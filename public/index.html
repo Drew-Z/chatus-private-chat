@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Chatus</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="login-view" id="loginView" hidden>
+        <form class="login-panel" id="loginForm">
+          <div class="brand-mark">C</div>
+          <h1>Chatus</h1>
+          <label for="accessCode">访问码</label>
+          <input id="accessCode" name="accessCode" type="password" autocomplete="current-password" required />
+          <button type="submit">进入</button>
+          <p class="status-line" id="loginStatus" role="status"></p>
+        </form>
+      </section>
+
+      <section class="chat-view" id="chatView" hidden>
+        <aside class="side-panel">
+          <div class="side-top">
+            <div class="brand-row">
+              <div class="brand-mark small">C</div>
+              <div>
+                <strong>Chatus</strong>
+                <span id="userLabel"></span>
+              </div>
+            </div>
+            <button class="ghost-button" id="newChatButton" type="button">新会话</button>
+          </div>
+          <div class="usage-block">
+            <span>今日剩余</span>
+            <strong id="usageText">--</strong>
+          </div>
+          <div class="route-block">
+            <label for="routeSelect">线路</label>
+            <select id="routeSelect"></select>
+            <label id="userApiKeyLabel" for="userApiKeyInput">API Key</label>
+            <input
+              id="userApiKeyInput"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="使用自己的 key"
+            />
+          </div>
+          <button class="plain-button" id="logoutButton" type="button">退出</button>
+        </aside>
+
+        <section class="conversation">
+          <header class="chat-header">
+            <div>
+              <h1>聊天</h1>
+              <p id="connectionState">已连接</p>
+            </div>
+            <button class="ghost-button compact" id="clearButton" type="button">清空</button>
+          </header>
+
+          <div class="message-list" id="messageList" aria-live="polite"></div>
+
+          <form class="composer" id="chatForm">
+            <div class="attachment-row" id="attachmentRow"></div>
+            <div class="composer-bar">
+              <label class="icon-button" for="imageInput" title="添加图片">
+                <span>+</span>
+              </label>
+              <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+              <textarea id="promptInput" rows="1" placeholder="输入消息" required></textarea>
+              <button class="send-button" id="sendButton" type="submit">发送</button>
+              <button class="stop-button" id="stopButton" type="button" hidden>停止</button>
+            </div>
+          </form>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
