@@ -114,6 +114,7 @@ CLOUDFLARE_API_TOKEN   Cloudflare API Token，用于 GitHub Actions 部署
 CLOUDFLARE_ACCOUNT_ID  当前 Cloudflare 账号 ID
 ACCESS_CODES           聊天窗口访问码
 ROUTES_CONFIG          多线路配置，推荐设置
+WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态线路 key
 SYSTEM_PROMPT          可选，默认系统提示词
 UPSTREAM_API_KEY       可选，旧单线路 fallback
 ```
@@ -132,7 +133,17 @@ npx wrangler secret put UPSTREAM_GROK_BACKUP_KEY
 npx wrangler secret put ANTHROPIC_KEY
 ```
 
-这些 route key 不一定要进 GitHub Actions。`wrangler deploy --secrets-file` 会上传本次文件里的 secrets，同时保留 Worker 上已有的其他 secrets。
+也可以把这些动态 key 集中放进 GitHub Secret `WORKER_SECRETS_JSON`，让 Actions 部署时一起上传：
+
+```json
+{
+  "UPSTREAM_GROK_MAIN_KEY": "sk-...",
+  "UPSTREAM_GROK_BACKUP_KEY": "sk-...",
+  "ANTHROPIC_KEY": "sk-ant-..."
+}
+```
+
+两种方式选一种就行。`wrangler deploy --secrets-file` 会上传本次文件里的 secrets，同时保留 Worker 上已有的其他 secrets。
 
 ## 自动部署
 

@@ -34,6 +34,7 @@ jobs:
           ACCESS_CODES: ${{ secrets.ACCESS_CODES }}
           ROUTES_CONFIG: ${{ secrets.ROUTES_CONFIG }}
           SYSTEM_PROMPT: ${{ secrets.SYSTEM_PROMPT }}
+          WORKER_SECRETS_JSON: ${{ secrets.WORKER_SECRETS_JSON }}
         run: |
           node - <<'NODE'
           const fs = require("fs");
@@ -46,6 +47,16 @@ jobs:
           if (process.env.ROUTES_CONFIG) {
             JSON.parse(process.env.ROUTES_CONFIG);
           }
+          const extraSecrets = process.env.WORKER_SECRETS_JSON
+            ? JSON.parse(process.env.WORKER_SECRETS_JSON)
+            : {};
+          if (
+            extraSecrets === null ||
+            Array.isArray(extraSecrets) ||
+            typeof extraSecrets !== "object"
+          ) {
+            throw new Error("WORKER_SECRETS_JSON must be a JSON object when set");
+          }
 
           const keys = ["ACCESS_CODES", "ROUTES_CONFIG", "UPSTREAM_API_KEY", "SYSTEM_PROMPT"];
           const secrets = Object.fromEntries(
@@ -53,6 +64,15 @@ jobs:
               .filter((key) => process.env[key])
               .map((key) => [key, process.env[key]]),
           );
+          for (const [key, value] of Object.entries(extraSecrets)) {
+            if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
+              throw new Error(`Invalid Worker secret name in WORKER_SECRETS_JSON: ${key}`);
+            }
+            if (typeof value !== "string" || !value) {
+              throw new Error(`Worker secret ${key} must be a non-empty string`);
+            }
+            secrets[key] = value;
+          }
           fs.writeFileSync(".prod.secrets.json", JSON.stringify(secrets, null, 2));
           NODE
 
