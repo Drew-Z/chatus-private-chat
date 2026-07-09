@@ -51,7 +51,8 @@ ACCESS_CODES="friend:code-one,alice:code-two"
   "defaults": {
     "defaultRoute": "grok-main",
     "allowedRoutes": ["grok-main"],
-    "allowBringYourOwnKey": false
+    "allowBringYourOwnKey": false,
+    "blockedPrompts": ["你好", "hi", "hello", "测试", "test", "在吗", "嗨", "哈喽", "hey", "ping"]
   },
   "users": {
     "friend": {
@@ -104,6 +105,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 - `requiresUserKey`: 设为 `true` 时，这条线路必须由朋友填写自己的 API key。
 - `allowUserKey`: 设为 `false` 时，即使用户开启 BYOK，这条线路也不允许覆盖服务端 key。
 - `directEndpoint`: 设为 `true` 时，`baseUrl` 会被当作完整 endpoint，不再自动拼 `/chat/completions` 或 `/v1/messages`。
+- `blockedPrompts`: 精确屏蔽低价值短提示词，例如 `["你好", "hi", "hello", "测试", "test"]`。只拦最后一条纯文本用户消息，带图片或更长任务不会被拦。
 
 ## GitHub Actions Secrets
 
@@ -116,6 +118,7 @@ ACCESS_CODES           聊天窗口访问码
 ROUTES_CONFIG          多线路配置，推荐设置
 WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态线路 key
 SYSTEM_PROMPT          可选，默认系统提示词
+BLOCKED_PROMPTS        可选，全局屏蔽的短提示词列表
 UPSTREAM_API_KEY       可选，旧单线路 fallback
 ```
 
@@ -144,6 +147,20 @@ npx wrangler secret put ANTHROPIC_KEY
 ```
 
 两种方式选一种就行。`wrangler deploy --secrets-file` 会上传本次文件里的 secrets，同时保留 Worker 上已有的其他 secrets。
+
+`BLOCKED_PROMPTS` 可以填逗号分隔：
+
+```text
+你好,hi,hello,测试,test,在吗,嗨,哈喽,hey,ping
+```
+
+也可以填 JSON 数组：
+
+```json
+["你好", "hi", "hello", "测试", "test", "在吗", "嗨", "哈喽", "hey", "ping"]
+```
+
+命中后网页会提示：`不要用这种方式测活，必须使用一个小任务之类的`。
 
 ## 自动部署
 

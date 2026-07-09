@@ -34,6 +34,7 @@ jobs:
           ACCESS_CODES: ${{ secrets.ACCESS_CODES }}
           ROUTES_CONFIG: ${{ secrets.ROUTES_CONFIG }}
           SYSTEM_PROMPT: ${{ secrets.SYSTEM_PROMPT }}
+          BLOCKED_PROMPTS: ${{ secrets.BLOCKED_PROMPTS }}
           WORKER_SECRETS_JSON: ${{ secrets.WORKER_SECRETS_JSON }}
         run: |
           node - <<'NODE'
@@ -58,7 +59,7 @@ jobs:
             throw new Error("WORKER_SECRETS_JSON must be a JSON object when set");
           }
 
-          const keys = ["ACCESS_CODES", "ROUTES_CONFIG", "UPSTREAM_API_KEY", "SYSTEM_PROMPT"];
+          const keys = ["ACCESS_CODES", "ROUTES_CONFIG", "UPSTREAM_API_KEY", "SYSTEM_PROMPT", "BLOCKED_PROMPTS"];
           const secrets = Object.fromEntries(
             keys
               .filter((key) => process.env[key])

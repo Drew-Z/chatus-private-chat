@@ -43,6 +43,7 @@ type UserConfig = {
   allowBringYourOwnKey?: boolean;
   dailyMessageLimit?: number;
   minuteMessageLimit?: number;
+  blockedPrompts?: string[];
 };
 
 type AppConfig = {
@@ -94,6 +95,7 @@ type Env = {
   MAX_IMAGES_PER_REQUEST?: string;
   SESSION_TTL_SECONDS?: string;
   DEFAULT_MAX_TOKENS?: string;
+  BLOCKED_PROMPTS?: string;
   [key: string]: unknown;
 };
 
@@ -101,6 +103,7 @@ const SESSION_COOKIE = "chatus_session";
 const MAX_MESSAGES = 24;
 const MAX_REQUEST_BYTES = 7_000_000;
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
+const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -237,6 +240,15 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     return jsonResponse({ error: "empty_messages" }, 400);
   }
 
+  const latestPrompt = getLatestUserPrompt(normalized);
+  if (
+    latestPrompt &&
+    !latestPrompt.hasImages &&
+    isBlockedPrompt(latestPrompt.text, getBlockedPrompts(env, access.user))
+  ) {
+    return jsonResponse({ error: "blocked_prompt", message: BLOCKED_PROMPT_MESSAGE }, 400);
+  }
+
   const hasImages = messagesContainImages(normalized);
   const selectedPublicRoute =
     access.routes.find((route) => route.id === selectedRoute) ||
@@ -341,6 +353,7 @@ function getAppConfig(env: Env): AppConfig {
       defaultRoute: "default",
       allowedRoutes: ["default"],
       allowBringYourOwnKey: false,
+      blockedPrompts: parsePromptList(env.BLOCKED_PROMPTS),
     },
   });
 }
@@ -404,6 +417,7 @@ function normalizeUserConfig(value: unknown): UserConfig {
     allowBringYourOwnKey: value.allowBringYourOwnKey === true,
     dailyMessageLimit: normalizePositiveNumber(value.dailyMessageLimit),
     minuteMessageLimit: normalizePositiveNumber(value.minuteMessageLimit),
+    blockedPrompts: parsePromptList(value.blockedPrompts),
   };
 }
 
@@ -823,6 +837,63 @@ function messagesContainImages(messages: ChatMessage[]): boolean {
   return messages.some((message) =>
     Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"),
   );
+}
+
+function getLatestUserPrompt(messages: ChatMessage[]): { text: string; hasImages: boolean } | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+
+    if (typeof message.content === "string") {
+      return { text: message.content, hasImages: false };
+    }
+
+    return {
+      text: extractText(message.content),
+      hasImages: message.content.some((part) => part.type === "image_url"),
+    };
+  }
+
+  return null;
+}
+
+function getBlockedPrompts(env: Env, user: UserConfig): string[] {
+  return [...parsePromptList(env.BLOCKED_PROMPTS), ...(user.blockedPrompts || [])];
+}
+
+function isBlockedPrompt(prompt: string, blockedPrompts: string[]): boolean {
+  const normalizedPrompt = normalizePromptForBlocking(prompt);
+  if (!normalizedPrompt) return false;
+
+  return blockedPrompts.some((blocked) => normalizePromptForBlocking(blocked) === normalizedPrompt);
+}
+
+function normalizePromptForBlocking(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[\s\r\n\t]+/g, "")
+    .replace(/[!！?？.。,:：;；'"“”‘’`~～\-_—|/\\()[\]{}<>《》]+/g, "");
+}
+
+function parsePromptList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+  }
+
+  if (typeof value !== "string" || !value.trim()) return [];
+  const trimmed = value.trim();
+  if (trimmed.startsWith("[")) {
+    try {
+      return parsePromptList(JSON.parse(trimmed));
+    } catch {
+      return [];
+    }
+  }
+
+  return trimmed
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function findAccessLabel(accessCodes: string, code: string): string | null {

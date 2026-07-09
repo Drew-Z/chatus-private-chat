@@ -211,7 +211,7 @@ async function streamChat(assistantMessage) {
 
     if (!response.ok || !response.body) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(formatError(data.error || "request_failed"));
+      throw new Error(data.message || formatError(data.error || "request_failed"));
     }
 
     const reader = response.body.getReader();
@@ -404,6 +404,7 @@ function showInlineError(message) {
 
 function formatError(code) {
   const messagesByCode = {
+    blocked_prompt: "不要用这种方式测活，必须使用一个小任务之类的",
     empty_messages: "消息为空",
     forbidden: "请求被拒绝",
     no_routes_available: "没有可用线路",
