@@ -517,10 +517,30 @@ async function callRoute(args: {
     error: {
       routeId,
       status: response.status,
-      message: message.slice(0, 500),
+      message: formatUpstreamErrorMessage(message),
     },
     terminal,
   };
+}
+
+function formatUpstreamErrorMessage(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return "upstream returned an empty error";
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    const message = findErrorMessage(parsed);
+    return message || trimmed.slice(0, 500);
+  } catch {
+    return trimmed.slice(0, 500);
+  }
+}
+
+function findErrorMessage(value: unknown): string {
+  if (!isRecord(value)) return "";
+  if (typeof value.message === "string") return value.message;
+  if (isRecord(value.error)) return findErrorMessage(value.error);
+  return "";
 }
 
 async function callOpenAiChat(args: {
@@ -802,9 +822,11 @@ function normalizeMessages(input: unknown, env: Env): ChatMessage[] {
       if (role !== "system" && role !== "user" && role !== "assistant") return null;
 
       if (typeof item.content === "string") {
+        const content = item.content.slice(0, maxTextChars);
+        if (!content.trim()) return null;
         return {
           role,
-          content: item.content.slice(0, maxTextChars),
+          content,
         };
       }
 

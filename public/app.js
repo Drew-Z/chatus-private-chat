@@ -190,7 +190,7 @@ async function streamChat(assistantMessage) {
 
   try {
     const payload = {
-      messages,
+      messages: buildRequestMessages(assistantMessage),
       routeId: selectedRouteId,
     };
     const userApiKey = userApiKeyInput.value.trim();
@@ -319,6 +319,14 @@ function buildUserContent(text, files) {
     content.push({ type: "image_url", image_url: { url: file.url } });
   }
   return content;
+}
+
+function buildRequestMessages(pendingAssistantMessage) {
+  return messages.filter((message) => {
+    if (message === pendingAssistantMessage || message.role === "error") return false;
+    if (typeof message.content === "string") return Boolean(message.content.trim());
+    return Array.isArray(message.content) && message.content.length > 0;
+  });
 }
 
 function renderMessages() {
