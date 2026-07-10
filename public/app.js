@@ -6,6 +6,7 @@ const accessCode = document.querySelector("#accessCode");
 const userLabel = document.querySelector("#userLabel");
 const usageText = document.querySelector("#usageText");
 const messageList = document.querySelector("#messageList");
+const chatList = document.querySelector("#chatList");
 const chatForm = document.querySelector("#chatForm");
 const promptInput = document.querySelector("#promptInput");
 const sendButton = document.querySelector("#sendButton");
@@ -17,12 +18,23 @@ const connectionState = document.querySelector("#connectionState");
 const routeSelect = document.querySelector("#routeSelect");
 const userApiKeyInput = document.querySelector("#userApiKeyInput");
 const userApiKeyLabel = document.querySelector("#userApiKeyLabel");
+const memoryInput = document.querySelector("#memoryInput");
+const saveMemoryButton = document.querySelector("#saveMemoryButton");
+const memoryStatus = document.querySelector("#memoryStatus");
 
-const STORAGE_KEY = "chatus.messages.v1";
+const LEGACY_STORAGE_KEY = "chatus.messages.v1";
+const SESSIONS_STORAGE_PREFIX = "chatus.sessions.v2.";
+const ACTIVE_SESSION_PREFIX = "chatus.activeSession.v2.";
 const ROUTE_STORAGE_KEY = "chatus.route.v1";
 const MAX_ATTACHMENTS = 4;
+const MAX_SESSIONS = 20;
+const MAX_STORED_MESSAGES = 80;
+const MAX_CONTEXT_MESSAGES = 24;
 
-let messages = loadMessages();
+let currentUser = "";
+let sessions = [];
+let activeSessionId = "";
+let messages = [];
 let attachments = [];
 let abortController = null;
 let routes = [];
@@ -53,19 +65,22 @@ loginForm.addEventListener("submit", async (event) => {
 
 document.querySelector("#logoutButton").addEventListener("click", async () => {
   await fetch("/api/logout", { method: "POST" });
+  currentUser = "";
+  sessions = [];
+  activeSessionId = "";
   messages = [];
   attachments = [];
-  saveMessages();
   renderMessages();
   renderAttachments();
+  renderChatList();
+  memoryInput.value = "";
+  memoryStatus.textContent = "";
   showLogin();
 });
 
 document.querySelector("#newChatButton").addEventListener("click", () => {
-  messages = [];
+  createNewSession();
   attachments = [];
-  saveMessages();
-  renderMessages();
   renderAttachments();
   promptInput.focus();
 });
@@ -74,6 +89,10 @@ document.querySelector("#clearButton").addEventListener("click", () => {
   messages = [];
   saveMessages();
   renderMessages();
+});
+
+saveMemoryButton.addEventListener("click", () => {
+  saveMemory();
 });
 
 routeSelect.addEventListener("change", () => {
@@ -173,12 +192,16 @@ async function showChat(existingSession) {
   loginView.hidden = true;
   chatView.hidden = false;
   const session = existingSession || (await (await fetch("/api/session")).json());
+  currentUser = session.user || "friend";
   routes = Array.isArray(session.routes) ? session.routes : [];
   selectedRouteId = chooseRoute(session.defaultRoute);
-  userLabel.textContent = session.user || "";
+  loadUserSessions();
+  userLabel.textContent = currentUser;
   updateUsage(session.usage);
   renderRoutes();
+  renderChatList();
   renderMessages();
+  await loadMemory();
   updateConnectionState();
   promptInput.focus();
 }
@@ -245,6 +268,220 @@ async function streamChat(assistantMessage) {
     setBusy(false);
     updateConnectionState();
   }
+}
+
+async function loadMemory() {
+  memoryStatus.textContent = "读取中";
+  saveMemoryButton.disabled = true;
+
+  try {
+    const response = await fetch("/api/memory");
+    if (!response.ok) throw new Error("load_failed");
+    const data = await response.json();
+    memoryInput.maxLength = Number(data.maxChars) || 4000;
+    memoryInput.value = data.memory || "";
+    memoryStatus.textContent = memoryInput.value ? "已加载" : "空";
+  } catch {
+    memoryStatus.textContent = "读取失败";
+  } finally {
+    saveMemoryButton.disabled = false;
+  }
+}
+
+async function saveMemory() {
+  memoryStatus.textContent = "保存中";
+  saveMemoryButton.disabled = true;
+
+  try {
+    const response = await fetch("/api/memory", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: memoryInput.value }),
+    });
+    if (!response.ok) throw new Error("save_failed");
+    const data = await response.json();
+    memoryInput.value = data.memory || "";
+    memoryStatus.textContent = "已保存";
+  } catch {
+    memoryStatus.textContent = "保存失败";
+  } finally {
+    saveMemoryButton.disabled = false;
+  }
+}
+
+function loadUserSessions() {
+  sessions = loadSessions();
+  activeSessionId = chooseActiveSessionId();
+  messages = getActiveSession().messages;
+}
+
+function loadSessions() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(sessionsStorageKey()) || "[]");
+    if (Array.isArray(parsed) && parsed.length) {
+      return normalizeSessions(parsed);
+    }
+  } catch {
+    // Fall through to legacy migration.
+  }
+
+  const legacyMessages = loadLegacyMessages();
+  return [createSession(legacyMessages)];
+}
+
+function normalizeSessions(input) {
+  return input
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : createId(),
+      title: typeof item.title === "string" && item.title.trim() ? item.title : "新会话",
+      createdAt: Number.isFinite(item.createdAt) ? item.createdAt : Date.now(),
+      updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : Date.now(),
+      messages: Array.isArray(item.messages) ? item.messages.slice(-MAX_STORED_MESSAGES) : [],
+    }))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_SESSIONS);
+}
+
+function loadLegacyMessages() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function createSession(initialMessages = []) {
+  const now = Date.now();
+  const trimmedMessages = initialMessages.slice(-MAX_STORED_MESSAGES);
+  return {
+    id: createId(),
+    title: deriveSessionTitle(trimmedMessages),
+    createdAt: now,
+    updatedAt: now,
+    messages: trimmedMessages,
+  };
+}
+
+function createNewSession() {
+  const session = createSession();
+  sessions = [session, ...sessions].slice(0, MAX_SESSIONS);
+  activeSessionId = session.id;
+  messages = session.messages;
+  saveSessions();
+  renderChatList();
+  renderMessages();
+}
+
+function chooseActiveSessionId() {
+  const stored = localStorage.getItem(activeSessionStorageKey());
+  if (sessions.some((session) => session.id === stored)) return stored;
+  if (!sessions.length) sessions = [createSession()];
+  return sessions[0].id;
+}
+
+function getActiveSession() {
+  let session = sessions.find((item) => item.id === activeSessionId);
+  if (!session) {
+    session = createSession();
+    sessions = [session, ...sessions].slice(0, MAX_SESSIONS);
+    activeSessionId = session.id;
+    saveSessions();
+  }
+  return session;
+}
+
+function activateSession(id) {
+  const session = sessions.find((item) => item.id === id);
+  if (!session) return;
+  activeSessionId = id;
+  messages = session.messages;
+  attachments = [];
+  localStorage.setItem(activeSessionStorageKey(), id);
+  renderAttachments();
+  renderChatList();
+  renderMessages();
+  promptInput.focus();
+}
+
+function deleteSession(id) {
+  sessions = sessions.filter((session) => session.id !== id);
+  if (!sessions.length) sessions = [createSession()];
+  if (activeSessionId === id) {
+    activeSessionId = sessions[0].id;
+    messages = sessions[0].messages;
+  }
+  saveSessions();
+  renderChatList();
+  renderMessages();
+}
+
+function saveMessages() {
+  const active = getActiveSession();
+  active.messages = messages.slice(-MAX_STORED_MESSAGES);
+  active.title = deriveSessionTitle(active.messages);
+  active.updatedAt = Date.now();
+  sessions = [active, ...sessions.filter((session) => session.id !== active.id)]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_SESSIONS);
+  messages = active.messages;
+  activeSessionId = active.id;
+  saveSessions();
+  renderChatList();
+}
+
+function saveSessions() {
+  localStorage.setItem(sessionsStorageKey(), JSON.stringify(sessions));
+  if (activeSessionId) localStorage.setItem(activeSessionStorageKey(), activeSessionId);
+}
+
+function renderChatList() {
+  chatList.textContent = "";
+  if (!sessions.length) return;
+
+  for (const session of sessions) {
+    const item = document.createElement("div");
+    item.className = `chat-list-item${session.id === activeSessionId ? " active" : ""}`;
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "chat-list-main";
+    open.textContent = session.title || "新会话";
+    open.title = session.title || "新会话";
+    open.addEventListener("click", () => activateSession(session.id));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chat-list-remove";
+    remove.textContent = "x";
+    remove.title = "删除会话";
+    remove.addEventListener("click", () => deleteSession(session.id));
+
+    item.append(open, remove);
+    chatList.append(item);
+  }
+}
+
+function sessionsStorageKey() {
+  return `${SESSIONS_STORAGE_PREFIX}${encodeURIComponent(currentUser || "friend")}`;
+}
+
+function activeSessionStorageKey() {
+  return `${ACTIVE_SESSION_PREFIX}${encodeURIComponent(currentUser || "friend")}`;
+}
+
+function createId() {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function deriveSessionTitle(inputMessages) {
+  const firstUser = inputMessages.find((message) => message.role === "user");
+  const text = firstUser ? extractText(firstUser.content).replace(/\s+/g, " ").trim() : "";
+  if (!text) return "新会话";
+  return text.length > 18 ? `${text.slice(0, 18)}...` : text;
 }
 
 function chooseRoute(defaultRoute) {
@@ -322,11 +559,14 @@ function buildUserContent(text, files) {
 }
 
 function buildRequestMessages(pendingAssistantMessage) {
-  return messages.filter((message) => {
+  const cleaned = messages.filter((message) => {
     if (message === pendingAssistantMessage || message.role === "error") return false;
     if (typeof message.content === "string") return Boolean(message.content.trim());
     return Array.isArray(message.content) && message.content.length > 0;
   });
+  const recent = cleaned.slice(-MAX_CONTEXT_MESSAGES);
+  while (recent[0]?.role === "assistant") recent.shift();
+  return recent;
 }
 
 function renderMessages() {
@@ -425,19 +665,6 @@ function formatError(code) {
     user_api_key_required: "需要填写 API Key",
   };
   return messagesByCode[code] || code || "请求失败";
-}
-
-function loadMessages() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveMessages() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-30)));
 }
 
 function readFileAsDataUrl(file) {

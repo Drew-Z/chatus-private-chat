@@ -17,9 +17,10 @@
   "vars": {
     "UPSTREAM_BASE_URL": "https://api.openai.com/v1",
     "MODEL_NAME": "gpt-4o-mini",
-    "DAILY_MESSAGE_LIMIT": "80",
+    "DAILY_MESSAGE_LIMIT": "500",
     "MINUTE_MESSAGE_LIMIT": "12",
     "MAX_TEXT_CHARS": "12000",
+    "MAX_MEMORY_CHARS": "4000",
     "MAX_IMAGE_BYTES": "2500000",
     "MAX_IMAGES_PER_REQUEST": "4",
     "SESSION_TTL_SECONDS": "2592000",

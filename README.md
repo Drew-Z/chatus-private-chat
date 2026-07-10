@@ -20,6 +20,9 @@ Browser
 - 多协议：`openai-chat` 适合 OpenAI-compatible 中转；`anthropic-messages` 适合 Claude/Claude Code 一类 Anthropic Messages 接口。
 - 多模态：前端支持图片上传；后端会按线路协议转换图片格式。
 - 私有访问：访问码登录、HttpOnly session、KV 限额，不暴露 `/v1/chat/completions` 分发接口。
+- 多会话：浏览器本地保存每个朋友最多 20 个会话，每次请求只发送最近 24 条上下文。
+- 长期记忆：每个访问码 label 在 KV 中有一份长期记忆，聊天时自动作为 system 信息注入。
+- 管理后台：`/admin.html` 可管理访问码、用户额度、允许线路、默认模型和运行时配置。
 
 ## 本地配置
 
@@ -27,6 +30,7 @@ Browser
 
 ```bash
 ACCESS_CODES="friend:change-this-long-random-code"
+ADMIN_TOKEN="change-this-admin-token"
 ROUTES_CONFIG="{...}"
 UPSTREAM_GROK_MAIN_KEY="sk-..."
 UPSTREAM_GROK_BACKUP_KEY="sk-..."
@@ -59,7 +63,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
       "defaultRoute": "grok-main",
       "allowedRoutes": ["grok-main", "grok-backup", "claude-code"],
       "allowBringYourOwnKey": true,
-      "dailyMessageLimit": 80,
+      "dailyMessageLimit": 500,
       "minuteMessageLimit": 12
     }
   },
@@ -115,6 +119,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 CLOUDFLARE_API_TOKEN   Cloudflare API Token，用于 GitHub Actions 部署
 CLOUDFLARE_ACCOUNT_ID  当前 Cloudflare 账号 ID
 ACCESS_CODES           聊天窗口访问码
+ADMIN_TOKEN            管理后台登录 token，用于 /admin.html
 ROUTES_CONFIG          多线路配置，推荐设置
 WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态线路 key
 SYSTEM_PROMPT          可选，默认系统提示词
@@ -162,6 +167,36 @@ npx wrangler secret put ANTHROPIC_KEY
 
 命中后网页会提示：`不要用这种方式测活，必须使用一个小任务之类的`。
 
+## 管理后台
+
+访问：
+
+```text
+https://你的 Worker 域名/admin.html
+```
+
+后台使用单独的 `ADMIN_TOKEN` 登录。登录后可以：
+
+- 查看今天每个朋友的用量、剩余额度、活跃 session、长期记忆长度。
+- 编辑访问码，格式仍是 `friend:code-one,alice:code-two`。
+- 用表单快速配置某个朋友可用的线路、默认模型、每日额度、每分钟额度、是否允许 BYOK。
+- 用表单新增/修改线路的 `baseUrl`、`model`、`apiKeyRef`、协议类型、fallback 和图片支持。
+- 直接编辑完整 `ROUTES_CONFIG` JSON，处理 `headers`、`authHeader`、`directEndpoint` 等高级字段。
+- 删除 KV 覆盖配置，恢复到 GitHub/Cloudflare Secret 中的默认配置。
+
+后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。上游 API Key 仍建议放在 Worker Secret / `WORKER_SECRETS_JSON` 里，后台线路只填写 `apiKeyRef`。
+
+## 会话与记忆
+
+当前实现借鉴了常见聊天项目的分层方式，但保持轻量：
+
+- 会话历史：保存在朋友自己的浏览器 localStorage 中，分用户 label 隔离。
+- 短期上下文：请求上游时只发送最近 24 条有效消息，避免越聊越慢、越聊越贵。
+- 长期记忆：保存在 Cloudflare KV 的 `memory:<label>`，默认最多 4000 字符。
+- System 注入：`SYSTEM_PROMPT` 和长期记忆会作为 system 消息放到请求最前面。
+
+暂时没有引入向量库。只有一个朋友或少量朋友使用时，手写长期记忆比自动抽取和向量检索更稳，也更容易知道模型到底记住了什么。
+
 ## 自动部署
 
 推送到 `main` 分支会自动执行 `.github/workflows/deploy.yml`：
@@ -188,6 +223,8 @@ npx wrangler deploy --dry-run
 ## 借鉴项目
 
 - LibreChat：适合作为多 endpoint 配置和 BYOK UI 的参考。
+- Open WebUI：适合作为用户记忆、会话管理和管理员配置体验的参考。
+- LangChain：适合作为短期上下文窗口和长期记忆分层的参考。
 - LiteLLM：适合作为路由、fallback、virtual key 和 provider adapter 的参考。
 
 这个项目的取舍更轻：不做公开 API proxy，只做一个私有网页登录聊天窗。

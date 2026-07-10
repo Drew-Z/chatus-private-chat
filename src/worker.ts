@@ -16,6 +16,16 @@ type Session = {
   lastSeen: number;
 };
 
+type AdminSession = {
+  createdAt: number;
+  lastSeen: number;
+};
+
+type AccessEntry = {
+  label: string;
+  code: string;
+};
+
 type ProviderType = "openai-chat" | "anthropic-messages";
 
 type RouteConfig = {
@@ -93,17 +103,25 @@ type Env = {
   MAX_TEXT_CHARS?: string;
   MAX_IMAGE_BYTES?: string;
   MAX_IMAGES_PER_REQUEST?: string;
+  MAX_MEMORY_CHARS?: string;
   SESSION_TTL_SECONDS?: string;
   DEFAULT_MAX_TOKENS?: string;
   BLOCKED_PROMPTS?: string;
+  ADMIN_TOKEN?: string;
   [key: string]: unknown;
 };
 
 const SESSION_COOKIE = "chatus_session";
+const ADMIN_COOKIE = "chatus_admin";
 const MAX_MESSAGES = 24;
 const MAX_REQUEST_BYTES = 7_000_000;
+const DEFAULT_DAILY_LIMIT = 500;
+const DEFAULT_MEMORY_CHARS = 4_000;
+const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
+const ROUTES_CONFIG_KEY = "config:routes_config";
+const ACCESS_CODES_KEY = "config:access_codes";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -127,6 +145,22 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return new Response(null, { status: 204, headers: securityHeaders() });
   }
 
+  if (url.pathname === "/api/admin/login" && request.method === "POST") {
+    return handleAdminLogin(request, env, url);
+  }
+
+  if (url.pathname === "/api/admin/logout" && request.method === "POST") {
+    return handleAdminLogout(request, env, url);
+  }
+
+  if (url.pathname.startsWith("/api/admin/")) {
+    const admin = await getAdminSession(request, env);
+    if (!admin) {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    return handleAdminApi(request, env, url);
+  }
+
   if (url.pathname === "/api/login" && request.method === "POST") {
     return handleLogin(request, env, url);
   }
@@ -141,7 +175,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   if (url.pathname === "/api/session" && request.method === "GET") {
-    const config = getAppConfig(env);
+    const config = await loadAppConfig(env);
     const access = getRouteAccess(config, session.label, env);
     const usage = await getUsage(env, session, access.user);
     return jsonResponse({
@@ -158,17 +192,26 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return handleChat(request, env, session);
   }
 
+  if (url.pathname === "/api/memory" && request.method === "GET") {
+    return handleGetMemory(env, session);
+  }
+
+  if (url.pathname === "/api/memory" && request.method === "PUT") {
+    return handlePutMemory(request, env, session);
+  }
+
   return jsonResponse({ error: "not_found" }, 404);
 }
 
 async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!env.ACCESS_CODES?.trim()) {
+  const accessCodes = await loadAccessCodes(env);
+  if (!accessCodes.trim()) {
     return jsonResponse({ error: "server_not_configured" }, 503);
   }
 
   const body = await readJson<{ code?: string }>(request);
   const code = body.code?.trim() || "";
-  const label = findAccessLabel(env.ACCESS_CODES, code);
+  const label = await findAccessLabel(accessCodes, code);
 
   if (!label) {
     return jsonResponse({ error: "invalid_code" }, 401);
@@ -212,6 +255,199 @@ async function handleLogout(request: Request, env: Env, url: URL): Promise<Respo
   );
 }
 
+async function handleAdminLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  const expected = env.ADMIN_TOKEN?.trim() || "";
+  if (!expected) {
+    return jsonResponse({ error: "admin_not_configured" }, 503);
+  }
+
+  const body = await readJson<{ token?: string }>(request);
+  const token = body.token?.trim() || "";
+  if (!(await secureCompare(token, expected))) {
+    return jsonResponse({ error: "invalid_token" }, 401);
+  }
+
+  const now = Date.now();
+  const sessionToken = randomToken();
+  const session: AdminSession = { createdAt: now, lastSeen: now };
+  await env.CHAT_STORE.put(`admin:${sessionToken}`, JSON.stringify(session), {
+    expirationTtl: ADMIN_SESSION_TTL_SECONDS,
+  });
+
+  return jsonResponse(
+    { authenticated: true },
+    200,
+    {
+      "Set-Cookie": buildAdminCookie(sessionToken, ADMIN_SESSION_TTL_SECONDS, url.protocol === "https:"),
+    },
+  );
+}
+
+async function handleAdminLogout(request: Request, env: Env, url: URL): Promise<Response> {
+  const token = getCookie(request, ADMIN_COOKIE);
+  if (token) {
+    await env.CHAT_STORE.delete(`admin:${token}`);
+  }
+
+  return jsonResponse(
+    { ok: true },
+    200,
+    {
+      "Set-Cookie": buildAdminCookie("", 0, url.protocol === "https:"),
+    },
+  );
+}
+
+async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Response> {
+  if (url.pathname === "/api/admin/session" && request.method === "GET") {
+    return jsonResponse({ authenticated: true });
+  }
+
+  if (url.pathname === "/api/admin/config" && request.method === "GET") {
+    return handleGetAdminConfig(env);
+  }
+
+  if (url.pathname === "/api/admin/config" && request.method === "PUT") {
+    return handlePutAdminConfig(request, env);
+  }
+
+  if (url.pathname === "/api/admin/config" && request.method === "DELETE") {
+    await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
+    return jsonResponse({ ok: true });
+  }
+
+  if (url.pathname === "/api/admin/access-codes" && request.method === "GET") {
+    return handleGetAdminAccessCodes(env);
+  }
+
+  if (url.pathname === "/api/admin/access-codes" && request.method === "PUT") {
+    return handlePutAdminAccessCodes(request, env);
+  }
+
+  if (url.pathname === "/api/admin/access-codes" && request.method === "DELETE") {
+    await env.CHAT_STORE.delete(ACCESS_CODES_KEY);
+    return jsonResponse({ ok: true });
+  }
+
+  if (url.pathname === "/api/admin/stats" && request.method === "GET") {
+    return handleGetAdminStats(env);
+  }
+
+  return jsonResponse({ error: "not_found" }, 404);
+}
+
+async function handleGetAdminConfig(env: Env): Promise<Response> {
+  const { config, source } = await loadEditableConfig(env);
+  return jsonResponse({ config, source });
+}
+
+async function handlePutAdminConfig(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ config?: unknown }>(request);
+  const normalized = normalizeAppConfig(body.config);
+  const validation = validateAppConfig(normalized);
+  if (!validation.ok) {
+    return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
+  }
+
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(normalized));
+  return jsonResponse({ ok: true, config: normalized, source: "kv" });
+}
+
+async function handleGetAdminAccessCodes(env: Env): Promise<Response> {
+  const { accessCodes, source } = await loadEditableAccessCodes(env);
+  return jsonResponse({
+    accessCodes,
+    entries: parseAccessCodes(accessCodes).map(({ label }) => ({ label })),
+    source,
+  });
+}
+
+async function handlePutAdminAccessCodes(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ accessCodes?: unknown }>(request);
+  const accessCodes = typeof body.accessCodes === "string" ? body.accessCodes.trim() : "";
+  const entries = parseAccessCodes(accessCodes);
+  if (!entries.length) {
+    return jsonResponse({ error: "invalid_access_codes", message: "至少需要一个 label:code 访问码" }, 400);
+  }
+
+  await env.CHAT_STORE.put(ACCESS_CODES_KEY, accessCodes);
+  return jsonResponse({ ok: true, entries: entries.map(({ label }) => ({ label })), source: "kv" });
+}
+
+async function handleGetAdminStats(env: Env): Promise<Response> {
+  const [{ config, source: configSource }, { accessCodes, source: accessCodeSource }] = await Promise.all([
+    loadEditableConfig(env),
+    loadEditableAccessCodes(env),
+  ]);
+  const day = new Date().toISOString().slice(0, 10);
+  const accessLabels = parseAccessCodes(accessCodes).map((entry) => entry.label);
+  const configLabels = Object.keys(config.users || {});
+  const labels = [...new Set([...accessLabels, ...configLabels])].sort();
+  const sessionsByLabel = await countActiveSessionsByLabel(env);
+
+  const users = await Promise.all(
+    labels.map(async (label) => {
+      const user = {
+        ...config.defaults,
+        ...(config.users?.[label] || {}),
+      };
+      const used = Number((await env.CHAT_STORE.get(usageKey(label, day))) || "0");
+      const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
+      const memory = await env.CHAT_STORE.get(memoryKey(label));
+      return {
+        label,
+        used,
+        dailyLimit,
+        remaining: Math.max(0, dailyLimit - used),
+        defaultRoute: user.defaultRoute || "",
+        allowedRoutes: user.allowedRoutes || [],
+        allowBringYourOwnKey: Boolean(user.allowBringYourOwnKey),
+        activeSessions: sessionsByLabel.get(label) || 0,
+        memoryChars: memory?.length || 0,
+      };
+    }),
+  );
+
+  return jsonResponse({
+    day,
+    users,
+    routes: Object.entries(config.routes).map(([id, route]) => ({
+      id,
+      label: route.label,
+      type: route.type,
+      model: route.model,
+      baseUrl: route.baseUrl,
+      apiKeyRef: route.apiKeyRef || "",
+      requiresUserKey: Boolean(route.requiresUserKey),
+      supportsImages: route.supportsImages !== false,
+    })),
+    configSource,
+    accessCodeSource,
+  });
+}
+
+async function handleGetMemory(env: Env, session: Session): Promise<Response> {
+  const memory = (await env.CHAT_STORE.get(memoryKey(session.label))) || "";
+  return jsonResponse({
+    memory,
+    maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS),
+  });
+}
+
+async function handlePutMemory(request: Request, env: Env, session: Session): Promise<Response> {
+  const maxChars = numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS);
+  const body = await readJson<{ memory?: unknown }>(request);
+  const memory = typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "";
+
+  if (memory) {
+    await env.CHAT_STORE.put(memoryKey(session.label), memory);
+  } else {
+    await env.CHAT_STORE.delete(memoryKey(session.label));
+  }
+
+  return jsonResponse({ ok: true, memory, maxChars });
+}
+
 async function handleChat(request: Request, env: Env, session: Session): Promise<Response> {
   const length = Number(request.headers.get("content-length") || "0");
   if (length > MAX_REQUEST_BYTES) {
@@ -222,7 +458,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     return jsonResponse({ error: "forbidden" }, 403);
   }
 
-  const config = getAppConfig(env);
+  const config = await loadAppConfig(env);
   const access = getRouteAccess(config, session.label, env);
   if (!access.routes.length) {
     return jsonResponse({ error: "no_routes_available" }, 403);
@@ -277,9 +513,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     );
   }
 
-  const messages = env.SYSTEM_PROMPT?.trim()
-    ? [{ role: "system" as const, content: env.SYSTEM_PROMPT.trim() }, ...normalized]
-    : normalized;
+  const messages = await buildMessagesWithSystem(env, session, normalized);
 
   const userApiKey = typeof body.userApiKey === "string" ? body.userApiKey.trim() : "";
   let lastError: { routeId: string; status: number; message: string } | null = null;
@@ -329,15 +563,53 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
   );
 }
 
+async function loadAppConfig(env: Env): Promise<AppConfig> {
+  const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY);
+  if (stored?.trim()) {
+    try {
+      return normalizeAppConfig(JSON.parse(stored));
+    } catch {
+      await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
+    }
+  }
+
+  return getAppConfig(env);
+}
+
+async function loadEditableConfig(env: Env): Promise<{ config: AppConfig; source: "kv" | "secret" | "default" }> {
+  const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY);
+  if (stored?.trim()) {
+    try {
+      return { config: normalizeAppConfig(JSON.parse(stored)), source: "kv" };
+    } catch {
+      await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
+    }
+  }
+
+  if (env.ROUTES_CONFIG?.trim()) {
+    try {
+      return { config: normalizeAppConfig(JSON.parse(env.ROUTES_CONFIG)), source: "secret" };
+    } catch {
+      return { config: getDefaultAppConfig(env), source: "default" };
+    }
+  }
+
+  return { config: getDefaultAppConfig(env), source: "default" };
+}
+
 function getAppConfig(env: Env): AppConfig {
   if (env.ROUTES_CONFIG?.trim()) {
     try {
       return normalizeAppConfig(JSON.parse(env.ROUTES_CONFIG));
     } catch {
-      return normalizeAppConfig({});
+      return getDefaultAppConfig(env);
     }
   }
 
+  return getDefaultAppConfig(env);
+}
+
+function getDefaultAppConfig(env: Env): AppConfig {
   return normalizeAppConfig({
     routes: {
       default: {
@@ -353,9 +625,40 @@ function getAppConfig(env: Env): AppConfig {
       defaultRoute: "default",
       allowedRoutes: ["default"],
       allowBringYourOwnKey: false,
+      dailyMessageLimit: numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT),
       blockedPrompts: parsePromptList(env.BLOCKED_PROMPTS),
     },
   });
+}
+
+function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; message: string } {
+  const routeIds = Object.keys(config.routes);
+  if (!routeIds.length) {
+    return { ok: false, message: "至少需要一条有效线路" };
+  }
+
+  const invalidFallback = routeIds.find((id) => config.routes[id].fallbacks?.some((fallback) => !config.routes[fallback]));
+  if (invalidFallback) {
+    return { ok: false, message: `线路 ${invalidFallback} 包含不存在的 fallback` };
+  }
+
+  const users = Object.entries(config.users || {});
+  for (const [label, user] of users) {
+    if (user.defaultRoute && !config.routes[user.defaultRoute]) {
+      return { ok: false, message: `用户 ${label} 的默认线路不存在` };
+    }
+
+    const missingRoute = user.allowedRoutes?.find((routeId) => !config.routes[routeId]);
+    if (missingRoute) {
+      return { ok: false, message: `用户 ${label} 允许了不存在的线路 ${missingRoute}` };
+    }
+  }
+
+  if (config.defaults?.defaultRoute && !config.routes[config.defaults.defaultRoute]) {
+    return { ok: false, message: "默认用户配置的 defaultRoute 不存在" };
+  }
+
+  return { ok: true };
 }
 
 function normalizeAppConfig(value: unknown): AppConfig {
@@ -471,6 +774,24 @@ function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): stri
     return String(env[route.apiKeyRef]);
   }
   return "";
+}
+
+async function buildMessagesWithSystem(env: Env, session: Session, normalized: ChatMessage[]): Promise<ChatMessage[]> {
+  const systemMessages: ChatMessage[] = [];
+  const systemPrompt = env.SYSTEM_PROMPT?.trim();
+  if (systemPrompt) {
+    systemMessages.push({ role: "system", content: systemPrompt });
+  }
+
+  const memory = (await env.CHAT_STORE.get(memoryKey(session.label)))?.trim();
+  if (memory) {
+    systemMessages.push({
+      role: "system",
+      content: `以下是关于当前用户的长期记忆。它可能包含用户偏好、常用背景和需要长期保持的一般信息。除非用户要求修改或遗忘，否则请在相关时参考：\n${memory}`,
+    });
+  }
+
+  return [...systemMessages, ...normalized];
 }
 
 async function callRoute(args: {
@@ -763,6 +1084,26 @@ async function getSession(request: Request, env: Env): Promise<Session | null> {
   }
 }
 
+async function getAdminSession(request: Request, env: Env): Promise<AdminSession | null> {
+  const token = getCookie(request, ADMIN_COOKIE);
+  if (!token) return null;
+
+  const raw = await env.CHAT_STORE.get(`admin:${token}`);
+  if (!raw) return null;
+
+  try {
+    const session = JSON.parse(raw) as AdminSession;
+    session.lastSeen = Date.now();
+    await env.CHAT_STORE.put(`admin:${token}`, JSON.stringify(session), {
+      expirationTtl: ADMIN_SESSION_TTL_SECONDS,
+    });
+    return session;
+  } catch {
+    await env.CHAT_STORE.delete(`admin:${token}`);
+    return null;
+  }
+}
+
 async function consumeLimits(
   env: Env,
   session: Session,
@@ -771,10 +1112,10 @@ async function consumeLimits(
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
   const minute = Math.floor(Date.now() / 60_000);
-  const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, 80);
+  const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
   const minuteLimit = user.minuteMessageLimit || numberEnv(env.MINUTE_MESSAGE_LIMIT, 12);
-  const dayKey = `usage:${session.id}:${day}`;
-  const minuteKey = `burst:${session.id}:${minute}`;
+  const dayKey = usageKey(session.label, day);
+  const minuteKey = burstKey(session.label, minute);
 
   const [dayCountRaw, minuteCountRaw] = await Promise.all([
     env.CHAT_STORE.get(dayKey),
@@ -801,9 +1142,33 @@ async function consumeLimits(
 
 async function getUsage(env: Env, session: Session, user: UserConfig) {
   const day = new Date().toISOString().slice(0, 10);
-  const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, 80);
-  const used = Number((await env.CHAT_STORE.get(`usage:${session.id}:${day}`)) || "0");
+  const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
+  const used = Number((await env.CHAT_STORE.get(usageKey(session.label, day))) || "0");
   return { used, limit: dailyLimit, remaining: Math.max(0, dailyLimit - used) };
+}
+
+async function countActiveSessionsByLabel(env: Env): Promise<Map<string, number>> {
+  const output = new Map<string, number>();
+  let cursor: string | undefined;
+
+  do {
+    const result = await env.CHAT_STORE.list({ prefix: "session:", cursor, limit: 100 });
+    cursor = result.list_complete ? undefined : result.cursor;
+    const sessions = await Promise.all(result.keys.map((key) => env.CHAT_STORE.get(key.name)));
+
+    for (const raw of sessions) {
+      if (!raw) continue;
+      try {
+        const session = JSON.parse(raw) as Session;
+        if (!session.label) continue;
+        output.set(session.label, (output.get(session.label) || 0) + 1);
+      } catch {
+        // Ignore malformed session records; getSession will clean them when encountered.
+      }
+    }
+  } while (cursor);
+
+  return output;
 }
 
 function normalizeMessages(input: unknown, env: Env): ChatMessage[] {
@@ -918,14 +1283,35 @@ function parsePromptList(value: unknown): string[] {
     .filter(Boolean);
 }
 
-function findAccessLabel(accessCodes: string, code: string): string | null {
-  for (const entry of accessCodes.split(",")) {
-    const trimmed = entry.trim();
-    if (!trimmed) continue;
-    const separator = trimmed.indexOf(":");
-    const label = separator === -1 ? "friend" : trimmed.slice(0, separator).trim() || "friend";
-    const expected = separator === -1 ? trimmed : trimmed.slice(separator + 1).trim();
-    if (expected && code === expected) return label;
+async function loadAccessCodes(env: Env): Promise<string> {
+  const stored = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
+  if (stored?.trim()) return stored.trim();
+  return env.ACCESS_CODES?.trim() || "";
+}
+
+async function loadEditableAccessCodes(env: Env): Promise<{ accessCodes: string; source: "kv" | "secret" }> {
+  const stored = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
+  if (stored?.trim()) return { accessCodes: stored.trim(), source: "kv" };
+  return { accessCodes: env.ACCESS_CODES?.trim() || "", source: "secret" };
+}
+
+function parseAccessCodes(accessCodes: string): AccessEntry[] {
+  return accessCodes
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separator = entry.indexOf(":");
+      const label = separator === -1 ? "friend" : entry.slice(0, separator).trim() || "friend";
+      const code = separator === -1 ? entry : entry.slice(separator + 1).trim();
+      return { label, code };
+    })
+    .filter((entry) => Boolean(entry.code));
+}
+
+async function findAccessLabel(accessCodes: string, code: string): Promise<string | null> {
+  for (const entry of parseAccessCodes(accessCodes)) {
+    if (await secureCompare(code, entry.code)) return entry.label;
   }
 
   return null;
@@ -1014,9 +1400,17 @@ function getCookie(request: Request, name: string): string | null {
 }
 
 function buildSessionCookie(value: string, maxAge: number, secure: boolean): string {
+  return buildCookie(SESSION_COOKIE, value, maxAge, secure);
+}
+
+function buildAdminCookie(value: string, maxAge: number, secure: boolean): string {
+  return buildCookie(ADMIN_COOKIE, value, maxAge, secure);
+}
+
+function buildCookie(name: string, value: string, maxAge: number, secure: boolean): string {
   const encoded = value ? encodeURIComponent(value) : "";
   const parts = [
-    `${SESSION_COOKIE}=${encoded}`,
+    `${name}=${encoded}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
@@ -1026,10 +1420,38 @@ function buildSessionCookie(value: string, maxAge: number, secure: boolean): str
   return parts.join("; ");
 }
 
+function usageKey(label: string, day: string): string {
+  return `usage:${encodeURIComponent(label)}:${day}`;
+}
+
+function burstKey(label: string, minute: number): string {
+  return `burst:${encodeURIComponent(label)}:${minute}`;
+}
+
+function memoryKey(label: string): string {
+  return `memory:${encodeURIComponent(label)}`;
+}
+
 function randomToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function secureCompare(actual: string, expected: string): Promise<boolean> {
+  if (!actual || !expected) return false;
+  const encoder = new TextEncoder();
+  const [actualHash, expectedHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(actual)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  const actualBytes = new Uint8Array(actualHash);
+  const expectedBytes = new Uint8Array(expectedHash);
+  let diff = actualBytes.length ^ expectedBytes.length;
+  for (let index = 0; index < actualBytes.length && index < expectedBytes.length; index += 1) {
+    diff |= actualBytes[index] ^ expectedBytes[index];
+  }
+  return diff === 0;
 }
 
 function numberEnv(value: string | undefined, fallback: number): number {

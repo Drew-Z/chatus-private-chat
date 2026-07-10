@@ -31,6 +31,7 @@
               </div>
             </div>
             <button class="ghost-button" id="newChatButton" type="button">新会话</button>
+            <div class="chat-list" id="chatList" aria-label="历史会话"></div>
           </div>
           <div class="usage-block">
             <span>今日剩余</span>
@@ -47,6 +48,14 @@
               spellcheck="false"
               placeholder="使用自己的 key"
             />
+          </div>
+          <div class="memory-block">
+            <label for="memoryInput">长期记忆</label>
+            <textarea id="memoryInput" rows="4" maxlength="4000" spellcheck="false"></textarea>
+            <div class="memory-actions">
+              <button class="ghost-button compact" id="saveMemoryButton" type="button">保存</button>
+              <span id="memoryStatus" role="status"></span>
+            </div>
           </div>
           <button class="plain-button" id="logoutButton" type="button">退出</button>
         </aside>
