@@ -125,7 +125,7 @@ loginForm.addEventListener("submit", async (event) => {
   let retryAfter = 0;
   setLoginBusy(true);
   try {
-    const response = await fetch("/api/login", {
+    const response = await fetchWithTimeout("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
@@ -176,7 +176,7 @@ promptInput.addEventListener("input", () => saveActiveDraft());
 document.querySelector("#logoutButton").addEventListener("click", async () => {
   const previousUser = currentUser;
   clearUserDrafts(previousUser);
-  await fetch("/api/logout", { method: "POST" }).catch(() => null);
+  await fetchWithTimeout("/api/logout", { method: "POST" }).catch(() => null);
   currentUser = "";
   currentDisplayName = "";
   sessions = [];
@@ -404,7 +404,7 @@ chatForm.addEventListener("submit", async (event) => {
 async function boot() {
   syncThemeControls();
   try {
-    const response = await fetch("/api/session");
+    const response = await fetchWithTimeout("/api/session");
     if (response.ok) await showChat(await response.json());
     else showLogin();
   } catch {
@@ -451,7 +451,7 @@ async function showChat(existingSession, readOnlyOffline = false) {
   setOfflineMode(readOnlyOffline);
   let session = existingSession;
   if (!session) {
-    const response = await fetch("/api/session");
+    const response = await fetchWithTimeout("/api/session");
     if (!response.ok) throw new Error("session_unavailable");
     session = await response.json();
   }
@@ -513,7 +513,7 @@ function loadSessionSnapshot() {
 async function reconnectSession() {
   showStatusToast("网络已恢复，正在重新验证会话");
   try {
-    const response = await fetch("/api/session");
+    const response = await fetchWithTimeout("/api/session");
     if (!response.ok) {
       localStorage.removeItem(SESSION_SNAPSHOT_KEY);
       showLogin();
@@ -555,6 +555,24 @@ function setLoginBusy(busy) {
   loginSubmitButton.disabled = busy;
   loginSubmitButton.textContent = busy ? "正在进入…" : "进入 Chatus";
   accessCode.disabled = busy;
+}
+
+async function fetchWithTimeout(input, init = {}, timeoutMs = 20_000) {
+  const controller = new AbortController();
+  const sourceSignal = init.signal;
+  const forwardAbort = () => controller.abort(sourceSignal?.reason);
+  if (sourceSignal?.aborted) forwardAbort();
+  else sourceSignal?.addEventListener("abort", forwardAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted && !sourceSignal?.aborted) throw new Error("请求超时，请检查网络后重试");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    sourceSignal?.removeEventListener("abort", forwardAbort);
+  }
 }
 
 function readRetryAfter(response) {
@@ -711,7 +729,7 @@ async function loadMemory(options = {}) {
   saveMemoryButton.disabled = true;
   if (suggestMemoryButton) suggestMemoryButton.disabled = true;
   try {
-    const response = await fetch("/api/memory");
+    const response = await fetchWithTimeout("/api/memory");
     if (handleUnauthorizedResponse(response)) return;
     if (!response.ok) throw new Error("load_failed");
     const data = await response.json();
@@ -731,7 +749,7 @@ async function saveMemory() {
   memoryStatus.textContent = "保存中";
   saveMemoryButton.disabled = true;
   try {
-    const response = await fetch("/api/memory", {
+    const response = await fetchWithTimeout("/api/memory", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ memory: memoryInput.value }),
@@ -765,7 +783,7 @@ async function suggestMemory() {
     };
     const userApiKey = userApiKeyInput.value.trim();
     if (userApiKey) payload.userApiKey = userApiKey;
-    const response = await fetch("/api/memory/suggest", {
+    const response = await fetchWithTimeout("/api/memory/suggest", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: JSON.stringify(payload),
@@ -804,14 +822,14 @@ async function loadUserSessions(options = {}) {
   if (!cloudSyncEnabled || options.offline) return;
 
   try {
-    const response = await fetch("/api/chats");
+    const response = await fetchWithTimeout("/api/chats");
     if (handleUnauthorizedResponse(response)) throw new Error("session_expired");
     if (!response.ok) throw new Error("cloud_list_failed");
     const data = await response.json();
     const remote = normalizeSessions(data.chats || []);
 
     if (!remote.length && local.length) {
-      const migrate = await fetch("/api/chats/migrate", {
+      const migrate = await fetchWithTimeout("/api/chats/migrate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chats: local, mode: "merge" }),
@@ -838,7 +856,7 @@ async function loadUserSessions(options = {}) {
       }
       sessions = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
       if (localNewer.length) {
-        await fetch("/api/chats/migrate", {
+        await fetchWithTimeout("/api/chats/migrate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chats: localNewer, mode: "merge" }),
@@ -1018,7 +1036,7 @@ async function deleteSession(id) {
   }
   saveSessionsLocalOnly();
   if (cloudSyncEnabled) {
-    fetch(`/api/chats?id=${encodeURIComponent(id)}`, { method: "DELETE" })
+    fetchWithTimeout(`/api/chats?id=${encodeURIComponent(id)}`, { method: "DELETE" })
       .then(async (response) => {
         if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) setSyncStatus("云端删除失败，本地已删除");
@@ -1080,7 +1098,7 @@ function queueCloudSave(chat, immediate = false) {
     }
     cloudSaveInFlight = true;
     try {
-      const response = await fetch("/api/chats", {
+      const response = await fetchWithTimeout("/api/chats", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat }),
@@ -1149,7 +1167,7 @@ async function preserveCloudConflict(localChat, remoteValue) {
   renderMessages(false);
   updateChatTitle();
 
-  const response = await fetch("/api/chats", {
+  const response = await fetchWithTimeout("/api/chats", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat: copy }),
@@ -1514,7 +1532,7 @@ function openModelPicker(focusTarget = "selected") {
 function refreshRouteState() {
   if (offlineMode || sessionExpired || Date.now() - lastRouteRefreshAt < 60_000) return routeRefreshPromise;
   if (routeRefreshPromise) return routeRefreshPromise;
-  routeRefreshPromise = fetch("/api/session", { cache: "no-store" })
+  routeRefreshPromise = fetchWithTimeout("/api/session", { cache: "no-store" })
     .then(async (response) => {
       if (handleUnauthorizedResponse(response)) return;
       if (!response.ok) return;
@@ -1816,7 +1834,7 @@ async function rateAssistant(message, rating) {
   saveMessages();
   renderMessages(false);
   try {
-    const response = await fetch("/api/feedback", {
+    const response = await fetchWithTimeout("/api/feedback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rating, reason, routeId: message.routeId, chatId: activeSessionId, messageId: message.id }),
@@ -2190,7 +2208,7 @@ async function importSessionBackup() {
       if (!existing || session.updatedAt >= existing.updatedAt) byId.set(session.id, session);
     }
     const merged = [...byId.values()].sort(compareSessions).slice(0, MAX_SESSIONS);
-    const response = await fetch("/api/chats/migrate", {
+    const response = await fetchWithTimeout("/api/chats/migrate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chats: imported, mode: "merge" }),
@@ -2249,7 +2267,7 @@ async function logoutAllDevices() {
   if (!(await confirmAction({ title: "退出所有设备？", description: "当前用户在所有浏览器和设备上的登录都会失效，对话和记忆不会被删除。", confirmLabel: "全部退出", destructive: true }))) return;
   logoutAllDevicesButton.disabled = true;
   try {
-    const response = await fetch("/api/sessions/revoke-all", { method: "POST" });
+    const response = await fetchWithTimeout("/api/sessions/revoke-all", { method: "POST" });
     if (!response.ok) throw new Error("revoke_failed");
     localStorage.removeItem(SESSION_SNAPSHOT_KEY);
     clearUserDrafts(currentUser);
@@ -2269,7 +2287,7 @@ async function deleteAllUserData() {
   if (!(await confirmAction({ title: "永久删除全部数据？", description: "所有云端与本地对话、会话摘要和长期记忆都将被删除。此操作无法撤销。", confirmLabel: "永久删除", destructive: true }))) return;
   deleteUserDataButton.disabled = true;
   try {
-    const response = await fetch("/api/user-data", { method: "DELETE" });
+    const response = await fetchWithTimeout("/api/user-data", { method: "DELETE" });
     if (handleUnauthorizedResponse(response)) return;
     if (!response.ok) throw new Error("delete_failed");
     localStorage.removeItem(sessionsStorageKey());
@@ -2319,7 +2337,7 @@ async function maybeRefreshSummary() {
     };
     const userApiKey = userApiKeyInput.value.trim();
     if (userApiKey) payload.userApiKey = userApiKey;
-    const response = await fetch("/api/session-summary", {
+    const response = await fetchWithTimeout("/api/session-summary", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: JSON.stringify(payload),

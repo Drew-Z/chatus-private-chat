@@ -159,7 +159,7 @@ refreshAdminButton.addEventListener("click", () => {
 });
 
 adminLogoutButton.addEventListener("click", async () => {
-  await fetch("/api/admin/logout", { method: "POST" });
+  await fetchWithTimeout("/api/admin/logout", { method: "POST" });
   showLogin();
 });
 
@@ -345,7 +345,7 @@ resetConfigButton.addEventListener("click", async () => {
 });
 
 async function bootAdmin() {
-  const response = await fetch("/api/admin/session");
+  const response = await fetchWithTimeout("/api/admin/session");
   if (response.ok) {
     await showAdmin();
   } else {
@@ -739,7 +739,7 @@ async function revokeLabelSessions(label) {
 
 async function fetchRelease() {
   try {
-    const response = await fetch(`/release.json?t=${Date.now()}`, { cache: "no-store" });
+    const response = await fetchWithTimeout(`/release.json?t=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) return null;
     return await response.json();
   } catch {
@@ -749,7 +749,7 @@ async function fetchRelease() {
 
 async function fetchCoreHealth() {
   try {
-    const response = await fetch(`/healthz?t=${Date.now()}`, { cache: "no-store" });
+    const response = await fetchWithTimeout(`/healthz?t=${Date.now()}`, { cache: "no-store" });
     const data = await response.json().catch(() => null);
     return response.ok && data?.status === "ok" ? data : data || { status: "degraded", checks: {} };
   } catch {
@@ -799,7 +799,7 @@ function renderProductionStatus(release, health) {
 
 async function api(path, options = {}) {
   const headers = options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers;
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetchWithTimeout(path, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   const requestId = response.headers.get("X-Request-ID") || "";
   const reference = requestId ? ` · 请求 ${requestId.slice(0, 8)}` : "";
@@ -818,6 +818,19 @@ async function api(path, options = {}) {
   }
 
   return data;
+}
+
+async function fetchWithTimeout(input, init = {}, timeoutMs = 30_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("请求超时，请检查网络后重试");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function renderStats() {
@@ -1407,7 +1420,7 @@ async function checkAllRoutesHealth() {
     while (cursor < routeIds.length) {
       const routeId = routeIds[cursor++];
       try {
-        const response = await fetch("/api/admin/route-health", {
+        const response = await fetchWithTimeout("/api/admin/route-health", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ routeId }),

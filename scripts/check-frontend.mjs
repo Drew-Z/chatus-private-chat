@@ -57,6 +57,8 @@ assert(chatScript.includes("preserveCloudConflict(chat, data.currentChat)"), "ap
 assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
 assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: login throttling needs a retry countdown");
 assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily rate limits must remain distinct");
+assert(chatScript.includes("async function fetchWithTimeout"), "app.js: non-streaming requests need bounded timeouts");
+assert(chatScript.includes('const response = await fetch("/api/chat"'), "app.js: streaming chat must remain user-cancellable without a fixed timeout");
 
 console.log("Frontend structure checks passed");
 
