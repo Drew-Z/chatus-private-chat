@@ -20,6 +20,11 @@ const connectionState = document.querySelector("#connectionState");
 const routeSelect = document.querySelector("#routeSelect");
 const userApiKeyInput = document.querySelector("#userApiKeyInput");
 const userApiKeyLabel = document.querySelector("#userApiKeyLabel");
+const userKeyField = document.querySelector(".user-key-field");
+const toggleUserApiKey = document.querySelector("#toggleUserApiKey");
+const modelPickerTrigger = document.querySelector("#modelPickerTrigger");
+const modelPickerName = document.querySelector("#modelPickerName");
+const modelPickerMenu = document.querySelector("#modelPickerMenu");
 const memoryInput = document.querySelector("#memoryInput");
 const saveMemoryButton = document.querySelector("#saveMemoryButton");
 const suggestMemoryButton = document.querySelector("#suggestMemoryButton");
@@ -161,10 +166,38 @@ openSidebarButton?.addEventListener("click", () => openSidebar());
 closeSidebarButton?.addEventListener("click", () => closeSidebar());
 sidebarBackdrop?.addEventListener("click", () => closeSidebar());
 routeSelect.addEventListener("change", () => {
-  selectedRouteId = routeSelect.value;
-  localStorage.setItem(ROUTE_STORAGE_KEY, selectedRouteId);
-  updateRouteControls();
-  updateConnectionState();
+  selectRoute(routeSelect.value);
+});
+modelPickerTrigger?.addEventListener("click", () => toggleModelPicker());
+modelPickerMenu?.addEventListener("keydown", (event) => {
+  const options = [...modelPickerMenu.querySelectorAll(".model-option")];
+  const current = options.indexOf(document.activeElement);
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    options[(current + 1 + options.length) % options.length]?.focus();
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    options[(current - 1 + options.length) % options.length]?.focus();
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    options[0]?.focus();
+  } else if (event.key === "End") {
+    event.preventDefault();
+    options.at(-1)?.focus();
+  }
+});
+toggleUserApiKey?.addEventListener("click", () => {
+  const showing = userApiKeyInput.type === "text";
+  userApiKeyInput.type = showing ? "password" : "text";
+  toggleUserApiKey.title = showing ? "显示 API Key" : "隐藏 API Key";
+  toggleUserApiKey.setAttribute("aria-label", toggleUserApiKey.title);
+});
+document.addEventListener("click", (event) => {
+  if (!modelPickerMenu || modelPickerMenu.hidden) return;
+  if (!event.target.closest(".model-picker")) closeModelPicker();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeModelPicker();
 });
 imageInput.addEventListener("change", async () => {
   await addImageFiles(imageInput.files);
@@ -852,25 +885,92 @@ function chooseRoute(defaultRoute) {
 
 function renderRoutes() {
   routeSelect.textContent = "";
+  modelPickerMenu.textContent = "";
   for (const route of routes) {
     const option = document.createElement("option");
     option.value = route.id;
     const label = route.label || route.id;
     option.textContent = route.model && route.model !== label ? `${label} · ${route.model}` : label;
     routeSelect.append(option);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `model-option${route.id === selectedRouteId ? " selected" : ""}`;
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(route.id === selectedRouteId));
+    const icon = document.createElement("span");
+    icon.className = "model-option-icon";
+    icon.textContent = route.type === "anthropic-messages" ? "A" : "AI";
+    const copy = document.createElement("span");
+    copy.className = "model-option-copy";
+    const name = document.createElement("strong");
+    name.textContent = route.model || label;
+    const meta = document.createElement("span");
+    meta.textContent = label;
+    copy.append(name, meta);
+    const badges = document.createElement("span");
+    badges.className = "model-option-badges";
+    if (route.supportsImages !== false) badges.append(modelBadge("图片"));
+    if (route.allowUserKey || route.requiresUserKey) badges.append(modelBadge(route.requiresUserKey ? "需 Key" : "可用 Key"));
+    button.append(icon, copy, badges);
+    button.addEventListener("click", () => {
+      selectRoute(route.id);
+      closeModelPicker();
+      promptInput.focus();
+    });
+    modelPickerMenu.append(button);
   }
   routeSelect.value = selectedRouteId;
   routeSelect.disabled = routes.length <= 1;
+  modelPickerTrigger.disabled = routes.length <= 1;
   updateRouteControls();
+}
+
+function modelBadge(text) {
+  const badge = document.createElement("small");
+  badge.textContent = text;
+  return badge;
+}
+
+function selectRoute(routeId) {
+  if (!routes.some((route) => route.id === routeId)) return;
+  selectedRouteId = routeId;
+  routeSelect.value = routeId;
+  localStorage.setItem(ROUTE_STORAGE_KEY, selectedRouteId);
+  renderRoutes();
+  updateConnectionState();
+  if (!messages.length) renderMessages(false);
+  showStatusToast(`已切换到 ${routeLabelById(routeId)}`);
+}
+
+function toggleModelPicker() {
+  if (!modelPickerMenu || modelPickerTrigger.disabled) return;
+  if (modelPickerMenu.hidden) openModelPicker();
+  else closeModelPicker();
+}
+
+function openModelPicker() {
+  modelPickerMenu.hidden = false;
+  modelPickerTrigger.setAttribute("aria-expanded", "true");
+  modelPickerMenu.querySelector(".model-option.selected")?.focus();
+}
+
+function closeModelPicker() {
+  if (!modelPickerMenu) return;
+  modelPickerMenu.hidden = true;
+  modelPickerTrigger?.setAttribute("aria-expanded", "false");
 }
 
 function updateRouteControls() {
   const route = getSelectedRoute();
+  if (modelPickerName) modelPickerName.textContent = route?.model || route?.label || "选择模型";
   const canUseOwnKey = Boolean(route?.allowUserKey || route?.requiresUserKey);
   userApiKeyLabel.hidden = !canUseOwnKey;
-  userApiKeyInput.hidden = !canUseOwnKey;
+  userKeyField.hidden = !canUseOwnKey;
   userApiKeyInput.required = Boolean(route?.requiresUserKey);
-  if (!canUseOwnKey) userApiKeyInput.value = "";
+  if (!canUseOwnKey) {
+    userApiKeyInput.value = "";
+    userApiKeyInput.type = "password";
+  }
   const supportsImages = route?.supportsImages !== false;
   imageInput.disabled = !supportsImages || isBusy;
   imageInputLabel.classList.toggle("disabled", !supportsImages);
@@ -1222,6 +1322,8 @@ function setBusy(nextBusy) {
   stopButton.hidden = !nextBusy;
   promptInput.disabled = nextBusy;
   routeSelect.disabled = nextBusy || routes.length <= 1;
+  modelPickerTrigger.disabled = nextBusy || routes.length <= 1;
+  if (nextBusy) closeModelPicker();
   userApiKeyInput.disabled = nextBusy;
   imageInput.disabled = nextBusy || getSelectedRoute()?.supportsImages === false;
   if (suggestMemoryButton) suggestMemoryButton.disabled = nextBusy;

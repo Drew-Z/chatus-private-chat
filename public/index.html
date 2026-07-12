@@ -88,9 +88,18 @@
           <header class="chat-header">
             <div class="route-block">
               <label for="routeSelect">当前模型</label>
-              <select id="routeSelect" aria-label="选择模型"></select>
+              <select id="routeSelect" class="native-route-select" aria-label="选择模型"></select>
+              <div class="model-picker">
+                <button class="model-picker-trigger" id="modelPickerTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                  <span class="model-picker-name" id="modelPickerName">选择模型</span><span class="model-picker-chevron">⌄</span>
+                </button>
+                <div class="model-picker-menu" id="modelPickerMenu" role="listbox" hidden></div>
+              </div>
               <label id="userApiKeyLabel" for="userApiKeyInput">个人 API Key</label>
-              <input id="userApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="使用自己的 API Key" />
+              <div class="user-key-field">
+                <input id="userApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="使用自己的 API Key" />
+                <button class="key-visibility" id="toggleUserApiKey" type="button" title="显示 API Key" aria-label="显示 API Key">◉</button>
+              </div>
             </div>
             <div class="chat-heading">
               <h1 id="chatTitle">新会话</h1>
