@@ -436,6 +436,17 @@ describe("Worker API", () => {
     });
     expect(put.status).toBe(200);
 
+    const stale = await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat: { ...chat, title: "旧设备版本", updatedAt: 19 } }),
+    });
+    expect(stale.status).toBe(200);
+    await expect(stale.json()).resolves.toMatchObject({
+      accepted: false,
+      currentChat: { id: "chat-1", title: "测试会话", updatedAt: 20 },
+    });
+
     const list = await apiRequest("/api/chats", cookie);
     expect(list.status).toBe(200);
     await expect(list.json()).resolves.toMatchObject({

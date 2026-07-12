@@ -1188,7 +1188,13 @@ async function handlePutChat(request: Request, env: Env, session: Session): Prom
   const result = await getUserState(env, session.label).upsertChat(stored);
   const chats = await getUserState(env, session.label).listChats();
   if (!result.accepted) {
-    return jsonResponse({ ok: true, accepted: false, chat: summarizeChat(chat), chats: chats.map(summarizeChat) });
+    return jsonResponse({
+      ok: true,
+      accepted: false,
+      chat: summarizeChat(chat),
+      currentChat: chats.find((item) => item.id === chat.id) || null,
+      chats: chats.map(summarizeChat),
+    });
   }
   return jsonResponse({ ok: true, chat: summarizeChat(chat), chats: chats.map(summarizeChat) });
 }

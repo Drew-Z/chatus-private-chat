@@ -1052,7 +1052,9 @@ function queueCloudSave(chat, immediate = false) {
         const data = await response.json().catch(() => ({}));
         setSyncStatus(data.message || "云端保存失败，已保留本地");
       } else {
-        setSyncStatus("已同步到云端");
+        const data = await response.json().catch(() => ({}));
+        if (data.accepted === false && data.currentChat) await preserveCloudConflict(chat, data.currentChat);
+        else setSyncStatus("已同步到云端");
       }
     } catch {
       setSyncStatus("云端保存失败，已保留本地");
@@ -1080,6 +1082,44 @@ function queueCloudSave(chat, immediate = false) {
     cloudSaveTimer = null;
     run();
   }, 500);
+}
+
+async function preserveCloudConflict(localChat, remoteValue) {
+  const remoteChat = normalizeSessions([remoteValue])[0];
+  if (!remoteChat) {
+    setSyncStatus("其他设备已有更新，本次未覆盖云端版本");
+    return;
+  }
+  const copy = normalizeSessions([{
+    ...localChat,
+    id: createId(),
+    title: `${localChat.title || "新会话"}（此设备副本）`.slice(0, 60),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }])[0];
+  if (!copy) return;
+
+  sessions = [copy, remoteChat, ...sessions.filter((item) => item.id !== localChat.id)]
+    .sort(compareSessions)
+    .slice(0, MAX_SESSIONS);
+  if (activeSessionId === localChat.id) {
+    activeSessionId = copy.id;
+    messages = copy.messages;
+  }
+  saveSessionsLocalOnly();
+  renderChatList();
+  renderMessages(false);
+  updateChatTitle();
+
+  const response = await fetch("/api/chats", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat: copy }),
+  }).catch(() => null);
+  if (response && handleUnauthorizedResponse(response)) return;
+  setSyncStatus(response?.ok
+    ? "检测到多设备更新，已保留云端版本并创建此设备副本"
+    : "检测到多设备更新，此设备副本已保留在本机");
 }
 
 function setSyncStatus(text) {

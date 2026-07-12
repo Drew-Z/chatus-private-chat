@@ -53,6 +53,8 @@ assert(chatScript.includes("近期巡检异常，失败时会尝试备用线路"
 assert(chatScript.includes('openModelPicker(event.key === "ArrowUp" ? "last" : "selected")'), "app.js: model picker trigger needs arrow-key navigation");
 assert(chatScript.includes('event.key === "Tab"'), "app.js: model picker must close when keyboard focus leaves");
 assert(chatScript.includes("bootView.hidden = true;"), "app.js: startup state must resolve into an application view");
+assert(chatScript.includes("preserveCloudConflict(chat, data.currentChat)"), "app.js: cloud save conflicts must preserve both versions");
+assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
 
 console.log("Frontend structure checks passed");
 
