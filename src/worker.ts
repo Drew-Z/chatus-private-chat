@@ -56,6 +56,7 @@ type RouteConfig = {
 };
 
 type UserConfig = {
+  enabled?: boolean;
   displayName?: string;
   defaultRoute?: string;
   allowedRoutes?: string[];
@@ -506,6 +507,10 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   if (!label) {
     return jsonResponse({ error: "invalid_code" }, 401);
   }
+  const config = await loadAppConfig(env);
+  if (getEffectiveUserConfig(config, label).enabled === false) {
+    return jsonResponse({ error: "user_disabled", message: "该用户已暂停使用" }, 403);
+  }
 
   const now = Date.now();
   const session: Session = {
@@ -799,6 +804,7 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
       .reduce((sum, metric) => sum + metric.count, 0);
     return {
       label,
+      enabled: user.enabled !== false,
       displayName: user.displayName || label,
       used,
       dailyLimit,
@@ -1867,6 +1873,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
 function normalizeUserConfig(value: unknown): UserConfig {
   if (!isRecord(value)) return {};
   const output: UserConfig = {};
+  if (typeof value.enabled === "boolean") output.enabled = value.enabled;
   if (typeof value.displayName === "string") {
     const displayName = value.displayName.trim().slice(0, 40);
     if (displayName) output.displayName = displayName;
@@ -1891,10 +1898,7 @@ function normalizeUserConfig(value: unknown): UserConfig {
 }
 
 function getRouteAccess(config: AppConfig, label: string, env: Env): RouteAccess {
-  const user = {
-    ...config.defaults,
-    ...(config.users?.[label] || {}),
-  };
+  const user = getEffectiveUserConfig(config, label);
   const allowedIds = user.allowedRoutes?.length ? user.allowedRoutes : Object.keys(config.routes);
   const routes = allowedIds
     .map((id): PublicRoute | null => {
@@ -1922,6 +1926,10 @@ function getRouteAccess(config: AppConfig, label: string, env: Env): RouteAccess
       : routes[0]?.id || "";
 
   return { routes, defaultRoute, user };
+}
+
+function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
+  return { ...(config.defaults || {}), ...(config.users?.[label] || {}) };
 }
 
 function buildRoutePlan(selectedRoute: string, config: AppConfig, access: RouteAccess): string[] {
@@ -2486,7 +2494,13 @@ async function getSession(request: Request, env: Env): Promise<Session | null> {
 
   try {
     const session = JSON.parse(raw) as Session;
-    return session.id && session.label ? session : null;
+    if (!session.id || !session.label) return null;
+    const config = await loadAppConfig(env);
+    if (getEffectiveUserConfig(config, session.label).enabled === false) {
+      await env.CHAT_STORE.delete(`session:${token}`);
+      return null;
+    }
+    return session;
   } catch {
     await env.CHAT_STORE.delete(`session:${token}`);
     return null;

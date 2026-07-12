@@ -105,6 +105,33 @@ describe("Worker API", () => {
     });
   });
 
+  it("blocks disabled users from new and existing sessions", async () => {
+    const label = `paused-${crypto.randomUUID()}`;
+    const { cookie } = await login(label);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://paused.example/v1",
+          model: "paused-model",
+          apiKey: "paused-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      users: { [label]: { enabled: false, displayName: "暂停用户" } },
+    }));
+
+    expect((await apiRequest("/api/session", cookie)).status).toBe(401);
+    const relogin = await exports.default.fetch(new Request("https://example.test/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "test-access-code" }),
+    }));
+    expect(relogin.status).toBe(403);
+    await expect(relogin.json()).resolves.toMatchObject({ error: "user_disabled" });
+  });
+
   it("creates a configured user and access code in one admin operation", async () => {
     const cookie = await adminLogin();
     const label = `invite-${crypto.randomUUID()}`;

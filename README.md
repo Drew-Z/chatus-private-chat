@@ -19,6 +19,7 @@ Browser
 - 多线路：每条线路可配置独立 `baseUrl`、`model`、协议类型和 fallback。
 - 多朋友：按访问码 label 匹配用户，每个用户可设置允许线路、默认线路、限额和 BYOK。
 - 用户身份：可为稳定 label 配置独立显示名称；修改昵称不会影响访问码、权限或历史会话归属。
+- 用户状态：可暂停或恢复某个朋友；暂停后拒绝新登录并使现有会话在下一次请求时失效，但保留其数据和配置。
 - 多协议：`openai-chat` 适合 OpenAI-compatible 中转；`anthropic-messages` 适合 Claude/Claude Code 一类 Anthropic Messages 接口。
 - 多模态：前端支持图片上传；后端会按线路协议转换图片格式。
 - 私有访问：访问码登录、HttpOnly session、强一致用户限额，不暴露 `/v1/chat/completions` 分发接口。

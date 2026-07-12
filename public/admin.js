@@ -35,6 +35,7 @@ const userDefaultRoute = document.querySelector("#userDefaultRoute");
 const userDailyLimit = document.querySelector("#userDailyLimit");
 const userMinuteLimit = document.querySelector("#userMinuteLimit");
 const userByok = document.querySelector("#userByok");
+const userEnabled = document.querySelector("#userEnabled");
 const allowedRoutesBox = document.querySelector("#allowedRoutesBox");
 const deleteUserButton = document.querySelector("#deleteUserButton");
 const revokeUserSessionsButton = document.querySelector("#revokeUserSessionsButton");
@@ -870,7 +871,7 @@ function renderStats() {
 
     const meta = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = user.displayName && user.displayName !== user.label ? `${user.displayName}（${user.label}）` : user.label;
+    title.textContent = `${user.displayName && user.displayName !== user.label ? `${user.displayName}（${user.label}）` : user.label}${user.enabled === false ? " · 已暂停" : ""}`;
     const detail = document.createElement("span");
     detail.textContent = [
       user.defaultRoute ? `默认 ${user.defaultRoute}` : "无默认线路",
@@ -999,6 +1000,7 @@ function populateUserForm() {
   userDailyLimit.value = user.dailyMessageLimit || 500;
   userMinuteLimit.value = user.minuteMessageLimit || 12;
   userByok.checked = Boolean(user.allowBringYourOwnKey);
+  if (userEnabled) userEnabled.checked = user.enabled !== false;
   if (userDisplayName) userDisplayName.value = user.displayName || "";
   if (userSystemPrompt) userSystemPrompt.value = user.systemPrompt || "";
   deleteUserButton.disabled = selectedUser === DEFAULT_USER || !config.users?.[selectedUser];
@@ -1041,6 +1043,7 @@ function readUserForm() {
   const systemPrompt = (userSystemPrompt?.value || "").trim();
   const displayName = (userDisplayName?.value || "").trim();
   return {
+    enabled: userEnabled?.checked !== false,
     ...(displayName ? { displayName: displayName.slice(0, 40) } : {}),
     defaultRoute: userDefaultRoute.value,
     allowedRoutes,
