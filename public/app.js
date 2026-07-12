@@ -60,6 +60,8 @@ const settingsDialog = document.querySelector("#settingsDialog");
 const themeOptions = document.querySelector("#themeOptions");
 const themeSummary = document.querySelector("#themeSummary");
 const exportAllButton = document.querySelector("#exportAllButton");
+const importAllButton = document.querySelector("#importAllButton");
+const importAllInput = document.querySelector("#importAllInput");
 const clearOfflineDataButton = document.querySelector("#clearOfflineDataButton");
 const deleteUserDataButton = document.querySelector("#deleteUserDataButton");
 
@@ -201,6 +203,8 @@ clearButton.addEventListener("click", async () => {
 
 document.querySelector("#exportButton")?.addEventListener("click", () => exportActiveSession());
 exportAllButton?.addEventListener("click", () => exportAllSessions());
+importAllButton?.addEventListener("click", () => importAllInput?.click());
+importAllInput?.addEventListener("change", () => importSessionBackup());
 clearOfflineDataButton?.addEventListener("click", () => clearOfflineData());
 deleteUserDataButton?.addEventListener("click", () => deleteAllUserData());
 saveMemoryButton.addEventListener("click", () => saveMemory());
@@ -1705,6 +1709,7 @@ function exportAllSessions() {
     exportedAt: new Date().toISOString(),
     user: currentUser,
     conversations: sessions.map((session) => ({
+      id: session.id,
       title: session.title,
       createdAt: new Date(session.createdAt).toISOString(),
       updatedAt: new Date(session.updatedAt).toISOString(),
@@ -1715,6 +1720,71 @@ function exportAllSessions() {
   };
   downloadBlob(JSON.stringify(payload, null, 2), `chatus-export-${new Date().toISOString().slice(0, 10)}.json`, "application/json;charset=utf-8");
   showStatusToast(`已导出 ${sessions.length} 个会话`);
+}
+async function importSessionBackup() {
+  const file = importAllInput.files?.[0];
+  importAllInput.value = "";
+  if (!file) return;
+  if (offlineMode) return showStatusToast("需要联网才能导入并同步备份");
+  if (file.size > 15_000_000) return showStatusToast("备份文件过大，无法导入");
+  importAllButton.disabled = true;
+  try {
+    const payload = JSON.parse(await file.text());
+    if (payload?.product !== "Chatus" || !Array.isArray(payload.conversations)) throw new Error("invalid_backup");
+    const imported = normalizeImportedSessions(payload.conversations);
+    if (!imported.length) throw new Error("empty_backup");
+    if (!(await confirmAction({
+      title: `导入 ${imported.length} 个会话？`,
+      description: "备份会与当前会话合并；ID 相同的会话保留更新时间较新的版本，并同步到云端。",
+      confirmLabel: "导入",
+    }))) return;
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    for (const session of imported) {
+      const existing = byId.get(session.id);
+      if (!existing || session.updatedAt >= existing.updatedAt) byId.set(session.id, session);
+    }
+    const merged = [...byId.values()].sort(compareSessions).slice(0, MAX_SESSIONS);
+    const response = await fetch("/api/chats/migrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chats: imported, mode: "merge" }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || "cloud_import_failed");
+    sessions = merged;
+    activeSessionId = sessions[0].id;
+    messages = sessions[0].messages;
+    saveSessionsLocalOnly();
+    renderChatList();
+    renderMessages(true);
+    updateChatTitle();
+    settingsDialog?.close();
+    showStatusToast(`已导入 ${imported.length} 个会话`);
+  } catch (error) {
+    const known = error.message === "invalid_backup" || error.message === "empty_backup";
+    showStatusToast(known ? "这不是有效的 Chatus 对话备份" : error.message || "导入失败");
+  } finally {
+    importAllButton.disabled = false;
+  }
+}
+function normalizeImportedSessions(input) {
+  const prepared = input.slice(0, MAX_SESSIONS).map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const createdAt = parseBackupTime(item.createdAt);
+    const updatedAt = parseBackupTime(item.updatedAt);
+    return {
+      ...item,
+      id: typeof item.id === "string" && item.id ? item.id : createId(),
+      createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+      updatedAt: Number.isFinite(updatedAt) ? updatedAt : Number.isFinite(createdAt) ? createdAt : Date.now(),
+    };
+  }).filter(Boolean);
+  return normalizeSessions(prepared);
+}
+function parseBackupTime(value) {
+  if (Number.isFinite(value)) return Number(value);
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : NaN;
 }
 async function clearOfflineData() {
   if (!(await confirmAction({ title: "清除本机缓存？", description: "将移除当前设备保存的会话副本和离线页面缓存。重新联网后仍可从云端同步。", confirmLabel: "清除" }))) return;
