@@ -2341,6 +2341,51 @@ body.sidebar-open {
   background: #090a0b;
 }
 
+.data-settings {
+  display: grid;
+  gap: 7px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #e4e7e9;
+}
+
+.settings-section-heading {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 3px;
+}
+
+.settings-section-heading strong {
+  font-size: 13px;
+}
+
+.settings-section-heading span,
+.settings-action small {
+  color: #687078;
+  font-size: 11px;
+}
+
+.settings-action {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 11px;
+  text-align: left;
+  color: #25292d;
+  background: #f7f8f9;
+  border: 1px solid #e2e5e7;
+  border-radius: 7px;
+}
+
+.settings-action:hover {
+  background: #f0f2f3;
+}
+
+.settings-action.destructive span {
+  color: #9b342b;
+}
+
 /* Dark theme */
 [data-theme="dark"] body {
   background: #151719;
@@ -2376,6 +2421,25 @@ body.sidebar-open {
   color: #e7e9eb;
   background: #181a1d;
   border-color: #41464c;
+}
+
+[data-theme="dark"] .data-settings {
+  border-color: #383d42;
+}
+
+[data-theme="dark"] .settings-section-heading span,
+[data-theme="dark"] .settings-action small {
+  color: #a5abb1;
+}
+
+[data-theme="dark"] .settings-action {
+  color: #e7e9eb;
+  background: #282c30;
+  border-color: #3b4045;
+}
+
+[data-theme="dark"] .settings-action:hover {
+  background: #30353a;
 }
 
 [data-theme="dark"] .chat-product-body .side-panel {

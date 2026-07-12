@@ -80,7 +80,7 @@
                 </div>
               </div>
             </details>
-            <button class="side-tool-button" id="settingsButton" type="button"><span>外观</span><small id="themeSummary">跟随系统</small></button>
+            <button class="side-tool-button" id="settingsButton" type="button"><span>设置</span><small id="themeSummary">跟随系统</small></button>
             <div class="account-row">
               <div class="account-avatar" aria-hidden="true">U</div>
               <div class="account-copy"><strong id="userLabel"></strong><span>今日剩余 <b id="usageText">--</b></span></div>
@@ -158,7 +158,7 @@
     <dialog class="app-dialog settings-dialog" id="settingsDialog">
       <form method="dialog">
         <div class="dialog-heading">
-          <h2>外观</h2>
+          <h2>设置</h2>
           <button class="icon-control" value="close" type="submit" aria-label="关闭">×</button>
         </div>
         <fieldset class="theme-options" id="themeOptions">
@@ -168,6 +168,15 @@
           <label><input type="radio" name="theme" value="dark" /><span>深色</span></label>
         </fieldset>
         <button class="install-app-button" id="installAppButton" type="button" hidden>安装到设备</button>
+        <section class="data-settings" aria-labelledby="dataSettingsTitle">
+          <div class="settings-section-heading">
+            <strong id="dataSettingsTitle">数据管理</strong>
+            <span>管理当前用户的对话与设备缓存</span>
+          </div>
+          <button class="settings-action" id="exportAllButton" type="button"><span>导出全部对话</span><small>JSON 格式，包含摘要与消息</small></button>
+          <button class="settings-action" id="clearOfflineDataButton" type="button"><span>清除本机缓存</span><small>云端对话不会受到影响</small></button>
+          <button class="settings-action destructive" id="deleteUserDataButton" type="button"><span>删除全部数据</span><small>永久删除云端对话与长期记忆</small></button>
+        </section>
       </form>
     </dialog>
     <script src="/app.js" type="module"></script>

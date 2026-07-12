@@ -130,6 +130,25 @@ describe("Worker API", () => {
     await expect(remove.json()).resolves.toMatchObject({ deleted: true, chats: [] });
   });
 
+  it("deletes all user conversations and long-term memory", async () => {
+    const { cookie } = await login();
+    await apiRequest("/api/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: "偏好简洁回答" }),
+    });
+    await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat: { id: "delete-me", title: "待删除", createdAt: 10, updatedAt: 20, messages: [] } }),
+    });
+
+    const remove = await apiRequest("/api/user-data", cookie, { method: "DELETE" });
+    expect(remove.status).toBe(200);
+    await expect(apiRequest("/api/chats", cookie).then((response) => response.json())).resolves.toMatchObject({ chats: [] });
+    await expect(apiRequest("/api/memory", cookie).then((response) => response.json())).resolves.toMatchObject({ memory: "" });
+  });
+
   it("rejects auxiliary model calls without the web client marker", async () => {
     const { cookie } = await login();
     const response = await apiRequest("/api/session-summary", cookie, {

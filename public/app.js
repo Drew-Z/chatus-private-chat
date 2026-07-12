@@ -59,6 +59,9 @@ const settingsButton = document.querySelector("#settingsButton");
 const settingsDialog = document.querySelector("#settingsDialog");
 const themeOptions = document.querySelector("#themeOptions");
 const themeSummary = document.querySelector("#themeSummary");
+const exportAllButton = document.querySelector("#exportAllButton");
+const clearOfflineDataButton = document.querySelector("#clearOfflineDataButton");
+const deleteUserDataButton = document.querySelector("#deleteUserDataButton");
 
 const LEGACY_STORAGE_KEY = "chatus.messages.v1";
 const SESSIONS_STORAGE_PREFIX = "chatus.sessions.v3.";
@@ -197,6 +200,9 @@ clearButton.addEventListener("click", async () => {
 });
 
 document.querySelector("#exportButton")?.addEventListener("click", () => exportActiveSession());
+exportAllButton?.addEventListener("click", () => exportAllSessions());
+clearOfflineDataButton?.addEventListener("click", () => clearOfflineData());
+deleteUserDataButton?.addEventListener("click", () => deleteAllUserData());
 saveMemoryButton.addEventListener("click", () => saveMemory());
 suggestMemoryButton?.addEventListener("click", () => suggestMemory());
 
@@ -1638,6 +1644,67 @@ function exportActiveSession() {
   a.href = url;
   a.download = `${(active.title || "chat").replace(/[\\/:*?"<>|]/g, "_").slice(0, 40)}.md`;
   a.click();
+  URL.revokeObjectURL(url);
+}
+function exportAllSessions() {
+  const payload = {
+    product: "Chatus",
+    exportedAt: new Date().toISOString(),
+    user: currentUser,
+    conversations: sessions.map((session) => ({
+      title: session.title,
+      createdAt: new Date(session.createdAt).toISOString(),
+      updatedAt: new Date(session.updatedAt).toISOString(),
+      summary: session.summary || "",
+      messages: session.messages.filter((message) => message.role !== "error"),
+    })),
+  };
+  downloadBlob(JSON.stringify(payload, null, 2), `chatus-export-${new Date().toISOString().slice(0, 10)}.json`, "application/json;charset=utf-8");
+  showStatusToast(`已导出 ${sessions.length} 个会话`);
+}
+async function clearOfflineData() {
+  if (!(await confirmAction({ title: "清除本机缓存？", description: "将移除当前设备保存的会话副本和离线页面缓存。重新联网后仍可从云端同步。", confirmLabel: "清除" }))) return;
+  localStorage.removeItem(sessionsStorageKey());
+  localStorage.removeItem(activeSessionStorageKey());
+  localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+  if ("caches" in window) await caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))).catch(() => null);
+  settingsDialog?.close();
+  showStatusToast("本机缓存已清理，当前会话仍保留在页面中");
+}
+async function deleteAllUserData() {
+  if (offlineMode) return showStatusToast("需要联网才能删除云端数据");
+  if (!(await confirmAction({ title: "永久删除全部数据？", description: "所有云端与本地对话、会话摘要和长期记忆都将被删除。此操作无法撤销。", confirmLabel: "永久删除", destructive: true }))) return;
+  deleteUserDataButton.disabled = true;
+  try {
+    const response = await fetch("/api/user-data", { method: "DELETE" });
+    if (!response.ok) throw new Error("delete_failed");
+    localStorage.removeItem(sessionsStorageKey());
+    localStorage.removeItem(activeSessionStorageKey());
+    localStorage.removeItem(memoryStorageKey());
+    localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+    sessions = [createSession()];
+    activeSessionId = sessions[0].id;
+    messages = sessions[0].messages;
+    memoryInput.value = "";
+    memoryStatus.textContent = "暂无长期记忆";
+    saveSessionsLocalOnly();
+    renderChatList();
+    renderMessages(true);
+    updateChatTitle();
+    settingsDialog?.close();
+    showStatusToast("全部对话与长期记忆已删除");
+  } catch {
+    showStatusToast("删除失败，请稍后重试");
+  } finally {
+    deleteUserDataButton.disabled = false;
+  }
+}
+function downloadBlob(content, filename, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
   URL.revokeObjectURL(url);
 }
 async function maybeRefreshSummary() {

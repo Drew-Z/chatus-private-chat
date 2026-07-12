@@ -457,6 +457,12 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return handleMigrateChats(request, env, session);
   }
 
+  if (url.pathname === "/api/user-data" && request.method === "DELETE") {
+    await getUserState(env, session.label).replaceChats([]);
+    await env.CHAT_STORE.delete(memoryKey(session.label));
+    return jsonResponse({ ok: true });
+  }
+
   return jsonResponse({ error: "not_found" }, 404);
 }
 
