@@ -249,6 +249,7 @@ routeForm.addEventListener("submit", async (event) => {
     requiresUserKey: routeRequiresKeyInput.checked,
     supportsImages: routeImagesInput.checked,
   });
+  if (!routeEnabledInput.checked) repairDisabledRouteAssignments(routeId);
   selectedRoute = routeId;
   await saveConfigObject("线路配置已保存");
 });
@@ -865,6 +866,7 @@ function renderUserPicker() {
 
   userDefaultRoute.textContent = "";
   for (const routeId of Object.keys(config.routes || {})) {
+    if (config.routes[routeId]?.enabled === false) continue;
     const option = document.createElement("option");
     option.value = routeId;
     const health = routeHealth[routeId];
@@ -883,7 +885,9 @@ function renderAllowedRouteChecks() {
     const input = document.createElement("input");
     input.type = "checkbox";
     input.value = routeId;
-    label.append(input, document.createTextNode(routeLabel(routeId)));
+    const disabled = config.routes[routeId]?.enabled === false;
+    label.classList.toggle("disabled-route-option", disabled);
+    label.append(input, document.createTextNode(`${routeLabel(routeId)}${disabled ? "（已停用）" : ""}`));
     allowedRoutesBox.append(label);
   }
 }
@@ -894,7 +898,8 @@ function populateUserForm() {
       ? config.defaults || {}
       : { ...(config.defaults || {}), ...(config.users?.[selectedUser] || {}) };
   const routeIds = Object.keys(config.routes || {});
-  userDefaultRoute.value = user.defaultRoute || routeIds[0] || "";
+  const enabledRouteIds = routeIds.filter((routeId) => config.routes[routeId]?.enabled !== false);
+  userDefaultRoute.value = enabledRouteIds.includes(user.defaultRoute) ? user.defaultRoute : enabledRouteIds[0] || "";
   userDailyLimit.value = user.dailyMessageLimit || 500;
   userMinuteLimit.value = user.minuteMessageLimit || 12;
   userByok.checked = Boolean(user.allowBringYourOwnKey);
@@ -930,6 +935,11 @@ function readUserForm() {
     setStatus("至少选择一条允许线路", true);
     return null;
   }
+  const enabledAllowedRoutes = allowedRoutes.filter((routeId) => config.routes?.[routeId]?.enabled !== false);
+  if (!enabledAllowedRoutes.length) {
+    setStatus("至少选择一条已启用的线路", true);
+    return null;
+  }
 
   const systemPrompt = (userSystemPrompt?.value || "").trim();
   return {
@@ -940,6 +950,20 @@ function readUserForm() {
     minuteMessageLimit: positiveNumber(userMinuteLimit.value),
     ...(systemPrompt ? { systemPrompt: systemPrompt.slice(0, 2000) } : {}),
   };
+}
+
+function repairDisabledRouteAssignments(routeId) {
+  const replacement = Object.keys(config.routes || {}).find((id) => id !== routeId && config.routes[id]?.enabled !== false);
+  if (!replacement) return;
+  const repair = (user) => {
+    if (!user) return;
+    if (user.defaultRoute === routeId) user.defaultRoute = replacement;
+    if (Array.isArray(user.allowedRoutes) && !user.allowedRoutes.some((id) => config.routes[id]?.enabled !== false)) {
+      user.allowedRoutes.push(replacement);
+    }
+  };
+  repair(config.defaults);
+  for (const user of Object.values(config.users || {})) repair(user);
 }
 
 function renderRoutePicker() {

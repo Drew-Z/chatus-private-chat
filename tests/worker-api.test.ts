@@ -310,6 +310,41 @@ describe("Worker API", () => {
     });
   });
 
+  it("rejects configurations without an enabled route for every user", async () => {
+    const cookie = await adminLogin();
+    const route = {
+      label: "Disabled",
+      type: "openai-chat",
+      baseUrl: "https://disabled.example/v1",
+      model: "disabled-model",
+      enabled: false,
+    };
+    const noEnabledRoute = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: { routes: { disabled: route }, defaults: { allowedRoutes: ["disabled"] } } }),
+    });
+    expect(noEnabledRoute.status).toBe(400);
+    await expect(noEnabledRoute.json()).resolves.toMatchObject({ message: "至少需要启用一条线路" });
+
+    const userWithoutRoute = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          routes: {
+            active: { ...route, label: "Active", enabled: true },
+            disabled: route,
+          },
+          defaults: { defaultRoute: "active", allowedRoutes: ["active"] },
+          users: { friend: { defaultRoute: "disabled", allowedRoutes: ["disabled"] } },
+        },
+      }),
+    });
+    expect(userWithoutRoute.status).toBe(400);
+    await expect(userWithoutRoute.json()).resolves.toMatchObject({ message: "用户 friend 至少需要一条已启用的允许线路" });
+  });
+
   it("requires the route health task to return the correct answer", async () => {
     const cookie = await adminLogin();
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({

@@ -633,6 +633,16 @@ button {
   border-radius: 8px;
 }
 
+.checkbox-grid label.disabled-route-option {
+  color: #8a9097;
+  background: #f3f4f5;
+}
+
+[data-theme="dark"] .checkbox-grid label.disabled-route-option {
+  color: #8f969e;
+  background: #24272b;
+}
+
 .admin-textarea {
   width: 100%;
   min-height: 420px;
@@ -3531,6 +3541,16 @@ body.sidebar-open {
   background: #f7f8f9;
   border-color: #e2e6e9;
   font-size: 12px;
+}
+
+.admin-body .checkbox-grid label.disabled-route-option {
+  color: #8a9097;
+  background: #eceff1;
+}
+
+[data-theme="dark"] .admin-body .checkbox-grid label.disabled-route-option {
+  color: #8f969e;
+  background: #24272b;
 }
 
 .admin-body .form-actions {

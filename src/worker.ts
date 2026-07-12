@@ -1699,6 +1699,10 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   if (!routeIds.length) {
     return { ok: false, message: "至少需要一条有效线路" };
   }
+  const enabledRouteIds = routeIds.filter((id) => config.routes[id].enabled !== false);
+  if (!enabledRouteIds.length) {
+    return { ok: false, message: "至少需要启用一条线路" };
+  }
 
   const invalidFallback = routeIds.find((id) => config.routes[id].fallbacks?.some((fallback) => !config.routes[fallback]));
   if (invalidFallback) {
@@ -1715,10 +1719,19 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     if (missingRoute) {
       return { ok: false, message: `用户 ${label} 允许了不存在的线路 ${missingRoute}` };
     }
+    const effective = { ...(config.defaults || {}), ...user };
+    const allowed = effective.allowedRoutes?.length ? effective.allowedRoutes : routeIds;
+    if (!allowed.some((routeId) => config.routes[routeId]?.enabled !== false)) {
+      return { ok: false, message: `用户 ${label} 至少需要一条已启用的允许线路` };
+    }
   }
 
   if (config.defaults?.defaultRoute && !config.routes[config.defaults.defaultRoute]) {
     return { ok: false, message: "默认用户配置的 defaultRoute 不存在" };
+  }
+  const defaultAllowed = config.defaults?.allowedRoutes?.length ? config.defaults.allowedRoutes : routeIds;
+  if (!defaultAllowed.some((routeId) => config.routes[routeId]?.enabled !== false)) {
+    return { ok: false, message: "默认用户配置至少需要一条已启用的允许线路" };
   }
 
   return { ok: true };
