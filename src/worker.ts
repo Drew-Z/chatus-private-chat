@@ -520,7 +520,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 }
 
 async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
-  const loginState = await getLoginState(env, request);
+  const loginState = await getLoginState(env, request, "user");
   const throttle = await loginState.getLoginThrottle(Date.now(), 8, 10 * 60_000);
   if (!throttle.ok) {
     return jsonResponse({ error: "login_rate_limited", retryAfter: throttle.retryAfter }, 429, { "Retry-After": String(throttle.retryAfter) });
@@ -583,6 +583,15 @@ async function handleLogout(request: Request, env: Env, url: URL): Promise<Respo
 }
 
 async function handleAdminLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  const loginState = await getLoginState(env, request, "admin");
+  const throttle = await loginState.getLoginThrottle(Date.now(), 5, 15 * 60_000);
+  if (!throttle.ok) {
+    return jsonResponse(
+      { error: "admin_login_rate_limited", message: "管理员登录尝试过多，请稍后再试", retryAfter: throttle.retryAfter },
+      429,
+      { "Retry-After": String(throttle.retryAfter) },
+    );
+  }
   const expected = env.ADMIN_TOKEN?.trim() || "";
   if (!expected) {
     return jsonResponse({ error: "admin_not_configured" }, 503);
@@ -591,8 +600,10 @@ async function handleAdminLogin(request: Request, env: Env, url: URL): Promise<R
   const body = await readJson<{ token?: string }>(request);
   const token = body.token?.trim() || "";
   if (!(await secureCompare(token, expected))) {
+    await loginState.recordLoginFailure(Date.now());
     return jsonResponse({ error: "invalid_token" }, 401);
   }
+  await loginState.clearLoginFailures();
 
   const now = Date.now();
   const sessionToken = randomToken();
@@ -2963,11 +2974,11 @@ function getUserState(env: Env, label: string): DurableObjectStub<UserState> {
   return env.USER_STATE.getByName(label);
 }
 
-async function getLoginState(env: Env, request: Request): Promise<DurableObjectStub<UserState>> {
+async function getLoginState(env: Env, request: Request, scope: "user" | "admin"): Promise<DurableObjectStub<UserState>> {
   const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For")?.split(",", 1)[0]?.trim() || "unknown";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ip));
   const key = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  return env.USER_STATE.get(env.USER_STATE.idFromName(`login:${key}`));
+  return env.USER_STATE.get(env.USER_STATE.idFromName(`login:${scope}:${key}`));
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {

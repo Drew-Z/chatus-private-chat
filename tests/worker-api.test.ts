@@ -150,6 +150,31 @@ describe("Worker API", () => {
     await expect(blocked.json()).resolves.toMatchObject({ error: "login_rate_limited" });
   });
 
+  it("rate limits failed admin logins independently from user access codes", async () => {
+    const ip = `admin-${crypto.randomUUID()}`;
+    const attempt = (token = "wrong-admin-token") => exports.default.fetch(new Request("https://example.test/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+      body: JSON.stringify({ token }),
+    }));
+
+    for (let index = 0; index < 5; index += 1) {
+      expect((await attempt()).status).toBe(401);
+    }
+    const blocked = await attempt("test-admin-token");
+    expect(blocked.status).toBe(429);
+    expect(Number(blocked.headers.get("Retry-After"))).toBeGreaterThan(0);
+    await expect(blocked.json()).resolves.toMatchObject({ error: "admin_login_rate_limited" });
+
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "friend:valid-user-code");
+    const userLogin = await exports.default.fetch(new Request("https://example.test/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+      body: JSON.stringify({ code: "valid-user-code" }),
+    }));
+    expect(userLogin.status).toBe(200);
+  });
+
   it("lets a user revoke every active device session without deleting data", async () => {
     const label = `self-revoke-${crypto.randomUUID()}`;
     const first = await login(label);
