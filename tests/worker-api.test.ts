@@ -358,6 +358,7 @@ describe("Worker API", () => {
     expect(assetResponse.headers.get("Content-Security-Policy")).toContain("default-src 'self'");
     expect(assetResponse.headers.get("X-Frame-Options")).toBe("DENY");
     expect(assetResponse.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(assetResponse.headers.get("Strict-Transport-Security")).toBe("max-age=31536000; includeSubDomains");
     expect(assetResponse.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(assetResponse.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/i);
 
@@ -375,6 +376,7 @@ describe("Worker API", () => {
     expect(cookie).toContain("SameSite=Lax");
     expect(loginResponse.headers.get("Cache-Control")).toContain("no-store");
     expect(loginResponse.headers.get("Pragma")).toBe("no-cache");
+    expect(loginResponse.headers.get("Strict-Transport-Security")).toContain("max-age=31536000");
     expect(loginResponse.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/i);
 
     const sessionResponse = await exports.default.fetch(new Request("https://example.test/api/session", {

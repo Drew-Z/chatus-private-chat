@@ -3100,6 +3100,7 @@ function securityHeaders(init: HeadersInit = {}): Headers {
   const headers = new Headers(init);
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
+  headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
   headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
