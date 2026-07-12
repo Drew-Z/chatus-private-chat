@@ -240,6 +240,8 @@ https://你的 Worker 域名/admin.html
 install -> typecheck -> test -> write .prod.secrets.json -> wrangler deploy
 ```
 
+Wrangler 上传遇到 Cloudflare 控制面临时 `5xx` 时会自动重试 3 次；代码检查和生产 smoke 失败不会重试或被忽略。
+
 当前 KV namespace 已绑定：
 
 ```text
