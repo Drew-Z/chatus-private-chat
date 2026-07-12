@@ -45,8 +45,9 @@ async function runChecks() {
   assertSecurityHeaders(home, "home");
   const homeHtml = await home.text();
   assert(homeHtml.includes('id="loginView"'), "home: login view missing");
-  assert(homeHtml.includes('src="/app.js"'), "home: app script missing");
+  assert(homeHtml.includes('src="/app.js?v='), "home: versioned app script missing");
   if (expectedCommit) assert(homeHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "home: release meta does not match deployment");
+  if (expectedCommit) assert(homeHtml.includes(`/app.js?v=${expectedCommit}`), "home: asset version does not match deployment");
 
   const admin = await request(`/admin?smoke=${marker}`);
   assert(admin.status === 200, `admin: expected 200, got ${admin.status}`);
@@ -55,6 +56,19 @@ async function runChecks() {
   assert(adminHtml.includes('id="adminLoginView"'), "admin: login view missing");
   assert(adminHtml.includes('id="releaseGrid"') || adminHtml.includes('class="release-grid"'), "admin: production status panel missing");
   if (expectedCommit) assert(adminHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "admin: release meta does not match deployment");
+
+  if (expectedCommit) {
+    const fingerprintedAsset = await request(`/app.js?v=${expectedCommit}`);
+    assert(fingerprintedAsset.headers.get("cache-control")?.includes("immutable"), "fingerprinted asset: immutable cache missing");
+    const appSource = await fingerprintedAsset.text();
+    assert(appSource.includes(`./markdown.js?v=${expectedCommit}`), "app module: dependency fingerprint does not match deployment");
+    const markdownAsset = await request(`/markdown.js?v=${expectedCommit}`);
+    assert(markdownAsset.headers.get("cache-control")?.includes("immutable"), "markdown module: immutable cache missing");
+    const plainAsset = await request("/app.js");
+    assert(!plainAsset.headers.get("cache-control")?.includes("immutable"), "plain asset: must remain revalidated");
+    const releaseAsset = await request(`/release.json?v=${expectedCommit}`);
+    assert(!releaseAsset.headers.get("cache-control")?.includes("immutable"), "release metadata: must not be immutable");
+  }
 
   const session = await request("/api/session");
   assert(session.status === 401, `session: expected 401, got ${session.status}`);

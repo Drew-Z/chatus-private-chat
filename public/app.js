@@ -1,4 +1,4 @@
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdown } from "./markdown.js?v=development";
 
 const loginView = document.querySelector("#loginView");
 const chatView = document.querySelector("#chatView");

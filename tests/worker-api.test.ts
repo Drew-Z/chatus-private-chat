@@ -389,6 +389,19 @@ describe("Worker API", () => {
     expect(sessionResponse.headers.get("X-Request-ID")).not.toBe(loginResponse.headers.get("X-Request-ID"));
   });
 
+  it("caches only fingerprinted JavaScript and CSS assets as immutable", async () => {
+    const fingerprint = "a".repeat(40);
+    const fingerprinted = await exports.default.fetch(new Request(`https://example.test/app.js?v=${fingerprint}`));
+    expect(fingerprinted.headers.get("Cache-Control")).toContain("max-age=31536000");
+    expect(fingerprinted.headers.get("Cache-Control")).toContain("immutable");
+
+    const plain = await exports.default.fetch(new Request("https://example.test/app.js"));
+    expect(plain.headers.get("Cache-Control") || "").not.toContain("immutable");
+
+    const release = await exports.default.fetch(new Request(`https://example.test/release.json?v=${fingerprint}`));
+    expect(release.headers.get("Cache-Control") || "").not.toContain("immutable");
+  });
+
   it("invalidates an admin session when its token fingerprint no longer matches", async () => {
     const cookie = await adminLogin();
     const sessionToken = cookie.split("=", 2)[1];

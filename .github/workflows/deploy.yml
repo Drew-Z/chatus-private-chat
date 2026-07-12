@@ -106,9 +106,17 @@ jobs:
             }
             fs.writeFileSync(
               file,
-              source.replace('meta name="chatus-release" content="development"', `meta name="chatus-release" content="${process.env.GITHUB_SHA}"`),
+              source
+                .replace('meta name="chatus-release" content="development"', `meta name="chatus-release" content="${process.env.GITHUB_SHA}"`)
+                .replaceAll("?v=development", `?v=${process.env.GITHUB_SHA}`),
             );
           }
+          const appFile = "public/app.js";
+          const appSource = fs.readFileSync(appFile, "utf8");
+          if (!appSource.includes("?v=development")) {
+            throw new Error(`${appFile} is missing the asset version placeholder`);
+          }
+          fs.writeFileSync(appFile, appSource.replaceAll("?v=development", `?v=${process.env.GITHUB_SHA}`));
           NODE
 
       - name: Deploy Worker

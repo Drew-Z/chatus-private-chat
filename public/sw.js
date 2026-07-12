@@ -1,4 +1,4 @@
-const CACHE_NAME = "chatus-shell-v2";
+const CACHE_NAME = "chatus-shell-v3";
 const SHELL_ASSETS = [
   "/",
   "/admin",
@@ -36,9 +36,16 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request).catch(() => caches.match(url.pathname.startsWith("/admin") ? "/admin" : "/")),
-    );
+    const fallbackPath = url.pathname.startsWith("/admin") ? "/admin" : "/";
+    const network = fetch(request).then(async (response) => {
+      if (response.ok && response.type === "basic") {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(fallbackPath, response.clone());
+      }
+      return response;
+    });
+    event.waitUntil(network.then(() => undefined).catch(() => undefined));
+    event.respondWith(network.catch(() => caches.match(fallbackPath)));
     return;
   }
 

@@ -430,7 +430,21 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     return handleApi(request, env, url);
   }
   const assetResponse = await env.ASSETS.fetch(request);
-  return withSecurityHeaders(assetResponse);
+  return withAssetCacheHeaders(assetResponse, url);
+}
+
+function withAssetCacheHeaders(response: Response, url: URL): Response {
+  const secured = withSecurityHeaders(response);
+  const fingerprint = url.searchParams.get("v") || "";
+  if (!/^[0-9a-f]{40}$/i.test(fingerprint) || !/\.(?:css|js)$/i.test(url.pathname)) return secured;
+
+  const headers = new Headers(secured.headers);
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  return new Response(secured.body, {
+    status: secured.status,
+    statusText: secured.statusText,
+    headers,
+  });
 }
 
 async function handleHealthCheck(env: Env): Promise<Response> {

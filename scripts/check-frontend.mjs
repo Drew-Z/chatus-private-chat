@@ -22,6 +22,7 @@ for (const page of pages) {
   const duplicateIds = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
   assert(!duplicateIds.length, `${page.html}: duplicate ids: ${duplicateIds.join(", ")}`);
   assert(html.includes('meta name="chatus-release" content="development"'), `${page.html}: missing release meta placeholder`);
+  assert(html.includes("?v=development"), `${page.html}: missing asset version placeholders`);
 
   const referencedIds = [...script.matchAll(/querySelector\(["']#([A-Za-z][\w-]*)["']\)/g)].map((match) => match[1]);
   const missingIds = [...new Set(referencedIds.filter((id) => !ids.includes(id)))];
@@ -45,11 +46,13 @@ assert(pwaScript.includes("fetchReleaseCommit"), "pwa.js: releases must be detec
 assert(pwaScript.includes('meta[name="chatus-release"]'), "pwa.js: update checks need the version of the loaded page");
 assert(pwaScript.includes("5 * 60_000"), "pwa.js: long-lived pages need periodic release checks");
 assert(serviceWorker.includes('event.data?.type === "SKIP_WAITING"'), "sw.js: missing update activation handler");
+assert(serviceWorker.includes('cache.put(fallbackPath, response.clone())'), "sw.js: successful navigation must refresh the offline page");
 const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?\n\}\);/)?.[0] || "";
 assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: updates must not activate during install");
 
 const chatScript = await readFile(path.join(root, "public/app.js"), "utf8");
 const styles = await readFile(path.join(root, "public/styles.css"), "utf8");
+assert(chatScript.includes('./markdown.js?v=development'), "app.js: markdown module must share the release fingerprint");
 assert(chatScript.includes('promptInput.addEventListener("input", () => saveActiveDraft())'), "app.js: missing draft input persistence");
 assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft restoration");
 assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout must clear local drafts");
