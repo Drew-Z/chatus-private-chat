@@ -3292,6 +3292,99 @@ body.sidebar-open {
   display: none;
 }
 
+.route-health-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.route-health-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) minmax(90px, 0.45fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 54px;
+  padding: 9px 11px;
+  color: #25292d;
+  text-align: left;
+  background: #f7f8f9;
+  border: 1px solid #e2e5e7;
+  border-radius: 7px;
+}
+
+.route-health-row:hover {
+  background: #f0f2f3;
+}
+
+.route-health-indicator {
+  width: 7px;
+  height: 7px;
+  background: #9aa1a8;
+  border-radius: 50%;
+}
+
+.route-health-row.healthy .route-health-indicator {
+  background: #238263;
+}
+
+.route-health-row.unhealthy .route-health-indicator {
+  background: #b4493d;
+}
+
+.route-health-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.route-health-copy strong,
+.route-health-copy small,
+.route-health-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-health-copy strong {
+  font-size: 12px;
+}
+
+.route-health-copy small,
+.route-health-model {
+  color: #687078;
+  font-size: 11px;
+}
+
+.route-health-model {
+  text-align: right;
+}
+
+[data-theme="dark"] .route-health-row {
+  color: #e7e9eb;
+  background: #282c30;
+  border-color: #3b4045;
+}
+
+[data-theme="dark"] .route-health-row:hover {
+  background: #30353a;
+}
+
+[data-theme="dark"] .route-health-copy small,
+[data-theme="dark"] .route-health-model {
+  color: #a5abb1;
+}
+
+@media (max-width: 560px) {
+  .route-health-row {
+    grid-template-columns: 8px minmax(0, 1fr);
+  }
+
+  .route-health-model {
+    display: none;
+  }
+}
+
 @media (max-width: 960px) {
   .admin-body .admin-grid {
     grid-template-columns: 1fr;

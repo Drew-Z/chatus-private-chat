@@ -60,6 +60,7 @@ const generateAccessCodeButton = document.querySelector("#generateAccessCodeButt
 const healthRouteButton = document.querySelector("#healthRouteButton");
 const healthAllRoutesButton = document.querySelector("#healthAllRoutesButton");
 const routeHealthStatus = document.querySelector("#routeHealthStatus");
+const routeHealthList = document.querySelector("#routeHealthList");
 const adminNavItems = [...document.querySelectorAll("[data-admin-target]")];
 const adminSections = [...document.querySelectorAll("[data-admin-section]")];
 const adminPageTitle = document.querySelector("#adminPageTitle");
@@ -668,6 +669,61 @@ function renderRoutePicker() {
   routeAdminSelect.value = routeIds.includes(selectedRoute) ? selectedRoute : routeIds[0] || "__new";
   selectedRoute = routeAdminSelect.value;
   populateRouteForm();
+  renderRouteHealthList();
+}
+
+function renderRouteHealthList() {
+  if (!routeHealthList) return;
+  routeHealthList.textContent = "";
+  const routeIds = Object.keys(config.routes || {}).sort((a, b) => healthRank(routeHealth[a]) - healthRank(routeHealth[b]));
+  for (const routeId of routeIds) {
+    const health = routeHealth[routeId];
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `route-health-row ${health ? health.ok ? "healthy" : "unhealthy" : "unknown"}`;
+    const indicator = document.createElement("span");
+    indicator.className = "route-health-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("span");
+    copy.className = "route-health-copy";
+    const title = document.createElement("strong");
+    title.textContent = routeLabel(routeId);
+    const detail = document.createElement("small");
+    detail.textContent = health
+      ? health.ok
+        ? `正常${Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : ""} · ${relativeTime(health.checkedAt)}`
+        : `异常 · ${health.message || health.error || "检查失败"} · ${relativeTime(health.checkedAt)}`
+      : "尚未检查";
+    copy.append(title, detail);
+    const model = document.createElement("small");
+    model.className = "route-health-model";
+    model.textContent = config.routes[routeId]?.model || routeId;
+    row.append(indicator, copy, model);
+    row.addEventListener("click", () => {
+      selectedRoute = routeId;
+      routeAdminSelect.value = routeId;
+      populateRouteForm();
+      routeIdInput.focus();
+    });
+    routeHealthList.append(row);
+  }
+}
+
+function healthRank(health) {
+  if (health && !health.ok) return 0;
+  if (!health) return 1;
+  return 2;
+}
+
+function relativeTime(value) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "时间未知";
+  const minutes = Math.max(0, Math.round((Date.now() - time) / 60_000));
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.round(hours / 24)} 天前`;
 }
 
 function populateRouteForm() {
