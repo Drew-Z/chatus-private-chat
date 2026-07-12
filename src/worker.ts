@@ -136,6 +136,7 @@ const MAX_CLOUD_SESSIONS = 30;
 const MAX_CLOUD_MESSAGES = 120;
 const MAX_CLOUD_SESSION_BYTES = 1_800_000;
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
+const ADMIN_AUDIT_KEY = "config:admin_audit";
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -585,6 +586,7 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
   if (url.pathname === "/api/admin/config" && request.method === "DELETE") {
     await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
+    await appendAdminAudit(env, "config.reset");
     return jsonResponse({ ok: true });
   }
 
@@ -598,6 +600,7 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
   if (url.pathname === "/api/admin/access-codes" && request.method === "DELETE") {
     await env.CHAT_STORE.delete(ACCESS_CODES_KEY);
+    await appendAdminAudit(env, "access.reset");
     return jsonResponse({ ok: true });
   }
 
@@ -617,11 +620,16 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleAdminResetUsage(request, env);
   }
 
+  if (url.pathname === "/api/admin/audit" && request.method === "GET") {
+    return jsonResponse({ entries: await loadAdminAudit(env) });
+  }
+
   if (url.pathname === "/api/admin/sessions/revoke" && request.method === "POST") {
     const body = await readJson<{ label?: unknown }>(request);
     const label = typeof body.label === "string" ? body.label.trim() : "";
     if (!label) return jsonResponse({ error: "label_required" }, 400);
     const revoked = await revokeSessionsByLabel(env, label);
+    await appendAdminAudit(env, "sessions.revoke", label);
     return jsonResponse({ ok: true, label, revoked });
   }
 
@@ -654,6 +662,7 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   }
 
   await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(normalized));
+  await appendAdminAudit(env, "config.update");
   return jsonResponse({ ok: true, config: normalized, source: "kv" });
 }
 
@@ -675,6 +684,7 @@ async function handlePutAdminAccessCodes(request: Request, env: Env): Promise<Re
   }
 
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, accessCodes);
+  await appendAdminAudit(env, "access.update", `${entries.length} entries`);
   return jsonResponse({ ok: true, entries: entries.map(({ label }) => ({ label })), source: "kv" });
 }
 
@@ -867,6 +877,7 @@ async function handleAdminPutMemory(request: Request, env: Env): Promise<Respons
   } else {
     await env.CHAT_STORE.delete(memoryKey(label));
   }
+  await appendAdminAudit(env, memory ? "memory.update" : "memory.clear", label);
   return jsonResponse({ ok: true, label, memory, maxChars });
 }
 
@@ -881,6 +892,7 @@ async function handleAdminResetUsage(request: Request, env: Env): Promise<Respon
     env.CHAT_STORE.delete(usageKey(label, day)),
     getUserState(env, label).resetUsage(day),
   ]);
+  await appendAdminAudit(env, "usage.reset", label);
   return jsonResponse({ ok: true, label, day });
 }
 
@@ -2678,6 +2690,37 @@ async function recordChatMetric(
   },
 ): Promise<void> {
   await getUserState(env, args.label).recordMetric(args);
+}
+
+type AdminAuditEntry = {
+  id: string;
+  action: string;
+  target?: string;
+  at: string;
+};
+
+async function loadAdminAudit(env: Env): Promise<AdminAuditEntry[]> {
+  const raw = await env.CHAT_STORE.get(ADMIN_AUDIT_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is AdminAuditEntry =>
+      isRecord(entry) && typeof entry.id === "string" && typeof entry.action === "string" && typeof entry.at === "string"
+    ).slice(0, 100);
+  } catch {
+    return [];
+  }
+}
+
+async function appendAdminAudit(env: Env, action: string, target?: string): Promise<void> {
+  try {
+    const entries = await loadAdminAudit(env);
+    entries.unshift({ id: crypto.randomUUID(), action, ...(target ? { target: target.slice(0, 100) } : {}), at: new Date().toISOString() });
+    await env.CHAT_STORE.put(ADMIN_AUDIT_KEY, JSON.stringify(entries.slice(0, 100)));
+  } catch {
+    // Audit persistence must not block the requested admin operation.
+  }
 }
 
 async function revokeSessionsByLabel(env: Env, label: string): Promise<number> {

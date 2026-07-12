@@ -3196,6 +3196,51 @@ body.sidebar-open {
   margin-top: 16px;
 }
 
+.audit-list {
+  display: grid;
+  gap: 11px;
+  margin-top: 15px;
+}
+
+.audit-list > div {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+
+.audit-list > div > div {
+  display: grid;
+  gap: 2px;
+}
+
+.audit-list strong {
+  font-size: 12px;
+}
+
+.audit-list small,
+.audit-empty {
+  color: #687078;
+  font-size: 11px;
+}
+
+.audit-marker {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  background: #6d747b;
+  border-radius: 50%;
+}
+
+.audit-empty {
+  margin: 14px 0 0;
+}
+
+[data-theme="dark"] .audit-list small,
+[data-theme="dark"] .audit-empty {
+  color: #a5abb1;
+}
+
 .diagnostic-list > div {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr);

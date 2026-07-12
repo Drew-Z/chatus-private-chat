@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
+const ADMIN_AUDIT_KEY = "config:admin_audit";
 
 async function login(label = `tester-${crypto.randomUUID()}`) {
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, `${label}:test-access-code`);
@@ -45,6 +46,7 @@ describe("Worker API", () => {
       env.CHAT_STORE.delete(ACCESS_CODES_KEY),
       env.CHAT_STORE.delete(ROUTES_CONFIG_KEY),
       env.CHAT_STORE.delete("route-health:default"),
+      env.CHAT_STORE.delete(ADMIN_AUDIT_KEY),
     ]);
   });
 
@@ -291,5 +293,8 @@ describe("Worker API", () => {
     await expect(revoke.json()).resolves.toMatchObject({ ok: true, label, revoked: 2 });
     expect((await apiRequest("/api/session", first.cookie)).status).toBe(401);
     expect((await apiRequest("/api/session", second.cookie)).status).toBe(401);
+    const audit = await apiRequest("/api/admin/audit", adminCookie);
+    expect(audit.status).toBe(200);
+    await expect(audit.json()).resolves.toMatchObject({ entries: [{ action: "sessions.revoke", target: label }] });
   });
 });

@@ -20,6 +20,7 @@ const releaseTime = document.querySelector("#releaseTime");
 const releaseRoutes = document.querySelector("#releaseRoutes");
 const releaseUsers = document.querySelector("#releaseUsers");
 const diagnosticList = document.querySelector("#diagnosticList");
+const auditList = document.querySelector("#auditList");
 const userSystemPrompt = document.querySelector("#userSystemPrompt");
 const userForm = document.querySelector("#userForm");
 const userSelect = document.querySelector("#userSelect");
@@ -336,17 +337,19 @@ function showAdminSection(section) {
 
 async function loadDashboard(message = "") {
   setStatus("读取中");
-  const [configData, accessData, statsData, releaseData, healthData] = await Promise.all([
+  const [configData, accessData, statsData, releaseData, healthData, auditData] = await Promise.all([
     api("/api/admin/config"),
     api("/api/admin/access-codes"),
     api("/api/admin/stats"),
     fetchRelease(),
     api("/api/admin/route-health"),
+    api("/api/admin/audit"),
   ]);
 
   config = normalizeClientConfig(configData.config);
   stats = statsData;
   routeHealth = healthData?.routes || {};
+  renderAuditLog(auditData?.entries || []);
   accessLabels = Array.isArray(accessData.entries)
     ? accessData.entries.map((entry) => entry?.label).filter(Boolean)
     : [];
@@ -366,6 +369,43 @@ async function loadDashboard(message = "") {
   renderUserPicker();
   renderRoutePicker();
   setStatus(message || "已同步");
+}
+
+function renderAuditLog(entries) {
+  if (!auditList) return;
+  auditList.textContent = "";
+  const labels = {
+    "config.update": "更新配置",
+    "config.reset": "恢复配置 Secret",
+    "access.update": "更新访问码",
+    "access.reset": "恢复访问码 Secret",
+    "sessions.revoke": "注销用户会话",
+    "memory.update": "更新长期记忆",
+    "memory.clear": "清空长期记忆",
+    "usage.reset": "重置用户额度",
+  };
+  const visible = Array.isArray(entries) ? entries.slice(0, 8) : [];
+  if (!visible.length) {
+    const empty = document.createElement("p");
+    empty.className = "audit-empty";
+    empty.textContent = "暂无管理记录";
+    auditList.append(empty);
+    return;
+  }
+  for (const entry of visible) {
+    const row = document.createElement("div");
+    const marker = document.createElement("span");
+    marker.className = "audit-marker";
+    marker.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = labels[entry.action] || entry.action || "管理操作";
+    const detail = document.createElement("small");
+    detail.textContent = `${entry.target ? `${entry.target} · ` : ""}${relativeTime(entry.at)}`;
+    copy.append(title, detail);
+    row.append(marker, copy);
+    auditList.append(row);
+  }
 }
 
 function renderAccessEntries() {
