@@ -9,6 +9,8 @@ type ChatPart =
 type ChatMessage = {
   role: ChatRole;
   content: string | ChatPart[];
+  routeId?: string;
+  fallback?: boolean;
 };
 
 type Session = {
@@ -1311,7 +1313,12 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
     if (typeof item.content === "string") {
       const content = item.content.slice(0, 20_000);
       if (!content.trim() && role !== "assistant") continue;
-      output.push({ role, content });
+      output.push({
+        role,
+        content,
+        routeId: role === "assistant" && typeof item.routeId === "string" ? item.routeId.slice(0, 80) : undefined,
+        fallback: role === "assistant" && item.fallback === true,
+      });
       continue;
     }
 
@@ -1332,7 +1339,12 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
         parts.push({ type: "image_url", image_url: { url: part.image_url.url } });
       }
     }
-    if (parts.length) output.push({ role, content: parts });
+    if (parts.length) output.push({
+      role,
+      content: parts,
+      routeId: role === "assistant" && typeof item.routeId === "string" ? item.routeId.slice(0, 80) : undefined,
+      fallback: role === "assistant" && item.fallback === true,
+    });
   }
   return output;
 }

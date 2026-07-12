@@ -2033,6 +2033,31 @@ body.sidebar-open {
   transition: opacity 0.15s ease;
 }
 
+.message-route {
+  width: fit-content;
+  margin-top: 7px;
+  color: #737a82;
+  font-size: 11px;
+}
+
+.message-route.fallback {
+  padding: 2px 6px;
+  color: #805b20;
+  background: #fff7e8;
+  border: 1px solid #eeddbb;
+  border-radius: 5px;
+}
+
+[data-theme="dark"] .message-route {
+  color: #9da4ab;
+}
+
+[data-theme="dark"] .message-route.fallback {
+  color: #e2c17f;
+  background: #302a20;
+  border-color: #55452b;
+}
+
 .chat-product-body .message:hover .message-actions,
 .chat-product-body .message:focus-within .message-actions {
   opacity: 1;

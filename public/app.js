@@ -504,6 +504,8 @@ async function streamChat(assistantMessage) {
     }
     usedRoute = response.headers.get("X-Chatus-Route") || selectedRouteId;
     lastRouteUsed = usedRoute;
+    assistantMessage.routeId = usedRoute;
+    assistantMessage.fallback = Boolean(usedRoute && usedRoute !== selectedRouteId);
     if (usedRoute && usedRoute !== selectedRouteId) {
       setSyncStatus(`已 fallback 到 ${routeLabelById(usedRoute)}`);
     }
@@ -755,6 +757,8 @@ function normalizeMessage(item) {
     id: typeof item.id === "string" ? item.id : createId(),
     role: item.role === "user" || item.role === "assistant" || item.role === "error" ? item.role : "error",
     content: item.content,
+    routeId: typeof item.routeId === "string" ? item.routeId : "",
+    fallback: item.fallback === true,
   };
 }
 
@@ -1323,6 +1327,14 @@ function renderMessages(forceScroll = true) {
       if (!text.trim()) body.append(document.createTextNode(isBusy && index === messages.length - 1 ? "…" : ""));
       else body.append(renderMarkdown(text));
       node.append(body);
+      if (message.routeId) {
+        const routeMeta = document.createElement("div");
+        routeMeta.className = `message-route${message.fallback ? " fallback" : ""}`;
+        routeMeta.textContent = message.fallback
+          ? `备用线路 · ${routeLabelById(message.routeId)}`
+          : routeLabelById(message.routeId);
+        node.append(routeMeta);
+      }
     } else if (message.role === "error") {
       node.append(document.createTextNode(extractText(message.content) || "错误"));
     } else {
