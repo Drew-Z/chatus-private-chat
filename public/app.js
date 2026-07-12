@@ -1389,14 +1389,18 @@ function modelBadge(text, className = "") {
 }
 
 function selectRoute(routeId) {
-  if (!routes.some((route) => route.id === routeId)) return;
+  const route = routes.find((item) => item.id === routeId);
+  if (!route) return;
   selectedRouteId = routeId;
+  lastRouteUsed = "";
   routeSelect.value = routeId;
   localStorage.setItem(ROUTE_STORAGE_KEY, selectedRouteId);
   renderRoutes();
   updateConnectionState();
   if (!messages.length) renderMessages(false);
-  showStatusToast(`已切换到 ${routeLabelById(routeId)}`);
+  showStatusToast(route.healthStatus === "unhealthy"
+    ? `已切换到 ${routeLabelById(routeId)} · 近期巡检异常，失败时会尝试备用线路`
+    : `已切换到 ${routeLabelById(routeId)}`);
 }
 
 function toggleModelPicker() {
@@ -1481,6 +1485,7 @@ function routeLabelById(id) {
 }
 function updateConnectionState(prefix) {
   const route = getSelectedRoute();
+  connectionState.classList.remove("route-unhealthy", "route-unknown");
   if (prefix) {
     connectionState.textContent = prefix;
     return;
@@ -1491,6 +1496,16 @@ function updateConnectionState(prefix) {
   }
   const label = lastRouteUsed ? routeLabelById(lastRouteUsed) : route?.label;
   const promptMark = hasUserSystemPrompt ? " · 专属提示词" : "";
+  if (route?.healthStatus === "unhealthy" && !lastRouteUsed) {
+    connectionState.classList.add("route-unhealthy");
+    connectionState.textContent = `近期异常 · ${label || route.id}${promptMark}`;
+    return;
+  }
+  if (route?.healthStatus === "unknown" && !lastRouteUsed) {
+    connectionState.classList.add("route-unknown");
+    connectionState.textContent = label ? `未巡检 · ${label}${promptMark}` : `未巡检${promptMark}`;
+    return;
+  }
   connectionState.textContent = label ? `已连接 · ${label}${promptMark}` : `已连接${promptMark}`;
 }
 function parseStreamLine(line) {

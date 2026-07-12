@@ -48,6 +48,8 @@ const chatScript = await readFile(path.join(root, "public/app.js"), "utf8");
 assert(chatScript.includes('promptInput.addEventListener("input", () => saveActiveDraft())'), "app.js: missing draft input persistence");
 assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft restoration");
 assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout must clear local drafts");
+assert(chatScript.includes('connectionState.classList.add("route-unhealthy")'), "app.js: selected unhealthy route must be visible");
+assert(chatScript.includes("近期巡检异常，失败时会尝试备用线路"), "app.js: unhealthy route selection must explain fallback");
 
 console.log("Frontend structure checks passed");
 

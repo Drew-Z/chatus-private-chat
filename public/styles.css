@@ -2047,6 +2047,14 @@ body.sidebar-open {
   background: #f0f1f2;
 }
 
+#connectionState.route-unhealthy {
+  color: var(--warn);
+}
+
+#connectionState.route-unknown {
+  color: var(--muted);
+}
+
 .chat-product-body .route-block select:hover {
   background-color: #eceff1;
 }
