@@ -106,6 +106,7 @@ let currentAdminSection = "overview";
 let savedAccessCodes = "";
 let savedMemory = "";
 let configRevision = "";
+let accessRevision = "";
 const dirtyScopes = new Set();
 
 for (const item of adminNavItems) {
@@ -360,7 +361,7 @@ saveAccessCodesButton.addEventListener("click", async () => {
   try {
     await api("/api/admin/access-codes", {
       method: "PUT",
-      body: JSON.stringify({ accessCodes: accessCodesInput.value }),
+      body: JSON.stringify({ accessCodes: accessCodesInput.value, expectedRevision: accessRevision }),
     });
     await loadDashboard("访问码已保存");
   } catch (error) {
@@ -370,7 +371,10 @@ saveAccessCodesButton.addEventListener("click", async () => {
 
 resetAccessCodesButton.addEventListener("click", async () => {
   if (!(await confirmAdminAction("恢复 Secret 访问码？", "后台保存的访问码覆盖将被删除，当前 Secret 配置会重新生效。", "恢复"))) return;
-  await api("/api/admin/access-codes", { method: "DELETE" });
+  await api("/api/admin/access-codes", {
+    method: "DELETE",
+    body: JSON.stringify({ expectedRevision: accessRevision }),
+  });
   await loadDashboard("已恢复 Secret 里的访问码");
 });
 
@@ -454,6 +458,7 @@ async function loadDashboard(message = "") {
   renderProductionStatus(releaseData, coreHealthData);
   configJsonInput.value = JSON.stringify(config, null, 2);
   accessCodesInput.value = accessData.accessCodes || "";
+  accessRevision = accessData.revision || "";
   savedAccessCodes = accessCodesInput.value;
   renderAccessEntries();
 
@@ -720,7 +725,7 @@ async function rotateAccessEntry(index, entry) {
   try {
     await api("/api/admin/access-codes", {
       method: "PUT",
-      body: JSON.stringify({ accessCodes: accessCodesInput.value }),
+      body: JSON.stringify({ accessCodes: accessCodesInput.value, expectedRevision: accessRevision }),
     });
     accessSaved = true;
     const revoked = await revokeLabelSessions(entry.label);
@@ -763,7 +768,7 @@ async function revokeAccessEntry(index, entry) {
   try {
     await api("/api/admin/access-codes", {
       method: "PUT",
-      body: JSON.stringify({ accessCodes: accessCodesInput.value }),
+      body: JSON.stringify({ accessCodes: accessCodesInput.value, expectedRevision: accessRevision }),
     });
     accessSaved = true;
     const revoked = await revokeLabelSessions(entry.label);

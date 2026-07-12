@@ -622,6 +622,24 @@ describe("Worker API", () => {
     expect(stored.users.concurrent.displayName).toBe("Concurrent edit");
   });
 
+  it("rejects stale access-code updates", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "friend:original-code");
+    const cookie = await adminLogin();
+    const initialResponse = await apiRequest("/api/admin/access-codes", cookie);
+    const initial = await initialResponse.json() as any;
+    expect(initial.revision).toMatch(/^[0-9a-f]{64}$/);
+
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "friend:rotated-code");
+    const stale = await apiRequest("/api/admin/access-codes", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accessCodes: "friend:stale-code", expectedRevision: initial.revision }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "access_codes_conflict" });
+    await expect(env.CHAT_STORE.get(ACCESS_CODES_KEY)).resolves.toBe("friend:rotated-code");
+  });
+
   it("requires the route health task to return the correct answer", async () => {
     const cookie = await adminLogin();
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({

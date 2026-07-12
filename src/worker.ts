@@ -727,6 +727,9 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
   }
 
   if (url.pathname === "/api/admin/access-codes" && request.method === "DELETE") {
+    const body = await readJson<{ expectedRevision?: unknown }>(request);
+    const conflict = await accessRevisionConflict(env, body.expectedRevision);
+    if (conflict) return conflict;
     await env.CHAT_STORE.delete(ACCESS_CODES_KEY);
     await appendAdminAudit(env, "access.reset");
     return jsonResponse({ ok: true });
@@ -819,11 +822,14 @@ async function handleGetAdminAccessCodes(env: Env): Promise<Response> {
     accessCodes,
     entries: parseAccessCodes(accessCodes).map(({ label }) => ({ label })),
     source,
+    revision: await secretFingerprint(accessCodes),
   });
 }
 
 async function handlePutAdminAccessCodes(request: Request, env: Env): Promise<Response> {
-  const body = await readJson<{ accessCodes?: unknown }>(request);
+  const body = await readJson<{ accessCodes?: unknown; expectedRevision?: unknown }>(request);
+  const conflict = await accessRevisionConflict(env, body.expectedRevision);
+  if (conflict) return conflict;
   const accessCodes = typeof body.accessCodes === "string" ? body.accessCodes.trim() : "";
   const entries = parseAccessCodes(accessCodes);
   if (!entries.length) {
@@ -832,7 +838,25 @@ async function handlePutAdminAccessCodes(request: Request, env: Env): Promise<Re
 
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, accessCodes);
   await appendAdminAudit(env, "access.update", `${entries.length} entries`);
-  return jsonResponse({ ok: true, entries: entries.map(({ label }) => ({ label })), source: "kv" });
+  return jsonResponse({
+    ok: true,
+    entries: entries.map(({ label }) => ({ label })),
+    source: "kv",
+    revision: await secretFingerprint(accessCodes),
+  });
+}
+
+async function accessRevisionConflict(env: Env, expectedValue: unknown): Promise<Response | null> {
+  const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
+  if (!expectedRevision) return null;
+  const current = await loadEditableAccessCodes(env);
+  const currentRevision = await secretFingerprint(current.accessCodes);
+  if (currentRevision === expectedRevision) return null;
+  return jsonResponse({
+    error: "access_codes_conflict",
+    message: "访问码已在其他标签页或设备更新，请刷新后重试",
+    currentRevision,
+  }, 409);
 }
 
 async function handleGetAdminStats(env: Env): Promise<Response> {
