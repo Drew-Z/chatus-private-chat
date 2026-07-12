@@ -476,6 +476,7 @@ async function showChat(existingSession, readOnlyOffline = false) {
   updateConnectionState("同步会话中");
   await loadUserSessions({ offline: offlineMode });
   if (sessionExpired) return;
+  restoreSessionRoute(getActiveSession());
   renderChatList();
   renderMessages(true);
   updateChatTitle();
@@ -960,6 +961,7 @@ function normalizeSessions(input) {
       summary: typeof item.summary === "string" ? item.summary : "",
       summaryUntil: Number.isFinite(item.summaryUntil) ? item.summaryUntil : 0,
       pinned: item.pinned === true,
+      routeId: typeof item.routeId === "string" ? item.routeId : "",
       messages: Array.isArray(item.messages) ? item.messages.slice(-MAX_STORED_MESSAGES).map(normalizeMessage) : [],
     }))
     .sort(compareSessions)
@@ -1000,6 +1002,7 @@ function createSession(initialMessages = []) {
     summary: "",
     summaryUntil: 0,
     pinned: false,
+    routeId: selectedRouteId,
     messages: trimmedMessages,
   };
 }
@@ -1009,6 +1012,7 @@ function createNewSession() {
   sessions = [session, ...sessions].slice(0, MAX_SESSIONS);
   activeSessionId = session.id;
   messages = session.messages;
+  restoreSessionRoute(session);
   attachments = [];
   restoreActiveDraft();
   hideMemorySuggest();
@@ -1043,6 +1047,7 @@ function activateSession(id, searchQuery = "") {
   const targetMessageId = searchQuery ? findSearchMessageId(session, searchQuery) : "";
   activeSessionId = id;
   messages = session.messages;
+  restoreSessionRoute(session);
   attachments = [];
   restoreActiveDraft();
   hideMemorySuggest();
@@ -1556,12 +1561,33 @@ function selectRoute(routeId) {
   lastRouteUsed = "";
   routeSelect.value = routeId;
   localStorage.setItem(ROUTE_STORAGE_KEY, selectedRouteId);
+  const active = sessions.find((session) => session.id === activeSessionId);
+  if (active && active.routeId !== routeId) {
+    active.routeId = routeId;
+    active.updatedAt = Date.now();
+    saveSessions();
+  }
   renderRoutes();
   updateConnectionState();
   if (!messages.length) renderMessages(false);
   showStatusToast(route.healthStatus === "unhealthy"
     ? `已切换到 ${routeLabelById(routeId)} · 近期巡检异常，失败时会尝试备用线路`
     : `已切换到 ${routeLabelById(routeId)}`);
+}
+
+function restoreSessionRoute(session) {
+  const routeId = routes.some((route) => route.id === session?.routeId)
+    ? session.routeId
+    : chooseRoute(session?.routeId || "");
+  if (!routeId) return;
+  if (session && session.routeId !== routeId) session.routeId = routeId;
+  if (routeId === selectedRouteId) return;
+  selectedRouteId = routeId;
+  lastRouteUsed = "";
+  routeSelect.value = routeId;
+  localStorage.setItem(ROUTE_STORAGE_KEY, routeId);
+  renderRoutes();
+  updateConnectionState();
 }
 
 function toggleModelPicker() {
