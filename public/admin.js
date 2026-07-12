@@ -92,6 +92,7 @@ let config = { routes: {}, users: {}, defaults: {} };
 let stats = null;
 let accessLabels = [];
 let routeHealth = {};
+let feedbackEntries = [];
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
 
@@ -385,8 +386,10 @@ async function loadDashboard(message = "") {
 function renderFeedback(entries) {
   if (!feedbackList || !feedbackSummary) return;
   const items = Array.isArray(entries) ? entries : [];
+  feedbackEntries = items;
   const positive = items.filter((item) => item.rating === "up").length;
-  feedbackSummary.textContent = items.length ? `${positive}/${items.length} 有帮助` : "暂无评价";
+  const positiveRate = items.length ? Math.round((positive / items.length) * 100) : 0;
+  feedbackSummary.textContent = items.length ? `${positiveRate}% 有帮助 · ${items.length} 条` : "暂无评价";
   feedbackList.textContent = "";
   if (!items.length) {
     feedbackList.append(textNode("朋友评价回答后会显示在这里"));
@@ -491,6 +494,28 @@ function renderAttentionCenter() {
         routeId: route.id,
       });
     }
+  }
+
+  const feedbackByRoute = new Map();
+  for (const entry of feedbackEntries) {
+    if (!entry?.routeId || (entry.rating !== "up" && entry.rating !== "down")) continue;
+    const current = feedbackByRoute.get(entry.routeId) || { total: 0, negative: 0 };
+    current.total += 1;
+    if (entry.rating === "down") current.negative += 1;
+    feedbackByRoute.set(entry.routeId, current);
+  }
+  for (const [routeId, quality] of feedbackByRoute) {
+    if (!config.routes?.[routeId] || config.routes[routeId].enabled === false) continue;
+    if (quality.total < 3) continue;
+    const negativeRate = Math.round((quality.negative / quality.total) * 100);
+    if (negativeRate < 50) continue;
+    alerts.push({
+      severity: negativeRate >= 75 ? "critical" : "warning",
+      title: `${routeLabel(routeId)} 回答质量评价偏低`,
+      detail: `最近 ${quality.total} 条评价中，${negativeRate}% 标记为需改进`,
+      section: "routes",
+      routeId,
+    });
   }
 
   for (const user of Array.isArray(stats?.users) ? stats.users : []) {
