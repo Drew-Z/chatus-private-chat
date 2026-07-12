@@ -35,6 +35,15 @@ for (const page of pages) {
   }
 }
 
+const [pwaScript, serviceWorker] = await Promise.all([
+  readFile(path.join(root, "public/pwa.js"), "utf8"),
+  readFile(path.join(root, "public/sw.js"), "utf8"),
+]);
+assert(pwaScript.includes('postMessage({ type: "SKIP_WAITING" })'), "pwa.js: missing explicit update activation");
+assert(serviceWorker.includes('event.data?.type === "SKIP_WAITING"'), "sw.js: missing update activation handler");
+const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?\n\}\);/)?.[0] || "";
+assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: updates must not activate during install");
+
 console.log("Frontend structure checks passed");
 
 function assert(condition, message) {

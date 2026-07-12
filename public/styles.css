@@ -1781,6 +1781,50 @@ body.sidebar-open {
   pointer-events: none;
 }
 
+.app-update-prompt {
+  position: fixed;
+  z-index: 1200;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 14px 12px 16px;
+  color: #f8fafc;
+  background: #202124;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  font-size: 14px;
+}
+
+.app-update-prompt button {
+  flex: none;
+  padding: 7px 10px;
+  color: #202124;
+  background: #f8fafc;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.app-update-prompt button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+@media (max-width: 640px) {
+  .app-update-prompt {
+    right: 16px;
+    bottom: 16px;
+    left: 16px;
+    justify-content: space-between;
+  }
+}
+
 .chat-product-body .chat-header {
   position: relative;
   min-height: 64px;

@@ -1,4 +1,4 @@
-const CACHE_NAME = "chatus-shell-v1";
+const CACHE_NAME = "chatus-shell-v2";
 const SHELL_ASSETS = [
   "/",
   "/admin",
@@ -15,7 +15,10 @@ const SHELL_ASSETS = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)));
-  self.skipWaiting();
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
