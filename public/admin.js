@@ -80,6 +80,7 @@ const ADMIN_SECTION_TITLES = {
 let config = { routes: {}, users: {}, defaults: {} };
 let stats = null;
 let accessLabels = [];
+let routeHealth = {};
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
 
@@ -311,15 +312,17 @@ function showAdminSection(section) {
 
 async function loadDashboard(message = "") {
   setStatus("读取中");
-  const [configData, accessData, statsData, releaseData] = await Promise.all([
+  const [configData, accessData, statsData, releaseData, healthData] = await Promise.all([
     api("/api/admin/config"),
     api("/api/admin/access-codes"),
     api("/api/admin/stats"),
     fetchRelease(),
+    api("/api/admin/route-health"),
   ]);
 
   config = normalizeClientConfig(configData.config);
   stats = statsData;
+  routeHealth = healthData?.routes || {};
   accessLabels = Array.isArray(accessData.entries)
     ? accessData.entries.map((entry) => entry?.label).filter(Boolean)
     : [];
@@ -580,7 +583,8 @@ function renderUserPicker() {
   for (const routeId of Object.keys(config.routes || {})) {
     const option = document.createElement("option");
     option.value = routeId;
-    option.textContent = routeLabel(routeId);
+    const health = routeHealth[routeId];
+    option.textContent = `${routeLabel(routeId)}${health ? health.ok ? " · 正常" : " · 异常" : ""}`;
     userDefaultRoute.append(option);
   }
 
@@ -676,6 +680,20 @@ function populateRouteForm() {
   routeImagesInput.checked = route.supportsImages !== false;
   routeRequiresKeyInput.checked = Boolean(route.requiresUserKey);
   deleteRouteButton.disabled = selectedRoute === "__new";
+  renderStoredRouteHealth(selectedRoute);
+}
+
+function renderStoredRouteHealth(routeId) {
+  if (!routeId || routeId === "__new") return setRouteHealth("");
+  const health = routeHealth[routeId];
+  if (!health) return setRouteHealth("尚未进行健康检查");
+  const checkedAt = new Date(health.checkedAt);
+  const time = Number.isNaN(checkedAt.valueOf()) ? "" : checkedAt.toLocaleString("zh-CN", { hour12: false });
+  const latency = Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : "";
+  setRouteHealth(
+    health.ok ? `最近正常${latency}${time ? ` · ${time}` : ""}` : `最近异常 · ${health.message || health.error || "检查失败"}${time ? ` · ${time}` : ""}`,
+    !health.ok,
+  );
 }
 
 function syncConfigFromEditor() {
@@ -840,6 +858,11 @@ async function checkRouteHealth() {
       method: "POST",
       body: JSON.stringify({ routeId }),
     });
+    routeHealth[routeId] = data;
+    renderRoutePicker();
+    selectedRoute = routeId;
+    routeAdminSelect.value = routeId;
+    populateRouteForm();
     if (data.ok) {
       setRouteHealth(`健康 · ${data.latencyMs}ms · ${data.model || routeId} · 样本: ${data.sample || "ok"}`);
     } else {
@@ -847,6 +870,14 @@ async function checkRouteHealth() {
     }
   } catch (error) {
     setRouteHealth(error.message || "检查失败", true);
+    try {
+      const healthData = await api("/api/admin/route-health");
+      routeHealth = healthData?.routes || routeHealth;
+      if (config.routes?.[routeId]) {
+        selectedRoute = routeId;
+        renderRoutePicker();
+      }
+    } catch {}
   } finally {
     healthRouteButton.disabled = false;
   }

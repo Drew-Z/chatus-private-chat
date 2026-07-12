@@ -615,6 +615,10 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleAdminRouteHealth(request, env);
   }
 
+  if (url.pathname === "/api/admin/route-health" && request.method === "GET") {
+    return handleGetAdminRouteHealth(env);
+  }
+
   if (url.pathname === "/api/admin/route-models" && request.method === "POST") {
     return handleAdminRouteModels(request, env);
   }
@@ -1064,12 +1068,15 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
 
   const apiKey = resolveRouteKey(route, env, "");
   if (!apiKey) {
-    return jsonResponse({
+    const result = {
       ok: false,
       routeId,
       error: "missing_key",
       message: "线路 key 未配置（检查 apiKeyRef / secret）",
-    }, 400);
+      checkedAt: new Date().toISOString(),
+    };
+    await saveRouteHealth(env, routeId, result);
+    return jsonResponse(result, 400);
   }
 
   const started = Date.now();
@@ -1084,16 +1091,19 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
       maxTokens: 16,
       env,
     });
-    return jsonResponse({
+    const result = {
       ok: true,
       routeId,
       latencyMs: Date.now() - started,
       sample: text.slice(0, 80),
       model: route.model,
       type: route.type,
-    });
+      checkedAt: new Date().toISOString(),
+    };
+    await saveRouteHealth(env, routeId, result);
+    return jsonResponse(result);
   } catch (error) {
-    return jsonResponse({
+    const result = {
       ok: false,
       routeId,
       latencyMs: Date.now() - started,
@@ -1101,8 +1111,33 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
       message: error instanceof Error ? error.message : "health check failed",
       model: route.model,
       type: route.type,
-    }, 502);
+      checkedAt: new Date().toISOString(),
+    };
+    await saveRouteHealth(env, routeId, result);
+    return jsonResponse(result, 502);
   }
+}
+
+async function handleGetAdminRouteHealth(env: Env): Promise<Response> {
+  const config = await loadAppConfig(env);
+  const entries = await Promise.all(Object.keys(config.routes).map(async (routeId) => {
+    const raw = await env.CHAT_STORE.get(routeHealthKey(routeId));
+    if (!raw) return [routeId, null] as const;
+    try {
+      return [routeId, JSON.parse(raw)] as const;
+    } catch {
+      return [routeId, null] as const;
+    }
+  }));
+  return jsonResponse({ routes: Object.fromEntries(entries) });
+}
+
+async function saveRouteHealth(env: Env, routeId: string, result: unknown): Promise<void> {
+  await env.CHAT_STORE.put(routeHealthKey(routeId), JSON.stringify(result));
+}
+
+function routeHealthKey(routeId: string): string {
+  return `route-health:${encodeURIComponent(routeId)}`;
 }
 
 type CloudChat = {

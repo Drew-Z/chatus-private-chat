@@ -196,4 +196,21 @@ describe("Worker API", () => {
       fetchSpy.mockRestore();
     }
   });
+
+  it("persists the latest route health result", async () => {
+    const cookie = await adminLogin();
+    const check = await apiRequest("/api/admin/route-health", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeId: "default" }),
+    });
+    expect(check.status).toBe(400);
+    await expect(check.json()).resolves.toMatchObject({ ok: false, routeId: "default", error: "missing_key" });
+
+    const stored = await apiRequest("/api/admin/route-health", cookie);
+    expect(stored.status).toBe(200);
+    await expect(stored.json()).resolves.toMatchObject({
+      routes: { default: { ok: false, routeId: "default", error: "missing_key" } },
+    });
+  });
 });
