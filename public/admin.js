@@ -872,9 +872,10 @@ function renderStats() {
       label.textContent = String(item.day || "").slice(5);
       const bar = document.createElement("div");
       bar.className = "trend-bar";
-      const fill = document.createElement("div");
+      const fill = document.createElement("progress");
       fill.className = "trend-fill";
-      fill.style.width = `${Math.max(4, Math.round(((Number(item.requests) || 0) / maxReq) * 100))}%`;
+      fill.max = maxReq;
+      fill.value = Number(item.requests) || 0;
       bar.append(fill);
       const meta = document.createElement("span");
       meta.className = "trend-meta";
@@ -934,10 +935,19 @@ function renderStats() {
       spark.className = "usage-spark";
       const maxUsed = Math.max(1, ...user.usageByDay.map((d) => Number(d.used) || 0));
       for (const day of [...user.usageByDay].reverse()) {
-        const bar = document.createElement("div");
-        bar.className = "usage-spark-bar";
-        bar.style.height = `${Math.max(3, Math.round(((Number(day.used) || 0) / maxUsed) * 28))}px`;
-        bar.title = `${day.day}: ${day.used || 0}`;
+        const bar = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        bar.setAttribute("class", "usage-spark-bar");
+        bar.setAttribute("viewBox", "0 0 8 28");
+        bar.setAttribute("role", "img");
+        bar.setAttribute("aria-label", `${day.day}: ${day.used || 0}`);
+        const height = Math.max(3, Math.round(((Number(day.used) || 0) / maxUsed) * 28));
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", "0");
+        rect.setAttribute("y", String(28 - height));
+        rect.setAttribute("width", "8");
+        rect.setAttribute("height", String(height));
+        rect.setAttribute("rx", "2");
+        bar.append(rect);
         spark.append(bar);
       }
       meta.append(spark);
@@ -1292,7 +1302,7 @@ function sourceLabel(source) {
 
 function setStatus(message, isError = false) {
   adminStatus.textContent = message;
-  adminStatus.style.color = isError ? "var(--warn)" : "var(--muted)";
+  adminStatus.classList.toggle("is-error", isError);
 }
 
 function confirmAdminAction(title, description, confirmLabel = "确认") {
@@ -1503,5 +1513,5 @@ function setRouteHealth(message, isError = false) {
     return;
   }
   routeHealthStatus.textContent = message;
-  routeHealthStatus.style.color = isError ? "var(--warn)" : "var(--muted)";
+  routeHealthStatus.classList.toggle("is-error", isError);
 }

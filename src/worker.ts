@@ -3122,7 +3122,7 @@ function securityHeaders(init: HeadersInit = {}): Headers {
   headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
   headers.set(
     "Content-Security-Policy",
-    "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   );
   return headers;
 }

@@ -16,7 +16,6 @@
     const normalized = VALID_THEMES.has(preference) ? preference : "system";
     document.documentElement.dataset.theme = resolvedTheme(normalized);
     document.documentElement.dataset.themePreference = normalized;
-    document.documentElement.style.colorScheme = resolvedTheme(normalized);
     const themeMeta = document.querySelector("meta[name='theme-color']");
     if (themeMeta) themeMeta.content = resolvedTheme(normalized) === "dark" ? "#151719" : "#f7f8fa";
     return normalized;

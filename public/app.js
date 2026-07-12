@@ -2116,8 +2116,7 @@ function canvasToBlob(canvas, type, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 }
 function autoResizePrompt() {
-  promptInput.style.height = "auto";
-  promptInput.style.height = `${Math.min(promptInput.scrollHeight, 170)}px`;
+  // CSS field-sizing handles growth; this function remains as a compatibility hook for existing call sites.
 }
 function updateComposerMeta() {
   if (!composerCount) return;

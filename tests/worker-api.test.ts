@@ -356,6 +356,7 @@ describe("Worker API", () => {
   it("adds hardened security headers to assets and session cookies", async () => {
     const assetResponse = await exports.default.fetch(new Request("https://example.test/"));
     expect(assetResponse.headers.get("Content-Security-Policy")).toContain("default-src 'self'");
+    expect(assetResponse.headers.get("Content-Security-Policy")).not.toContain("'unsafe-inline'");
     expect(assetResponse.headers.get("X-Frame-Options")).toBe("DENY");
     expect(assetResponse.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(assetResponse.headers.get("Strict-Transport-Security")).toBe("max-age=31536000; includeSubDomains");

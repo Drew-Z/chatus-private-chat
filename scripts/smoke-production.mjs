@@ -18,7 +18,9 @@ async function request(path, options = {}) {
 }
 
 function assertSecurityHeaders(response, label) {
-  assert(response.headers.get("content-security-policy")?.includes("default-src 'self'"), `${label}: missing CSP`);
+  const csp = response.headers.get("content-security-policy") || "";
+  assert(csp.includes("default-src 'self'"), `${label}: missing CSP`);
+  assert(!csp.includes("'unsafe-inline'"), `${label}: CSP allows unsafe inline content`);
   assert(response.headers.get("x-frame-options") === "DENY", `${label}: missing X-Frame-Options`);
   assert(response.headers.get("x-content-type-options") === "nosniff", `${label}: missing X-Content-Type-Options`);
   assert(response.headers.get("strict-transport-security")?.includes("max-age=31536000"), `${label}: missing HSTS`);

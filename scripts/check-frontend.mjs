@@ -59,6 +59,10 @@ assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: log
 assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily rate limits must remain distinct");
 assert(chatScript.includes("async function fetchWithTimeout"), "app.js: non-streaming requests need bounded timeouts");
 assert(chatScript.includes('const response = await fetch("/api/chat"'), "app.js: streaming chat must remain user-cancellable without a fixed timeout");
+for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
+  const source = await readFile(path.join(root, file), "utf8");
+  assert(!source.includes(".style."), `${file}: inline styles weaken the CSP`);
+}
 
 console.log("Frontend structure checks passed");
 
