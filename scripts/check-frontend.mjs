@@ -40,6 +40,8 @@ const [pwaScript, serviceWorker] = await Promise.all([
   readFile(path.join(root, "public/sw.js"), "utf8"),
 ]);
 assert(pwaScript.includes('postMessage({ type: "SKIP_WAITING" })'), "pwa.js: missing explicit update activation");
+assert(pwaScript.includes("fetchReleaseCommit"), "pwa.js: releases must be detected even when the service worker is unchanged");
+assert(pwaScript.includes("5 * 60_000"), "pwa.js: long-lived pages need periodic release checks");
 assert(serviceWorker.includes('event.data?.type === "SKIP_WAITING"'), "sw.js: missing update activation handler");
 const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?\n\}\);/)?.[0] || "";
 assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: updates must not activate during install");

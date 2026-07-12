@@ -79,6 +79,10 @@ async function runChecks() {
   const serviceWorkerSource = await serviceWorker.text();
   assert(serviceWorkerSource.includes('url.pathname.startsWith("/api/")'), "service worker: API cache exclusion missing");
 
+  const pwaScript = await request("/pwa.js");
+  assert(pwaScript.status === 200, `pwa script: expected 200, got ${pwaScript.status}`);
+  assert((await pwaScript.text()).includes("fetchReleaseCommit"), "pwa script: release update detection missing");
+
   const robots = await request("/robots.txt");
   assert(robots.status === 200, `robots: expected 200, got ${robots.status}`);
   assert((await robots.text()).includes("Disallow: /"), "robots: private-site directive missing");
