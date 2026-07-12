@@ -801,14 +801,16 @@ async function api(path, options = {}) {
   const headers = options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers;
   const response = await fetch(path, { ...options, headers });
   const data = await response.json().catch(() => ({}));
+  const requestId = response.headers.get("X-Request-ID") || "";
+  const reference = requestId ? ` · 请求 ${requestId.slice(0, 8)}` : "";
 
   if (response.status === 401 && path !== "/api/admin/login") {
     showLogin();
-    throw new Error("需要重新登录");
+    throw new Error(`需要重新登录${reference}`);
   }
 
   if (!response.ok) {
-    throw new Error(data.message || data.error || "请求失败");
+    throw new Error(`${data.message || data.error || "请求失败"}${reference}`);
   }
 
   return data;

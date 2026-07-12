@@ -547,6 +547,11 @@ function syncThemeControls() {
   }
 }
 
+function requestReference(response) {
+  const requestId = response.headers.get("X-Request-ID") || "";
+  return requestId ? ` · 请求 ${requestId.slice(0, 8)}` : "";
+}
+
 async function streamChat(assistantMessage) {
   setBusy(true);
   updateConnectionState("生成中");
@@ -593,7 +598,8 @@ async function streamChat(assistantMessage) {
     }
     if (!response.ok || !response.body) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.message || formatError(data.error || "request_failed"));
+      const message = data.message || formatError(data.error || "request_failed");
+      throw new Error(`${message}${requestReference(response)}`);
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
