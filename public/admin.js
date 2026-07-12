@@ -56,6 +56,7 @@ const DEFAULT_USER = "__defaults";
 
 let config = { routes: {}, users: {}, defaults: {} };
 let stats = null;
+let accessLabels = [];
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
 
@@ -271,6 +272,9 @@ async function loadDashboard(message = "") {
 
   config = normalizeClientConfig(configData.config);
   stats = statsData;
+  accessLabels = Array.isArray(accessData.entries)
+    ? accessData.entries.map((entry) => entry?.label).filter(Boolean)
+    : [];
   configJsonInput.value = JSON.stringify(config, null, 2);
   accessCodesInput.value = accessData.accessCodes || "";
 
@@ -279,7 +283,7 @@ async function loadDashboard(message = "") {
   adminSourceText.textContent = `配置：${sourceLabel(configData.source)} · 访问码：${sourceLabel(accessData.source)}`;
 
   if (!selectedRoute || !config.routes[selectedRoute]) selectedRoute = Object.keys(config.routes)[0] || "__new";
-  if (selectedUser !== DEFAULT_USER && !config.users?.[selectedUser]) selectedUser = DEFAULT_USER;
+  if (!getUserLabels().includes(selectedUser)) selectedUser = DEFAULT_USER;
 
   renderStats();
   renderUserPicker();
@@ -460,12 +464,17 @@ function renderStats() {
   renderMemoryUserPicker();
 }
 function renderUserPicker() {
-  const labels = [DEFAULT_USER, ...Object.keys(config.users || {}).sort()];
+  const labels = getUserLabels();
   userSelect.textContent = "";
   for (const label of labels) {
     const option = document.createElement("option");
     option.value = label;
-    option.textContent = label === DEFAULT_USER ? "默认配置" : label;
+    option.textContent =
+      label === DEFAULT_USER
+        ? "默认配置"
+        : config.users?.[label]
+          ? label
+          : `${label}（使用默认配置）`;
     userSelect.append(option);
   }
   userSelect.value = labels.includes(selectedUser) ? selectedUser : DEFAULT_USER;
@@ -496,19 +505,27 @@ function renderAllowedRouteChecks() {
 }
 
 function populateUserForm() {
-  const user = selectedUser === DEFAULT_USER ? config.defaults || {} : config.users?.[selectedUser] || {};
+  const user =
+    selectedUser === DEFAULT_USER
+      ? config.defaults || {}
+      : { ...(config.defaults || {}), ...(config.users?.[selectedUser] || {}) };
   const routeIds = Object.keys(config.routes || {});
   userDefaultRoute.value = user.defaultRoute || routeIds[0] || "";
   userDailyLimit.value = user.dailyMessageLimit || 500;
   userMinuteLimit.value = user.minuteMessageLimit || 12;
   userByok.checked = Boolean(user.allowBringYourOwnKey);
   if (userSystemPrompt) userSystemPrompt.value = user.systemPrompt || "";
-  deleteUserButton.disabled = selectedUser === DEFAULT_USER;
+  deleteUserButton.disabled = selectedUser === DEFAULT_USER || !config.users?.[selectedUser];
 
   const allowed = new Set(user.allowedRoutes?.length ? user.allowedRoutes : routeIds);
   for (const input of allowedRoutesBox.querySelectorAll("input[type='checkbox']")) {
     input.checked = allowed.has(input.value);
   }
+}
+
+function getUserLabels() {
+  const labels = new Set([...accessLabels, ...Object.keys(config.users || {})]);
+  return [DEFAULT_USER, ...[...labels].sort()];
 }
 
 function readUserForm() {
