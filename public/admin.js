@@ -98,6 +98,7 @@ let stats = null;
 let accessLabels = [];
 let routeHealth = {};
 let feedbackEntries = [];
+let coreHealth = null;
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
 
@@ -380,7 +381,7 @@ function showAdminSection(section) {
 
 async function loadDashboard(message = "") {
   setStatus("读取中");
-  const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData] = await Promise.all([
+  const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData, coreHealthData] = await Promise.all([
     api("/api/admin/config"),
     api("/api/admin/access-codes"),
     api("/api/admin/stats"),
@@ -388,17 +389,19 @@ async function loadDashboard(message = "") {
     api("/api/admin/route-health"),
     api("/api/admin/audit"),
     api("/api/admin/feedback"),
+    fetchCoreHealth(),
   ]);
 
   config = normalizeClientConfig(configData.config);
   stats = statsData;
   routeHealth = healthData?.routes || {};
+  coreHealth = coreHealthData;
   renderAuditLog(auditData?.entries || []);
   renderFeedback(feedbackData?.entries || []);
   accessLabels = Array.isArray(accessData.entries)
     ? accessData.entries.map((entry) => entry?.label).filter(Boolean)
     : [];
-  renderProductionStatus(releaseData);
+  renderProductionStatus(releaseData, coreHealthData);
   configJsonInput.value = JSON.stringify(config, null, 2);
   accessCodesInput.value = accessData.accessCodes || "";
   renderAccessEntries();
@@ -561,6 +564,15 @@ function renderAttentionCenter() {
     } else if (limit > 0 && remaining / limit <= 0.1) {
       alerts.push({ severity: "warning", title: `${user.label} 今日额度即将耗尽`, detail: `剩余 ${remaining}/${limit}`, section: "users", userLabel: user.label });
     }
+  }
+
+  if (coreHealth?.status !== "ok") {
+    alerts.push({
+      severity: "critical",
+      title: "核心服务健康检查异常",
+      detail: coreHealth ? "KV、Durable Object 或基础配置检查未通过" : "无法连接健康检查端点",
+      section: "overview",
+    });
   }
 
   alerts.sort((a, b) => (a.severity === "critical" ? 0 : 1) - (b.severity === "critical" ? 0 : 1));
@@ -735,13 +747,24 @@ async function fetchRelease() {
   }
 }
 
-function renderProductionStatus(release) {
+async function fetchCoreHealth() {
+  try {
+    const response = await fetch(`/healthz?t=${Date.now()}`, { cache: "no-store" });
+    const data = await response.json().catch(() => null);
+    return response.ok && data?.status === "ok" ? data : data || { status: "degraded", checks: {} };
+  } catch {
+    return null;
+  }
+}
+
+function renderProductionStatus(release, health) {
   const routeCount = Object.keys(config.routes || {}).length;
   const userCount = Object.keys(config.users || {}).length;
   const commit = typeof release?.commit === "string" ? release.commit : "";
   const deployedAt = typeof release?.deployedAt === "string" ? new Date(release.deployedAt) : null;
-  releaseState.textContent = commit ? "运行正常" : "版本信息不可用";
-  releaseState.classList.toggle("status-ok", Boolean(commit));
+  const healthy = health?.status === "ok";
+  releaseState.textContent = commit && healthy ? "运行正常" : healthy ? "版本信息不可用" : "核心服务异常";
+  releaseState.classList.toggle("status-ok", Boolean(commit && healthy));
   releaseCommit.textContent = commit ? commit.slice(0, 8) : "--";
   releaseCommit.title = commit;
   releaseTime.textContent = deployedAt && !Number.isNaN(deployedAt.valueOf())
@@ -754,7 +777,9 @@ function renderProductionStatus(release) {
     ["发布身份", Boolean(commit), commit ? "已验证" : "无法读取 release.json"],
     ["模型配置", routeCount > 0, routeCount > 0 ? `${routeCount} 条线路` : "尚未配置线路"],
     ["访问控制", accessLabels.length > 0, accessLabels.length > 0 ? `${accessLabels.length} 个 label` : "尚无访问码 label"],
-    ["云端同步", true, "Durable Object 已启用"],
+    ["KV 存储", health?.checks?.kv === true, health ? health.checks?.kv ? "连接正常" : "检查失败" : "无法读取健康状态"],
+    ["云端同步", health?.checks?.durableObject === true, health ? health.checks?.durableObject ? "Durable Object 正常" : "检查失败" : "无法读取健康状态"],
+    ["核心配置", health?.checks?.configured === true, health ? health.checks?.configured ? "基础配置有效" : "检查失败" : "无法读取健康状态"],
   ];
   for (const [label, ok, detail] of checks) {
     const row = document.createElement("div");
