@@ -330,8 +330,8 @@ chatForm.addEventListener("submit", async (event) => {
     showInlineError("当前线路不支持图片");
     return;
   }
-  messages.push({ id: createId(), role: "user", content: buildUserContent(text, attachments) });
-  const assistantMessage = { id: createId(), role: "assistant", content: "" };
+  messages.push({ id: createId(), role: "user", content: buildUserContent(text, attachments), createdAt: Date.now() });
+  const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
   renderMessages(true);
@@ -553,11 +553,11 @@ async function streamChat(assistantMessage) {
       }
     } else if (!received) {
       messages = messages.filter((message) => message !== assistantMessage);
-      messages.push({ id: createId(), role: "error", content: error.message || "请求失败" });
+      messages.push({ id: createId(), role: "error", content: error.message || "请求失败", createdAt: Date.now() });
       saveMessages();
       renderMessages(true);
     } else {
-      messages.push({ id: createId(), role: "error", content: error.message || "请求失败" });
+      messages.push({ id: createId(), role: "error", content: error.message || "请求失败", createdAt: Date.now() });
       saveMessages();
       renderMessages(true);
     }
@@ -760,13 +760,14 @@ function normalizeSessions(input) {
 }
 
 function normalizeMessage(item) {
-  if (!item || typeof item !== "object") return { id: createId(), role: "error", content: "无效消息" };
+  if (!item || typeof item !== "object") return { id: createId(), role: "error", content: "无效消息", createdAt: Date.now() };
   return {
     id: typeof item.id === "string" ? item.id : createId(),
     role: item.role === "user" || item.role === "assistant" || item.role === "error" ? item.role : "error",
     content: item.content,
     routeId: typeof item.routeId === "string" ? item.routeId : "",
     fallback: item.fallback === true,
+    createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now(),
   };
 }
 
@@ -1335,14 +1336,6 @@ function renderMessages(forceScroll = true) {
       if (!text.trim()) body.append(document.createTextNode(isBusy && index === messages.length - 1 ? "…" : ""));
       else body.append(renderMarkdown(text));
       node.append(body);
-      if (message.routeId) {
-        const routeMeta = document.createElement("div");
-        routeMeta.className = `message-route${message.fallback ? " fallback" : ""}`;
-        routeMeta.textContent = message.fallback
-          ? `备用线路 · ${routeLabelById(message.routeId)}`
-          : routeLabelById(message.routeId);
-        node.append(routeMeta);
-      }
     } else if (message.role === "error") {
       node.append(document.createTextNode(extractText(message.content) || "错误"));
     } else {
@@ -1357,6 +1350,24 @@ function renderMessages(forceScroll = true) {
       img.src = image;
       img.alt = "";
       node.append(img);
+    }
+    if (message.role === "assistant" || message.role === "user") {
+      const meta = document.createElement("div");
+      meta.className = "message-meta";
+      if (message.role === "assistant" && message.routeId) {
+        const routeMeta = document.createElement("span");
+        routeMeta.className = `message-route${message.fallback ? " fallback" : ""}`;
+        routeMeta.textContent = message.fallback
+          ? `备用线路 · ${routeLabelById(message.routeId)}`
+          : routeLabelById(message.routeId);
+        meta.append(routeMeta);
+      }
+      const time = document.createElement("time");
+      time.dateTime = new Date(message.createdAt).toISOString();
+      time.textContent = formatMessageTime(message.createdAt);
+      time.title = new Date(message.createdAt).toLocaleString("zh-CN", { hour12: false });
+      meta.append(time);
+      node.append(meta);
     }
     const actions = document.createElement("div");
     actions.className = "message-actions";
@@ -1452,8 +1463,8 @@ async function editUserMessage(index) {
   if (next === null) return;
   const images = extractImages(message.content).map((url, i) => ({ name: `image-${i + 1}`, url }));
   messages = messages.slice(0, index);
-  messages.push({ id: createId(), role: "user", content: buildUserContent(next.trim(), images) });
-  const assistantMessage = { id: createId(), role: "assistant", content: "" };
+  messages.push({ id: createId(), role: "user", content: buildUserContent(next.trim(), images), createdAt: Date.now() });
+  const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
   renderMessages(true);
@@ -1499,7 +1510,7 @@ function resendFromUser(index) {
   const message = messages[index];
   if (!message || message.role !== "user") return;
   messages = messages.slice(0, index + 1);
-  const assistantMessage = { id: createId(), role: "assistant", content: "" };
+  const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
   renderMessages(true);
@@ -1514,7 +1525,7 @@ function regenerateAssistant(index) {
   while (userIndex >= 0 && messages[userIndex].role !== "user") userIndex -= 1;
   if (userIndex < 0) return;
   messages = messages.slice(0, userIndex + 1);
-  const assistantMessage = { id: createId(), role: "assistant", content: "" };
+  const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
   renderMessages(true);
@@ -1530,7 +1541,7 @@ function retryLastFailed() {
   while (userIndex >= 0 && messages[userIndex].role !== "user") userIndex -= 1;
   if (userIndex < 0) { renderMessages(true); return; }
   messages = messages.slice(0, userIndex + 1);
-  const assistantMessage = { id: createId(), role: "assistant", content: "" };
+  const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
   renderMessages(true);
@@ -1615,7 +1626,7 @@ function updateUsage(usage) {
   if (!isBusy) sendButton.disabled = offlineMode || remaining === 0;
 }
 function showInlineError(message) {
-  messages.push({ id: createId(), role: "error", content: message });
+  messages.push({ id: createId(), role: "error", content: message, createdAt: Date.now() });
   saveMessages();
   renderMessages(true);
 }
@@ -1694,6 +1705,16 @@ function updateChatTitle() {
   const title = getActiveSession().title || "聊天";
   if (chatTitle) chatTitle.textContent = title;
   if (mobileTitle) mobileTitle.textContent = title;
+}
+function formatMessageTime(value) {
+  const date = new Date(value);
+  const now = new Date();
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  return sameDay
+    ? date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
+    : date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 function openSidebar() {
   sidePanel?.classList.add("open");

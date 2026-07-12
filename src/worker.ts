@@ -11,6 +11,7 @@ type ChatMessage = {
   content: string | ChatPart[];
   routeId?: string;
   fallback?: boolean;
+  createdAt?: number;
 };
 
 type Session = {
@@ -1376,6 +1377,7 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
         content,
         routeId: role === "assistant" && typeof item.routeId === "string" ? item.routeId.slice(0, 80) : undefined,
         fallback: role === "assistant" && item.fallback === true,
+        createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
       });
       continue;
     }
@@ -1402,6 +1404,7 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
       content: parts,
       routeId: role === "assistant" && typeof item.routeId === "string" ? item.routeId.slice(0, 80) : undefined,
       fallback: role === "assistant" && item.fallback === true,
+      createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
     });
   }
   return output;

@@ -2059,9 +2059,27 @@ body.sidebar-open {
   transition: opacity 0.15s ease;
 }
 
-.message-route {
+.message-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
   width: fit-content;
   margin-top: 7px;
+  color: #737a82;
+  font-size: 11px;
+}
+
+.message.user .message-meta {
+  margin-left: auto;
+}
+
+.message-meta time {
+  color: inherit;
+}
+
+.message-route {
+  width: fit-content;
   color: #737a82;
   font-size: 11px;
 }
