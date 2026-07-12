@@ -993,7 +993,18 @@ function renderChatList() {
     chatList.append(empty);
     return;
   }
+  let previousGroup = "";
   for (const session of [...filtered].sort(compareSessions)) {
+    if (!sessionFilter) {
+      const group = sessionDateGroup(session);
+      if (group !== previousGroup) {
+        const heading = document.createElement("div");
+        heading.className = "chat-list-group-label";
+        heading.textContent = group;
+        chatList.append(heading);
+        previousGroup = group;
+      }
+    }
     const item = document.createElement("div");
     item.className = `chat-list-item${session.id === activeSessionId ? " active" : ""}`;
     const open = document.createElement("button");
@@ -1046,6 +1057,17 @@ function renderChatList() {
     item.append(open, menu);
     chatList.append(item);
   }
+}
+
+function sessionDateGroup(session) {
+  if (session.pinned) return "置顶";
+  const updated = new Date(session.updatedAt);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const updatedDay = new Date(updated.getFullYear(), updated.getMonth(), updated.getDate()).getTime();
+  if (updatedDay >= today) return "今天";
+  if (updatedDay >= today - 6 * 86_400_000) return "最近 7 天";
+  return "更早";
 }
 
 function toggleSessionPin(id) {

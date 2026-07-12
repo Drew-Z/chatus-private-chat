@@ -1427,6 +1427,21 @@ body.sidebar-open {
   padding-right: 2px;
 }
 
+.chat-list-group-label {
+  padding: 10px 8px 3px;
+  color: #7a8188;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.chat-list-group-label:first-child {
+  padding-top: 4px;
+}
+
+[data-theme="dark"] .chat-list-group-label {
+  color: #9299a0;
+}
+
 .chat-product-body .chat-list-item {
   grid-template-columns: minmax(0, 1fr) 28px;
   gap: 2px;
