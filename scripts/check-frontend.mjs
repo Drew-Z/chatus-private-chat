@@ -55,6 +55,8 @@ assert(chatScript.includes('event.key === "Tab"'), "app.js: model picker must cl
 assert(chatScript.includes("bootView.hidden = true;"), "app.js: startup state must resolve into an application view");
 assert(chatScript.includes("preserveCloudConflict(chat, data.currentChat)"), "app.js: cloud save conflicts must preserve both versions");
 assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
+assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: login throttling needs a retry countdown");
+assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily rate limits must remain distinct");
 
 console.log("Frontend structure checks passed");
 

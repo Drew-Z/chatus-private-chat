@@ -114,6 +114,7 @@ let currentUsage = null;
 let sessionExpired = false;
 let lastRouteRefreshAt = 0;
 let routeRefreshPromise = null;
+let loginRetryTimer = null;
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -121,6 +122,7 @@ loginForm.addEventListener("submit", async (event) => {
   loginStatus.textContent = "";
   const code = accessCode.value.trim();
   if (!code) return;
+  let retryAfter = 0;
   setLoginBusy(true);
   try {
     const response = await fetch("/api/login", {
@@ -129,8 +131,9 @@ loginForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({ code }),
     });
     if (!response.ok) {
-      loginStatus.textContent = response.status === 429
-        ? "尝试次数过多，请稍后再试"
+      retryAfter = response.status === 429 ? readRetryAfter(response) : 0;
+      loginStatus.textContent = retryAfter
+        ? `尝试次数过多，请在 ${formatWaitTime(retryAfter)}后重试`
         : response.status >= 500 ? "服务暂时不可用，请稍后重试" : "访问码不可用";
       return;
     }
@@ -141,6 +144,7 @@ loginForm.addEventListener("submit", async (event) => {
     loginStatus.textContent = navigator.onLine ? "连接失败，请稍后重试" : "当前网络已断开";
   } finally {
     setLoginBusy(false);
+    if (retryAfter) startLoginRetryCountdown(retryAfter);
   }
 });
 
@@ -553,6 +557,36 @@ function setLoginBusy(busy) {
   accessCode.disabled = busy;
 }
 
+function readRetryAfter(response) {
+  const value = Number(response.headers.get("Retry-After"));
+  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
+}
+
+function formatWaitTime(seconds) {
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `约 ${Math.ceil(seconds / 60)} 分钟`;
+  return `约 ${Math.ceil(seconds / 3600)} 小时`;
+}
+
+function startLoginRetryCountdown(seconds) {
+  if (loginRetryTimer) clearInterval(loginRetryTimer);
+  const retryAt = Date.now() + seconds * 1000;
+  const tick = () => {
+    const remaining = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+    if (!remaining) {
+      clearInterval(loginRetryTimer);
+      loginRetryTimer = null;
+      setLoginBusy(false);
+      loginStatus.textContent = "现在可以重新尝试";
+      return;
+    }
+    setLoginBusy(true);
+    loginSubmitButton.textContent = `请等待 ${remaining}s`;
+  };
+  tick();
+  loginRetryTimer = setInterval(tick, 1000);
+}
+
 function syncThemeControls() {
   const preference = window.ChatusTheme?.getPreference?.() || "system";
   const labels = { system: "跟随系统", light: "浅色", dark: "深色" };
@@ -601,9 +635,6 @@ async function streamChat(assistantMessage) {
       return;
     }
     const remaining = response.headers.get("X-RateLimit-Remaining");
-    if (remaining !== null) {
-      updateUsage({ remaining: Number(remaining), limit: currentUsage?.limit });
-    }
     usedRoute = response.headers.get("X-Chatus-Route") || selectedRouteId;
     lastRouteUsed = usedRoute;
     assistantMessage.routeId = usedRoute;
@@ -613,9 +644,16 @@ async function streamChat(assistantMessage) {
     }
     if (!response.ok || !response.body) {
       const data = await response.json().catch(() => ({}));
-      const message = data.message || formatError(data.error || "request_failed");
+      if (data.reset === "daily" && remaining !== null) updateUsage({ remaining: 0, limit: currentUsage?.limit });
+      const retryAfter = readRetryAfter(response);
+      const message = response.status === 429 && retryAfter
+        ? data.reset === "daily"
+          ? "今日额度已用完，请在明日额度重置后重试"
+          : `请求过于频繁，请在 ${formatWaitTime(retryAfter)}后重试`
+        : data.message || formatError(data.error || "request_failed");
       throw new Error(`${message}${requestReference(response)}`);
     }
+    if (remaining !== null) updateUsage({ remaining: Number(remaining), limit: currentUsage?.limit });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";

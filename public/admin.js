@@ -810,7 +810,11 @@ async function api(path, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(`${data.message || data.error || "请求失败"}${reference}`);
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    const retryMessage = response.status === 429 && Number.isFinite(retryAfter) && retryAfter > 0
+      ? `请求过于频繁，请在 ${retryAfter < 60 ? `${Math.ceil(retryAfter)} 秒` : `约 ${Math.ceil(retryAfter / 60)} 分钟`}后重试`
+      : data.message || data.error || "请求失败";
+    throw new Error(`${retryMessage}${reference}`);
   }
 
   return data;
