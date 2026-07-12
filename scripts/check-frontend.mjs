@@ -61,6 +61,11 @@ assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily 
 assert(chatScript.includes("async function fetchWithTimeout"), "app.js: non-streaming requests need bounded timeouts");
 assert(chatScript.includes('const response = await fetch("/api/chat"'), "app.js: streaming chat must remain user-cancellable without a fixed timeout");
 assert(chatScript.includes('reducedMotion || distance > 1600 ? "auto" : "smooth"'), "app.js: smooth scrolling must respect reduced-motion preferences");
+assert(chatScript.includes("Chatus 诊断信息"), "app.js: user support diagnostics are missing");
+const diagnosticStart = chatScript.indexOf("async function copyDiagnostics()");
+const diagnosticEnd = chatScript.indexOf("\n}\n", diagnosticStart);
+const diagnosticSource = chatScript.slice(diagnosticStart, diagnosticEnd);
+assert(!diagnosticSource.includes("userApiKey"), "app.js: diagnostics must not include API keys");
 assert(styles.includes("button:focus-visible"), "styles.css: keyboard controls need a visible focus ring");
 assert(styles.includes("@media (prefers-reduced-motion: reduce)"), "styles.css: motion needs an accessibility fallback");
 for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {

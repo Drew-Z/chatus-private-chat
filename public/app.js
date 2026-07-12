@@ -66,6 +66,8 @@ const importAllInput = document.querySelector("#importAllInput");
 const clearOfflineDataButton = document.querySelector("#clearOfflineDataButton");
 const logoutAllDevicesButton = document.querySelector("#logoutAllDevicesButton");
 const deleteUserDataButton = document.querySelector("#deleteUserDataButton");
+const appVersion = document.querySelector("#appVersion");
+const copyDiagnosticsButton = document.querySelector("#copyDiagnosticsButton");
 const feedbackDialog = document.querySelector("#feedbackDialog");
 const feedbackForm = document.querySelector("#feedbackForm");
 
@@ -115,6 +117,7 @@ let sessionExpired = false;
 let lastRouteRefreshAt = 0;
 let routeRefreshPromise = null;
 let loginRetryTimer = null;
+let clientRelease = null;
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -150,8 +153,10 @@ loginForm.addEventListener("submit", async (event) => {
 
 settingsButton?.addEventListener("click", () => {
   syncThemeControls();
+  loadClientRelease();
   settingsDialog?.showModal();
 });
+copyDiagnosticsButton?.addEventListener("click", () => copyDiagnostics());
 themeOptions?.addEventListener("change", (event) => {
   const value = event.target?.value;
   if (!value) return;
@@ -612,6 +617,52 @@ function syncThemeControls() {
   if (themeSummary) themeSummary.textContent = labels[preference] || labels.system;
   for (const input of themeOptions?.querySelectorAll("input[name='theme']") || []) {
     input.checked = input.value === preference;
+  }
+}
+
+async function loadClientRelease() {
+  if (clientRelease) return renderClientRelease();
+  try {
+    const response = await fetchWithTimeout(`/release.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("release_unavailable");
+    clientRelease = await response.json();
+    renderClientRelease();
+  } catch {
+    if (appVersion) appVersion.textContent = "版本信息暂时不可用";
+  }
+}
+
+function renderClientRelease() {
+  if (!appVersion || !clientRelease) return;
+  const commit = typeof clientRelease.commit === "string" ? clientRelease.commit.slice(0, 8) : "未知";
+  const deployedAt = Date.parse(clientRelease.deployedAt || "");
+  const time = Number.isFinite(deployedAt)
+    ? new Date(deployedAt).toLocaleString("zh-CN", { hour12: false })
+    : "时间未知";
+  appVersion.textContent = `版本 ${commit} · ${time}`;
+}
+
+async function copyDiagnostics() {
+  await loadClientRelease();
+  const route = getSelectedRoute();
+  const commit = typeof clientRelease?.commit === "string" ? clientRelease.commit.slice(0, 8) : "unknown";
+  const standalone = window.matchMedia?.("(display-mode: standalone)").matches ? "yes" : "no";
+  const lines = [
+    "Chatus 诊断信息",
+    `版本: ${commit}`,
+    `用户: ${currentUser || "unknown"}`,
+    `线路: ${route?.id || "none"} / ${route?.model || "unknown"}`,
+    `线路状态: ${route?.healthStatus || "unknown"}`,
+    `网络: ${navigator.onLine ? "online" : "offline"}${offlineMode ? " / read-only" : ""}`,
+    `PWA: ${standalone} / worker-${navigator.serviceWorker?.controller ? "active" : "inactive"}`,
+    `会话数: ${sessions.length}`,
+    `视口: ${window.innerWidth}x${window.innerHeight}`,
+  ];
+  try {
+    await navigator.clipboard.writeText(lines.join("\n"));
+    showStatusToast("诊断信息已复制");
+  } catch {
+    showStatusToast("复制失败，请检查浏览器剪贴板权限");
   }
 }
 
