@@ -211,6 +211,7 @@ https://你的 Worker 域名/admin.html
 - 用户可配置专属 System Prompt（叠加在全局 `SYSTEM_PROMPT` 之后，最多 2000 字）。
 - 访问码支持按 label 生成随机长码并追加到列表。
 - 线路支持健康检查（最小 completion，查看延迟与连通性）。
+- 线路支持从上游安全拉取模型列表，API Key 由 Worker Secret 注入，浏览器可直接选择模型 ID。
 
 ## 会话同步 API
 

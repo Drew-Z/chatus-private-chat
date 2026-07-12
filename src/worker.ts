@@ -606,6 +606,10 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleAdminRouteHealth(request, env);
   }
 
+  if (url.pathname === "/api/admin/route-models" && request.method === "POST") {
+    return handleAdminRouteModels(request, env);
+  }
+
   return jsonResponse({ error: "not_found" }, 404);
 }
 
@@ -1104,6 +1108,117 @@ type CloudChat = {
 
 function chatIndexKey(label: string): string {
   return `chats:${encodeURIComponent(label)}:index`;
+}
+
+async function handleAdminRouteModels(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{
+    routeId?: unknown;
+    type?: unknown;
+    baseUrl?: unknown;
+    apiKeyRef?: unknown;
+  }>(request);
+  const routeId = typeof body.routeId === "string" ? body.routeId.trim() : "";
+  const config = await loadAppConfig(env);
+  const existing = routeId ? config.routes[routeId] : undefined;
+  const type = body.type === "anthropic-messages" ? "anthropic-messages" : "openai-chat";
+  const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : existing?.baseUrl || "";
+  const apiKeyRef = typeof body.apiKeyRef === "string" ? body.apiKeyRef.trim() : existing?.apiKeyRef;
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    return jsonResponse({ error: "invalid_base_url", message: "请填写有效的 http(s) Base URL" }, 400);
+  }
+
+  const route: RouteConfig = {
+    ...(existing || {}),
+    label: existing?.label || routeId || "临时线路",
+    type,
+    baseUrl,
+    model: existing?.model || "model-list",
+    apiKeyRef,
+  };
+  const apiKey = resolveRouteKey(route, env, "");
+  if (!apiKey) {
+    return jsonResponse(
+      { error: "missing_key", message: "无法读取线路密钥，请检查 API Key Ref 是否对应 Worker Secret" },
+      400,
+    );
+  }
+
+  const headers = buildHeaders(route.headers);
+  setAuthHeader(headers, route, apiKey, type === "anthropic-messages" ? "x-api-key" : "Authorization");
+  headers.set("Accept", "application/json");
+  if (type === "anthropic-messages" && !headers.has("anthropic-version")) {
+    headers.set("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
+  }
+
+  const endpoint = routeModelsUrl(route);
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      return jsonResponse(
+        {
+          error: "model_list_failed",
+          message: formatUpstreamErrorMessage(text) || `上游返回 HTTP ${response.status}`,
+          status: response.status,
+          endpoint,
+        },
+        502,
+      );
+    }
+    const payload = JSON.parse(text) as unknown;
+    const models = extractModelList(payload);
+    if (!models.length) {
+      return jsonResponse({ error: "empty_model_list", message: "上游没有返回可识别的模型列表", endpoint }, 502);
+    }
+    return jsonResponse({ models, count: models.length, endpoint });
+  } catch (error) {
+    return jsonResponse(
+      {
+        error: "model_list_failed",
+        message: error instanceof Error ? error.message : "拉取模型失败",
+        endpoint,
+      },
+      502,
+    );
+  }
+}
+
+function routeModelsUrl(route: RouteConfig): string {
+  const base = route.baseUrl.trim().replace(/\/+$/, "");
+  if (route.directEndpoint) {
+    return base
+      .replace(/\/chat\/completions$/i, "/models")
+      .replace(/\/messages$/i, "/models");
+  }
+  if (route.type === "anthropic-messages") {
+    return /\/v1$/i.test(base) ? `${base}/models` : `${base}/v1/models`;
+  }
+  return `${base}/models`;
+}
+
+function extractModelList(payload: unknown): string[] {
+  if (!isRecord(payload)) return [];
+  const candidates = Array.isArray(payload.data)
+    ? payload.data
+    : Array.isArray(payload.models)
+      ? payload.models
+      : [];
+  const models = candidates
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (!isRecord(item)) return "";
+      if (typeof item.id === "string") return item.id;
+      if (typeof item.name === "string") return item.name;
+      if (typeof item.model === "string") return item.model;
+      return "";
+    })
+    .map((model) => model.trim())
+    .filter((model) => model && model.length <= 200);
+  return [...new Set(models)].sort((a, b) => a.localeCompare(b)).slice(0, 500);
 }
 
 async function loadChatSessions(env: Env, label: string): Promise<CloudChat[]> {

@@ -586,6 +586,19 @@ button {
   outline: none;
 }
 
+.inline-field-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-field-action .compact {
+  height: 38px;
+  min-height: 38px;
+  white-space: nowrap;
+}
+
 .wide-field {
   grid-column: 1 / -1;
 }

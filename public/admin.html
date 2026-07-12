@@ -141,7 +141,11 @@
               </label>
               <label>
                 模型名
-                <input id="routeModelInput" autocomplete="off" placeholder="model-name" required />
+                <span class="inline-field-action">
+                  <input id="routeModelInput" list="routeModelOptions" autocomplete="off" placeholder="model-name" required />
+                  <button class="plain-button compact" id="fetchRouteModelsButton" type="button">拉取</button>
+                </span>
+                <datalist id="routeModelOptions"></datalist>
               </label>
               <label>
                 API Key Ref

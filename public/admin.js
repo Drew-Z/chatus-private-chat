@@ -31,6 +31,8 @@ const routeLabelInput = document.querySelector("#routeLabelInput");
 const routeTypeInput = document.querySelector("#routeTypeInput");
 const routeBaseUrlInput = document.querySelector("#routeBaseUrlInput");
 const routeModelInput = document.querySelector("#routeModelInput");
+const routeModelOptions = document.querySelector("#routeModelOptions");
+const fetchRouteModelsButton = document.querySelector("#fetchRouteModelsButton");
 const routeKeyRefInput = document.querySelector("#routeKeyRefInput");
 const routeFallbacksInput = document.querySelector("#routeFallbacksInput");
 const routeImagesInput = document.querySelector("#routeImagesInput");
@@ -83,6 +85,7 @@ clearMemoryAdminButton?.addEventListener("click", async () => {
 });
 memoryUserSelect?.addEventListener("change", () => loadAdminMemory());
 healthRouteButton?.addEventListener("click", () => checkRouteHealth());
+fetchRouteModelsButton?.addEventListener("click", () => fetchRouteModels());
 
 bootAdmin();
 
@@ -741,6 +744,49 @@ async function checkRouteHealth() {
     setRouteHealth(error.message || "检查失败", true);
   } finally {
     healthRouteButton.disabled = false;
+  }
+}
+
+async function fetchRouteModels() {
+  const baseUrl = routeBaseUrlInput.value.trim();
+  const apiKeyRef = routeKeyRefInput.value.trim();
+  if (!baseUrl) {
+    setRouteHealth("请先填写 Base URL", true);
+    routeBaseUrlInput.focus();
+    return;
+  }
+  setRouteHealth("正在拉取模型列表…");
+  fetchRouteModelsButton.disabled = true;
+  try {
+    const routeId = selectedRoute === "__new" ? routeIdInput.value.trim() : selectedRoute;
+    const data = await api("/api/admin/route-models", {
+      method: "POST",
+      body: JSON.stringify({
+        routeId,
+        type: routeTypeInput.value,
+        baseUrl,
+        apiKeyRef,
+      }),
+    });
+    const models = Array.isArray(data.models) ? data.models : [];
+    routeModelOptions.textContent = "";
+    for (const model of models) {
+      const option = document.createElement("option");
+      option.value = model;
+      routeModelOptions.append(option);
+    }
+    if (!routeModelInput.value.trim() && models[0]) routeModelInput.value = models[0];
+    setRouteHealth(`已拉取 ${models.length} 个模型，点击模型名输入框即可选择`);
+    routeModelInput.focus();
+    try {
+      routeModelInput.showPicker?.();
+    } catch {
+      // Some browsers only allow the picker from a direct input gesture.
+    }
+  } catch (error) {
+    setRouteHealth(error.message || "模型列表拉取失败", true);
+  } finally {
+    fetchRouteModelsButton.disabled = false;
   }
 }
 

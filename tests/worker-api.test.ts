@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -23,6 +23,20 @@ function apiRequest(path: string, cookie: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("Cookie", cookie);
   return exports.default.fetch(new Request(`https://example.test${path}`, { ...init, headers }));
+}
+
+async function adminLogin() {
+  const response = await exports.default.fetch(
+    new Request("https://example.test/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "test-admin-token" }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  const cookie = response.headers.get("Set-Cookie")?.split(";", 1)[0];
+  expect(cookie).toMatch(/^chatus_admin=/);
+  return cookie!;
 }
 
 describe("Worker API", () => {
@@ -104,5 +118,36 @@ describe("Worker API", () => {
     });
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ error: "forbidden" });
+  });
+
+  it("fetches and normalizes models through the admin API", async () => {
+    const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ data: [{ id: "model-b" }, { id: "model-a" }, { id: "model-a" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    try {
+      const response = await apiRequest("/api/admin/route-models", cookie, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "openai-chat",
+          baseUrl: "https://models.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        }),
+      });
+      const payload = await response.json();
+      expect(response.status, JSON.stringify(payload)).toBe(200);
+      expect(payload).toMatchObject({ models: ["model-a", "model-b"], count: 2 });
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [url, init] = fetchSpy.mock.calls[0];
+      expect(url).toBe("https://models.example/v1/models");
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-route-key");
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });
