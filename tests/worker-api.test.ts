@@ -54,6 +54,27 @@ describe("Worker API", () => {
     await expect(response.json()).resolves.toMatchObject({ authenticated: true, user: label });
   });
 
+  it("adds hardened security headers to assets and session cookies", async () => {
+    const assetResponse = await exports.default.fetch(new Request("https://example.test/"));
+    expect(assetResponse.headers.get("Content-Security-Policy")).toContain("default-src 'self'");
+    expect(assetResponse.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(assetResponse.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(assetResponse.headers.get("Referrer-Policy")).toBe("no-referrer");
+
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "security-user:test-access-code");
+    const loginResponse = await exports.default.fetch(
+      new Request("https://example.test/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: "test-access-code" }),
+      }),
+    );
+    const cookie = loginResponse.headers.get("Set-Cookie") || "";
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("Secure");
+    expect(cookie).toContain("SameSite=Lax");
+  });
+
   it("blocks trivial probe prompts before contacting an upstream", async () => {
     const { cookie, label } = await login();
     await env.CHAT_STORE.put(
