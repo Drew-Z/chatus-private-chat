@@ -395,25 +395,42 @@ export class UserState extends DurableObject<Env> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-
-    if (url.pathname === "/robots.txt") {
-      return textResponse("User-agent: *\nDisallow: /\n", 200, "text/plain");
+    const requestId = crypto.randomUUID();
+    try {
+      return withRequestId(await handleRequest(request, env, url), requestId);
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "unhandled_request_error",
+        requestId,
+        method: request.method,
+        path: url.pathname,
+        error: error instanceof Error ? error.name : "UnknownError",
+      }));
+      const response = url.pathname.startsWith("/api/") || url.pathname === "/healthz"
+        ? jsonResponse({ error: "internal_error", requestId }, 500)
+        : textResponse("Internal server error", 500, "text/plain");
+      return withRequestId(response, requestId);
     }
-    if (url.pathname === "/healthz" && request.method === "GET") {
-      return handleHealthCheck(env);
-    }
-
-    if (url.pathname.startsWith("/api/")) {
-      return handleApi(request, env, url);
-    }
-
-    const assetResponse = await env.ASSETS.fetch(request);
-    return withSecurityHeaders(assetResponse);
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runScheduledRouteHealthChecks(env));
   },
 };
+
+async function handleRequest(request: Request, env: Env, url: URL): Promise<Response> {
+  if (url.pathname === "/robots.txt") {
+    return textResponse("User-agent: *\nDisallow: /\n", 200, "text/plain");
+  }
+  if (url.pathname === "/healthz" && request.method === "GET") {
+    return handleHealthCheck(env);
+  }
+  if (url.pathname.startsWith("/api/")) {
+    return handleApi(request, env, url);
+  }
+  const assetResponse = await env.ASSETS.fetch(request);
+  return withSecurityHeaders(assetResponse);
+}
 
 async function handleHealthCheck(env: Env): Promise<Response> {
   try {
@@ -3056,6 +3073,16 @@ function sensitiveResponseHeaders(init: HeadersInit = {}): Headers {
 
 function withSecurityHeaders(response: Response): Response {
   const headers = securityHeaders(response.headers);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function withRequestId(response: Response, requestId: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("X-Request-ID", requestId);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

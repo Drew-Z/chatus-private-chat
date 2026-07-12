@@ -22,6 +22,7 @@ function assertSecurityHeaders(response, label) {
   assert(response.headers.get("x-frame-options") === "DENY", `${label}: missing X-Frame-Options`);
   assert(response.headers.get("x-content-type-options") === "nosniff", `${label}: missing X-Content-Type-Options`);
   assert(response.headers.get("referrer-policy") === "no-referrer", `${label}: missing Referrer-Policy`);
+  assert(/^[0-9a-f-]{36}$/i.test(response.headers.get("x-request-id") || ""), `${label}: missing request id`);
 }
 
 async function runChecks() {

@@ -359,6 +359,7 @@ describe("Worker API", () => {
     expect(assetResponse.headers.get("X-Frame-Options")).toBe("DENY");
     expect(assetResponse.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(assetResponse.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(assetResponse.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/i);
 
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "security-user:test-access-code");
     const loginResponse = await exports.default.fetch(
@@ -374,12 +375,15 @@ describe("Worker API", () => {
     expect(cookie).toContain("SameSite=Lax");
     expect(loginResponse.headers.get("Cache-Control")).toContain("no-store");
     expect(loginResponse.headers.get("Pragma")).toBe("no-cache");
+    expect(loginResponse.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/i);
 
     const sessionResponse = await exports.default.fetch(new Request("https://example.test/api/session", {
       headers: { Cookie: cookie.split(";", 1)[0] },
     }));
     expect(sessionResponse.headers.get("Cache-Control")).toContain("private");
     expect(sessionResponse.headers.get("Expires")).toBe("0");
+    expect(sessionResponse.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(sessionResponse.headers.get("X-Request-ID")).not.toBe(loginResponse.headers.get("X-Request-ID"));
   });
 
   it("blocks trivial probe prompts before contacting an upstream", async () => {
