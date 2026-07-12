@@ -1,6 +1,7 @@
 node_modules/
 .dev.vars
 .prod.secrets.json
+public/release.json
 .wrangler/
 dist/
 *.log

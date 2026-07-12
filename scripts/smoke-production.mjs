@@ -1,4 +1,5 @@
 const baseUrl = new URL(process.argv[2] || process.env.PRODUCTION_URL || "");
+const expectedCommit = process.argv[3] || process.env.EXPECTED_COMMIT || "";
 const maxAttempts = 12;
 const retryDelayMs = 5000;
 
@@ -65,6 +66,13 @@ async function runChecks() {
   const robots = await request("/robots.txt");
   assert(robots.status === 200, `robots: expected 200, got ${robots.status}`);
   assert((await robots.text()).includes("Disallow: /"), "robots: private-site directive missing");
+
+  if (expectedCommit) {
+    const releaseResponse = await request(`/release.json?smoke=${marker}`);
+    assert(releaseResponse.status === 200, `release: expected 200, got ${releaseResponse.status}`);
+    const release = await releaseResponse.json();
+    assert(release.commit === expectedCommit, `release: expected ${expectedCommit}, got ${release.commit || "missing"}`);
+  }
 }
 
 let lastError;
