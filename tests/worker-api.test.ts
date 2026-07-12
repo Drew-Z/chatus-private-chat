@@ -213,4 +213,48 @@ describe("Worker API", () => {
       routes: { default: { ok: false, routeId: "default", error: "missing_key" } },
     });
   });
+
+  it("requires the route health task to return the correct answer", async () => {
+    const cookie = await adminLogin();
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        health: {
+          label: "Health",
+          type: "openai-chat",
+          baseUrl: "https://health.example/v1",
+          model: "health-model",
+          apiKey: "health-key",
+        },
+      },
+      defaults: { defaultRoute: "health", allowedRoutes: ["health"] },
+    }));
+    let answer = "391";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: answer } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    try {
+      const healthy = await apiRequest("/api/admin/route-health", cookie, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routeId: "health" }),
+      });
+      const healthyPayload = await healthy.json();
+      expect(healthy.status, JSON.stringify(healthyPayload)).toBe(200);
+      expect(healthyPayload).toMatchObject({ ok: true, sample: "391" });
+
+      answer = "392";
+      const invalid = await apiRequest("/api/admin/route-health", cookie, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routeId: "health" }),
+      });
+      expect(invalid.status).toBe(502);
+      await expect(invalid.json()).resolves.toMatchObject({ ok: false, error: "task_validation_failed", sample: "392" });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });

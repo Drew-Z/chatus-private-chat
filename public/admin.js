@@ -922,7 +922,7 @@ async function checkRouteHealth() {
     routeAdminSelect.value = routeId;
     populateRouteForm();
     if (data.ok) {
-      setRouteHealth(`健康 · ${data.latencyMs}ms · ${data.model || routeId} · 样本: ${data.sample || "ok"}`);
+      setRouteHealth(`健康 · ${data.latencyMs}ms · ${data.model || routeId} · 任务结果: ${data.sample || "391"}`);
     } else {
       setRouteHealth(data.message || "检查失败", true);
     }

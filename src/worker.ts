@@ -1085,12 +1085,27 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
       route,
       apiKey,
       messages: [
-        { role: "user", content: "Reply with exactly: ok" },
+        { role: "user", content: "请完成一个小任务：计算 17 × 23，并只返回最终数字。" },
       ],
       temperature: 0,
-      maxTokens: 16,
+      maxTokens: 32,
       env,
     });
+    if (!text.includes("391")) {
+      const result = {
+        ok: false,
+        routeId,
+        latencyMs: Date.now() - started,
+        error: "task_validation_failed",
+        message: "线路已响应，但小任务答案未通过校验",
+        sample: text.slice(0, 80),
+        model: route.model,
+        type: route.type,
+        checkedAt: new Date().toISOString(),
+      };
+      await saveRouteHealth(env, routeId, result);
+      return jsonResponse(result, 502);
+    }
     const result = {
       ok: true,
       routeId,
