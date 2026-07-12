@@ -28,6 +28,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test
+        run: npm test
+
       - name: Prepare Worker secrets
         env:
           UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}

@@ -7,7 +7,8 @@
 ```text
 Browser
   -> Cloudflare Worker + Static Assets
-  -> KV session and quota store
+  -> KV sessions, configuration and long-term memory
+  -> per-user SQLite Durable Object (quota, metrics and cloud chats)
   -> route adapter
      -> OpenAI-compatible /chat/completions
      -> Anthropic /v1/messages
@@ -19,10 +20,11 @@ Browser
 - 多朋友：按访问码 label 匹配用户，每个用户可设置允许线路、默认线路、限额和 BYOK。
 - 多协议：`openai-chat` 适合 OpenAI-compatible 中转；`anthropic-messages` 适合 Claude/Claude Code 一类 Anthropic Messages 接口。
 - 多模态：前端支持图片上传；后端会按线路协议转换图片格式。
-- 私有访问：访问码登录、HttpOnly session、KV 限额，不暴露 `/v1/chat/completions` 分发接口。
-- 多会话：浏览器本地保存每个朋友最多 20 个会话，每次请求只发送最近 24 条上下文。
-- 长期记忆：每个访问码 label 在 KV 中有一份长期记忆，聊天时自动作为 system 信息注入。
-- 管理后台：`/admin.html` 可管理访问码、用户额度、允许线路、默认模型和运行时配置。
+- 私有访问：访问码登录、HttpOnly session、强一致用户限额，不暴露 `/v1/chat/completions` 分发接口。
+- 多会话：云端同步 + 本地缓存，每个朋友最多 30 个会话；上下文按字符预算裁剪，并带会话摘要。
+- 长期记忆：每个访问码 label 在 KV 中有一份长期记忆，支持建议写入与后台编辑。
+- 聊天体验：Markdown 渲染、消息编辑/重发/重新生成、会话搜索导出、移动端抽屉侧栏。
+- 管理后台：`/admin.html` 可管理访问码、用户额度、专属提示词、允许线路、默认模型、长期记忆、7 日用量/错误率与线路健康检查。
 
 ## 本地配置
 
@@ -64,7 +66,8 @@ ACCESS_CODES="friend:code-one,alice:code-two"
       "allowedRoutes": ["grok-main", "grok-backup", "claude-code"],
       "allowBringYourOwnKey": true,
       "dailyMessageLimit": 500,
-      "minuteMessageLimit": 12
+      "minuteMessageLimit": 12,
+      "systemPrompt": "你是这位朋友的私人助手，回答简洁友好。"
     }
   },
   "routes": {
@@ -190,19 +193,38 @@ https://你的 Worker 域名/admin.html
 
 当前实现借鉴了常见聊天项目的分层方式，但保持轻量：
 
-- 会话历史：保存在朋友自己的浏览器 localStorage 中，分用户 label 隔离。
-- 短期上下文：请求上游时只发送最近 24 条有效消息，避免越聊越慢、越聊越贵。
-- 长期记忆：保存在 Cloudflare KV 的 `memory:<label>`，默认最多 4000 字符。
-- System 注入：`SYSTEM_PROMPT` 和长期记忆会作为 system 消息放到请求最前面。
+- 会话历史：按用户存入 SQLite Durable Object + 浏览器 localStorage 缓存；换设备可恢复，最多 30 个会话。旧版 KV 会话会在首次读取时自动迁移。
+- 短期上下文：前后端按字符预算裁剪（默认约 14000 字符 / 最近 40 条），并优先保留最近对话；历史图片只保留最近 2 轮用户消息。
+- 会话摘要：聊天达到一定长度后自动调用当前线路生成滚动摘要，并在后续请求里作为 system 信息注入。
+- 长期记忆：保存在 Cloudflare KV 的 `memory:<label>`，默认最多 4000 字符；支持手写编辑与「建议写入」确认后追加。
+- System 注入：`SYSTEM_PROMPT` + 长期记忆 + 会话摘要，会放到请求最前面。
 
-暂时没有引入向量库。只有一个朋友或少量朋友使用时，手写长期记忆比自动抽取和向量检索更稳，也更容易知道模型到底记住了什么。
+聊天 UI 支持 Markdown/代码块复制、消息编辑/重发/重新生成、会话搜索与导出、粘贴/拖拽图片，以及移动端侧栏抽屉。
+
+暂时没有引入向量库。只有一个朋友或少量朋友使用时，可编辑记忆 + 会话摘要比黑盒向量检索更稳，也更容易知道模型到底记住了什么。
+
+## 管理后台增强
+
+- 可观测性：近 7 日请求量、错误率、fallback、限流，以及按线路/用户拆分。
+- 今日用量面板可一键重置某用户今日额度。
+- 可按用户读取/编辑/清空长期记忆。
+- 用户可配置专属 System Prompt（叠加在全局 `SYSTEM_PROMPT` 之后，最多 2000 字）。
+- 访问码支持按 label 生成随机长码并追加到列表。
+- 线路支持健康检查（最小 completion，查看延迟与连通性）。
+
+## 会话同步 API
+
+- `GET /api/chats`：拉取当前用户云端会话
+- `PUT /api/chats`：保存/更新单个会话
+- `DELETE /api/chats?id=`：删除会话
+- `POST /api/chats/migrate`：本地会话首次迁移/合并到云端
 
 ## 自动部署
 
 推送到 `main` 分支会自动执行 `.github/workflows/deploy.yml`：
 
 ```text
-install -> typecheck -> write .prod.secrets.json -> wrangler deploy
+install -> typecheck -> test -> write .prod.secrets.json -> wrangler deploy
 ```
 
 当前 KV namespace 已绑定：
@@ -211,12 +233,15 @@ install -> typecheck -> write .prod.secrets.json -> wrangler deploy
 chatus_private_chat -> 677a99ca03f14921ac091851fb95a8da
 ```
 
+`wrangler.jsonc` 还包含 `UserState` Durable Object 的 `v1` SQLite 迁移，首次部署会自动创建，不需要在 Dashboard 手动建库。自定义域名可以继续在 Cloudflare Dashboard 管理，部署不会移除它。
+
 ## 开发
 
 ```bash
 npm install
 npm run dev
 npm run typecheck
+npm test
 npx wrangler deploy --dry-run
 ```
 

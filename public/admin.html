@@ -35,10 +35,34 @@
       <main class="admin-grid">
         <section class="admin-panel stats-panel">
           <div class="panel-title">
-            <h2>今日用量</h2>
+            <h2>可观测性</h2>
             <span id="statsDay">--</span>
           </div>
+          <div class="metrics-summary" id="metricsSummary"></div>
+          <div class="metrics-trend" id="metricsTrend" aria-label="近7日趋势"></div>
+          <div class="panel-subtitle">线路 7 日</div>
+          <div class="route-metrics" id="routeMetrics"></div>
+          <div class="panel-subtitle">用户今日 / 7 日</div>
           <div class="stats-list" id="statsList"></div>
+        </section>
+
+        <section class="admin-panel admin-memory-panel">
+          <div class="panel-title">
+            <h2>用户记忆</h2>
+            <span>查看/编辑长期记忆</span>
+          </div>
+          <div class="form-grid">
+            <label>
+              用户
+              <select id="memoryUserSelect"></select>
+            </label>
+          </div>
+          <textarea id="adminMemoryInput" spellcheck="false" placeholder="该用户的长期记忆"></textarea>
+          <div class="form-actions">
+            <button class="ghost-button compact" id="loadMemoryButton" type="button">读取</button>
+            <button class="ghost-button compact" id="saveMemoryAdminButton" type="button">保存记忆</button>
+            <button class="plain-button compact" id="clearMemoryAdminButton" type="button">清空</button>
+          </div>
         </section>
 
         <section class="admin-panel">
@@ -71,6 +95,10 @@
               <label class="check-line">
                 <input id="userByok" type="checkbox" />
                 允许朋友填写自己的 API Key
+              </label>
+              <label class="wide-field">
+                用户级 System Prompt
+                <textarea id="userSystemPrompt" rows="4" maxlength="2000" spellcheck="false" placeholder="仅对该用户生效，叠加在全局 SYSTEM_PROMPT 之后"></textarea>
               </label>
             </div>
             <div class="checkbox-grid" id="allowedRoutesBox"></div>
@@ -134,8 +162,10 @@
             </div>
             <div class="form-actions">
               <button class="ghost-button compact" type="submit">保存线路</button>
+              <button class="ghost-button compact" id="healthRouteButton" type="button">健康检查</button>
               <button class="plain-button compact" id="deleteRouteButton" type="button">删除线路</button>
             </div>
+            <p class="admin-status" id="routeHealthStatus" role="status"></p>
           </form>
         </section>
 
@@ -143,6 +173,10 @@
           <div class="panel-title">
             <h2>访问码</h2>
             <span id="accessSourceText">Secret</span>
+          </div>
+          <div class="access-code-tools">
+            <input id="newAccessLabel" autocomplete="off" placeholder="label，如 alice" />
+            <button class="ghost-button compact" id="generateAccessCodeButton" type="button">生成并追加</button>
           </div>
           <textarea class="admin-textarea small" id="accessCodesInput" spellcheck="false"></textarea>
           <div class="form-actions">

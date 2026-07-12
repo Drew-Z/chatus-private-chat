@@ -11,6 +11,10 @@ const refreshAdminButton = document.querySelector("#refreshAdminButton");
 const adminLogoutButton = document.querySelector("#adminLogoutButton");
 const statsDay = document.querySelector("#statsDay");
 const statsList = document.querySelector("#statsList");
+const metricsSummary = document.querySelector("#metricsSummary");
+const metricsTrend = document.querySelector("#metricsTrend");
+const routeMetrics = document.querySelector("#routeMetrics");
+const userSystemPrompt = document.querySelector("#userSystemPrompt");
 const userForm = document.querySelector("#userForm");
 const userSelect = document.querySelector("#userSelect");
 const newUserLabel = document.querySelector("#newUserLabel");
@@ -38,6 +42,15 @@ const resetAccessCodesButton = document.querySelector("#resetAccessCodesButton")
 const configJsonInput = document.querySelector("#configJsonInput");
 const saveConfigButton = document.querySelector("#saveConfigButton");
 const resetConfigButton = document.querySelector("#resetConfigButton");
+const memoryUserSelect = document.querySelector("#memoryUserSelect");
+const adminMemoryInput = document.querySelector("#adminMemoryInput");
+const loadMemoryButton = document.querySelector("#loadMemoryButton");
+const saveMemoryAdminButton = document.querySelector("#saveMemoryAdminButton");
+const clearMemoryAdminButton = document.querySelector("#clearMemoryAdminButton");
+const newAccessLabel = document.querySelector("#newAccessLabel");
+const generateAccessCodeButton = document.querySelector("#generateAccessCodeButton");
+const healthRouteButton = document.querySelector("#healthRouteButton");
+const routeHealthStatus = document.querySelector("#routeHealthStatus");
 
 const DEFAULT_USER = "__defaults";
 
@@ -45,6 +58,30 @@ let config = { routes: {}, users: {}, defaults: {} };
 let stats = null;
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
+
+generateAccessCodeButton?.addEventListener("click", () => {
+  const label = (newAccessLabel?.value || "").trim() || "friend";
+  if (!/^[A-Za-z0-9._-]+$/.test(label)) {
+    setStatus("label 只能包含字母、数字、点、下划线和短横线", true);
+    return;
+  }
+  const code = generateAccessCode();
+  const entry = `${label}:${code}`;
+  const current = accessCodesInput.value.trim();
+  accessCodesInput.value = current ? `${current},${entry}` : entry;
+  if (newAccessLabel) newAccessLabel.value = "";
+  setStatus(`已生成 ${entry}，记得点击保存访问码`);
+});
+
+loadMemoryButton?.addEventListener("click", () => loadAdminMemory());
+saveMemoryAdminButton?.addEventListener("click", () => saveAdminMemory());
+clearMemoryAdminButton?.addEventListener("click", async () => {
+  if (!confirm("确认清空该用户长期记忆？")) return;
+  adminMemoryInput.value = "";
+  await saveAdminMemory(true);
+});
+memoryUserSelect?.addEventListener("change", () => loadAdminMemory());
+healthRouteButton?.addEventListener("click", () => checkRouteHealth());
 
 bootAdmin();
 
@@ -270,10 +307,76 @@ async function api(path, options = {}) {
 function renderStats() {
   statsDay.textContent = stats?.day || "--";
   statsList.textContent = "";
+  if (metricsSummary) metricsSummary.textContent = "";
+  if (metricsTrend) metricsTrend.textContent = "";
+  if (routeMetrics) routeMetrics.textContent = "";
+
+  const totals = stats?.totals || {};
+  if (metricsSummary) {
+    const cards = [
+      ["7日请求", totals.requests ?? 0],
+      ["7日错误", totals.errors ?? 0],
+      ["错误率", `${totals.errorRate ?? 0}%`],
+      ["Fallback", totals.fallbacks ?? 0],
+      ["限流", totals.rateLimited ?? 0],
+    ];
+    for (const [label, value] of cards) {
+      const card = document.createElement("div");
+      card.className = "metric-card";
+      const strong = document.createElement("strong");
+      strong.textContent = String(value);
+      const span = document.createElement("span");
+      span.textContent = label;
+      card.append(strong, span);
+      metricsSummary.append(card);
+    }
+  }
+
+  const trend = Array.isArray(stats?.trend) ? stats.trend : [];
+  if (metricsTrend && trend.length) {
+    const maxReq = Math.max(1, ...trend.map((item) => Number(item.requests) || 0));
+    for (const item of [...trend].reverse()) {
+      const row = document.createElement("div");
+      row.className = "trend-row";
+      const label = document.createElement("span");
+      label.className = "trend-day";
+      label.textContent = String(item.day || "").slice(5);
+      const bar = document.createElement("div");
+      bar.className = "trend-bar";
+      const fill = document.createElement("div");
+      fill.className = "trend-fill";
+      fill.style.width = `${Math.max(4, Math.round(((Number(item.requests) || 0) / maxReq) * 100))}%`;
+      bar.append(fill);
+      const meta = document.createElement("span");
+      meta.className = "trend-meta";
+      meta.textContent = `${item.requests || 0} / 错${item.errors || 0} / ${item.errorRate || 0}%`;
+      row.append(label, bar, meta);
+      metricsTrend.append(row);
+    }
+  }
+
+  const routeStats = Array.isArray(stats?.routeStats) ? stats.routeStats : [];
+  if (routeMetrics) {
+    if (!routeStats.length) {
+      routeMetrics.append(textNode("暂无线路统计"));
+    } else {
+      for (const route of routeStats) {
+        const row = document.createElement("div");
+        row.className = "route-metric-row";
+        const title = document.createElement("strong");
+        title.textContent = route.label || route.id;
+        const detail = document.createElement("span");
+        detail.textContent = `成功 ${route.ok7d || 0} · 失败 ${route.error7d || 0} · 错误率 ${route.errorRate7d || 0}% · ${route.model || ""}`;
+        row.append(title, detail);
+        routeMetrics.append(row);
+      }
+    }
+  }
 
   const users = Array.isArray(stats?.users) ? stats.users : [];
   if (!users.length) {
     statsList.append(textNode("暂无用户"));
+    renderMemoryUserPicker();
     return;
   }
 
@@ -289,10 +392,27 @@ function renderStats() {
       user.defaultRoute ? `默认 ${user.defaultRoute}` : "无默认线路",
       `${(user.allowedRoutes || []).length} 条线路`,
       user.allowBringYourOwnKey ? "BYOK 开" : "BYOK 关",
+      user.hasSystemPrompt ? `Prompt ${user.systemPromptChars || 0}字` : "无专属 Prompt",
       `${user.activeSessions || 0} 个会话`,
       `${user.memoryChars || 0} 字记忆`,
+      `7日 ${user.requests7d || 0} 请求`,
+      `错率 ${user.errorRate7d || 0}%`,
     ].join(" · ");
     meta.append(title, detail);
+
+    if (Array.isArray(user.usageByDay) && user.usageByDay.length) {
+      const spark = document.createElement("div");
+      spark.className = "usage-spark";
+      const maxUsed = Math.max(1, ...user.usageByDay.map((d) => Number(d.used) || 0));
+      for (const day of [...user.usageByDay].reverse()) {
+        const bar = document.createElement("div");
+        bar.className = "usage-spark-bar";
+        bar.style.height = `${Math.max(3, Math.round(((Number(day.used) || 0) / maxUsed) * 28))}px`;
+        bar.title = `${day.day}: ${day.used || 0}`;
+        spark.append(bar);
+      }
+      meta.append(spark);
+    }
 
     const usage = document.createElement("div");
     usage.className = "stat-usage";
@@ -302,11 +422,43 @@ function renderStats() {
     remaining.textContent = `剩余 ${user.remaining}`;
     usage.append(number, remaining);
 
+    const actions = document.createElement("div");
+    actions.className = "stat-actions";
+    const memoryBtn = document.createElement("button");
+    memoryBtn.type = "button";
+    memoryBtn.className = "ghost-button compact";
+    memoryBtn.textContent = "记忆";
+    memoryBtn.addEventListener("click", () => {
+      if (memoryUserSelect) {
+        memoryUserSelect.value = user.label;
+        loadAdminMemory();
+      }
+    });
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "plain-button compact";
+    resetBtn.textContent = "重置今日";
+    resetBtn.addEventListener("click", async () => {
+      if (!confirm(`重置 ${user.label} 今日用量？`)) return;
+      try {
+        await api("/api/admin/usage", {
+          method: "POST",
+          body: JSON.stringify({ label: user.label }),
+        });
+        await loadDashboard(`已重置 ${user.label} 今日用量`);
+      } catch (error) {
+        setStatus(error.message || "重置失败", true);
+      }
+    });
+    actions.append(memoryBtn, resetBtn);
+    meta.append(actions);
+
     row.append(meta, usage);
     statsList.append(row);
   }
-}
 
+  renderMemoryUserPicker();
+}
 function renderUserPicker() {
   const labels = [DEFAULT_USER, ...Object.keys(config.users || {}).sort()];
   userSelect.textContent = "";
@@ -350,6 +502,7 @@ function populateUserForm() {
   userDailyLimit.value = user.dailyMessageLimit || 500;
   userMinuteLimit.value = user.minuteMessageLimit || 12;
   userByok.checked = Boolean(user.allowBringYourOwnKey);
+  if (userSystemPrompt) userSystemPrompt.value = user.systemPrompt || "";
   deleteUserButton.disabled = selectedUser === DEFAULT_USER;
 
   const allowed = new Set(user.allowedRoutes?.length ? user.allowedRoutes : routeIds);
@@ -367,12 +520,14 @@ function readUserForm() {
     return null;
   }
 
+  const systemPrompt = (userSystemPrompt?.value || "").trim();
   return {
     defaultRoute: userDefaultRoute.value,
     allowedRoutes,
     allowBringYourOwnKey: userByok.checked,
     dailyMessageLimit: positiveNumber(userDailyLimit.value),
     minuteMessageLimit: positiveNumber(userMinuteLimit.value),
+    ...(systemPrompt ? { systemPrompt: systemPrompt.slice(0, 2000) } : {}),
   };
 }
 
@@ -490,4 +645,93 @@ function textNode(text) {
   const node = document.createElement("span");
   node.textContent = text;
   return node;
+}
+
+function renderMemoryUserPicker() {
+  if (!memoryUserSelect) return;
+  const labels = (Array.isArray(stats?.users) ? stats.users.map((u) => u.label) : Object.keys(config.users || {})).sort();
+  const previous = memoryUserSelect.value;
+  memoryUserSelect.textContent = "";
+  for (const label of labels) {
+    const option = document.createElement("option");
+    option.value = label;
+    option.textContent = label;
+    memoryUserSelect.append(option);
+  }
+  if (!labels.length) {
+    adminMemoryInput.value = "";
+    return;
+  }
+  memoryUserSelect.value = labels.includes(previous) ? previous : labels[0];
+}
+
+async function loadAdminMemory() {
+  if (!memoryUserSelect?.value) return;
+  setStatus("读取记忆中");
+  try {
+    const data = await api(`/api/admin/memory?label=${encodeURIComponent(memoryUserSelect.value)}`);
+    adminMemoryInput.maxLength = Number(data.maxChars) || 4000;
+    adminMemoryInput.value = data.memory || "";
+    setStatus(`已读取 ${memoryUserSelect.value} 的记忆`);
+  } catch (error) {
+    setStatus(error.message || "读取记忆失败", true);
+  }
+}
+
+async function saveAdminMemory(isClear = false) {
+  if (!memoryUserSelect?.value) return;
+  setStatus("保存记忆中");
+  try {
+    await api("/api/admin/memory", {
+      method: "PUT",
+      body: JSON.stringify({
+        label: memoryUserSelect.value,
+        memory: adminMemoryInput.value,
+      }),
+    });
+    setStatus(isClear ? `已清空 ${memoryUserSelect.value} 的记忆` : `已保存 ${memoryUserSelect.value} 的记忆`);
+    await loadDashboard();
+  } catch (error) {
+    setStatus(error.message || "保存记忆失败", true);
+  }
+}
+
+function generateAccessCode() {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function checkRouteHealth() {
+  const routeId = selectedRoute === "__new" ? routeIdInput.value.trim() : selectedRoute;
+  if (!routeId) {
+    setRouteHealth("请先选择或填写线路 ID", true);
+    return;
+  }
+  setRouteHealth("检查中…");
+  healthRouteButton.disabled = true;
+  try {
+    const data = await api("/api/admin/route-health", {
+      method: "POST",
+      body: JSON.stringify({ routeId }),
+    });
+    if (data.ok) {
+      setRouteHealth(`健康 · ${data.latencyMs}ms · ${data.model || routeId} · 样本: ${data.sample || "ok"}`);
+    } else {
+      setRouteHealth(data.message || "检查失败", true);
+    }
+  } catch (error) {
+    setRouteHealth(error.message || "检查失败", true);
+  } finally {
+    healthRouteButton.disabled = false;
+  }
+}
+
+function setRouteHealth(message, isError = false) {
+  if (!routeHealthStatus) {
+    setStatus(message, isError);
+    return;
+  }
+  routeHealthStatus.textContent = message;
+  routeHealthStatus.style.color = isError ? "var(--warn)" : "var(--muted)";
 }

@@ -1,3 +1,5 @@
+import { DurableObject } from "cloudflare:workers";
+
 type ChatRole = "system" | "user" | "assistant";
 
 type ChatPart =
@@ -54,6 +56,7 @@ type UserConfig = {
   dailyMessageLimit?: number;
   minuteMessageLimit?: number;
   blockedPrompts?: string[];
+  systemPrompt?: string;
 };
 
 type AppConfig = {
@@ -92,6 +95,7 @@ type AnthropicContentBlock =
 type Env = {
   ASSETS: Fetcher;
   CHAT_STORE: KVNamespace;
+  USER_STATE: DurableObjectNamespace<UserState>;
   ACCESS_CODES: string;
   ROUTES_CONFIG?: string;
   SYSTEM_PROMPT?: string;
@@ -104,6 +108,8 @@ type Env = {
   MAX_IMAGE_BYTES?: string;
   MAX_IMAGES_PER_REQUEST?: string;
   MAX_MEMORY_CHARS?: string;
+  MAX_SUMMARY_CHARS?: string;
+  MAX_CONTEXT_CHARS?: string;
   SESSION_TTL_SECONDS?: string;
   DEFAULT_MAX_TOKENS?: string;
   BLOCKED_PROMPTS?: string;
@@ -113,15 +119,241 @@ type Env = {
 
 const SESSION_COOKIE = "chatus_session";
 const ADMIN_COOKIE = "chatus_admin";
-const MAX_MESSAGES = 24;
+const MAX_MESSAGES = 40;
 const MAX_REQUEST_BYTES = 7_000_000;
 const DEFAULT_DAILY_LIMIT = 500;
 const DEFAULT_MEMORY_CHARS = 4_000;
+const DEFAULT_SUMMARY_CHARS = 1_200;
+const DEFAULT_CONTEXT_CHARS = 14_000;
+const DEFAULT_USER_SYSTEM_PROMPT_CHARS = 2_000;
+const METRICS_DAYS = 7;
+const MAX_CLOUD_SESSIONS = 30;
+const MAX_CLOUD_MESSAGES = 120;
+const MAX_CLOUD_SESSION_BYTES = 1_800_000;
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
+
+type UsageResult =
+  | { ok: true; remaining: number }
+  | { ok: false; retryAfter: number; reset: "daily" | "minute" };
+
+type ChatMetric = {
+  kind: "success" | "failure" | "route_error" | "rate_limited";
+  routeId?: string;
+  fallback?: boolean;
+  now?: number;
+};
+
+type StoredChat = CloudChat & { serializedBytes: number };
+
+type UserStats = {
+  usage: Record<string, number>;
+  metrics: Array<{ day: string; kind: string; routeId: string; count: number }>;
+};
+
+export class UserState extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS usage (
+          day TEXT PRIMARY KEY,
+          count INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS bursts (
+          minute INTEGER PRIMARY KEY,
+          count INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS metrics (
+          day TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          route_id TEXT NOT NULL DEFAULT '',
+          count INTEGER NOT NULL,
+          PRIMARY KEY (day, kind, route_id)
+        );
+        CREATE TABLE IF NOT EXISTS chats (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          summary TEXT NOT NULL,
+          summary_until INTEGER NOT NULL,
+          message_count INTEGER NOT NULL,
+          content TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS chats_updated_at ON chats(updated_at DESC);
+      `);
+    });
+  }
+
+  async consumeLimits(
+    dailyLimit: number,
+    minuteLimit: number,
+    nowMs: number,
+    legacyDayCount = 0,
+  ): Promise<UsageResult> {
+    const day = new Date(nowMs).toISOString().slice(0, 10);
+    const minute = Math.floor(nowMs / 60_000);
+    const sql = this.ctx.storage.sql;
+    sql.exec(
+      "INSERT INTO usage(day, count) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET count = MAX(count, excluded.count)",
+      day,
+      Math.max(0, legacyDayCount),
+    );
+    const dayCount = sql.exec<{ count: number }>("SELECT count FROM usage WHERE day = ?", day).one().count;
+    const minuteCount =
+      sql.exec<{ count: number }>("SELECT count FROM bursts WHERE minute = ?", minute).toArray()[0]?.count || 0;
+
+    if (dayCount >= dailyLimit) {
+      return { ok: false, retryAfter: secondsUntilNextUtcDay(nowMs), reset: "daily" };
+    }
+    if (minuteCount >= minuteLimit) {
+      return { ok: false, retryAfter: Math.max(1, 60 - Math.floor((nowMs % 60_000) / 1000)), reset: "minute" };
+    }
+
+    sql.exec("UPDATE usage SET count = count + 1 WHERE day = ?", day);
+    sql.exec(
+      "INSERT INTO bursts(minute, count) VALUES (?, 1) ON CONFLICT(minute) DO UPDATE SET count = count + 1",
+      minute,
+    );
+    sql.exec("DELETE FROM bursts WHERE minute < ?", minute - 2);
+    sql.exec("DELETE FROM usage WHERE day < ?", utcDayStringAt(nowMs, METRICS_DAYS + 2));
+    return { ok: true, remaining: Math.max(0, dailyLimit - dayCount - 1) };
+  }
+
+  async getUsage(day: string, legacyDayCount = 0): Promise<number> {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO usage(day, count) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET count = MAX(count, excluded.count)",
+      day,
+      Math.max(0, legacyDayCount),
+    );
+    return this.ctx.storage.sql.exec<{ count: number }>("SELECT count FROM usage WHERE day = ?", day).one().count;
+  }
+
+  async resetUsage(day: string): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM usage WHERE day = ?", day);
+  }
+
+  async recordMetric(metric: ChatMetric): Promise<void> {
+    const day = new Date(metric.now || Date.now()).toISOString().slice(0, 10);
+    const increment = (kind: string, routeId = "") => {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO metrics(day, kind, route_id, count) VALUES (?, ?, ?, 1) " +
+          "ON CONFLICT(day, kind, route_id) DO UPDATE SET count = count + 1",
+        day,
+        kind,
+        routeId,
+      );
+    };
+
+    if (metric.kind === "success") {
+      increment("req");
+      if (metric.routeId) increment("route_ok", metric.routeId);
+      if (metric.fallback) increment("fb");
+    } else if (metric.kind === "failure") {
+      increment("req");
+      increment("err");
+    } else if (metric.kind === "route_error" && metric.routeId) {
+      increment("route_err", metric.routeId);
+    } else if (metric.kind === "rate_limited") {
+      increment("rl");
+    }
+    this.ctx.storage.sql.exec("DELETE FROM metrics WHERE day < ?", utcDayStringAt(metric.now || Date.now(), METRICS_DAYS + 2));
+  }
+
+  async getStats(days: string[]): Promise<UserStats> {
+    const allowed = new Set(days);
+    const usage: Record<string, number> = {};
+    for (const row of this.ctx.storage.sql.exec<{ day: string; count: number }>("SELECT day, count FROM usage")) {
+      if (allowed.has(row.day)) usage[row.day] = row.count;
+    }
+    const metrics = this.ctx.storage.sql
+      .exec<{ day: string; kind: string; route_id: string; count: number }>(
+        "SELECT day, kind, route_id, count FROM metrics",
+      )
+      .toArray()
+      .filter((row) => allowed.has(row.day))
+      .map((row) => ({ day: row.day, kind: row.kind, routeId: row.route_id, count: row.count }));
+    return { usage, metrics };
+  }
+
+  async listChats(): Promise<CloudChat[]> {
+    const rows = this.ctx.storage.sql
+      .exec<{ content: string }>("SELECT content FROM chats ORDER BY updated_at DESC LIMIT ?", MAX_CLOUD_SESSIONS)
+      .toArray();
+    return rows
+      .map((row) => {
+        try {
+          return normalizeCloudChat(JSON.parse(row.content));
+        } catch {
+          return null;
+        }
+      })
+      .filter((chat): chat is CloudChat => Boolean(chat));
+  }
+
+  async upsertChat(chat: StoredChat): Promise<{ accepted: boolean }> {
+    if (chat.serializedBytes > MAX_CLOUD_SESSION_BYTES) return { accepted: false };
+    const existing = this.ctx.storage.sql
+      .exec<{ updated_at: number }>("SELECT updated_at FROM chats WHERE id = ?", chat.id)
+      .toArray()[0];
+    if (existing && existing.updated_at > chat.updatedAt) return { accepted: false };
+    this.writeChat(chat);
+    this.ctx.storage.sql.exec(
+      "DELETE FROM chats WHERE id NOT IN (SELECT id FROM chats ORDER BY updated_at DESC LIMIT ?)",
+      MAX_CLOUD_SESSIONS,
+    );
+    return { accepted: true };
+  }
+
+  async replaceChats(chats: StoredChat[]): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM chats");
+    for (const chat of chats.slice(0, MAX_CLOUD_SESSIONS)) this.writeChat(chat);
+  }
+
+  async migrateLegacyChats(chats: StoredChat[]): Promise<boolean> {
+    const count = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM chats").one().count;
+    if (count > 0) return false;
+    for (const chat of chats.slice(0, MAX_CLOUD_SESSIONS)) this.writeChat(chat);
+    return true;
+  }
+
+  async deleteChat(id: string): Promise<boolean> {
+    const before = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM chats WHERE id = ?", id).one().count;
+    this.ctx.storage.sql.exec("DELETE FROM chats WHERE id = ?", id);
+    return before > 0;
+  }
+
+  private writeChat(chat: StoredChat): void {
+    const content = JSON.stringify({
+      id: chat.id,
+      title: chat.title,
+      createdAt: chat.createdAt,
+      updatedAt: chat.updatedAt,
+      summary: chat.summary,
+      summaryUntil: chat.summaryUntil,
+      messages: chat.messages,
+    });
+    this.ctx.storage.sql.exec(
+      `INSERT INTO chats(id, title, created_at, updated_at, summary, summary_until, message_count, content)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET title = excluded.title, created_at = excluded.created_at,
+         updated_at = excluded.updated_at, summary = excluded.summary, summary_until = excluded.summary_until,
+         message_count = excluded.message_count, content = excluded.content`,
+      chat.id,
+      chat.title,
+      chat.createdAt,
+      chat.updatedAt,
+      chat.summary,
+      chat.summaryUntil,
+      chat.messages.length,
+      content,
+    );
+  }
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -185,6 +417,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       routes: access.routes,
       defaultRoute: access.defaultRoute,
       allowBringYourOwnKey: Boolean(access.user.allowBringYourOwnKey),
+      hasUserSystemPrompt: Boolean(access.user.systemPrompt?.trim()),
     });
   }
 
@@ -198,6 +431,30 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (url.pathname === "/api/memory" && request.method === "PUT") {
     return handlePutMemory(request, env, session);
+  }
+
+  if (url.pathname === "/api/memory/suggest" && request.method === "POST") {
+    return handleMemorySuggest(request, env, session);
+  }
+
+  if (url.pathname === "/api/session-summary" && request.method === "POST") {
+    return handleSessionSummary(request, env, session);
+  }
+
+  if (url.pathname === "/api/chats" && request.method === "GET") {
+    return handleListChats(env, session);
+  }
+
+  if (url.pathname === "/api/chats" && request.method === "PUT") {
+    return handlePutChat(request, env, session);
+  }
+
+  if (url.pathname === "/api/chats" && request.method === "DELETE") {
+    return handleDeleteChat(request, env, session, url);
+  }
+
+  if (url.pathname === "/api/chats/migrate" && request.method === "POST") {
+    return handleMigrateChats(request, env, session);
   }
 
   return jsonResponse({ error: "not_found" }, 404);
@@ -333,6 +590,22 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleGetAdminStats(env);
   }
 
+  if (url.pathname === "/api/admin/memory" && request.method === "GET") {
+    return handleAdminGetMemory(request, env, url);
+  }
+
+  if (url.pathname === "/api/admin/memory" && request.method === "PUT") {
+    return handleAdminPutMemory(request, env);
+  }
+
+  if (url.pathname === "/api/admin/usage" && request.method === "POST") {
+    return handleAdminResetUsage(request, env);
+  }
+
+  if (url.pathname === "/api/admin/route-health" && request.method === "POST") {
+    return handleAdminRouteHealth(request, env);
+  }
+
   return jsonResponse({ error: "not_found" }, 404);
 }
 
@@ -379,37 +652,126 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
     loadEditableConfig(env),
     loadEditableAccessCodes(env),
   ]);
-  const day = new Date().toISOString().slice(0, 10);
+  const day = utcDayString(0);
+  const days = Array.from({ length: METRICS_DAYS }, (_, index) => utcDayString(index));
   const accessLabels = parseAccessCodes(accessCodes).map((entry) => entry.label);
   const configLabels = Object.keys(config.users || {});
   const labels = [...new Set([...accessLabels, ...configLabels])].sort();
+  const routeIds = Object.keys(config.routes);
   const sessionsByLabel = await countActiveSessionsByLabel(env);
-
-  const users = await Promise.all(
+  const stateByLabel = new Map<string, UserStats>();
+  const legacyUsageByLabel = new Map<string, Record<string, number>>();
+  const memoryByLabel = new Map<string, string>();
+  await Promise.all(
     labels.map(async (label) => {
-      const user = {
-        ...config.defaults,
-        ...(config.users?.[label] || {}),
-      };
-      const used = Number((await env.CHAT_STORE.get(usageKey(label, day))) || "0");
-      const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
-      const memory = await env.CHAT_STORE.get(memoryKey(label));
-      return {
+      const [state, legacyUsage, memory] = await Promise.all([
+        getUserState(env, label).getStats(days),
+        Promise.all(days.map((dayKey) => env.CHAT_STORE.get(usageKey(label, dayKey)))),
+        env.CHAT_STORE.get(memoryKey(label)),
+      ]);
+      stateByLabel.set(label, state);
+      legacyUsageByLabel.set(
         label,
-        used,
-        dailyLimit,
-        remaining: Math.max(0, dailyLimit - used),
-        defaultRoute: user.defaultRoute || "",
-        allowedRoutes: user.allowedRoutes || [],
-        allowBringYourOwnKey: Boolean(user.allowBringYourOwnKey),
-        activeSessions: sessionsByLabel.get(label) || 0,
-        memoryChars: memory?.length || 0,
-      };
+        Object.fromEntries(days.map((dayKey, index) => [dayKey, positiveCount(legacyUsage[index])])),
+      );
+      memoryByLabel.set(label, memory || "");
     }),
+  );
+
+  const metricTotal = (dayKey: string, kind: string, routeId = "") =>
+    [...stateByLabel.values()].reduce(
+      (sum, state) =>
+        sum +
+        state.metrics
+          .filter((metric) => metric.day === dayKey && metric.kind === kind && metric.routeId === routeId)
+          .reduce((metricSum, metric) => metricSum + metric.count, 0),
+      0,
+    );
+
+  const trend = days.map((dayKey) => {
+    const requests = metricTotal(dayKey, "req");
+    const errors = metricTotal(dayKey, "err");
+    const fallbacks = metricTotal(dayKey, "fb");
+    const rateLimited = metricTotal(dayKey, "rl");
+    return {
+      day: dayKey,
+      requests,
+      errors,
+      fallbacks,
+      rateLimited,
+      errorRate: requests > 0 ? Number(((errors / requests) * 100).toFixed(1)) : 0,
+    };
+  });
+
+  const routeStats = routeIds.map((routeId) => {
+    const dayStats = days.map((dayKey) => ({
+      day: dayKey,
+      ok: metricTotal(dayKey, "route_ok", routeId),
+      error: metricTotal(dayKey, "route_err", routeId),
+    }));
+    const ok7d = dayStats.reduce((sum, item) => sum + item.ok, 0);
+    const error7d = dayStats.reduce((sum, item) => sum + item.error, 0);
+    return {
+      id: routeId,
+      label: config.routes[routeId]?.label || routeId,
+      model: config.routes[routeId]?.model || "",
+      ok7d,
+      error7d,
+      errorRate7d: ok7d + error7d > 0 ? Number(((error7d / (ok7d + error7d)) * 100).toFixed(1)) : 0,
+      days: dayStats,
+    };
+  });
+
+  const users = labels.map((label) => {
+    const user = { ...config.defaults, ...(config.users?.[label] || {}) };
+    const state = stateByLabel.get(label) || { usage: {}, metrics: [] };
+    const legacyUsage = legacyUsageByLabel.get(label) || {};
+    const usage7d = days.map((dayKey) => Math.max(state.usage[dayKey] || 0, legacyUsage[dayKey] || 0));
+    const used = usage7d[0] || 0;
+    const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
+    const requests7d = usage7d.reduce((sum, value) => sum + value, 0);
+    const errorCount7d = state.metrics
+      .filter((metric) => metric.kind === "err")
+      .reduce((sum, metric) => sum + metric.count, 0);
+    return {
+      label,
+      used,
+      dailyLimit,
+      remaining: Math.max(0, dailyLimit - used),
+      defaultRoute: user.defaultRoute || "",
+      allowedRoutes: user.allowedRoutes || [],
+      allowBringYourOwnKey: Boolean(user.allowBringYourOwnKey),
+      hasSystemPrompt: Boolean(user.systemPrompt?.trim()),
+      systemPromptChars: user.systemPrompt?.trim().length || 0,
+      activeSessions: sessionsByLabel.get(label) || 0,
+      memoryChars: memoryByLabel.get(label)?.length || 0,
+      requests7d,
+      errors7d: errorCount7d,
+      errorRate7d: requests7d > 0 ? Number(((errorCount7d / requests7d) * 100).toFixed(1)) : 0,
+      usageByDay: days.map((dayKey, index) => ({ day: dayKey, used: usage7d[index] })),
+    };
+  });
+
+  const totals = trend.reduce(
+    (acc, item) => {
+      acc.requests += item.requests;
+      acc.errors += item.errors;
+      acc.fallbacks += item.fallbacks;
+      acc.rateLimited += item.rateLimited;
+      return acc;
+    },
+    { requests: 0, errors: 0, fallbacks: 0, rateLimited: 0 },
   );
 
   return jsonResponse({
     day,
+    days,
+    totals: {
+      ...totals,
+      errorRate: totals.requests > 0 ? Number(((totals.errors / totals.requests) * 100).toFixed(1)) : 0,
+    },
+    trend,
+    routeStats,
     users,
     routes: Object.entries(config.routes).map(([id, route]) => ({
       id,
@@ -448,6 +810,415 @@ async function handlePutMemory(request: Request, env: Env, session: Session): Pr
   return jsonResponse({ ok: true, memory, maxChars });
 }
 
+async function handleAdminGetMemory(request: Request, env: Env, url: URL): Promise<Response> {
+  const label = (url.searchParams.get("label") || "").trim();
+  if (!label) {
+    return jsonResponse({ error: "label_required" }, 400);
+  }
+  const memory = (await env.CHAT_STORE.get(memoryKey(label))) || "";
+  return jsonResponse({
+    label,
+    memory,
+    maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS),
+  });
+}
+
+async function handleAdminPutMemory(request: Request, env: Env): Promise<Response> {
+  const maxChars = numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS);
+  const body = await readJson<{ label?: unknown; memory?: unknown }>(request);
+  const label = typeof body.label === "string" ? body.label.trim() : "";
+  if (!label) {
+    return jsonResponse({ error: "label_required" }, 400);
+  }
+  const memory = typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "";
+  if (memory) {
+    await env.CHAT_STORE.put(memoryKey(label), memory);
+  } else {
+    await env.CHAT_STORE.delete(memoryKey(label));
+  }
+  return jsonResponse({ ok: true, label, memory, maxChars });
+}
+
+async function handleAdminResetUsage(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ label?: unknown }>(request);
+  const label = typeof body.label === "string" ? body.label.trim() : "";
+  if (!label) {
+    return jsonResponse({ error: "label_required" }, 400);
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  await Promise.all([
+    env.CHAT_STORE.delete(usageKey(label, day)),
+    getUserState(env, label).resetUsage(day),
+  ]);
+  return jsonResponse({ ok: true, label, day });
+}
+
+async function handleMemorySuggest(request: Request, env: Env, session: Session): Promise<Response> {
+  if (request.headers.get("x-chatus-client") !== "web") {
+    return jsonResponse({ error: "forbidden" }, 403);
+  }
+  const body = await readJson<{ messages?: unknown; routeId?: unknown; userApiKey?: unknown }>(request);
+  const normalized = normalizeMessages(body.messages, env);
+  if (!normalized.length) {
+    return jsonResponse({ error: "empty_messages" }, 400);
+  }
+
+  const existing = ((await env.CHAT_STORE.get(memoryKey(session.label))) || "").trim();
+  const transcript = formatTranscript(normalized).slice(0, 8_000);
+  const prompt: ChatMessage[] = [
+    {
+      role: "system",
+      content:
+        "你是记忆整理助手。根据对话提炼值得长期保存的用户信息，例如偏好、身份、禁忌、常用背景。" +
+        "只输出简洁中文 bullet 列表，每条一行，以 - 开头。不要编造。没有可记信息时只输出：无。",
+    },
+    {
+      role: "user",
+      content:
+        (existing ? `当前长期记忆：\n${existing}\n\n` : "") +
+        `最近对话：\n${transcript}\n\n请给出建议新增或更新的记忆条目。`,
+    },
+  ];
+
+  const result = await completeWithUserRoute(env, session, {
+    routeId: typeof body.routeId === "string" ? body.routeId : undefined,
+    userApiKey: typeof body.userApiKey === "string" ? body.userApiKey : undefined,
+    messages: prompt,
+    maxTokens: 500,
+    temperature: 0.2,
+    consumeQuota: true,
+  });
+  if (!result.ok) {
+    return jsonResponse({ error: result.error, message: result.message, routeId: result.routeId }, result.status);
+  }
+
+  const suggestion = cleanSuggestionText(result.text);
+  return jsonResponse({ suggestion, routeId: result.routeId });
+}
+
+async function handleSessionSummary(request: Request, env: Env, session: Session): Promise<Response> {
+  if (request.headers.get("x-chatus-client") !== "web") {
+    return jsonResponse({ error: "forbidden" }, 403);
+  }
+  const body = await readJson<{
+    messages?: unknown;
+    previousSummary?: unknown;
+    routeId?: unknown;
+    userApiKey?: unknown;
+  }>(request);
+  const normalized = normalizeMessages(body.messages, env);
+  if (!normalized.length) {
+    return jsonResponse({ error: "empty_messages" }, 400);
+  }
+
+  const maxSummary = numberEnv(env.MAX_SUMMARY_CHARS, DEFAULT_SUMMARY_CHARS);
+  const previous =
+    typeof body.previousSummary === "string" ? body.previousSummary.trim().slice(0, maxSummary) : "";
+  const transcript = formatTranscript(normalized).slice(0, 10_000);
+  const prompt: ChatMessage[] = [
+    {
+      role: "system",
+      content:
+        "你是会话摘要助手。用简洁中文更新会话摘要，保留目标、约束、关键事实、未完成事项与用户偏好。" +
+        `输出纯文本，不超过 ${maxSummary} 字，不要标题装饰。`,
+    },
+    {
+      role: "user",
+      content:
+        (previous ? `已有摘要：\n${previous}\n\n` : "") +
+        `新增对话：\n${transcript}\n\n请输出更新后的完整摘要。`,
+    },
+  ];
+
+  const result = await completeWithUserRoute(env, session, {
+    routeId: typeof body.routeId === "string" ? body.routeId : undefined,
+    userApiKey: typeof body.userApiKey === "string" ? body.userApiKey : undefined,
+    messages: prompt,
+    maxTokens: 700,
+    temperature: 0.2,
+    consumeQuota: true,
+  });
+  if (!result.ok) {
+    return jsonResponse({ error: result.error, message: result.message, routeId: result.routeId }, result.status);
+  }
+
+  const summary = result.text.trim().slice(0, maxSummary);
+  return jsonResponse({ summary, routeId: result.routeId, maxChars: maxSummary });
+}
+
+
+async function handleListChats(env: Env, session: Session): Promise<Response> {
+  const chats = await loadChatSessions(env, session.label);
+  return jsonResponse({
+    chats,
+    maxSessions: MAX_CLOUD_SESSIONS,
+    maxMessages: MAX_CLOUD_MESSAGES,
+  });
+}
+
+async function handlePutChat(request: Request, env: Env, session: Session): Promise<Response> {
+  const body = await readJson<{ chat?: unknown }>(request);
+  const chat = normalizeCloudChat(body.chat);
+  if (!chat) {
+    return jsonResponse({ error: "invalid_chat", message: "会话数据无效" }, 400);
+  }
+
+  const stored = toStoredChat(chat);
+  if (!stored) {
+    return jsonResponse({ error: "chat_too_large", message: "会话内容过大，请减少图片后重试" }, 413);
+  }
+
+  await migrateLegacyChatIndex(env, session.label);
+  const result = await getUserState(env, session.label).upsertChat(stored);
+  const chats = await getUserState(env, session.label).listChats();
+  if (!result.accepted) {
+    return jsonResponse({ ok: true, accepted: false, chat: summarizeChat(chat), chats: chats.map(summarizeChat) });
+  }
+  return jsonResponse({ ok: true, chat: summarizeChat(chat), chats: chats.map(summarizeChat) });
+}
+
+async function handleDeleteChat(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+): Promise<Response> {
+  const id = (url.searchParams.get("id") || "").trim();
+  if (!id) {
+    return jsonResponse({ error: "id_required" }, 400);
+  }
+  await migrateLegacyChatIndex(env, session.label);
+  const deleted = await getUserState(env, session.label).deleteChat(id);
+  const chats = await getUserState(env, session.label).listChats();
+  return jsonResponse({ ok: true, deleted, chats: chats.map(summarizeChat) });
+}
+
+async function handleMigrateChats(request: Request, env: Env, session: Session): Promise<Response> {
+  const body = await readJson<{ chats?: unknown; mode?: unknown }>(request);
+  if (!Array.isArray(body.chats) || !body.chats.length) {
+    return jsonResponse({ error: "empty_chats", message: "没有可同步的会话" }, 400);
+  }
+  if (body.chats.length > MAX_CLOUD_SESSIONS) {
+    return jsonResponse({ error: "too_many_chats", message: `最多同步 ${MAX_CLOUD_SESSIONS} 个会话` }, 400);
+  }
+  const incoming: CloudChat[] = [];
+  for (const value of body.chats) {
+    const chat = normalizeCloudChat(value);
+    if (!chat) return jsonResponse({ error: "invalid_chat", message: "会话数据无效" }, 400);
+    if (!toStoredChat(chat)) {
+      return jsonResponse({ error: "chat_too_large", message: `会话“${chat.title}”内容过大` }, 413);
+    }
+    incoming.push(chat);
+  }
+
+  const mode = body.mode === "replace" ? "replace" : "merge";
+  const existing = mode === "replace" ? [] : await loadChatSessions(env, session.label);
+  const byId = new Map<string, CloudChat>();
+  for (const chat of existing) byId.set(chat.id, chat);
+  for (const chat of incoming) {
+    const prev = byId.get(chat.id);
+    if (!prev || chat.updatedAt >= prev.updatedAt) byId.set(chat.id, chat);
+  }
+
+  const chats = [...byId.values()]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_CLOUD_SESSIONS);
+  const storedChats = chats.map(toStoredChat);
+  if (storedChats.some((chat) => !chat)) {
+    return jsonResponse({ error: "chat_too_large", message: "部分会话内容过大" }, 413);
+  }
+  await getUserState(env, session.label).replaceChats(storedChats as StoredChat[]);
+  return jsonResponse({
+    ok: true,
+    mode,
+    count: chats.length,
+    chats,
+  });
+}
+
+async function handleAdminRouteHealth(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ routeId?: unknown }>(request);
+  const routeId = typeof body.routeId === "string" ? body.routeId.trim() : "";
+  if (!routeId) {
+    return jsonResponse({ error: "route_id_required" }, 400);
+  }
+
+  const config = await loadAppConfig(env);
+  const route = config.routes[routeId];
+  if (!route) {
+    return jsonResponse({ error: "route_not_found", message: "线路不存在" }, 404);
+  }
+
+  const apiKey = resolveRouteKey(route, env, "");
+  if (!apiKey) {
+    return jsonResponse({
+      ok: false,
+      routeId,
+      error: "missing_key",
+      message: "线路 key 未配置（检查 apiKeyRef / secret）",
+    }, 400);
+  }
+
+  const started = Date.now();
+  try {
+    const text = await completeOnce({
+      route,
+      apiKey,
+      messages: [
+        { role: "user", content: "Reply with exactly: ok" },
+      ],
+      temperature: 0,
+      maxTokens: 16,
+      env,
+    });
+    return jsonResponse({
+      ok: true,
+      routeId,
+      latencyMs: Date.now() - started,
+      sample: text.slice(0, 80),
+      model: route.model,
+      type: route.type,
+    });
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      routeId,
+      latencyMs: Date.now() - started,
+      error: "upstream_error",
+      message: error instanceof Error ? error.message : "health check failed",
+      model: route.model,
+      type: route.type,
+    }, 502);
+  }
+}
+
+type CloudChat = {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  summary: string;
+  summaryUntil: number;
+  messages: ChatMessage[];
+};
+
+function chatIndexKey(label: string): string {
+  return `chats:${encodeURIComponent(label)}:index`;
+}
+
+async function loadChatSessions(env: Env, label: string): Promise<CloudChat[]> {
+  await migrateLegacyChatIndex(env, label);
+  return getUserState(env, label).listChats();
+}
+
+async function migrateLegacyChatIndex(env: Env, label: string): Promise<void> {
+  const raw = await env.CHAT_STORE.get(chatIndexKey(label));
+  if (!raw?.trim()) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    const chats = parsed
+      .map((item) => normalizeCloudChat(item))
+      .filter((item): item is CloudChat => Boolean(item))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, MAX_CLOUD_SESSIONS);
+    const stored = chats.map(toStoredChat).filter((chat): chat is StoredChat => Boolean(chat));
+    if (stored.length !== chats.length) return;
+    await getUserState(env, label).migrateLegacyChats(stored);
+    await env.CHAT_STORE.delete(chatIndexKey(label));
+  } catch {
+    // Keep malformed legacy data for manual recovery instead of deleting it silently.
+  }
+}
+
+function toStoredChat(chat: CloudChat): StoredChat | null {
+  const serializedBytes = new TextEncoder().encode(JSON.stringify(chat)).byteLength;
+  return serializedBytes <= MAX_CLOUD_SESSION_BYTES ? { ...chat, serializedBytes } : null;
+}
+
+function summarizeChat(chat: CloudChat) {
+  return {
+    id: chat.id,
+    title: chat.title,
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    summary: chat.summary,
+    summaryUntil: chat.summaryUntil,
+    messageCount: chat.messages.length,
+  };
+}
+
+function normalizeCloudChat(value: unknown): CloudChat | null {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  if (!id || id.length > 80) return null;
+
+  const messages = normalizeCloudMessages(value.messages);
+  const createdAt = Number.isFinite(value.createdAt) ? Number(value.createdAt) : Date.now();
+  const updatedAt = Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : Date.now();
+  const title =
+    typeof value.title === "string" && value.title.trim()
+      ? value.title.trim().slice(0, 80)
+      : deriveTitleFromMessages(messages);
+  const summary = typeof value.summary === "string" ? value.summary.trim().slice(0, DEFAULT_SUMMARY_CHARS) : "";
+  const summaryUntil = Number.isFinite(value.summaryUntil) ? Number(value.summaryUntil) : 0;
+
+  return {
+    id,
+    title,
+    createdAt,
+    updatedAt,
+    summary,
+    summaryUntil,
+    messages,
+  };
+}
+
+function normalizeCloudMessages(input: unknown): ChatMessage[] {
+  if (!Array.isArray(input)) return [];
+  const output: ChatMessage[] = [];
+  for (const item of input.slice(-MAX_CLOUD_MESSAGES)) {
+    if (!isRecord(item)) continue;
+    const role = item.role;
+    if (role !== "user" && role !== "assistant" && role !== "system") continue;
+
+    if (typeof item.content === "string") {
+      const content = item.content.slice(0, 20_000);
+      if (!content.trim() && role !== "assistant") continue;
+      output.push({ role, content });
+      continue;
+    }
+
+    if (!Array.isArray(item.content)) continue;
+    const parts: ChatPart[] = [];
+    for (const part of item.content) {
+      if (!isRecord(part)) continue;
+      if (part.type === "text" && typeof part.text === "string") {
+        parts.push({ type: "text", text: part.text.slice(0, 20_000) });
+      }
+      if (
+        part.type === "image_url" &&
+        isRecord(part.image_url) &&
+        typeof part.image_url.url === "string" &&
+        part.image_url.url.startsWith("data:image/") &&
+        part.image_url.url.length < 2_500_000
+      ) {
+        parts.push({ type: "image_url", image_url: { url: part.image_url.url } });
+      }
+    }
+    if (parts.length) output.push({ role, content: parts });
+  }
+  return output;
+}
+
+function deriveTitleFromMessages(messages: ChatMessage[]): string {
+  const firstUser = messages.find((message) => message.role === "user");
+  if (!firstUser) return "新会话";
+  const text = extractText(firstUser.content).replace(/\s+/g, " ").trim();
+  if (!text) return "新会话";
+  return text.length > 18 ? `${text.slice(0, 18)}…` : text;
+}
+
 async function handleChat(request: Request, env: Env, session: Session): Promise<Response> {
   const length = Number(request.headers.get("content-length") || "0");
   if (length > MAX_REQUEST_BYTES) {
@@ -469,12 +1240,17 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     routeId?: unknown;
     userApiKey?: unknown;
     temperature?: unknown;
+    sessionSummary?: unknown;
   }>(request);
   const selectedRoute = typeof body.routeId === "string" ? body.routeId : access.defaultRoute;
-  const normalized = normalizeMessages(body.messages, env);
+  const normalized = trimMessagesForContext(normalizeMessages(body.messages, env), env);
   if (!normalized.length) {
     return jsonResponse({ error: "empty_messages" }, 400);
   }
+  const sessionSummary =
+    typeof body.sessionSummary === "string"
+      ? body.sessionSummary.trim().slice(0, numberEnv(env.MAX_SUMMARY_CHARS, DEFAULT_SUMMARY_CHARS))
+      : "";
 
   const latestPrompt = getLatestUserPrompt(normalized);
   if (
@@ -503,6 +1279,10 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
 
   const limitResult = await consumeLimits(env, session, access.user);
   if (!limitResult.ok) {
+    await recordChatMetric(env, {
+      kind: "rate_limited",
+      label: session.label,
+    });
     return jsonResponse(
       { error: "rate_limited", reset: limitResult.reset },
       429,
@@ -513,10 +1293,11 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     );
   }
 
-  const messages = await buildMessagesWithSystem(env, session, normalized);
+  const messages = await buildMessagesWithSystem(env, session, normalized, sessionSummary, access.user);
 
   const userApiKey = typeof body.userApiKey === "string" ? body.userApiKey.trim() : "";
   let lastError: { routeId: string; status: number; message: string } | null = null;
+  let attemptedRoutes = 0;
 
   for (const routeId of routeIds) {
     const route = config.routes[routeId];
@@ -532,6 +1313,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
       continue;
     }
 
+    attemptedRoutes += 1;
     const result = await callRoute({
       route,
       routeId,
@@ -543,14 +1325,31 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     });
 
     if (result.response) {
+      await recordChatMetric(env, {
+        kind: "success",
+        label: session.label,
+        routeId,
+        fallback: routeId !== selectedRoute && attemptedRoutes > 1,
+      });
       result.response.headers.set("X-RateLimit-Remaining", String(limitResult.remaining));
       result.response.headers.set("X-Chatus-Route", routeId);
       return result.response;
     }
 
     lastError = result.error;
+    await recordChatMetric(env, {
+      kind: "route_error",
+      label: session.label,
+      routeId,
+    });
     if (result.terminal) break;
   }
+
+  await recordChatMetric(env, {
+    kind: "failure",
+    label: session.label,
+    // route-level errors already recorded per attempt
+  });
 
   return jsonResponse(
     {
@@ -712,16 +1511,24 @@ function normalizeAppConfig(value: unknown): AppConfig {
 
 function normalizeUserConfig(value: unknown): UserConfig {
   if (!isRecord(value)) return {};
-  return {
-    defaultRoute: typeof value.defaultRoute === "string" ? value.defaultRoute : undefined,
-    allowedRoutes: Array.isArray(value.allowedRoutes)
-      ? value.allowedRoutes.filter((item): item is string => typeof item === "string")
-      : undefined,
-    allowBringYourOwnKey: value.allowBringYourOwnKey === true,
-    dailyMessageLimit: normalizePositiveNumber(value.dailyMessageLimit),
-    minuteMessageLimit: normalizePositiveNumber(value.minuteMessageLimit),
-    blockedPrompts: parsePromptList(value.blockedPrompts),
-  };
+  const output: UserConfig = {};
+  if (typeof value.defaultRoute === "string") output.defaultRoute = value.defaultRoute;
+  if (Array.isArray(value.allowedRoutes)) {
+    output.allowedRoutes = value.allowedRoutes.filter((item): item is string => typeof item === "string");
+  }
+  if (typeof value.allowBringYourOwnKey === "boolean") {
+    output.allowBringYourOwnKey = value.allowBringYourOwnKey;
+  }
+  const dailyMessageLimit = normalizePositiveNumber(value.dailyMessageLimit);
+  if (dailyMessageLimit !== undefined) output.dailyMessageLimit = dailyMessageLimit;
+  const minuteMessageLimit = normalizePositiveNumber(value.minuteMessageLimit);
+  if (minuteMessageLimit !== undefined) output.minuteMessageLimit = minuteMessageLimit;
+  if (value.blockedPrompts !== undefined) output.blockedPrompts = parsePromptList(value.blockedPrompts);
+  if (typeof value.systemPrompt === "string") {
+    const systemPrompt = value.systemPrompt.trim().slice(0, DEFAULT_USER_SYSTEM_PROMPT_CHARS);
+    if (systemPrompt) output.systemPrompt = systemPrompt;
+  }
+  return output;
 }
 
 function getRouteAccess(config: AppConfig, label: string, env: Env): RouteAccess {
@@ -776,11 +1583,25 @@ function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): stri
   return "";
 }
 
-async function buildMessagesWithSystem(env: Env, session: Session, normalized: ChatMessage[]): Promise<ChatMessage[]> {
+async function buildMessagesWithSystem(
+  env: Env,
+  session: Session,
+  normalized: ChatMessage[],
+  sessionSummary = "",
+  userConfig?: UserConfig,
+): Promise<ChatMessage[]> {
   const systemMessages: ChatMessage[] = [];
-  const systemPrompt = env.SYSTEM_PROMPT?.trim();
-  if (systemPrompt) {
-    systemMessages.push({ role: "system", content: systemPrompt });
+  const globalPrompt = env.SYSTEM_PROMPT?.trim();
+  if (globalPrompt) {
+    systemMessages.push({ role: "system", content: globalPrompt });
+  }
+
+  const userPrompt = userConfig?.systemPrompt?.trim();
+  if (userPrompt) {
+    systemMessages.push({
+      role: "system",
+      content: `以下是当前用户专属系统提示词，请优先遵循其中的风格、角色与约束：\n${userPrompt}`,
+    });
   }
 
   const memory = (await env.CHAT_STORE.get(memoryKey(session.label)))?.trim();
@@ -791,7 +1612,240 @@ async function buildMessagesWithSystem(env: Env, session: Session, normalized: C
     });
   }
 
+  if (sessionSummary.trim()) {
+    systemMessages.push({
+      role: "system",
+      content: `以下是当前会话的滚动摘要，用于弥补较早消息被裁剪的上下文。请优先参考摘要中的目标、约束和未完成事项：\n${sessionSummary.trim()}`,
+    });
+  }
+
   return [...systemMessages, ...normalized];
+}
+
+async function completeWithUserRoute(
+  env: Env,
+  session: Session,
+  args: {
+    routeId?: string;
+    userApiKey?: string;
+    messages: ChatMessage[];
+    maxTokens?: number;
+    temperature?: number;
+    consumeQuota?: boolean;
+  },
+): Promise<
+  | { ok: true; text: string; routeId: string }
+  | { ok: false; error: string; message: string; status: number; routeId?: string }
+> {
+  const config = await loadAppConfig(env);
+  const access = getRouteAccess(config, session.label, env);
+  if (!access.routes.length) {
+    return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
+  }
+
+  if (args.consumeQuota) {
+    const limitResult = await consumeLimits(env, session, access.user);
+    if (!limitResult.ok) {
+      return {
+        ok: false,
+        error: "rate_limited",
+        message: "额度已用完",
+        status: 429,
+      };
+    }
+  }
+
+  const selectedRoute = args.routeId || access.defaultRoute;
+  const routeIds = buildRoutePlan(selectedRoute, config, access);
+  const userApiKey = args.userApiKey?.trim() || "";
+  let lastError = "no route succeeded";
+  let lastRouteId = "";
+
+  for (const routeId of routeIds) {
+    const route = config.routes[routeId];
+    const publicRoute = access.routes.find((item) => item.id === routeId);
+    if (!route || !publicRoute) continue;
+
+    const key = resolveRouteKey(route, env, publicRoute.allowUserKey ? userApiKey : "");
+    if (!key) {
+      if (publicRoute.requiresUserKey) {
+        return {
+          ok: false,
+          error: "user_api_key_required",
+          message: "需要填写 API Key",
+          status: 400,
+          routeId,
+        };
+      }
+      lastError = "route key is not configured";
+      lastRouteId = routeId;
+      continue;
+    }
+
+    try {
+      const text = await completeOnce({
+        route,
+        apiKey: key,
+        messages: args.messages,
+        temperature: args.temperature ?? 0.2,
+        maxTokens: args.maxTokens,
+        env,
+      });
+      if (text.trim()) {
+        return { ok: true, text: text.trim(), routeId };
+      }
+      lastError = "empty completion";
+      lastRouteId = routeId;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "completion failed";
+      lastRouteId = routeId;
+    }
+  }
+
+  return {
+    ok: false,
+    error: "upstream_error",
+    message: lastError,
+    status: 502,
+    routeId: lastRouteId || undefined,
+  };
+}
+
+async function completeOnce(args: {
+  route: RouteConfig;
+  apiKey: string;
+  messages: ChatMessage[];
+  temperature: number;
+  maxTokens?: number;
+  env: Env;
+}): Promise<string> {
+  const { route, apiKey, messages, temperature, maxTokens, env } = args;
+  if (route.type === "anthropic-messages") {
+    const headers = buildHeaders(route.headers);
+    setAuthHeader(headers, route, apiKey, "x-api-key");
+    headers.set("Content-Type", "application/json");
+    if (!headers.has("anthropic-version")) {
+      headers.set("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
+    }
+    const anthropic = toAnthropicMessages(messages);
+    const response = await fetch(routeUrl(route, "/v1/messages"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: route.model,
+        messages: anthropic.messages,
+        stream: false,
+        max_tokens: maxTokens || route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
+        temperature: clampNumber(temperature, 0, 1, 0.2),
+        ...(anthropic.system ? { system: anthropic.system } : {}),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(formatUpstreamErrorMessage(JSON.stringify(payload)));
+    }
+    return extractAnthropicText(payload);
+  }
+
+  const headers = buildHeaders(route.headers);
+  setAuthHeader(headers, route, apiKey, "Authorization");
+  headers.set("Content-Type", "application/json");
+  const response = await fetch(routeUrl(route, "/chat/completions"), {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: route.model,
+      messages,
+      stream: false,
+      temperature: clampNumber(temperature, 0, 2, 0.2),
+      max_tokens: maxTokens || route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(formatUpstreamErrorMessage(JSON.stringify(payload)));
+  }
+  return extractOpenAiText(payload);
+}
+
+function extractOpenAiText(payload: unknown): string {
+  if (!isRecord(payload) || !Array.isArray(payload.choices) || !payload.choices[0]) return "";
+  const choice = payload.choices[0];
+  if (!isRecord(choice)) return "";
+  if (isRecord(choice.message) && typeof choice.message.content === "string") {
+    return choice.message.content;
+  }
+  if (typeof choice.text === "string") return choice.text;
+  return "";
+}
+
+function extractAnthropicText(payload: unknown): string {
+  if (!isRecord(payload) || !Array.isArray(payload.content)) return "";
+  return payload.content
+    .map((block) => {
+      if (!isRecord(block)) return "";
+      if (block.type === "text" && typeof block.text === "string") return block.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatTranscript(messages: ChatMessage[]): string {
+  return messages
+    .map((message) => {
+      const role = message.role === "assistant" ? "助手" : message.role === "user" ? "用户" : "系统";
+      const text = extractText(message.content).trim();
+      const images = Array.isArray(message.content)
+        ? message.content.filter((part) => part.type === "image_url").length
+        : 0;
+      const imageHint = images ? ` [含${images}张图片]` : "";
+      return `${role}: ${text || "(空)"}${imageHint}`;
+    })
+    .join("\n");
+}
+
+function cleanSuggestionText(text: string): string {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[*•]\s*/, "- ").replace(/^\d+\.\s*/, "- "));
+  if (!lines.length || lines.every((line) => /^无[.。!！]?$/.test(line.replace(/^-\s*/, "")))) {
+    return "";
+  }
+  return lines.join("\n");
+}
+
+function estimateMessageChars(message: ChatMessage): number {
+  if (typeof message.content === "string") return message.content.length;
+  let total = 0;
+  for (const part of message.content) {
+    if (part.type === "text") total += part.text.length;
+    if (part.type === "image_url") total += 800;
+  }
+  return total;
+}
+
+function trimMessagesForContext(messages: ChatMessage[], env: Env): ChatMessage[] {
+  if (!messages.length) return [];
+  const budget = numberEnv(env.MAX_CONTEXT_CHARS, DEFAULT_CONTEXT_CHARS);
+  const hardCap = Math.min(messages.length, MAX_MESSAGES);
+  const recent = messages.slice(-hardCap);
+  while (recent[0]?.role === "assistant") recent.shift();
+
+  let total = 0;
+  const kept: ChatMessage[] = [];
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index];
+    const cost = Math.max(1, estimateMessageChars(message));
+    if (kept.length && total + cost > budget) break;
+    kept.push(message);
+    total += cost;
+  }
+  kept.reverse();
+  while (kept[0]?.role === "assistant") kept.shift();
+  return kept;
 }
 
 async function callRoute(args: {
@@ -1073,11 +2127,7 @@ async function getSession(request: Request, env: Env): Promise<Session | null> {
 
   try {
     const session = JSON.parse(raw) as Session;
-    session.lastSeen = Date.now();
-    await env.CHAT_STORE.put(`session:${token}`, JSON.stringify(session), {
-      expirationTtl: numberEnv(env.SESSION_TTL_SECONDS, 2_592_000),
-    });
-    return session;
+    return session.id && session.label ? session : null;
   } catch {
     await env.CHAT_STORE.delete(`session:${token}`);
     return null;
@@ -1093,11 +2143,7 @@ async function getAdminSession(request: Request, env: Env): Promise<AdminSession
 
   try {
     const session = JSON.parse(raw) as AdminSession;
-    session.lastSeen = Date.now();
-    await env.CHAT_STORE.put(`admin:${token}`, JSON.stringify(session), {
-      expirationTtl: ADMIN_SESSION_TTL_SECONDS,
-    });
-    return session;
+    return Number.isFinite(session.createdAt) ? session : null;
   } catch {
     await env.CHAT_STORE.delete(`admin:${token}`);
     return null;
@@ -1109,41 +2155,19 @@ async function consumeLimits(
   session: Session,
   user: UserConfig,
 ): Promise<{ ok: true; remaining: number } | { ok: false; retryAfter: number; reset: string }> {
-  const now = new Date();
-  const day = now.toISOString().slice(0, 10);
-  const minute = Math.floor(Date.now() / 60_000);
+  const now = Date.now();
+  const day = new Date(now).toISOString().slice(0, 10);
   const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
   const minuteLimit = user.minuteMessageLimit || numberEnv(env.MINUTE_MESSAGE_LIMIT, 12);
-  const dayKey = usageKey(session.label, day);
-  const minuteKey = burstKey(session.label, minute);
-
-  const [dayCountRaw, minuteCountRaw] = await Promise.all([
-    env.CHAT_STORE.get(dayKey),
-    env.CHAT_STORE.get(minuteKey),
-  ]);
-  const dayCount = Number(dayCountRaw || "0");
-  const minuteCount = Number(minuteCountRaw || "0");
-
-  if (dayCount >= dailyLimit) {
-    return { ok: false, retryAfter: secondsUntilNextUtcDay(), reset: "daily" };
-  }
-
-  if (minuteCount >= minuteLimit) {
-    return { ok: false, retryAfter: 60, reset: "minute" };
-  }
-
-  await Promise.all([
-    env.CHAT_STORE.put(dayKey, String(dayCount + 1), { expirationTtl: 172_800 }),
-    env.CHAT_STORE.put(minuteKey, String(minuteCount + 1), { expirationTtl: 120 }),
-  ]);
-
-  return { ok: true, remaining: Math.max(0, dailyLimit - dayCount - 1) };
+  const legacyDayCount = positiveCount(await env.CHAT_STORE.get(usageKey(session.label, day)));
+  return getUserState(env, session.label).consumeLimits(dailyLimit, minuteLimit, now, legacyDayCount);
 }
 
 async function getUsage(env: Env, session: Session, user: UserConfig) {
   const day = new Date().toISOString().slice(0, 10);
   const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
-  const used = Number((await env.CHAT_STORE.get(usageKey(session.label, day))) || "0");
+  const legacyUsed = positiveCount(await env.CHAT_STORE.get(usageKey(session.label, day)));
+  const used = await getUserState(env, session.label).getUsage(day, legacyUsed);
   return { used, limit: dailyLimit, remaining: Math.max(0, dailyLimit - used) };
 }
 
@@ -1420,12 +2444,26 @@ function buildCookie(name: string, value: string, maxAge: number, secure: boolea
   return parts.join("; ");
 }
 
-function usageKey(label: string, day: string): string {
-  return `usage:${encodeURIComponent(label)}:${day}`;
+async function recordChatMetric(
+  env: Env,
+  args: {
+    kind: "success" | "failure" | "route_error" | "rate_limited";
+    label: string;
+    routeId?: string;
+    fallback?: boolean;
+  },
+): Promise<void> {
+  await getUserState(env, args.label).recordMetric(args);
 }
 
-function burstKey(label: string, minute: number): string {
-  return `burst:${encodeURIComponent(label)}:${minute}`;
+function utcDayString(daysAgo = 0): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - daysAgo);
+  return date.toISOString().slice(0, 10);
+}
+
+function usageKey(label: string, day: string): string {
+  return `usage:${encodeURIComponent(label)}:${day}`;
 }
 
 function memoryKey(label: string): string {
@@ -1459,15 +2497,30 @@ function numberEnv(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function positiveCount(value: string | null): number {
+  const parsed = Number(value || "0");
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function getUserState(env: Env, label: string): DurableObjectStub<UserState> {
+  return env.USER_STATE.getByName(label);
+}
+
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
 }
 
-function secondsUntilNextUtcDay(): number {
-  const now = new Date();
+function secondsUntilNextUtcDay(nowMs = Date.now()): number {
+  const now = new Date(nowMs);
   const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
   return Math.max(60, Math.floor((next - now.getTime()) / 1000));
+}
+
+function utcDayStringAt(nowMs: number, daysAgo = 0): string {
+  const date = new Date(nowMs);
+  date.setUTCDate(date.getUTCDate() - daysAgo);
+  return date.toISOString().slice(0, 10);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

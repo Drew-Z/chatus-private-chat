@@ -21,7 +21,14 @@
       </section>
 
       <section class="chat-view" id="chatView" hidden>
-        <aside class="side-panel">
+        <div class="mobile-bar" id="mobileBar">
+          <button class="ghost-button compact" id="openSidebarButton" type="button" title="菜单">菜单</button>
+          <strong id="mobileTitle">聊天</strong>
+          <button class="ghost-button compact" id="mobileNewChatButton" type="button">新会话</button>
+        </div>
+        <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
+
+        <aside class="side-panel" id="sidePanel">
           <div class="side-top">
             <div class="brand-row">
               <div class="brand-mark small">C</div>
@@ -29,8 +36,12 @@
                 <strong>Chatus</strong>
                 <span id="userLabel"></span>
               </div>
+              <button class="ghost-button compact side-close" id="closeSidebarButton" type="button" title="关闭">关闭</button>
             </div>
-            <button class="ghost-button" id="newChatButton" type="button">新会话</button>
+            <div class="side-actions">
+              <button class="ghost-button" id="newChatButton" type="button">新会话</button>
+              <input class="session-search" id="sessionSearch" type="search" placeholder="搜索会话" autocomplete="off" />
+            </div>
             <div class="chat-list" id="chatList" aria-label="历史会话"></div>
           </div>
           <div class="usage-block">
@@ -51,10 +62,18 @@
           </div>
           <div class="memory-block">
             <label for="memoryInput">长期记忆</label>
-            <textarea id="memoryInput" rows="4" maxlength="4000" spellcheck="false"></textarea>
+            <textarea id="memoryInput" rows="4" maxlength="4000" spellcheck="false" placeholder="偏好、背景、禁忌……"></textarea>
             <div class="memory-actions">
+              <button class="ghost-button compact" id="suggestMemoryButton" type="button">建议写入</button>
               <button class="ghost-button compact" id="saveMemoryButton" type="button">保存</button>
               <span id="memoryStatus" role="status"></span>
+            </div>
+            <div class="memory-suggest" id="memorySuggestBox" hidden>
+              <pre id="memorySuggestText"></pre>
+              <div class="memory-actions">
+                <button class="ghost-button compact" id="applyMemorySuggestButton" type="button">追加到记忆</button>
+                <button class="plain-button compact" id="dismissMemorySuggestButton" type="button">忽略</button>
+              </div>
             </div>
           </div>
           <button class="plain-button" id="logoutButton" type="button">退出</button>
@@ -63,24 +82,32 @@
         <section class="conversation">
           <header class="chat-header">
             <div>
-              <h1>聊天</h1>
+              <h1 id="chatTitle">聊天</h1>
               <p id="connectionState">已连接</p>
             </div>
-            <button class="ghost-button compact" id="clearButton" type="button">清空</button>
+            <div class="header-actions">
+              <button class="ghost-button compact" id="exportButton" type="button">导出</button>
+              <button class="ghost-button compact" id="clearButton" type="button">清空</button>
+            </div>
           </header>
 
           <div class="message-list" id="messageList" aria-live="polite"></div>
 
           <form class="composer" id="chatForm">
+            <div class="drop-hint" id="dropHint" hidden>放开以添加图片</div>
             <div class="attachment-row" id="attachmentRow"></div>
             <div class="composer-bar">
               <label class="icon-button" for="imageInput" title="添加图片">
                 <span>+</span>
               </label>
               <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
-              <textarea id="promptInput" rows="1" placeholder="输入消息" required></textarea>
+              <textarea id="promptInput" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行" required></textarea>
               <button class="send-button" id="sendButton" type="submit">发送</button>
               <button class="stop-button" id="stopButton" type="button" hidden>停止</button>
+            </div>
+            <div class="composer-meta">
+              <span id="composerHint">支持粘贴/拖拽图片</span>
+              <span id="composerCount"></span>
             </div>
           </form>
         </section>
