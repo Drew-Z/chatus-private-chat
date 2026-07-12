@@ -105,6 +105,7 @@ let hasUserSystemPrompt = false;
 let statusToastTimer = null;
 let offlineMode = false;
 let currentUsage = null;
+let sessionExpired = false;
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -398,7 +399,25 @@ function showLogin() {
   accessCode.focus();
 }
 
+function handleUnauthorizedResponse(response) {
+  if (response.status !== 401) return false;
+  expireUserSession();
+  return true;
+}
+
+function expireUserSession() {
+  if (sessionExpired) return;
+  sessionExpired = true;
+  localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+  userApiKeyInput.value = "";
+  closeModelPicker();
+  closeSidebar();
+  showLogin();
+  loginStatus.textContent = "登录已失效或已被管理员注销，请重新输入访问码";
+}
+
 async function showChat(existingSession, readOnlyOffline = false) {
+  sessionExpired = false;
   loginView.hidden = true;
   chatView.hidden = false;
   setOfflineMode(readOnlyOffline);
@@ -419,10 +438,12 @@ async function showChat(existingSession, readOnlyOffline = false) {
   renderRoutes();
   updateConnectionState("同步会话中");
   await loadUserSessions({ offline: offlineMode });
+  if (sessionExpired) return;
   renderChatList();
   renderMessages(true);
   updateChatTitle();
   await loadMemory({ offline: offlineMode });
+  if (sessionExpired) return;
   if (!offlineMode) cacheSessionSnapshot(session);
   updateConnectionState();
   updateComposerMeta();
@@ -537,6 +558,14 @@ async function streamChat(assistantMessage) {
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: requestBody,
     });
+    if (handleUnauthorizedResponse(response)) {
+      messages = messages.filter((message) => message !== assistantMessage);
+      const active = getActiveSession();
+      active.messages = messages;
+      saveSessionsLocalOnly();
+      renderMessages(false);
+      return;
+    }
     const remaining = response.headers.get("X-RateLimit-Remaining");
     if (remaining !== null) {
       updateUsage({ remaining: Number(remaining), limit: currentUsage?.limit });
@@ -610,6 +639,7 @@ async function loadMemory(options = {}) {
   if (suggestMemoryButton) suggestMemoryButton.disabled = true;
   try {
     const response = await fetch("/api/memory");
+    if (handleUnauthorizedResponse(response)) return;
     if (!response.ok) throw new Error("load_failed");
     const data = await response.json();
     memoryInput.maxLength = Number(data.maxChars) || 4000;
@@ -633,6 +663,7 @@ async function saveMemory() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ memory: memoryInput.value }),
     });
+    if (handleUnauthorizedResponse(response)) return;
     if (!response.ok) throw new Error("save_failed");
     const data = await response.json();
     memoryInput.value = data.memory || "";
@@ -666,6 +697,7 @@ async function suggestMemory() {
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: JSON.stringify(payload),
     });
+    if (handleUnauthorizedResponse(response)) return;
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || formatError(data.error || "request_failed"));
     pendingSuggestion = (data.suggestion || "").trim();
@@ -700,6 +732,7 @@ async function loadUserSessions(options = {}) {
 
   try {
     const response = await fetch("/api/chats");
+    if (handleUnauthorizedResponse(response)) throw new Error("session_expired");
     if (!response.ok) throw new Error("cloud_list_failed");
     const data = await response.json();
     const remote = normalizeSessions(data.chats || []);
@@ -908,6 +941,7 @@ async function deleteSession(id) {
   if (cloudSyncEnabled) {
     fetch(`/api/chats?id=${encodeURIComponent(id)}`, { method: "DELETE" })
       .then(async (response) => {
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) setSyncStatus("云端删除失败，本地已删除");
         else setSyncStatus("会话已删除");
       })
@@ -972,6 +1006,7 @@ function queueCloudSave(chat, immediate = false) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat }),
       });
+      if (handleUnauthorizedResponse(response)) return;
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         setSyncStatus(data.message || "云端保存失败，已保留本地");
@@ -1902,6 +1937,7 @@ async function importSessionBackup() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chats: imported, mode: "merge" }),
     });
+    if (handleUnauthorizedResponse(response)) return;
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || "cloud_import_failed");
     sessions = merged;
@@ -1954,6 +1990,7 @@ async function deleteAllUserData() {
   deleteUserDataButton.disabled = true;
   try {
     const response = await fetch("/api/user-data", { method: "DELETE" });
+    if (handleUnauthorizedResponse(response)) return;
     if (!response.ok) throw new Error("delete_failed");
     localStorage.removeItem(sessionsStorageKey());
     localStorage.removeItem(activeSessionStorageKey());
@@ -2005,6 +2042,7 @@ async function maybeRefreshSummary() {
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: JSON.stringify(payload),
     });
+    if (handleUnauthorizedResponse(response)) return;
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.summary) {
       setSyncStatus(data.message || "摘要更新失败，将继续使用现有上下文");
