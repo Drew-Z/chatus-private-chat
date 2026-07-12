@@ -112,6 +112,7 @@ describe("Worker API", () => {
       updatedAt: 20,
       summary: "",
       summaryUntil: 0,
+      pinned: true,
       messages: [{ role: "user", content: "完成一个小任务" }],
     };
     const put = await apiRequest("/api/chats", cookie, {
@@ -123,7 +124,7 @@ describe("Worker API", () => {
 
     const list = await apiRequest("/api/chats", cookie);
     expect(list.status).toBe(200);
-    await expect(list.json()).resolves.toMatchObject({ chats: [{ id: "chat-1", title: "测试会话" }] });
+    await expect(list.json()).resolves.toMatchObject({ chats: [{ id: "chat-1", title: "测试会话", pinned: true }] });
 
     const remove = await apiRequest("/api/chats?id=chat-1", cookie, { method: "DELETE" });
     expect(remove.status).toBe(200);

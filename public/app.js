@@ -742,9 +742,10 @@ function normalizeSessions(input) {
       updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : Date.now(),
       summary: typeof item.summary === "string" ? item.summary : "",
       summaryUntil: Number.isFinite(item.summaryUntil) ? item.summaryUntil : 0,
+      pinned: item.pinned === true,
       messages: Array.isArray(item.messages) ? item.messages.slice(-MAX_STORED_MESSAGES).map(normalizeMessage) : [],
     }))
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .sort(compareSessions)
     .slice(0, MAX_SESSIONS);
 }
 
@@ -776,6 +777,7 @@ function createSession(initialMessages = []) {
     updatedAt: now,
     summary: "",
     summaryUntil: 0,
+    pinned: false,
     messages: trimmedMessages,
   };
 }
@@ -861,7 +863,7 @@ function saveMessages() {
   if (!active.title || active.title === "新会话") active.title = deriveSessionTitle(active.messages);
   active.updatedAt = Date.now();
   sessions = [active, ...sessions.filter((session) => session.id !== active.id)]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .sort(compareSessions)
     .slice(0, MAX_SESSIONS);
   messages = active.messages;
   activeSessionId = active.id;
@@ -969,7 +971,7 @@ function renderChatList() {
   chatList.textContent = "";
   if (!sessions.length) return;
   const filtered = sessionFilter
-    ? sessions.filter((session) => `${session.title}\n${session.summary || ""}`.toLowerCase().includes(sessionFilter))
+    ? sessions.filter((session) => sessionSearchText(session).includes(sessionFilter))
     : sessions;
   if (!filtered.length) {
     const empty = document.createElement("div");
@@ -978,13 +980,22 @@ function renderChatList() {
     chatList.append(empty);
     return;
   }
-  for (const session of filtered) {
+  for (const session of [...filtered].sort(compareSessions)) {
     const item = document.createElement("div");
     item.className = `chat-list-item${session.id === activeSessionId ? " active" : ""}`;
     const open = document.createElement("button");
     open.type = "button";
     open.className = "chat-list-main";
-    open.textContent = session.title || "新会话";
+    const title = document.createElement("span");
+    title.className = "chat-list-title";
+    title.textContent = session.title || "新会话";
+    open.append(title);
+    if (session.pinned) {
+      const pinMark = document.createElement("span");
+      pinMark.className = "chat-pin-mark";
+      pinMark.textContent = "置顶";
+      open.append(pinMark);
+    }
     open.title = session.summary ? `${session.title}\n${session.summary}` : session.title || "新会话";
     open.addEventListener("click", () => activateSession(session.id));
     const menu = document.createElement("details");
@@ -1002,6 +1013,13 @@ function renderChatList() {
       menu.removeAttribute("open");
       await renameSession(session.id);
     });
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.textContent = session.pinned ? "取消置顶" : "置顶";
+    pin.addEventListener("click", () => {
+      menu.removeAttribute("open");
+      toggleSessionPin(session.id);
+    });
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger-action";
@@ -1010,11 +1028,34 @@ function renderChatList() {
       menu.removeAttribute("open");
       await deleteSession(session.id);
     });
-    actions.append(rename, remove);
+    actions.append(pin, rename, remove);
     menu.append(summary, actions);
     item.append(open, menu);
     chatList.append(item);
   }
+}
+
+function toggleSessionPin(id) {
+  if (offlineMode) return showStatusToast("离线只读模式下不能修改置顶");
+  const session = sessions.find((item) => item.id === id);
+  if (!session) return;
+  session.pinned = !session.pinned;
+  session.updatedAt = Date.now();
+  sessions.sort(compareSessions);
+  saveSessionsLocalOnly();
+  queueCloudSave(session, true);
+  renderChatList();
+  setSyncStatus(session.pinned ? "会话已置顶" : "已取消置顶");
+}
+
+function compareSessions(a, b) {
+  if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+  return b.updatedAt - a.updatedAt;
+}
+
+function sessionSearchText(session) {
+  const messageText = session.messages.map((message) => extractText(message.content)).join("\n");
+  return `${session.title}\n${session.summary || ""}\n${messageText}`.toLowerCase();
 }
 
 async function renameSession(id) {
@@ -1656,6 +1697,7 @@ function exportAllSessions() {
       createdAt: new Date(session.createdAt).toISOString(),
       updatedAt: new Date(session.updatedAt).toISOString(),
       summary: session.summary || "",
+      pinned: Boolean(session.pinned),
       messages: session.messages.filter((message) => message.role !== "error"),
     })),
   };

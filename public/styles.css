@@ -1441,9 +1441,26 @@ body.sidebar-open {
 }
 
 .chat-product-body .chat-list-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 0 10px;
   color: #4c525a;
   font-size: 13px;
+}
+
+.chat-list-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-pin-mark {
+  flex: 0 0 auto;
+  color: #176b52;
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .chat-product-body .chat-list-item:hover,
