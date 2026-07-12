@@ -53,14 +53,33 @@ const newAccessLabel = document.querySelector("#newAccessLabel");
 const generateAccessCodeButton = document.querySelector("#generateAccessCodeButton");
 const healthRouteButton = document.querySelector("#healthRouteButton");
 const routeHealthStatus = document.querySelector("#routeHealthStatus");
+const adminNavItems = [...document.querySelectorAll("[data-admin-target]")];
+const adminSections = [...document.querySelectorAll("[data-admin-section]")];
+const adminPageTitle = document.querySelector("#adminPageTitle");
+const adminDialog = document.querySelector("#adminDialog");
+const adminDialogTitle = document.querySelector("#adminDialogTitle");
+const adminDialogDescription = document.querySelector("#adminDialogDescription");
+const adminDialogConfirm = document.querySelector("#adminDialogConfirm");
 
 const DEFAULT_USER = "__defaults";
+const ADMIN_SECTION_KEY = "chatus.admin.section.v1";
+const ADMIN_SECTION_TITLES = {
+  overview: "概览",
+  users: "用户管理",
+  routes: "模型线路",
+  access: "访问控制",
+  advanced: "高级配置",
+};
 
 let config = { routes: {}, users: {}, defaults: {} };
 let stats = null;
 let accessLabels = [];
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
+
+for (const item of adminNavItems) {
+  item.addEventListener("click", () => showAdminSection(item.dataset.adminTarget));
+}
 
 generateAccessCodeButton?.addEventListener("click", () => {
   const label = (newAccessLabel?.value || "").trim() || "friend";
@@ -79,7 +98,7 @@ generateAccessCodeButton?.addEventListener("click", () => {
 loadMemoryButton?.addEventListener("click", () => loadAdminMemory());
 saveMemoryAdminButton?.addEventListener("click", () => saveAdminMemory());
 clearMemoryAdminButton?.addEventListener("click", async () => {
-  if (!confirm("确认清空该用户长期记忆？")) return;
+  if (!(await confirmAdminAction("清空长期记忆？", "该用户保存的长期记忆将被永久移除。", "清空"))) return;
   adminMemoryInput.value = "";
   await saveAdminMemory(true);
 });
@@ -147,6 +166,8 @@ deleteUserButton.addEventListener("click", async () => {
     return;
   }
 
+  if (!(await confirmAdminAction("删除用户配置？", `${selectedUser} 将恢复使用默认配置，访问码不会被删除。`, "删除配置"))) return;
+
   syncConfigFromEditor();
   delete config.users?.[selectedUser];
   selectedUser = DEFAULT_USER;
@@ -203,6 +224,7 @@ deleteRouteButton.addEventListener("click", async () => {
     setStatus("至少需要保留一条线路", true);
     return;
   }
+  if (!(await confirmAdminAction("删除模型线路？", `${routeLabel(selectedRoute)} 将被删除，关联用户会自动调整到其他线路。`, "删除线路"))) return;
 
   delete config.routes[selectedRoute];
   const fallbackRoute = Object.keys(config.routes)[0] || "";
@@ -224,6 +246,7 @@ saveAccessCodesButton.addEventListener("click", async () => {
 });
 
 resetAccessCodesButton.addEventListener("click", async () => {
+  if (!(await confirmAdminAction("恢复 Secret 访问码？", "后台保存的访问码覆盖将被删除，当前 Secret 配置会重新生效。", "恢复"))) return;
   await api("/api/admin/access-codes", { method: "DELETE" });
   await loadDashboard("已恢复 Secret 里的访问码");
 });
@@ -238,6 +261,7 @@ saveConfigButton.addEventListener("click", async () => {
 });
 
 resetConfigButton.addEventListener("click", async () => {
+  if (!(await confirmAdminAction("恢复 Secret 配置？", "后台保存的用户和线路配置将被删除，当前 Secret 配置会重新生效。", "恢复"))) return;
   await api("/api/admin/config", { method: "DELETE" });
   selectedUser = DEFAULT_USER;
   selectedRoute = "";
@@ -262,7 +286,21 @@ function showLogin() {
 async function showAdmin() {
   adminLoginView.hidden = true;
   adminView.hidden = false;
+  showAdminSection(localStorage.getItem(ADMIN_SECTION_KEY) || "overview");
   await loadDashboard();
+}
+
+function showAdminSection(section) {
+  const target = ADMIN_SECTION_TITLES[section] ? section : "overview";
+  for (const panel of adminSections) panel.hidden = panel.dataset.adminSection !== target;
+  for (const item of adminNavItems) {
+    const active = item.dataset.adminTarget === target;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-current", active ? "page" : "false");
+  }
+  if (adminPageTitle) adminPageTitle.textContent = ADMIN_SECTION_TITLES[target];
+  localStorage.setItem(ADMIN_SECTION_KEY, target);
+  document.querySelector(".admin-content")?.scrollTo({ top: 0, behavior: "instant" });
 }
 
 async function loadDashboard(message = "") {
@@ -446,7 +484,7 @@ function renderStats() {
     resetBtn.className = "plain-button compact";
     resetBtn.textContent = "重置今日";
     resetBtn.addEventListener("click", async () => {
-      if (!confirm(`重置 ${user.label} 今日用量？`)) return;
+      if (!(await confirmAdminAction("重置今日用量？", `${user.label} 的今日已用额度将归零。`, "重置"))) return;
       try {
         await api("/api/admin/usage", {
           method: "POST",
@@ -659,6 +697,18 @@ function sourceLabel(source) {
 function setStatus(message, isError = false) {
   adminStatus.textContent = message;
   adminStatus.style.color = isError ? "var(--warn)" : "var(--muted)";
+}
+
+function confirmAdminAction(title, description, confirmLabel = "确认") {
+  if (!adminDialog) return Promise.resolve(false);
+  adminDialogTitle.textContent = title;
+  adminDialogDescription.textContent = description;
+  adminDialogConfirm.textContent = confirmLabel;
+  adminDialog.returnValue = "";
+  adminDialog.showModal();
+  return new Promise((resolve) => {
+    adminDialog.addEventListener("close", () => resolve(adminDialog.returnValue === "confirm"), { once: true });
+  });
 }
 
 function textNode(text) {

@@ -20,20 +20,38 @@
     </section>
 
     <section class="admin-view" id="adminView" hidden>
-      <header class="admin-header">
-        <div>
-          <strong>Chatus Admin</strong>
-          <span id="adminSourceText">读取中</span>
-        </div>
-        <nav>
-          <a class="ghost-button compact" href="/">聊天页</a>
-          <button class="ghost-button compact" id="refreshAdminButton" type="button">刷新</button>
-          <button class="plain-button compact" id="adminLogoutButton" type="button">退出</button>
-        </nav>
-      </header>
+      <div class="admin-shell">
+        <aside class="admin-sidebar">
+          <div class="admin-brand">
+            <div class="brand-mark small">C</div>
+            <div><strong>Chatus</strong><span>管理控制台</span></div>
+          </div>
+          <nav class="admin-nav" aria-label="后台导航">
+            <button class="admin-nav-item active" type="button" data-admin-target="overview"><span>概览</span><small>用量与记忆</small></button>
+            <button class="admin-nav-item" type="button" data-admin-target="users"><span>用户</span><small>权限与额度</small></button>
+            <button class="admin-nav-item" type="button" data-admin-target="routes"><span>模型线路</span><small>接口与健康</small></button>
+            <button class="admin-nav-item" type="button" data-admin-target="access"><span>访问控制</span><small>访问码管理</small></button>
+            <button class="admin-nav-item" type="button" data-admin-target="advanced"><span>高级配置</span><small>完整 JSON</small></button>
+          </nav>
+          <div class="admin-sidebar-footer">
+            <a href="/">返回聊天</a>
+            <button id="adminLogoutButton" type="button">退出登录</button>
+          </div>
+        </aside>
 
-      <main class="admin-grid">
-        <section class="admin-panel stats-panel">
+        <section class="admin-content">
+          <header class="admin-header">
+            <div>
+              <h1 id="adminPageTitle">概览</h1>
+              <span id="adminSourceText">读取中</span>
+            </div>
+            <nav>
+              <button class="ghost-button compact" id="refreshAdminButton" type="button">刷新数据</button>
+            </nav>
+          </header>
+
+          <main class="admin-grid">
+        <section class="admin-panel stats-panel" data-admin-section="overview">
           <div class="panel-title">
             <h2>可观测性</h2>
             <span id="statsDay">--</span>
@@ -46,7 +64,7 @@
           <div class="stats-list" id="statsList"></div>
         </section>
 
-        <section class="admin-panel admin-memory-panel">
+        <section class="admin-panel admin-memory-panel" data-admin-section="overview">
           <div class="panel-title">
             <h2>用户记忆</h2>
             <span>查看/编辑长期记忆</span>
@@ -65,7 +83,7 @@
           </div>
         </section>
 
-        <section class="admin-panel">
+        <section class="admin-panel admin-user-panel" data-admin-section="users" hidden>
           <div class="panel-title">
             <h2>用户模型</h2>
             <span>按朋友配置线路和额度</span>
@@ -109,7 +127,7 @@
           </form>
         </section>
 
-        <section class="admin-panel">
+        <section class="admin-panel admin-route-panel" data-admin-section="routes" hidden>
           <div class="panel-title">
             <h2>线路模型</h2>
             <span>API Key 建议只填 apiKeyRef</span>
@@ -173,7 +191,7 @@
           </form>
         </section>
 
-        <section class="admin-panel">
+        <section class="admin-panel admin-access-panel" data-admin-section="access" hidden>
           <div class="panel-title">
             <h2>访问码</h2>
             <span id="accessSourceText">Secret</span>
@@ -189,7 +207,7 @@
           </div>
         </section>
 
-        <section class="admin-panel json-panel">
+        <section class="admin-panel json-panel" data-admin-section="advanced" hidden>
           <div class="panel-title">
             <h2>高级配置 JSON</h2>
             <span id="configSourceText">Secret</span>
@@ -200,9 +218,25 @@
             <button class="plain-button compact" id="resetConfigButton" type="button">恢复 Secret</button>
           </div>
         </section>
-      </main>
-      <p class="admin-status" id="adminStatus" role="status"></p>
+          </main>
+          <p class="admin-status" id="adminStatus" role="status"></p>
+        </section>
+      </div>
     </section>
+
+    <dialog class="app-dialog admin-dialog" id="adminDialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <h2 id="adminDialogTitle">确认操作</h2>
+          <button class="icon-control" value="cancel" type="submit" aria-label="关闭">×</button>
+        </div>
+        <p id="adminDialogDescription"></p>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="submit">取消</button>
+          <button class="dialog-primary destructive" id="adminDialogConfirm" value="confirm" type="submit">确认</button>
+        </div>
+      </form>
+    </dialog>
 
     <script src="/admin.js" type="module"></script>
   </body>
