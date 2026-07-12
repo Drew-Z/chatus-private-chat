@@ -21,6 +21,9 @@ const releaseRoutes = document.querySelector("#releaseRoutes");
 const releaseUsers = document.querySelector("#releaseUsers");
 const diagnosticList = document.querySelector("#diagnosticList");
 const auditList = document.querySelector("#auditList");
+const attentionPanel = document.querySelector("#attentionPanel");
+const attentionSummary = document.querySelector("#attentionSummary");
+const attentionList = document.querySelector("#attentionList");
 const userSystemPrompt = document.querySelector("#userSystemPrompt");
 const userForm = document.querySelector("#userForm");
 const userSelect = document.querySelector("#userSelect");
@@ -366,6 +369,7 @@ async function loadDashboard(message = "") {
   if (!getUserLabels().includes(selectedUser)) selectedUser = DEFAULT_USER;
 
   renderStats();
+  renderAttentionCenter();
   renderUserPicker();
   renderRoutePicker();
   setStatus(message || "已同步");
@@ -405,6 +409,89 @@ function renderAuditLog(entries) {
     copy.append(title, detail);
     row.append(marker, copy);
     auditList.append(row);
+  }
+}
+
+function renderAttentionCenter() {
+  if (!attentionPanel || !attentionList || !attentionSummary) return;
+  const alerts = [];
+  const now = Date.now();
+
+  for (const [routeId, route] of Object.entries(config.routes || {})) {
+    const health = routeHealth[routeId];
+    const checkedAt = health?.checkedAt ? Date.parse(health.checkedAt) : NaN;
+    if (health && !health.ok) {
+      alerts.push({
+        severity: "critical",
+        title: `${route.label || routeId} 健康检查失败`,
+        detail: health.message || health.error || "上游线路不可用",
+        section: "routes",
+        routeId,
+      });
+    } else if (!health || !Number.isFinite(checkedAt) || now - checkedAt > 24 * 60 * 60 * 1000) {
+      alerts.push({
+        severity: "warning",
+        title: `${route.label || routeId} 缺少近期健康检查`,
+        detail: health ? `上次检查于 ${relativeTime(health.checkedAt)}` : "尚未完成过健康检查",
+        section: "routes",
+        routeId,
+      });
+    }
+  }
+
+  for (const route of Array.isArray(stats?.routeStats) ? stats.routeStats : []) {
+    const attempts = Number(route.ok7d || 0) + Number(route.error7d || 0);
+    if (attempts >= 5 && Number(route.errorRate7d || 0) >= 20) {
+      alerts.push({
+        severity: Number(route.errorRate7d) >= 50 ? "critical" : "warning",
+        title: `${route.label || route.id} 近期错误率偏高`,
+        detail: `7 日内 ${attempts} 次调用，错误率 ${route.errorRate7d}%`,
+        section: "routes",
+        routeId: route.id,
+      });
+    }
+  }
+
+  for (const user of Array.isArray(stats?.users) ? stats.users : []) {
+    const limit = Number(user.dailyLimit || 0);
+    const remaining = Number(user.remaining || 0);
+    if (limit > 0 && remaining <= 0) {
+      alerts.push({ severity: "critical", title: `${user.label} 今日额度已耗尽`, detail: `已使用 ${user.used}/${limit}`, section: "users", userLabel: user.label });
+    } else if (limit > 0 && remaining / limit <= 0.1) {
+      alerts.push({ severity: "warning", title: `${user.label} 今日额度即将耗尽`, detail: `剩余 ${remaining}/${limit}`, section: "users", userLabel: user.label });
+    }
+  }
+
+  alerts.sort((a, b) => (a.severity === "critical" ? 0 : 1) - (b.severity === "critical" ? 0 : 1));
+  attentionList.textContent = "";
+  attentionPanel.hidden = alerts.length === 0;
+  attentionSummary.textContent = alerts.length ? `${alerts.length} 项待处理` : "运行正常";
+
+  for (const alert of alerts) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `attention-item ${alert.severity}`;
+    const indicator = document.createElement("span");
+    indicator.className = "attention-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = alert.title;
+    const detail = document.createElement("small");
+    detail.textContent = alert.detail;
+    const action = document.createElement("span");
+    action.className = "attention-action";
+    action.textContent = "处理";
+    copy.append(title, detail);
+    button.append(indicator, copy, action);
+    button.addEventListener("click", () => {
+      if (alert.routeId && config.routes?.[alert.routeId]) selectedRoute = alert.routeId;
+      if (alert.userLabel && getUserLabels().includes(alert.userLabel)) selectedUser = alert.userLabel;
+      showAdminSection(alert.section);
+      if (alert.section === "routes") renderRoutePicker();
+      if (alert.section === "users") renderUserPicker();
+    });
+    attentionList.append(button);
   }
 }
 
