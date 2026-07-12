@@ -200,8 +200,10 @@ closeSidebarButton?.addEventListener("click", () => closeSidebar());
 sidebarBackdrop?.addEventListener("click", () => closeSidebar());
 messageList.addEventListener("scroll", () => updateScrollButton(), { passive: true });
 scrollBottomButton?.addEventListener("click", () => {
-  messageList.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" });
+  const distance = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight;
+  messageList.scrollTo({ top: messageList.scrollHeight, behavior: distance > 1600 ? "auto" : "smooth" });
   scrollBottomButton.classList.remove("has-new-content");
+  requestAnimationFrame(() => updateScrollButton());
 });
 routeSelect.addEventListener("change", () => {
   selectRoute(routeSelect.value);
@@ -1190,7 +1192,7 @@ function renderMessages(forceScroll = true) {
 function updateScrollButton(markNewContent = false) {
   if (!scrollBottomButton) return;
   const distance = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight;
-  const shouldShow = messages.length > 0 && distance > 180;
+  const shouldShow = Boolean(messageList.querySelector(".message")) && distance > 180;
   scrollBottomButton.hidden = !shouldShow;
   if (!shouldShow) scrollBottomButton.classList.remove("has-new-content");
   else if (markNewContent) scrollBottomButton.classList.add("has-new-content");
