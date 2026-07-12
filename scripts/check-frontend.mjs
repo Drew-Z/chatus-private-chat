@@ -50,6 +50,8 @@ assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft rest
 assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout must clear local drafts");
 assert(chatScript.includes('connectionState.classList.add("route-unhealthy")'), "app.js: selected unhealthy route must be visible");
 assert(chatScript.includes("近期巡检异常，失败时会尝试备用线路"), "app.js: unhealthy route selection must explain fallback");
+assert(chatScript.includes('openModelPicker(event.key === "ArrowUp" ? "last" : "selected")'), "app.js: model picker trigger needs arrow-key navigation");
+assert(chatScript.includes('event.key === "Tab"'), "app.js: model picker must close when keyboard focus leaves");
 
 console.log("Frontend structure checks passed");
 

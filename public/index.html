@@ -96,10 +96,10 @@
               <label for="routeSelect">当前模型</label>
               <select id="routeSelect" class="native-route-select" aria-label="选择模型"></select>
               <div class="model-picker">
-                <button class="model-picker-trigger" id="modelPickerTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+                <button class="model-picker-trigger" id="modelPickerTrigger" type="button" aria-haspopup="listbox" aria-controls="modelPickerMenu" aria-expanded="false">
                   <span class="model-picker-name" id="modelPickerName">选择模型</span><span class="model-picker-chevron">⌄</span>
                 </button>
-                <div class="model-picker-menu" id="modelPickerMenu" role="listbox" hidden></div>
+                <div class="model-picker-menu" id="modelPickerMenu" role="listbox" aria-label="选择模型" hidden></div>
               </div>
               <label id="userApiKeyLabel" for="userApiKeyInput">个人 API Key</label>
               <div class="user-key-field">

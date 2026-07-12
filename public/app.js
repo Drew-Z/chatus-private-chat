@@ -251,6 +251,11 @@ routeSelect.addEventListener("change", () => {
   selectRoute(routeSelect.value);
 });
 modelPickerTrigger?.addEventListener("click", () => toggleModelPicker());
+modelPickerTrigger?.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  openModelPicker(event.key === "ArrowUp" ? "last" : "selected");
+});
 modelPickerMenu?.addEventListener("keydown", (event) => {
   const options = [...modelPickerMenu.querySelectorAll(".model-option")];
   const current = options.indexOf(document.activeElement);
@@ -266,6 +271,8 @@ modelPickerMenu?.addEventListener("keydown", (event) => {
   } else if (event.key === "End") {
     event.preventDefault();
     options.at(-1)?.focus();
+  } else if (event.key === "Tab") {
+    closeModelPicker();
   }
 });
 toggleUserApiKey?.addEventListener("click", () => {
@@ -1349,6 +1356,8 @@ function renderRoutes() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `model-option${route.id === selectedRouteId ? " selected" : ""}`;
+    button.id = `model-option-${encodeURIComponent(route.id).replace(/%/g, "-")}`;
+    button.tabIndex = -1;
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", String(route.id === selectedRouteId));
     const icon = document.createElement("span");
@@ -1366,6 +1375,7 @@ function renderRoutes() {
     if (route.supportsImages !== false) badges.append(modelBadge("图片"));
     if (route.allowUserKey || route.requiresUserKey) badges.append(modelBadge(route.requiresUserKey ? "需 Key" : "可用 Key"));
     const healthLabel = route.healthStatus === "healthy" ? "近期正常" : route.healthStatus === "unhealthy" ? "近期异常" : "未检查";
+    button.setAttribute("aria-label", `${route.model || label}，${label}，${healthLabel}`);
     badges.append(modelBadge(healthLabel, `health-${route.healthStatus || "unknown"}`));
     button.append(icon, copy, badges);
     button.addEventListener("click", () => {
@@ -1409,10 +1419,14 @@ function toggleModelPicker() {
   else closeModelPicker();
 }
 
-function openModelPicker() {
+function openModelPicker(focusTarget = "selected") {
+  if (!modelPickerMenu || modelPickerTrigger.disabled) return;
   modelPickerMenu.hidden = false;
   modelPickerTrigger.setAttribute("aria-expanded", "true");
-  modelPickerMenu.querySelector(".model-option.selected")?.focus();
+  const target = focusTarget === "last"
+    ? modelPickerMenu.querySelector(".model-option:last-child")
+    : modelPickerMenu.querySelector(".model-option.selected") || modelPickerMenu.querySelector(".model-option");
+  target?.focus();
   refreshRouteState();
 }
 
