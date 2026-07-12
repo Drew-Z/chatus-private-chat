@@ -106,6 +106,8 @@ let statusToastTimer = null;
 let offlineMode = false;
 let currentUsage = null;
 let sessionExpired = false;
+let lastRouteRefreshAt = 0;
+let routeRefreshPromise = null;
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -431,6 +433,7 @@ async function showChat(existingSession, readOnlyOffline = false) {
   routes = Array.isArray(session.routes) ? session.routes : [];
   selectedRouteId = chooseRoute(session.defaultRoute);
   hasUserSystemPrompt = Boolean(session.hasUserSystemPrompt);
+  if (!readOnlyOffline) lastRouteRefreshAt = Date.now();
   userLabel.textContent = currentUser;
   const accountAvatar = document.querySelector(".account-avatar");
   if (accountAvatar) accountAvatar.textContent = currentUser.slice(0, 1).toUpperCase() || "U";
@@ -1339,6 +1342,34 @@ function openModelPicker() {
   modelPickerMenu.hidden = false;
   modelPickerTrigger.setAttribute("aria-expanded", "true");
   modelPickerMenu.querySelector(".model-option.selected")?.focus();
+  refreshRouteState();
+}
+
+function refreshRouteState() {
+  if (offlineMode || sessionExpired || Date.now() - lastRouteRefreshAt < 60_000) return routeRefreshPromise;
+  if (routeRefreshPromise) return routeRefreshPromise;
+  routeRefreshPromise = fetch("/api/session", { cache: "no-store" })
+    .then(async (response) => {
+      if (handleUnauthorizedResponse(response)) return;
+      if (!response.ok) return;
+      const session = await response.json();
+      const nextRoutes = Array.isArray(session.routes) ? session.routes : [];
+      routes = nextRoutes;
+      if (!routes.some((route) => route.id === selectedRouteId)) selectedRouteId = chooseRoute(session.defaultRoute);
+      hasUserSystemPrompt = Boolean(session.hasUserSystemPrompt);
+      updateUsage(session.usage);
+      renderRoutes();
+      if (routes.length <= 1) closeModelPicker();
+      updateConnectionState();
+      cacheSessionSnapshot(session);
+      lastRouteRefreshAt = Date.now();
+      if (!modelPickerMenu.hidden) modelPickerMenu.querySelector(".model-option.selected")?.focus();
+    })
+    .catch(() => null)
+    .finally(() => {
+      routeRefreshPromise = null;
+    });
+  return routeRefreshPromise;
 }
 
 function closeModelPicker() {
