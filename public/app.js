@@ -9,6 +9,7 @@ const loginSubmitButton = loginForm.querySelector("button[type='submit']");
 const userLabel = document.querySelector("#userLabel");
 const usageText = document.querySelector("#usageText");
 const messageList = document.querySelector("#messageList");
+const scrollBottomButton = document.querySelector("#scrollBottomButton");
 const chatList = document.querySelector("#chatList");
 const chatForm = document.querySelector("#chatForm");
 const promptInput = document.querySelector("#promptInput");
@@ -197,6 +198,11 @@ sessionSearch?.addEventListener("input", () => {
 openSidebarButton?.addEventListener("click", () => openSidebar());
 closeSidebarButton?.addEventListener("click", () => closeSidebar());
 sidebarBackdrop?.addEventListener("click", () => closeSidebar());
+messageList.addEventListener("scroll", () => updateScrollButton(), { passive: true });
+scrollBottomButton?.addEventListener("click", () => {
+  messageList.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" });
+  scrollBottomButton.classList.remove("has-new-content");
+});
 routeSelect.addEventListener("change", () => {
   selectRoute(routeSelect.value);
 });
@@ -1136,6 +1142,7 @@ function renderMessages(forceScroll = true) {
   messageList.textContent = "";
   if (!messages.length) {
     renderEmptyChat();
+    updateScrollButton();
     return;
   }
   messages.forEach((message, index) => {
@@ -1177,6 +1184,16 @@ function renderMessages(forceScroll = true) {
     messageList.append(node);
   });
   if (forceScroll || nearBottom) messageList.scrollTop = messageList.scrollHeight;
+  updateScrollButton(!nearBottom && isBusy);
+}
+
+function updateScrollButton(markNewContent = false) {
+  if (!scrollBottomButton) return;
+  const distance = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight;
+  const shouldShow = messages.length > 0 && distance > 180;
+  scrollBottomButton.hidden = !shouldShow;
+  if (!shouldShow) scrollBottomButton.classList.remove("has-new-content");
+  else if (markNewContent) scrollBottomButton.classList.add("has-new-content");
 }
 
 function renderEmptyChat() {
