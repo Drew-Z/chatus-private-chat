@@ -58,6 +58,7 @@ const clearMemoryAdminButton = document.querySelector("#clearMemoryAdminButton")
 const newAccessLabel = document.querySelector("#newAccessLabel");
 const generateAccessCodeButton = document.querySelector("#generateAccessCodeButton");
 const healthRouteButton = document.querySelector("#healthRouteButton");
+const healthAllRoutesButton = document.querySelector("#healthAllRoutesButton");
 const routeHealthStatus = document.querySelector("#routeHealthStatus");
 const adminNavItems = [...document.querySelectorAll("[data-admin-target]")];
 const adminSections = [...document.querySelectorAll("[data-admin-section]")];
@@ -111,6 +112,7 @@ clearMemoryAdminButton?.addEventListener("click", async () => {
 });
 memoryUserSelect?.addEventListener("change", () => loadAdminMemory());
 healthRouteButton?.addEventListener("click", () => checkRouteHealth());
+healthAllRoutesButton?.addEventListener("click", () => checkAllRoutesHealth());
 fetchRouteModelsButton?.addEventListener("click", () => fetchRouteModels());
 
 bootAdmin();
@@ -880,6 +882,54 @@ async function checkRouteHealth() {
     } catch {}
   } finally {
     healthRouteButton.disabled = false;
+  }
+}
+
+async function checkAllRoutesHealth() {
+  const routeIds = Object.keys(config.routes || {});
+  if (!routeIds.length) return setRouteHealth("没有可检查的线路", true);
+  const previousRoute = selectedRoute;
+  let completed = 0;
+  healthRouteButton.disabled = true;
+  healthAllRoutesButton.disabled = true;
+  setRouteHealth(`正在检查 0/${routeIds.length} 条线路…`);
+  const results = [];
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < routeIds.length) {
+      const routeId = routeIds[cursor++];
+      try {
+        const response = await fetch("/api/admin/route-health", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ routeId }),
+        });
+        const data = await response.json().catch(() => ({ ok: false, routeId, message: `HTTP ${response.status}` }));
+        results.push({ routeId, ...data, ok: response.ok && data.ok === true });
+      } catch {
+        results.push({ routeId, ok: false, message: "网络请求失败" });
+      }
+      completed += 1;
+      setRouteHealth(`正在检查 ${completed}/${routeIds.length} 条线路…`);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(3, routeIds.length) }, () => worker()));
+    const healthData = await api("/api/admin/route-health");
+    routeHealth = healthData?.routes || routeHealth;
+    selectedRoute = config.routes?.[previousRoute] ? previousRoute : routeIds[0];
+    renderRoutePicker();
+    const healthy = results.filter((item) => item.ok);
+    const failed = results.length - healthy.length;
+    const average = healthy.length
+      ? Math.round(healthy.reduce((sum, item) => sum + (Number(item.latencyMs) || 0), 0) / healthy.length)
+      : 0;
+    setRouteHealth(`检查完成 · 正常 ${healthy.length} · 异常 ${failed}${healthy.length ? ` · 平均 ${average}ms` : ""}`, failed > 0);
+  } catch (error) {
+    setRouteHealth(error.message || "批量检查失败", true);
+  } finally {
+    healthRouteButton.disabled = false;
+    healthAllRoutesButton.disabled = false;
   }
 }
 
