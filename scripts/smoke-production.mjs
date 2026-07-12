@@ -46,6 +46,7 @@ async function runChecks() {
   const homeHtml = await home.text();
   assert(homeHtml.includes('id="loginView"'), "home: login view missing");
   assert(homeHtml.includes('src="/app.js"'), "home: app script missing");
+  if (expectedCommit) assert(homeHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "home: release meta does not match deployment");
 
   const admin = await request(`/admin?smoke=${marker}`);
   assert(admin.status === 200, `admin: expected 200, got ${admin.status}`);
@@ -53,6 +54,7 @@ async function runChecks() {
   const adminHtml = await admin.text();
   assert(adminHtml.includes('id="adminLoginView"'), "admin: login view missing");
   assert(adminHtml.includes('id="releaseGrid"') || adminHtml.includes('class="release-grid"'), "admin: production status panel missing");
+  if (expectedCommit) assert(adminHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "admin: release meta does not match deployment");
 
   const session = await request("/api/session");
   assert(session.status === 401, `session: expected 401, got ${session.status}`);

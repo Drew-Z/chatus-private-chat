@@ -3,7 +3,7 @@
   let installButton = null;
   let updateRequested = false;
   let pendingUpdateWorker = null;
-  let currentReleaseCommit = "";
+  let currentReleaseCommit = document.querySelector('meta[name="chatus-release"]')?.content || "";
   let releaseCheckInFlight = false;
 
   function showUpdatePrompt(worker) {

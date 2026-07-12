@@ -99,6 +99,16 @@ jobs:
             "public/release.json",
             JSON.stringify({ commit: process.env.GITHUB_SHA, deployedAt: new Date().toISOString() }),
           );
+          for (const file of ["public/index.html", "public/admin.html"]) {
+            const source = fs.readFileSync(file, "utf8");
+            if (!source.includes('meta name="chatus-release" content="development"')) {
+              throw new Error(`${file} is missing the release meta placeholder`);
+            }
+            fs.writeFileSync(
+              file,
+              source.replace('meta name="chatus-release" content="development"', `meta name="chatus-release" content="${process.env.GITHUB_SHA}"`),
+            );
+          }
           NODE
 
       - name: Deploy Worker

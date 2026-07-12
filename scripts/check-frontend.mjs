@@ -21,6 +21,7 @@ for (const page of pages) {
   const ids = [...html.matchAll(/\bid=["']([^"']+)["']/g)].map((match) => match[1]);
   const duplicateIds = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
   assert(!duplicateIds.length, `${page.html}: duplicate ids: ${duplicateIds.join(", ")}`);
+  assert(html.includes('meta name="chatus-release" content="development"'), `${page.html}: missing release meta placeholder`);
 
   const referencedIds = [...script.matchAll(/querySelector\(["']#([A-Za-z][\w-]*)["']\)/g)].map((match) => match[1]);
   const missingIds = [...new Set(referencedIds.filter((id) => !ids.includes(id)))];
@@ -41,6 +42,7 @@ const [pwaScript, serviceWorker] = await Promise.all([
 ]);
 assert(pwaScript.includes('postMessage({ type: "SKIP_WAITING" })'), "pwa.js: missing explicit update activation");
 assert(pwaScript.includes("fetchReleaseCommit"), "pwa.js: releases must be detected even when the service worker is unchanged");
+assert(pwaScript.includes('meta[name="chatus-release"]'), "pwa.js: update checks need the version of the loaded page");
 assert(pwaScript.includes("5 * 60_000"), "pwa.js: long-lived pages need periodic release checks");
 assert(serviceWorker.includes('event.data?.type === "SKIP_WAITING"'), "sw.js: missing update activation handler");
 const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?\n\}\);/)?.[0] || "";
