@@ -84,6 +84,7 @@
         </aside>
 
         <section class="conversation">
+          <div class="status-toast" id="statusToast" role="status" hidden></div>
           <header class="chat-header">
             <div class="route-block">
               <label for="routeSelect">当前模型</label>
@@ -123,6 +124,21 @@
         </section>
       </section>
     </main>
+
+    <dialog class="app-dialog" id="appDialog">
+      <form method="dialog" id="appDialogForm">
+        <div class="dialog-heading">
+          <h2 id="appDialogTitle">确认操作</h2>
+          <button class="icon-control" value="cancel" type="submit" aria-label="关闭">×</button>
+        </div>
+        <p id="appDialogDescription"></p>
+        <textarea id="appDialogInput" rows="4" hidden></textarea>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="submit">取消</button>
+          <button class="dialog-primary" id="appDialogConfirm" value="confirm" type="submit">确认</button>
+        </div>
+      </form>
+    </dialog>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

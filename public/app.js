@@ -38,6 +38,13 @@ const mobileTitle = document.querySelector("#mobileTitle");
 const dropHint = document.querySelector("#dropHint");
 const composerCount = document.querySelector("#composerCount");
 const composerHint = document.querySelector("#composerHint");
+const appDialog = document.querySelector("#appDialog");
+const appDialogForm = document.querySelector("#appDialogForm");
+const appDialogTitle = document.querySelector("#appDialogTitle");
+const appDialogDescription = document.querySelector("#appDialogDescription");
+const appDialogInput = document.querySelector("#appDialogInput");
+const appDialogConfirm = document.querySelector("#appDialogConfirm");
+const statusToast = document.querySelector("#statusToast");
 
 const LEGACY_STORAGE_KEY = "chatus.messages.v1";
 const SESSIONS_STORAGE_PREFIX = "chatus.sessions.v3.";
@@ -74,6 +81,7 @@ let cloudSaveInFlight = false;
 let cloudSaveQueued = false;
 let syncStatusText = "";
 let hasUserSystemPrompt = false;
+let statusToastTimer = null;
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -121,9 +129,9 @@ document.querySelector("#mobileNewChatButton")?.addEventListener("click", () => 
   promptInput.focus();
 });
 
-document.querySelector("#clearButton").addEventListener("click", () => {
+document.querySelector("#clearButton").addEventListener("click", async () => {
   if (!messages.length) return;
-  if (!confirm("清空当前会话的所有消息？")) return;
+  if (!(await confirmAction({ title: "清空当前会话？", description: "所有消息将被移除，此操作无法撤销。", confirmLabel: "清空", destructive: true }))) return;
   messages = [];
   const active = getActiveSession();
   active.summary = "";
@@ -611,7 +619,10 @@ function activateSession(id) {
   promptInput.focus();
 }
 
-function deleteSession(id) {
+async function deleteSession(id) {
+  const session = sessions.find((item) => item.id === id);
+  if (!session) return;
+  if (!(await confirmAction({ title: "删除这个会话？", description: `“${session.title || "新会话"}”将从本地和云端移除。`, confirmLabel: "删除", destructive: true }))) return;
   sessions = sessions.filter((session) => session.id !== id);
   if (!sessions.length) sessions = [createSession()];
   if (activeSessionId === id) {
@@ -637,7 +648,7 @@ function deleteSession(id) {
 function saveMessages() {
   const active = getActiveSession();
   active.messages = messages.slice(-MAX_STORED_MESSAGES);
-  active.title = deriveSessionTitle(active.messages);
+  if (!active.title || active.title === "新会话") active.title = deriveSessionTitle(active.messages);
   active.updatedAt = Date.now();
   sessions = [active, ...sessions.filter((session) => session.id !== active.id)]
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -727,8 +738,20 @@ function setSyncStatus(text) {
     return;
   }
   connectionState.textContent = syncStatusText;
+  showStatusToast(syncStatusText);
   setTimeout(() => {
     if (connectionState.textContent === syncStatusText) updateConnectionState();
+  }, 2200);
+}
+
+function showStatusToast(text) {
+  if (!statusToast || !text) return;
+  if (statusToastTimer) clearTimeout(statusToastTimer);
+  statusToast.textContent = text;
+  statusToast.hidden = false;
+  statusToastTimer = setTimeout(() => {
+    statusToast.hidden = true;
+    statusToastTimer = null;
   }, 2200);
 }
 
@@ -754,15 +777,55 @@ function renderChatList() {
     open.textContent = session.title || "新会话";
     open.title = session.summary ? `${session.title}\n${session.summary}` : session.title || "新会话";
     open.addEventListener("click", () => activateSession(session.id));
+    const menu = document.createElement("details");
+    menu.className = "chat-list-menu";
+    const summary = document.createElement("summary");
+    summary.title = "会话操作";
+    summary.setAttribute("aria-label", "会话操作");
+    summary.textContent = "···";
+    const actions = document.createElement("div");
+    actions.className = "chat-list-menu-popover";
+    const rename = document.createElement("button");
+    rename.type = "button";
+    rename.textContent = "重命名";
+    rename.addEventListener("click", async () => {
+      menu.removeAttribute("open");
+      await renameSession(session.id);
+    });
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "chat-list-remove";
-    remove.textContent = "×";
-    remove.title = "删除会话";
-    remove.addEventListener("click", () => deleteSession(session.id));
-    item.append(open, remove);
+    remove.className = "danger-action";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      menu.removeAttribute("open");
+      await deleteSession(session.id);
+    });
+    actions.append(rename, remove);
+    menu.append(summary, actions);
+    item.append(open, menu);
     chatList.append(item);
   }
+}
+
+async function renameSession(id) {
+  const session = sessions.find((item) => item.id === id);
+  if (!session) return;
+  const next = await promptAction({
+    title: "重命名会话",
+    description: "使用一个简短、容易识别的名称。",
+    value: session.title || "新会话",
+    confirmLabel: "保存",
+    rows: 1,
+  });
+  if (next === null || !next.trim()) return;
+  session.title = next.trim().slice(0, 60);
+  session.updatedAt = Date.now();
+  saveSessionsLocalOnly();
+  if (session.id === activeSessionId) queueCloudSave(session, true);
+  else queueCloudSave(session, false);
+  renderChatList();
+  updateChatTitle();
+  setSyncStatus("会话已重命名");
 }
 
 function sessionsStorageKey() {
@@ -1012,10 +1075,16 @@ async function copyMessage(message) {
   }
 }
 
-function editUserMessage(index) {
+async function editUserMessage(index) {
   const message = messages[index];
   if (!message || message.role !== "user") return;
-  const next = prompt("编辑消息后将从这里重发：", extractText(message.content));
+  const next = await promptAction({
+    title: "编辑消息",
+    description: "保存后将从这条消息重新生成后续回答。",
+    value: extractText(message.content),
+    confirmLabel: "保存并重发",
+    rows: 5,
+  });
   if (next === null) return;
   const images = extractImages(message.content).map((url, i) => ({ name: `image-${i + 1}`, url }));
   messages = messages.slice(0, index);
@@ -1025,6 +1094,40 @@ function editUserMessage(index) {
   saveMessages();
   renderMessages(true);
   streamChat(assistantMessage).then(() => maybeRefreshSummary());
+}
+
+function openActionDialog({ title, description = "", value = null, confirmLabel = "确认", destructive = false, rows = 4 }) {
+  if (!appDialog || !appDialogForm) return Promise.resolve(null);
+  appDialogTitle.textContent = title;
+  appDialogDescription.textContent = description;
+  appDialogDescription.hidden = !description;
+  appDialogInput.hidden = value === null;
+  appDialogInput.rows = rows;
+  appDialogInput.value = value ?? "";
+  appDialogConfirm.textContent = confirmLabel;
+  appDialogConfirm.classList.toggle("destructive", destructive);
+  appDialog.returnValue = "";
+  appDialog.showModal();
+  if (value !== null) {
+    requestAnimationFrame(() => {
+      appDialogInput.focus();
+      appDialogInput.select();
+    });
+  }
+  return new Promise((resolve) => {
+    appDialog.addEventListener("close", () => {
+      if (appDialog.returnValue !== "confirm") resolve(null);
+      else resolve(value === null ? true : appDialogInput.value);
+    }, { once: true });
+  });
+}
+
+function confirmAction(options) {
+  return openActionDialog({ ...options, value: null }).then(Boolean);
+}
+
+function promptAction(options) {
+  return openActionDialog(options);
 }
 
 function resendFromUser(index) {
