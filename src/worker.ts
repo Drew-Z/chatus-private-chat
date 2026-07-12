@@ -377,6 +377,9 @@ export default {
     const assetResponse = await env.ASSETS.fetch(request);
     return withSecurityHeaders(assetResponse);
   },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runScheduledRouteHealthChecks(env));
+  },
 };
 
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
@@ -1092,6 +1095,11 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
     return jsonResponse({ error: "route_not_found", message: "线路不存在" }, 404);
   }
 
+  const result = await checkRouteHealth(env, routeId, route);
+  return jsonResponse(result, result.ok ? 200 : healthCheckStatus("error" in result ? result.error : ""));
+}
+
+async function checkRouteHealth(env: Env, routeId: string, route: RouteConfig) {
   const apiKey = resolveRouteKey(route, env, "");
   if (!apiKey) {
     const result = {
@@ -1102,7 +1110,7 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
       checkedAt: new Date().toISOString(),
     };
     await saveRouteHealth(env, routeId, result);
-    return jsonResponse(result, 400);
+    return result;
   }
 
   const started = Date.now();
@@ -1130,7 +1138,7 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
         checkedAt: new Date().toISOString(),
       };
       await saveRouteHealth(env, routeId, result);
-      return jsonResponse(result, 502);
+      return result;
     }
     const result = {
       ok: true,
@@ -1142,7 +1150,7 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
       checkedAt: new Date().toISOString(),
     };
     await saveRouteHealth(env, routeId, result);
-    return jsonResponse(result);
+    return result;
   } catch (error) {
     const result = {
       ok: false,
@@ -1155,8 +1163,26 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
       checkedAt: new Date().toISOString(),
     };
     await saveRouteHealth(env, routeId, result);
-    return jsonResponse(result, 502);
+    return result;
   }
+}
+
+function healthCheckStatus(error: unknown): number {
+  return error === "missing_key" ? 400 : 502;
+}
+
+async function runScheduledRouteHealthChecks(env: Env): Promise<void> {
+  const config = await loadAppConfig(env);
+  const entries = Object.entries(config.routes);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < entries.length) {
+      const entry = entries[cursor++];
+      if (!entry) return;
+      await checkRouteHealth(env, entry[0], entry[1]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(2, entries.length) }, () => worker()));
 }
 
 async function handleGetAdminRouteHealth(env: Env): Promise<Response> {

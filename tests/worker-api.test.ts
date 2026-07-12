@@ -1,5 +1,7 @@
 import { env, exports } from "cloudflare:workers";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import worker from "../src/worker";
 
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -41,6 +43,8 @@ async function adminLogin() {
 }
 
 describe("Worker API", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   beforeEach(async () => {
     await Promise.all([
       env.CHAT_STORE.delete(ACCESS_CODES_KEY),
@@ -72,6 +76,36 @@ describe("Worker API", () => {
       user: label,
       routes: [{ id: "default", healthStatus: "unhealthy" }],
     });
+  });
+
+  it("runs scheduled route health checks and persists results", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        scheduled: {
+          label: "Scheduled",
+          type: "openai-chat",
+          baseUrl: "https://scheduled.example/v1",
+          model: "scheduled-model",
+          apiKey: "scheduled-key",
+        },
+      },
+      defaults: { defaultRoute: "scheduled", allowedRoutes: ["scheduled"] },
+    }));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      choices: [{ message: { content: "391" } }],
+    }), { headers: { "Content-Type": "application/json" } }));
+    const ctx = createExecutionContext();
+
+    await worker.scheduled(createScheduledController({ cron: "17 */6 * * *" }), env, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await expect(env.CHAT_STORE.get("route-health:scheduled", "json")).resolves.toMatchObject({
+      ok: true,
+      routeId: "scheduled",
+      model: "scheduled-model",
+    });
+    fetchMock.mockRestore();
   });
 
   it("adds hardened security headers to assets and session cookies", async () => {
