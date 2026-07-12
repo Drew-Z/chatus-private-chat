@@ -180,6 +180,9 @@ export class UserState extends DurableObject<Env> {
           minute INTEGER PRIMARY KEY,
           count INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS login_failures (
+          at INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS metrics (
           day TEXT NOT NULL,
           kind TEXT NOT NULL,
@@ -244,6 +247,22 @@ export class UserState extends DurableObject<Env> {
       Math.max(0, legacyDayCount),
     );
     return this.ctx.storage.sql.exec<{ count: number }>("SELECT count FROM usage WHERE day = ?", day).one().count;
+  }
+
+  async getLoginThrottle(nowMs: number, limit: number, windowMs: number): Promise<{ ok: boolean; retryAfter: number }> {
+    const cutoff = nowMs - windowMs;
+    this.ctx.storage.sql.exec("DELETE FROM login_failures WHERE at <= ?", cutoff);
+    const rows = this.ctx.storage.sql.exec<{ at: number }>("SELECT at FROM login_failures ORDER BY at ASC").toArray();
+    if (rows.length < limit) return { ok: true, retryAfter: 0 };
+    return { ok: false, retryAfter: Math.max(1, Math.ceil((rows[0].at + windowMs - nowMs) / 1000)) };
+  }
+
+  async recordLoginFailure(nowMs: number): Promise<void> {
+    this.ctx.storage.sql.exec("INSERT INTO login_failures(at) VALUES (?)", nowMs);
+  }
+
+  async clearLoginFailures(): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM login_failures");
   }
 
   async resetUsage(day: string): Promise<void> {
@@ -495,6 +514,11 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 }
 
 async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
+  const loginState = await getLoginState(env, request);
+  const throttle = await loginState.getLoginThrottle(Date.now(), 8, 10 * 60_000);
+  if (!throttle.ok) {
+    return jsonResponse({ error: "login_rate_limited", retryAfter: throttle.retryAfter }, 429, { "Retry-After": String(throttle.retryAfter) });
+  }
   const accessCodes = await loadAccessCodes(env);
   if (!accessCodes.trim()) {
     return jsonResponse({ error: "server_not_configured" }, 503);
@@ -505,12 +529,14 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   const label = await findAccessLabel(accessCodes, code);
 
   if (!label) {
+    await loginState.recordLoginFailure(Date.now());
     return jsonResponse({ error: "invalid_code" }, 401);
   }
   const config = await loadAppConfig(env);
   if (getEffectiveUserConfig(config, label).enabled === false) {
     return jsonResponse({ error: "user_disabled", message: "该用户已暂停使用" }, 403);
   }
+  await loginState.clearLoginFailures();
 
   const now = Date.now();
   const session: Session = {
@@ -2929,6 +2955,13 @@ function positiveCount(value: string | null): number {
 
 function getUserState(env: Env, label: string): DurableObjectStub<UserState> {
   return env.USER_STATE.getByName(label);
+}
+
+async function getLoginState(env: Env, request: Request): Promise<DurableObjectStub<UserState>> {
+  const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For")?.split(",", 1)[0]?.trim() || "unknown";
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ip));
+  const key = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return env.USER_STATE.get(env.USER_STATE.idFromName(`login:${key}`));
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {

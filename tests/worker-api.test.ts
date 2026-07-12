@@ -132,6 +132,24 @@ describe("Worker API", () => {
     await expect(relogin.json()).resolves.toMatchObject({ error: "user_disabled" });
   });
 
+  it("rate limits repeated failed login attempts by client IP", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "friend:correct-access-code");
+    const ip = `test-${crypto.randomUUID()}`;
+    const attempt = () => exports.default.fetch(new Request("https://example.test/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+      body: JSON.stringify({ code: "wrong-access-code" }),
+    }));
+
+    for (let index = 0; index < 8; index += 1) {
+      expect((await attempt()).status).toBe(401);
+    }
+    const blocked = await attempt();
+    expect(blocked.status).toBe(429);
+    expect(Number(blocked.headers.get("Retry-After"))).toBeGreaterThan(0);
+    await expect(blocked.json()).resolves.toMatchObject({ error: "login_rate_limited" });
+  });
+
   it("creates a configured user and access code in one admin operation", async () => {
     const cookie = await adminLogin();
     const label = `invite-${crypto.randomUUID()}`;

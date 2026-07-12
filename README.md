@@ -23,6 +23,7 @@ Browser
 - 多协议：`openai-chat` 适合 OpenAI-compatible 中转；`anthropic-messages` 适合 Claude/Claude Code 一类 Anthropic Messages 接口。
 - 多模态：前端支持图片上传；后端会按线路协议转换图片格式。
 - 私有访问：访问码登录、HttpOnly session、强一致用户限额，不暴露 `/v1/chat/completions` 分发接口。
+- 登录保护：按 IP 对失败访问码尝试做 Durable Object 强一致限流，成功登录后自动清空失败计数。
 - 多会话：云端同步 + 本地缓存，每个朋友最多 30 个会话；上下文按字符预算裁剪，并带会话摘要。
 - 长期记忆：每个访问码 label 在 KV 中有一份长期记忆，支持建议写入与后台编辑。
 - 聊天体验：Markdown 渲染、消息编辑/重发/重新生成、会话搜索导出、移动端抽屉侧栏。

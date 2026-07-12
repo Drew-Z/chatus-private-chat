@@ -126,7 +126,9 @@ loginForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({ code }),
     });
     if (!response.ok) {
-      loginStatus.textContent = response.status >= 500 ? "服务暂时不可用，请稍后重试" : "访问码不可用";
+      loginStatus.textContent = response.status === 429
+        ? "尝试次数过多，请稍后再试"
+        : response.status >= 500 ? "服务暂时不可用，请稍后重试" : "访问码不可用";
       return;
     }
     await response.json();
