@@ -45,6 +45,7 @@ const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?
 assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: updates must not activate during install");
 
 const chatScript = await readFile(path.join(root, "public/app.js"), "utf8");
+const styles = await readFile(path.join(root, "public/styles.css"), "utf8");
 assert(chatScript.includes('promptInput.addEventListener("input", () => saveActiveDraft())'), "app.js: missing draft input persistence");
 assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft restoration");
 assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout must clear local drafts");
@@ -59,6 +60,9 @@ assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: log
 assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily rate limits must remain distinct");
 assert(chatScript.includes("async function fetchWithTimeout"), "app.js: non-streaming requests need bounded timeouts");
 assert(chatScript.includes('const response = await fetch("/api/chat"'), "app.js: streaming chat must remain user-cancellable without a fixed timeout");
+assert(chatScript.includes('reducedMotion || distance > 1600 ? "auto" : "smooth"'), "app.js: smooth scrolling must respect reduced-motion preferences");
+assert(styles.includes("button:focus-visible"), "styles.css: keyboard controls need a visible focus ring");
+assert(styles.includes("@media (prefers-reduced-motion: reduce)"), "styles.css: motion needs an accessibility fallback");
 for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
   const source = await readFile(path.join(root, file), "utf8");
   assert(!source.includes(".style."), `${file}: inline styles weaken the CSP`);

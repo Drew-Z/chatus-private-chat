@@ -248,7 +248,8 @@ sidebarBackdrop?.addEventListener("click", () => closeSidebar());
 messageList.addEventListener("scroll", () => updateScrollButton(), { passive: true });
 scrollBottomButton?.addEventListener("click", () => {
   const distance = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight;
-  messageList.scrollTo({ top: messageList.scrollHeight, behavior: distance > 1600 ? "auto" : "smooth" });
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  messageList.scrollTo({ top: messageList.scrollHeight, behavior: reducedMotion || distance > 1600 ? "auto" : "smooth" });
   scrollBottomButton.classList.remove("has-new-content");
   requestAnimationFrame(() => updateScrollButton());
 });

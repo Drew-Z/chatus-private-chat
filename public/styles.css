@@ -3000,6 +3000,21 @@ body.sidebar-open {
   border-color: #383d42;
 }
 
+button:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+[role="option"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side-panel,
+  .chat-product-body .message-actions {
+    transition: none;
+  }
+}
+
 [data-theme="dark"] .admin-body .plain-button {
   background: transparent;
 }
