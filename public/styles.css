@@ -3231,6 +3231,8 @@ body.sidebar-open {
 
 .access-entry-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 5px;
 }
 
@@ -3264,6 +3266,7 @@ body.sidebar-open {
 
   .access-entry-actions {
     grid-column: 2;
+    justify-content: flex-start;
   }
 }
 

@@ -381,14 +381,46 @@ function renderAccessEntries() {
         setStatus("复制失败，请使用下方文本编辑器", true);
       }
     });
+    const rotateButton = document.createElement("button");
+    rotateButton.type = "button";
+    rotateButton.className = "plain-button compact";
+    rotateButton.textContent = "轮换";
+    rotateButton.addEventListener("click", () => rotateAccessEntry(index, entry));
     const revokeButton = document.createElement("button");
     revokeButton.type = "button";
     revokeButton.className = "plain-button compact danger-action";
     revokeButton.textContent = "撤销";
     revokeButton.addEventListener("click", () => revokeAccessEntry(index, entry));
-    actions.append(copyButton, revokeButton);
+    actions.append(copyButton, rotateButton, revokeButton);
     row.append(avatar, copy, actions);
     accessEntryList.append(row);
+  }
+}
+
+async function rotateAccessEntry(index, entry) {
+  if (!(await confirmAdminAction("轮换访问码？", `${entry.label} 的旧访问码将立即失效，新访问码会自动复制。已有登录会话会在过期前保持有效。`, "轮换"))) return;
+  const entries = parseAccessEntries(accessCodesInput.value);
+  if (!entries[index]) return setStatus("访问码列表已变化，请刷新后重试", true);
+  const previousValue = accessCodesInput.value;
+  const nextCode = generateAccessCode();
+  entries[index] = { ...entries[index], code: nextCode };
+  accessCodesInput.value = entries.map((item) => `${item.label}:${item.code}`).join(",");
+  renderAccessEntries();
+  try {
+    await api("/api/admin/access-codes", {
+      method: "PUT",
+      body: JSON.stringify({ accessCodes: accessCodesInput.value }),
+    });
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(nextCode);
+      copied = true;
+    } catch {}
+    await loadDashboard(copied ? `${entry.label} 的访问码已轮换并复制` : `${entry.label} 的访问码已轮换，请点击复制`);
+  } catch (error) {
+    accessCodesInput.value = previousValue;
+    renderAccessEntries();
+    setStatus(error.message || "轮换失败", true);
   }
 }
 
