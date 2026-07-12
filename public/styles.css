@@ -3659,6 +3659,11 @@ body.sidebar-open {
   background: #b4493d;
 }
 
+.route-health-row.disabled .route-health-indicator {
+  background: #9aa1a8;
+  box-shadow: inset 0 0 0 2px #fff;
+}
+
 .route-health-copy {
   display: grid;
   gap: 3px;

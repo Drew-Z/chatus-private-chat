@@ -34,6 +34,7 @@ type AccessEntry = {
 type ProviderType = "openai-chat" | "anthropic-messages";
 
 type RouteConfig = {
+  enabled?: boolean;
   label: string;
   type: ProviderType;
   baseUrl: string;
@@ -819,6 +820,7 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
     users,
     routes: Object.entries(config.routes).map(([id, route]) => ({
       id,
+      enabled: route.enabled !== false,
       label: route.label,
       type: route.type,
       model: route.model,
@@ -1173,7 +1175,7 @@ function healthCheckStatus(error: unknown): number {
 
 async function runScheduledRouteHealthChecks(env: Env): Promise<void> {
   const config = await loadAppConfig(env);
-  const entries = Object.entries(config.routes);
+  const entries = Object.entries(config.routes).filter(([, route]) => route.enabled !== false);
   let cursor = 0;
   const worker = async () => {
     while (cursor < entries.length) {
@@ -1734,6 +1736,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
     if (typeof rawRoute.baseUrl !== "string" || typeof rawRoute.model !== "string") continue;
 
     routes[id] = {
+      enabled: rawRoute.enabled !== false,
       label: typeof rawRoute.label === "string" ? rawRoute.label : id,
       type,
       baseUrl: rawRoute.baseUrl,
@@ -1802,7 +1805,7 @@ function getRouteAccess(config: AppConfig, label: string, env: Env): RouteAccess
   const routes = allowedIds
     .map((id): PublicRoute | null => {
       const route = config.routes[id];
-      if (!route) return null;
+      if (!route || route.enabled === false) return null;
       const hasServerKey = !route.requiresUserKey && Boolean(resolveRouteKey(route, env, ""));
       const allowUserKey = Boolean(user.allowBringYourOwnKey && route.allowUserKey !== false);
       if (!hasServerKey && !allowUserKey) return null;

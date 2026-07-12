@@ -78,6 +78,48 @@ describe("Worker API", () => {
     });
   });
 
+  it("hides disabled routes from users and fallback plans", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        active: {
+          label: "Active",
+          type: "openai-chat",
+          baseUrl: "https://active.example/v1",
+          model: "active-model",
+          apiKey: "active-key",
+          fallbacks: ["disabled"],
+        },
+        disabled: {
+          enabled: false,
+          label: "Disabled",
+          type: "openai-chat",
+          baseUrl: "https://disabled.example/v1",
+          model: "disabled-model",
+          apiKey: "disabled-key",
+        },
+      },
+      defaults: { defaultRoute: "disabled", allowedRoutes: ["active", "disabled"] },
+    }));
+    const { cookie } = await login();
+
+    const session = await apiRequest("/api/session", cookie);
+    await expect(session.json()).resolves.toMatchObject({
+      defaultRoute: "active",
+      routes: [{ id: "active" }],
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("upstream failed", { status: 502 }));
+    const chat = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId: "active", messages: [{ role: "user", content: "计算 8 加 9，并解释步骤" }] }),
+    });
+    const chatPayload = await chat.clone().json();
+    expect(chat.status, JSON.stringify(chatPayload)).toBe(502);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("active.example");
+  });
+
   it("runs scheduled route health checks and persists results", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {

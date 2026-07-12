@@ -47,6 +47,7 @@ const fetchRouteModelsButton = document.querySelector("#fetchRouteModelsButton")
 const routeKeyRefInput = document.querySelector("#routeKeyRefInput");
 const routeFallbacksInput = document.querySelector("#routeFallbacksInput");
 const routeImagesInput = document.querySelector("#routeImagesInput");
+const routeEnabledInput = document.querySelector("#routeEnabledInput");
 const routeRequiresKeyInput = document.querySelector("#routeRequiresKeyInput");
 const deleteRouteButton = document.querySelector("#deleteRouteButton");
 const accessCodesInput = document.querySelector("#accessCodesInput");
@@ -244,6 +245,7 @@ routeForm.addEventListener("submit", async (event) => {
     apiKeyRef: routeKeyRefInput.value.trim(),
     model,
     fallbacks: splitCsv(routeFallbacksInput.value),
+    enabled: routeEnabledInput.checked,
     requiresUserKey: routeRequiresKeyInput.checked,
     supportsImages: routeImagesInput.checked,
   });
@@ -418,6 +420,7 @@ function renderAttentionCenter() {
   const now = Date.now();
 
   for (const [routeId, route] of Object.entries(config.routes || {})) {
+    if (route.enabled === false) continue;
     const health = routeHealth[routeId];
     const checkedAt = health?.checkedAt ? Date.parse(health.checkedAt) : NaN;
     if (health && !health.ok) {
@@ -945,7 +948,7 @@ function renderRoutePicker() {
   for (const routeId of routeIds) {
     const option = document.createElement("option");
     option.value = routeId;
-    option.textContent = routeLabel(routeId);
+    option.textContent = `${routeLabel(routeId)}${config.routes[routeId]?.enabled === false ? "（已停用）" : ""}`;
     routeAdminSelect.append(option);
   }
 
@@ -968,7 +971,8 @@ function renderRouteHealthList() {
     const health = routeHealth[routeId];
     const row = document.createElement("button");
     row.type = "button";
-    row.className = `route-health-row ${health ? health.ok ? "healthy" : "unhealthy" : "unknown"}`;
+    const disabled = config.routes[routeId]?.enabled === false;
+    row.className = `route-health-row ${disabled ? "disabled" : health ? health.ok ? "healthy" : "unhealthy" : "unknown"}`;
     const indicator = document.createElement("span");
     indicator.className = "route-health-indicator";
     indicator.setAttribute("aria-hidden", "true");
@@ -977,7 +981,9 @@ function renderRouteHealthList() {
     const title = document.createElement("strong");
     title.textContent = routeLabel(routeId);
     const detail = document.createElement("small");
-    detail.textContent = health
+    detail.textContent = disabled
+      ? "已停用，不参与用户请求和自动巡检"
+      : health
       ? health.ok
         ? `正常${Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : ""} · ${relativeTime(health.checkedAt)}`
         : `异常 · ${health.message || health.error || "检查失败"} · ${relativeTime(health.checkedAt)}`
@@ -1024,6 +1030,7 @@ function populateRouteForm() {
   routeKeyRefInput.value = route.apiKeyRef || "";
   routeFallbacksInput.value = Array.isArray(route.fallbacks) ? route.fallbacks.join(",") : "";
   routeImagesInput.checked = route.supportsImages !== false;
+  routeEnabledInput.checked = route.enabled !== false;
   routeRequiresKeyInput.checked = Boolean(route.requiresUserKey);
   deleteRouteButton.disabled = selectedRoute === "__new";
   renderStoredRouteHealth(selectedRoute);

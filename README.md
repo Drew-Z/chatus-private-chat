@@ -111,6 +111,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 - `apiKey`: 也可以直接写在 `ROUTES_CONFIG` 里，适合只想维护一个 GitHub Secret 的私有小项目。
 - `requiresUserKey`: 设为 `true` 时，这条线路必须由朋友填写自己的 API key。
 - `allowUserKey`: 设为 `false` 时，即使用户开启 BYOK，这条线路也不允许覆盖服务端 key。
+- `enabled`: 设为 `false` 可临时停用线路；配置和统计会保留，但用户不可选择、fallback 不会调用、自动巡检会跳过。
 - `directEndpoint`: 设为 `true` 时，`baseUrl` 会被当作完整 endpoint，不再自动拼 `/chat/completions` 或 `/v1/messages`。
 - `blockedPrompts`: 精确屏蔽低价值短提示词，例如 `["你好", "hi", "hello", "测试", "test"]`。只拦最后一条纯文本用户消息，带图片或更长任务不会被拦。
 
