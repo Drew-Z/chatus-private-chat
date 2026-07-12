@@ -356,6 +356,14 @@ describe("Worker API", () => {
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("Secure");
     expect(cookie).toContain("SameSite=Lax");
+    expect(loginResponse.headers.get("Cache-Control")).toContain("no-store");
+    expect(loginResponse.headers.get("Pragma")).toBe("no-cache");
+
+    const sessionResponse = await exports.default.fetch(new Request("https://example.test/api/session", {
+      headers: { Cookie: cookie.split(";", 1)[0] },
+    }));
+    expect(sessionResponse.headers.get("Cache-Control")).toContain("private");
+    expect(sessionResponse.headers.get("Expires")).toBe("0");
   });
 
   it("blocks trivial probe prompts before contacting an upstream", async () => {

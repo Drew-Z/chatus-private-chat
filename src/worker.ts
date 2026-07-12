@@ -410,7 +410,7 @@ export default {
 
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: securityHeaders() });
+    return new Response(null, { status: 204, headers: sensitiveResponseHeaders() });
   }
 
   if (url.pathname === "/api/admin/login" && request.method === "POST") {
@@ -3012,11 +3012,19 @@ function textResponse(body: string, status: number, contentType: string): Respon
 function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: securityHeaders({
+    headers: sensitiveResponseHeaders({
       "Content-Type": "application/json; charset=utf-8",
       ...headers,
     }),
   });
+}
+
+function sensitiveResponseHeaders(init: HeadersInit = {}): Headers {
+  const headers = securityHeaders(init);
+  headers.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  headers.set("Pragma", "no-cache");
+  headers.set("Expires", "0");
+  return headers;
 }
 
 function withSecurityHeaders(response: Response): Response {
