@@ -87,6 +87,9 @@ for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
   const source = await readFile(path.join(root, file), "utf8");
   assert(!source.includes(".style."), `${file}: inline styles weaken the CSP`);
 }
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('window.addEventListener("beforeunload"'), "admin.js: unsaved configuration needs a page-leave warning");
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("confirmDiscardChanges"), "admin.js: internal navigation must protect unsaved configuration");
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
 
 console.log("Frontend structure checks passed");
 

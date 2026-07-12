@@ -101,10 +101,37 @@ let feedbackEntries = [];
 let coreHealth = null;
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
+let selectedMemoryUser = "";
+let currentAdminSection = "overview";
+let savedAccessCodes = "";
+let savedMemory = "";
+const dirtyScopes = new Set();
 
 for (const item of adminNavItems) {
-  item.addEventListener("click", () => showAdminSection(item.dataset.adminTarget));
+  item.addEventListener("click", async () => {
+    const target = item.dataset.adminTarget;
+    if (target === currentAdminSection) return;
+    if (!(await confirmDiscardChanges("切换栏目"))) return;
+    showAdminSection(target);
+  });
 }
+
+for (const [element, scope] of [
+  [userForm, "user"],
+  [routeForm, "route"],
+  [accessCodesInput, "access"],
+  [configJsonInput, "config"],
+  [adminMemoryInput, "memory"],
+]) {
+  element?.addEventListener("input", () => markDirty(scope));
+  element?.addEventListener("change", () => markDirty(scope));
+}
+
+window.addEventListener("beforeunload", (event) => {
+  if (!dirtyScopes.size) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 generateAccessCodeButton?.addEventListener("click", () => {
   const label = (newAccessLabel?.value || "").trim() || "friend";
@@ -128,7 +155,14 @@ clearMemoryAdminButton?.addEventListener("click", async () => {
   adminMemoryInput.value = "";
   await saveAdminMemory(true);
 });
-memoryUserSelect?.addEventListener("change", () => loadAdminMemory());
+memoryUserSelect?.addEventListener("change", async () => {
+  const next = memoryUserSelect.value;
+  memoryUserSelect.value = selectedMemoryUser;
+  if (!(await confirmDiscardChanges("切换记忆用户"))) return;
+  memoryUserSelect.value = next;
+  selectedMemoryUser = next;
+  loadAdminMemory();
+});
 healthRouteButton?.addEventListener("click", () => checkRouteHealth());
 healthAllRoutesButton?.addEventListener("click", () => checkAllRoutesHealth());
 fetchRouteModelsButton?.addEventListener("click", () => fetchRouteModels());
@@ -154,17 +188,23 @@ adminLoginForm.addEventListener("submit", async (event) => {
   }
 });
 
-refreshAdminButton.addEventListener("click", () => {
+refreshAdminButton.addEventListener("click", async () => {
+  if (!(await confirmDiscardChanges("刷新数据"))) return;
   loadDashboard();
 });
 
 adminLogoutButton.addEventListener("click", async () => {
+  if (!(await confirmDiscardChanges("退出后台"))) return;
   await fetchWithTimeout("/api/admin/logout", { method: "POST" });
   showLogin();
 });
 
-userSelect.addEventListener("change", () => {
-  selectedUser = userSelect.value;
+userSelect.addEventListener("change", async () => {
+  const next = userSelect.value;
+  userSelect.value = selectedUser;
+  if (!(await confirmDiscardChanges("切换用户"))) return;
+  selectedUser = next;
+  userSelect.value = next;
   populateUserForm();
 });
 
@@ -233,6 +273,7 @@ deleteUserButton.addEventListener("click", async () => {
 
 revokeUserSessionsButton?.addEventListener("click", async () => {
   if (selectedUser === DEFAULT_USER) return;
+  if (!(await confirmDiscardChanges("注销用户会话"))) return;
   const active = activeSessionCount(selectedUser);
   if (!(await confirmAdminAction("注销全部会话？", `${selectedUser} 在所有设备上的 ${active} 个登录会话将立即失效，访问码本身保持不变。`, "全部注销"))) return;
   revokeUserSessionsButton.disabled = true;
@@ -248,8 +289,12 @@ revokeUserSessionsButton?.addEventListener("click", async () => {
   }
 });
 
-routeAdminSelect.addEventListener("change", () => {
-  selectedRoute = routeAdminSelect.value;
+routeAdminSelect.addEventListener("change", async () => {
+  const next = routeAdminSelect.value;
+  routeAdminSelect.value = selectedRoute;
+  if (!(await confirmDiscardChanges("切换线路"))) return;
+  selectedRoute = next;
+  routeAdminSelect.value = next;
   populateRouteForm();
 });
 
@@ -354,6 +399,7 @@ async function bootAdmin() {
 }
 
 function showLogin() {
+  clearDirty();
   adminView.hidden = true;
   adminLoginView.hidden = false;
   adminToken.focus();
@@ -368,6 +414,7 @@ async function showAdmin() {
 
 function showAdminSection(section) {
   const target = ADMIN_SECTION_TITLES[section] ? section : "overview";
+  currentAdminSection = target;
   for (const panel of adminSections) panel.hidden = panel.dataset.adminSection !== target;
   for (const item of adminNavItems) {
     const active = item.dataset.adminTarget === target;
@@ -404,6 +451,7 @@ async function loadDashboard(message = "") {
   renderProductionStatus(releaseData, coreHealthData);
   configJsonInput.value = JSON.stringify(config, null, 2);
   accessCodesInput.value = accessData.accessCodes || "";
+  savedAccessCodes = accessCodesInput.value;
   renderAccessEntries();
 
   configSourceText.textContent = sourceLabel(configData.source);
@@ -417,6 +465,7 @@ async function loadDashboard(message = "") {
   renderAttentionCenter();
   renderUserPicker();
   renderRoutePicker();
+  clearDirty();
   setStatus(message || "已同步");
 }
 
@@ -1241,6 +1290,7 @@ async function saveConfigObject(message) {
   });
   config = normalizeClientConfig(data.config);
   configJsonInput.value = JSON.stringify(config, null, 2);
+  clearDirty("user", "route", "config");
   await loadDashboard(message);
 }
 
@@ -1317,6 +1367,41 @@ function confirmAdminAction(title, description, confirmLabel = "确认") {
   });
 }
 
+function markDirty(scope) {
+  dirtyScopes.add(scope);
+  if (!document.title.startsWith("• ")) document.title = `• ${document.title}`;
+}
+
+function clearDirty(...scopes) {
+  if (scopes.length) {
+    for (const scope of scopes) dirtyScopes.delete(scope);
+  } else {
+    dirtyScopes.clear();
+  }
+  if (!dirtyScopes.size) document.title = document.title.replace(/^•\s*/, "");
+}
+
+async function confirmDiscardChanges(action) {
+  if (!dirtyScopes.size) return true;
+  const confirmed = await confirmAdminAction(
+    "放弃未保存的更改？",
+    `${action}会丢弃当前尚未保存的编辑内容。`,
+    "放弃更改",
+  );
+  if (confirmed) resetUnsavedEditors();
+  return confirmed;
+}
+
+function resetUnsavedEditors() {
+  configJsonInput.value = JSON.stringify(config, null, 2);
+  accessCodesInput.value = savedAccessCodes;
+  adminMemoryInput.value = savedMemory;
+  renderAccessEntries();
+  populateUserForm();
+  populateRouteForm();
+  clearDirty();
+}
+
 function textNode(text) {
   const node = document.createElement("span");
   node.textContent = text;
@@ -1336,18 +1421,23 @@ function renderMemoryUserPicker() {
   }
   if (!labels.length) {
     adminMemoryInput.value = "";
+    savedMemory = "";
+    selectedMemoryUser = "";
     return;
   }
   memoryUserSelect.value = labels.includes(previous) ? previous : labels[0];
+  selectedMemoryUser = memoryUserSelect.value;
 }
 
 async function loadAdminMemory() {
   if (!memoryUserSelect?.value) return;
+  selectedMemoryUser = memoryUserSelect.value;
   setStatus("读取记忆中");
   try {
     const data = await api(`/api/admin/memory?label=${encodeURIComponent(memoryUserSelect.value)}`);
     adminMemoryInput.maxLength = Number(data.maxChars) || 4000;
     adminMemoryInput.value = data.memory || "";
+    savedMemory = adminMemoryInput.value;
     setStatus(`已读取 ${memoryUserSelect.value} 的记忆`);
   } catch (error) {
     setStatus(error.message || "读取记忆失败", true);
@@ -1365,6 +1455,8 @@ async function saveAdminMemory(isClear = false) {
         memory: adminMemoryInput.value,
       }),
     });
+    savedMemory = adminMemoryInput.value;
+    clearDirty("memory");
     setStatus(isClear ? `已清空 ${memoryUserSelect.value} 的记忆` : `已保存 ${memoryUserSelect.value} 的记忆`);
     await loadDashboard();
   } catch (error) {
