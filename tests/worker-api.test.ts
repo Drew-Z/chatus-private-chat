@@ -80,6 +80,31 @@ describe("Worker API", () => {
     });
   });
 
+  it("returns a display name without changing the stable user label", async () => {
+    const label = `named-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://named.example/v1",
+          model: "named-model",
+          apiKey: "named-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      users: { [label]: { displayName: "小林" } },
+    }));
+    const { cookie } = await login(label);
+    const response = await apiRequest("/api/session", cookie);
+    await expect(response.json()).resolves.toMatchObject({
+      authenticated: true,
+      user: label,
+      displayName: "小林",
+      routes: [{ id: "default" }],
+    });
+  });
+
   it("hides disabled routes from users and fallback plans", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {

@@ -27,6 +27,7 @@ const attentionPanel = document.querySelector("#attentionPanel");
 const attentionSummary = document.querySelector("#attentionSummary");
 const attentionList = document.querySelector("#attentionList");
 const userSystemPrompt = document.querySelector("#userSystemPrompt");
+const userDisplayName = document.querySelector("#userDisplayName");
 const userForm = document.querySelector("#userForm");
 const userSelect = document.querySelector("#userSelect");
 const newUserLabel = document.querySelector("#newUserLabel");
@@ -836,7 +837,7 @@ function renderStats() {
 
     const meta = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = user.label;
+    title.textContent = user.displayName && user.displayName !== user.label ? `${user.displayName}（${user.label}）` : user.label;
     const detail = document.createElement("span");
     detail.textContent = [
       user.defaultRoute ? `默认 ${user.defaultRoute}` : "无默认线路",
@@ -965,6 +966,7 @@ function populateUserForm() {
   userDailyLimit.value = user.dailyMessageLimit || 500;
   userMinuteLimit.value = user.minuteMessageLimit || 12;
   userByok.checked = Boolean(user.allowBringYourOwnKey);
+  if (userDisplayName) userDisplayName.value = user.displayName || "";
   if (userSystemPrompt) userSystemPrompt.value = user.systemPrompt || "";
   deleteUserButton.disabled = selectedUser === DEFAULT_USER || !config.users?.[selectedUser];
   const activeSessions = selectedUser === DEFAULT_USER ? 0 : activeSessionCount(selectedUser);
@@ -1004,7 +1006,9 @@ function readUserForm() {
   }
 
   const systemPrompt = (userSystemPrompt?.value || "").trim();
+  const displayName = (userDisplayName?.value || "").trim();
   return {
+    ...(displayName ? { displayName: displayName.slice(0, 40) } : {}),
     defaultRoute: userDefaultRoute.value,
     allowedRoutes,
     allowBringYourOwnKey: userByok.checked,

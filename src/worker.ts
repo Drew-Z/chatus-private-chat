@@ -56,6 +56,7 @@ type RouteConfig = {
 };
 
 type UserConfig = {
+  displayName?: string;
   defaultRoute?: string;
   allowedRoutes?: string[];
   allowBringYourOwnKey?: boolean;
@@ -431,6 +432,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return jsonResponse({
       authenticated: true,
       user: session.label,
+      displayName: access.user.displayName || session.label,
       usage,
       routes,
       defaultRoute: access.defaultRoute,
@@ -794,6 +796,7 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
       .reduce((sum, metric) => sum + metric.count, 0);
     return {
       label,
+      displayName: user.displayName || label,
       used,
       dailyLimit,
       remaining: Math.max(0, dailyLimit - used),
@@ -1837,6 +1840,10 @@ function normalizeAppConfig(value: unknown): AppConfig {
 function normalizeUserConfig(value: unknown): UserConfig {
   if (!isRecord(value)) return {};
   const output: UserConfig = {};
+  if (typeof value.displayName === "string") {
+    const displayName = value.displayName.trim().slice(0, 40);
+    if (displayName) output.displayName = displayName;
+  }
   if (typeof value.defaultRoute === "string") output.defaultRoute = value.defaultRoute;
   if (Array.isArray(value.allowedRoutes)) {
     output.allowedRoutes = value.allowedRoutes.filter((item): item is string => typeof item === "string");

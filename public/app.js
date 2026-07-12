@@ -86,6 +86,7 @@ const SUMMARY_EVERY = 8;
 const RENDER_THROTTLE_MS = 50;
 
 let currentUser = "";
+let currentDisplayName = "";
 let sessions = [];
 let activeSessionId = "";
 let messages = [];
@@ -128,9 +129,9 @@ loginForm.addEventListener("submit", async (event) => {
       loginStatus.textContent = response.status >= 500 ? "服务暂时不可用，请稍后重试" : "访问码不可用";
       return;
     }
-    const session = await response.json();
+    await response.json();
     accessCode.value = "";
-    await showChat(session);
+    await showChat();
   } catch {
     loginStatus.textContent = navigator.onLine ? "连接失败，请稍后重试" : "当前网络已断开";
   } finally {
@@ -166,6 +167,7 @@ document.querySelector("#logoutButton").addEventListener("click", async () => {
   const previousUser = currentUser;
   await fetch("/api/logout", { method: "POST" }).catch(() => null);
   currentUser = "";
+  currentDisplayName = "";
   sessions = [];
   activeSessionId = "";
   messages = [];
@@ -432,13 +434,15 @@ async function showChat(existingSession, readOnlyOffline = false) {
     session = await response.json();
   }
   currentUser = session.user || "friend";
+  currentDisplayName = session.displayName || currentUser;
   routes = Array.isArray(session.routes) ? session.routes : [];
   selectedRouteId = chooseRoute(session.defaultRoute);
   hasUserSystemPrompt = Boolean(session.hasUserSystemPrompt);
   if (!readOnlyOffline) lastRouteRefreshAt = Date.now();
-  userLabel.textContent = currentUser;
+  userLabel.textContent = currentDisplayName;
+  userLabel.title = currentDisplayName === currentUser ? "" : `用户标识：${currentUser}`;
   const accountAvatar = document.querySelector(".account-avatar");
-  if (accountAvatar) accountAvatar.textContent = currentUser.slice(0, 1).toUpperCase() || "U";
+  if (accountAvatar) accountAvatar.textContent = currentDisplayName.slice(0, 1).toUpperCase() || "U";
   updateUsage(session.usage);
   renderRoutes();
   updateConnectionState("同步会话中");
@@ -462,6 +466,7 @@ function cacheSessionSnapshot(session) {
       SESSION_SNAPSHOT_KEY,
       JSON.stringify({
         user: session.user || currentUser,
+        displayName: session.displayName || currentDisplayName,
         routes: Array.isArray(session.routes) ? session.routes : routes,
         defaultRoute: session.defaultRoute || selectedRouteId,
         usage: session.usage || null,
@@ -1593,7 +1598,7 @@ function renderEmptyChat() {
   mark.className = "empty-chat-mark";
   mark.textContent = "C";
   const title = document.createElement("h2");
-  title.textContent = `你好，${currentUser || "朋友"}`;
+  title.textContent = `你好，${currentDisplayName || currentUser || "朋友"}`;
   const copy = document.createElement("p");
   copy.textContent = route ? `正在使用 ${route.label || route.model || route.id}，从一个具体任务开始吧。` : "从一个具体任务开始吧。";
   const suggestions = document.createElement("div");
@@ -1979,6 +1984,7 @@ function exportAllSessions() {
     product: "Chatus",
     exportedAt: new Date().toISOString(),
     user: currentUser,
+    displayName: currentDisplayName,
     conversations: sessions.map((session) => ({
       id: session.id,
       title: session.title,
