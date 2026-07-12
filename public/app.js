@@ -63,6 +63,7 @@ const exportAllButton = document.querySelector("#exportAllButton");
 const importAllButton = document.querySelector("#importAllButton");
 const importAllInput = document.querySelector("#importAllInput");
 const clearOfflineDataButton = document.querySelector("#clearOfflineDataButton");
+const logoutAllDevicesButton = document.querySelector("#logoutAllDevicesButton");
 const deleteUserDataButton = document.querySelector("#deleteUserDataButton");
 const feedbackDialog = document.querySelector("#feedbackDialog");
 const feedbackForm = document.querySelector("#feedbackForm");
@@ -216,6 +217,7 @@ exportAllButton?.addEventListener("click", () => exportAllSessions());
 importAllButton?.addEventListener("click", () => importAllInput?.click());
 importAllInput?.addEventListener("change", () => importSessionBackup());
 clearOfflineDataButton?.addEventListener("click", () => clearOfflineData());
+logoutAllDevicesButton?.addEventListener("click", () => logoutAllDevices());
 deleteUserDataButton?.addEventListener("click", () => deleteAllUserData());
 saveMemoryButton.addEventListener("click", () => saveMemory());
 suggestMemoryButton?.addEventListener("click", () => suggestMemory());
@@ -2074,6 +2076,25 @@ async function clearOfflineData() {
   if ("caches" in window) await caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))).catch(() => null);
   settingsDialog?.close();
   showStatusToast("本机缓存已清理，当前会话仍保留在页面中");
+}
+async function logoutAllDevices() {
+  if (offlineMode) return showStatusToast("需要联网才能退出所有设备");
+  if (!(await confirmAction({ title: "退出所有设备？", description: "当前用户在所有浏览器和设备上的登录都会失效，对话和记忆不会被删除。", confirmLabel: "全部退出", destructive: true }))) return;
+  logoutAllDevicesButton.disabled = true;
+  try {
+    const response = await fetch("/api/sessions/revoke-all", { method: "POST" });
+    if (!response.ok) throw new Error("revoke_failed");
+    localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+    settingsDialog?.close();
+    currentUser = "";
+    currentDisplayName = "";
+    showLogin();
+    loginStatus.textContent = "所有设备已退出，请重新输入访问码";
+  } catch {
+    showStatusToast("退出所有设备失败，请稍后重试");
+  } finally {
+    logoutAllDevicesButton.disabled = false;
+  }
 }
 async function deleteAllUserData() {
   if (offlineMode) return showStatusToast("需要联网才能删除云端数据");

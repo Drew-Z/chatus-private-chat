@@ -499,6 +499,12 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/chats/migrate" && request.method === "POST") {
     return handleMigrateChats(request, env, session);
   }
+  if (url.pathname === "/api/sessions/revoke-all" && request.method === "POST") {
+    const revoked = await revokeSessionsByLabel(env, session.label);
+    return jsonResponse({ ok: true, revoked }, 200, {
+      "Set-Cookie": buildSessionCookie("", 0, url.protocol === "https:"),
+    });
+  }
 
   if (url.pathname === "/api/user-data" && request.method === "DELETE") {
     await getUserState(env, session.label).replaceChats([]);

@@ -150,6 +150,21 @@ describe("Worker API", () => {
     await expect(blocked.json()).resolves.toMatchObject({ error: "login_rate_limited" });
   });
 
+  it("lets a user revoke every active device session without deleting data", async () => {
+    const label = `self-revoke-${crypto.randomUUID()}`;
+    const first = await login(label);
+    const second = await login(label);
+    await env.CHAT_STORE.put(`memory:${encodeURIComponent(label)}`, "keep this memory");
+
+    const revoked = await apiRequest("/api/sessions/revoke-all", first.cookie, { method: "POST" });
+    expect(revoked.status).toBe(200);
+    expect(revoked.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    await expect(revoked.json()).resolves.toMatchObject({ ok: true, revoked: 2 });
+    expect((await apiRequest("/api/session", first.cookie)).status).toBe(401);
+    expect((await apiRequest("/api/session", second.cookie)).status).toBe(401);
+    expect(await env.CHAT_STORE.get(`memory:${encodeURIComponent(label)}`)).toBe("keep this memory");
+  });
+
   it("creates a configured user and access code in one admin operation", async () => {
     const cookie = await adminLogin();
     const label = `invite-${crypto.randomUUID()}`;
