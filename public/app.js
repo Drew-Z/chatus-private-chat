@@ -74,6 +74,7 @@ const ACTIVE_SESSION_PREFIX = "chatus.activeSession.v3.";
 const ROUTE_STORAGE_KEY = "chatus.route.v1";
 const SESSION_SNAPSHOT_KEY = "chatus.sessionSnapshot.v1";
 const MEMORY_STORAGE_PREFIX = "chatus.memory.v1.";
+const DRAFT_STORAGE_PREFIX = "chatus.draft.v1.";
 const MAX_ATTACHMENTS = 4;
 const MAX_SESSIONS = 30;
 const MAX_STORED_MESSAGES = 120;
@@ -165,9 +166,11 @@ window.addEventListener("online", () => {
   else if (!chatView.hidden) showStatusToast("网络已恢复");
   else if (loginStatus.textContent === "当前网络已断开") loginStatus.textContent = "";
 });
+promptInput.addEventListener("input", () => saveActiveDraft());
 
 document.querySelector("#logoutButton").addEventListener("click", async () => {
   const previousUser = currentUser;
+  clearUserDrafts(previousUser);
   await fetch("/api/logout", { method: "POST" }).catch(() => null);
   currentUser = "";
   currentDisplayName = "";
@@ -378,6 +381,7 @@ chatForm.addEventListener("submit", async (event) => {
   saveMessages();
   renderMessages(true);
   promptInput.value = "";
+  clearActiveDraft();
   autoResizePrompt();
   attachments = [];
   renderAttachments();
@@ -455,6 +459,7 @@ async function showChat(existingSession, readOnlyOffline = false) {
   renderChatList();
   renderMessages(true);
   updateChatTitle();
+  restoreActiveDraft();
   await loadMemory({ offline: offlineMode });
   if (sessionExpired) return;
   if (!offlineMode) cacheSessionSnapshot(session);
@@ -887,6 +892,7 @@ function createNewSession() {
   activeSessionId = session.id;
   messages = session.messages;
   attachments = [];
+  restoreActiveDraft();
   hideMemorySuggest();
   saveSessions();
   renderChatList();
@@ -920,6 +926,7 @@ function activateSession(id, searchQuery = "") {
   activeSessionId = id;
   messages = session.messages;
   attachments = [];
+  restoreActiveDraft();
   hideMemorySuggest();
   localStorage.setItem(activeSessionStorageKey(), id);
   renderAttachments();
@@ -954,10 +961,12 @@ async function deleteSession(id) {
   if (!session) return;
   if (!(await confirmAction({ title: "删除这个会话？", description: `“${session.title || "新会话"}”将从本地和云端移除。`, confirmLabel: "删除", destructive: true }))) return;
   sessions = sessions.filter((session) => session.id !== id);
+  removeDraft(currentUser, id);
   if (!sessions.length) sessions = [createSession()];
   if (activeSessionId === id) {
     activeSessionId = sessions[0].id;
     messages = sessions[0].messages;
+    restoreActiveDraft();
   }
   saveSessionsLocalOnly();
   if (cloudSyncEnabled) {
@@ -1272,6 +1281,45 @@ function memoryStorageKey(user = currentUser) {
 }
 function activeSessionStorageKey() {
   return `${ACTIVE_SESSION_PREFIX}${encodeURIComponent(currentUser || "friend")}`;
+}
+function draftStorageKey(user = currentUser, sessionId = activeSessionId) {
+  return `${DRAFT_STORAGE_PREFIX}${encodeURIComponent(user || "friend")}.${encodeURIComponent(sessionId || "new")}`;
+}
+function saveActiveDraft() {
+  if (!currentUser || !activeSessionId) return;
+  const value = promptInput.value.slice(0, 12000);
+  try {
+    if (value) localStorage.setItem(draftStorageKey(), value);
+    else localStorage.removeItem(draftStorageKey());
+  } catch {}
+}
+function restoreActiveDraft() {
+  try {
+    promptInput.value = localStorage.getItem(draftStorageKey()) || "";
+  } catch {
+    promptInput.value = "";
+  }
+  autoResizePrompt();
+  updateComposerMeta();
+}
+function clearActiveDraft() {
+  removeDraft(currentUser, activeSessionId);
+}
+function removeDraft(user, sessionId) {
+  if (!user || !sessionId) return;
+  try {
+    localStorage.removeItem(draftStorageKey(user, sessionId));
+  } catch {}
+}
+function clearUserDrafts(user) {
+  if (!user) return;
+  const prefix = `${DRAFT_STORAGE_PREFIX}${encodeURIComponent(user)}.`;
+  try {
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(prefix)) localStorage.removeItem(key);
+    }
+  } catch {}
 }
 function createId() {
   return globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1626,6 +1674,7 @@ function renderEmptyChat() {
     button.textContent = prompt;
     button.addEventListener("click", () => {
       promptInput.value = prompt;
+      saveActiveDraft();
       autoResizePrompt();
       updateComposerMeta();
       promptInput.focus();
@@ -2042,6 +2091,7 @@ async function importSessionBackup() {
     sessions = merged;
     activeSessionId = sessions[0].id;
     messages = sessions[0].messages;
+    restoreActiveDraft();
     saveSessionsLocalOnly();
     renderChatList();
     renderMessages(true);
@@ -2079,6 +2129,7 @@ async function clearOfflineData() {
   localStorage.removeItem(sessionsStorageKey());
   localStorage.removeItem(activeSessionStorageKey());
   localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+  clearUserDrafts(currentUser);
   if ("caches" in window) await caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))).catch(() => null);
   settingsDialog?.close();
   showStatusToast("本机缓存已清理，当前会话仍保留在页面中");
@@ -2091,6 +2142,7 @@ async function logoutAllDevices() {
     const response = await fetch("/api/sessions/revoke-all", { method: "POST" });
     if (!response.ok) throw new Error("revoke_failed");
     localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+    clearUserDrafts(currentUser);
     settingsDialog?.close();
     currentUser = "";
     currentDisplayName = "";
@@ -2114,9 +2166,11 @@ async function deleteAllUserData() {
     localStorage.removeItem(activeSessionStorageKey());
     localStorage.removeItem(memoryStorageKey());
     localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+    clearUserDrafts(currentUser);
     sessions = [createSession()];
     activeSessionId = sessions[0].id;
     messages = sessions[0].messages;
+    restoreActiveDraft();
     memoryInput.value = "";
     memoryStatus.textContent = "暂无长期记忆";
     saveSessionsLocalOnly();
