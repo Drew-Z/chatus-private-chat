@@ -30,6 +30,7 @@ const userMinuteLimit = document.querySelector("#userMinuteLimit");
 const userByok = document.querySelector("#userByok");
 const allowedRoutesBox = document.querySelector("#allowedRoutesBox");
 const deleteUserButton = document.querySelector("#deleteUserButton");
+const revokeUserSessionsButton = document.querySelector("#revokeUserSessionsButton");
 const routeForm = document.querySelector("#routeForm");
 const routeAdminSelect = document.querySelector("#routeAdminSelect");
 const routeIdInput = document.querySelector("#routeIdInput");
@@ -185,6 +186,23 @@ deleteUserButton.addEventListener("click", async () => {
   delete config.users?.[selectedUser];
   selectedUser = DEFAULT_USER;
   await saveConfigObject("用户配置已删除");
+});
+
+revokeUserSessionsButton?.addEventListener("click", async () => {
+  if (selectedUser === DEFAULT_USER) return;
+  const active = activeSessionCount(selectedUser);
+  if (!(await confirmAdminAction("注销全部会话？", `${selectedUser} 在所有设备上的 ${active} 个登录会话将立即失效，访问码本身保持不变。`, "全部注销"))) return;
+  revokeUserSessionsButton.disabled = true;
+  try {
+    const data = await api("/api/admin/sessions/revoke", {
+      method: "POST",
+      body: JSON.stringify({ label: selectedUser }),
+    });
+    await loadDashboard(`已注销 ${Number(data.revoked) || 0} 个会话`);
+  } catch (error) {
+    setStatus(error.message || "会话注销失败", true);
+    revokeUserSessionsButton.disabled = activeSessionCount(selectedUser) === 0;
+  }
 });
 
 routeAdminSelect.addEventListener("change", () => {
@@ -752,11 +770,21 @@ function populateUserForm() {
   userByok.checked = Boolean(user.allowBringYourOwnKey);
   if (userSystemPrompt) userSystemPrompt.value = user.systemPrompt || "";
   deleteUserButton.disabled = selectedUser === DEFAULT_USER || !config.users?.[selectedUser];
+  const activeSessions = selectedUser === DEFAULT_USER ? 0 : activeSessionCount(selectedUser);
+  if (revokeUserSessionsButton) {
+    revokeUserSessionsButton.textContent = activeSessions ? `注销会话（${activeSessions}）` : "注销会话";
+    revokeUserSessionsButton.disabled = selectedUser === DEFAULT_USER || activeSessions === 0;
+  }
 
   const allowed = new Set(user.allowedRoutes?.length ? user.allowedRoutes : routeIds);
   for (const input of allowedRoutesBox.querySelectorAll("input[type='checkbox']")) {
     input.checked = allowed.has(input.value);
   }
+}
+
+function activeSessionCount(label) {
+  const user = (Array.isArray(stats?.users) ? stats.users : []).find((item) => item.label === label);
+  return Number(user?.activeSessions) || 0;
 }
 
 function getUserLabels() {
