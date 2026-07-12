@@ -6,7 +6,11 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta name="theme-color" content="#f7f8fa" />
     <title>Chatus</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
     <script src="/theme.js"></script>
+    <script src="/pwa.js" defer></script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="chat-product-body">
@@ -163,6 +167,7 @@
           <label><input type="radio" name="theme" value="light" /><span>浅色</span></label>
           <label><input type="radio" name="theme" value="dark" /><span>深色</span></label>
         </fieldset>
+        <button class="install-app-button" id="installAppButton" type="button" hidden>安装到设备</button>
       </form>
     </dialog>
     <script src="/app.js" type="module"></script>
