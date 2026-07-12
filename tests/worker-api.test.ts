@@ -105,6 +105,36 @@ describe("Worker API", () => {
     });
   });
 
+  it("creates a configured user and access code in one admin operation", async () => {
+    const cookie = await adminLogin();
+    const label = `invite-${crypto.randomUUID()}`;
+    const response = await apiRequest("/api/admin/users", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        label,
+        user: { displayName: "新朋友", defaultRoute: "default", allowedRoutes: ["default"], dailyMessageLimit: 321 },
+      }),
+    });
+    const payload = await response.json();
+    expect(response.status, JSON.stringify(payload)).toBe(200);
+    expect(payload).toMatchObject({ label, config: { users: { [label]: { displayName: "新朋友", dailyMessageLimit: 321 } } } });
+    expect(payload.accessCode).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+
+    const accessCodes = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
+    expect(accessCodes).toContain(`${label}:${payload.accessCode}`);
+    const duplicate = await apiRequest("/api/admin/users", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, user: {} }),
+    });
+    expect(duplicate.status).toBe(409);
+
+    const audit = JSON.parse((await env.CHAT_STORE.get(ADMIN_AUDIT_KEY)) || "[]");
+    expect(audit[0]).toMatchObject({ action: "user.create", target: label });
+    expect(JSON.stringify(audit)).not.toContain(payload.accessCode);
+  });
+
   it("hides disabled routes from users and fallback plans", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {

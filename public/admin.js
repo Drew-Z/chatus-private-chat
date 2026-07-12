@@ -38,6 +38,9 @@ const userByok = document.querySelector("#userByok");
 const allowedRoutesBox = document.querySelector("#allowedRoutesBox");
 const deleteUserButton = document.querySelector("#deleteUserButton");
 const revokeUserSessionsButton = document.querySelector("#revokeUserSessionsButton");
+const createdAccessCode = document.querySelector("#createdAccessCode");
+const createdAccessCodeInput = document.querySelector("#createdAccessCodeInput");
+const copyCreatedAccessCode = document.querySelector("#copyCreatedAccessCode");
 const routeForm = document.querySelector("#routeForm");
 const routeAdminSelect = document.querySelector("#routeAdminSelect");
 const routeIdInput = document.querySelector("#routeIdInput");
@@ -171,6 +174,24 @@ userForm.addEventListener("submit", async (event) => {
   const userConfig = readUserForm();
   if (!userConfig) return;
 
+  const creating = Boolean(newUserLabel.value.trim());
+  if (creating) {
+    try {
+      const data = await api("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify({ label: target, user: userConfig }),
+      });
+      selectedUser = target;
+      newUserLabel.value = "";
+      await loadDashboard(`已创建用户 ${target}`);
+      createdAccessCodeInput.value = data.accessCode || "";
+      createdAccessCode.hidden = !createdAccessCodeInput.value;
+    } catch (error) {
+      setStatus(error.message || "创建用户失败", true);
+    }
+    return;
+  }
+
   if (target === DEFAULT_USER) {
     config.defaults = userConfig;
   } else {
@@ -181,6 +202,17 @@ userForm.addEventListener("submit", async (event) => {
 
   newUserLabel.value = "";
   await saveConfigObject("用户配置已保存");
+});
+
+copyCreatedAccessCode?.addEventListener("click", async () => {
+  if (!createdAccessCodeInput?.value) return;
+  try {
+    await navigator.clipboard.writeText(createdAccessCodeInput.value);
+    setStatus("新访问码已复制");
+  } catch {
+    createdAccessCodeInput.select();
+    setStatus("无法自动复制，请手动复制访问码", true);
+  }
 });
 
 deleteUserButton.addEventListener("click", async () => {
@@ -431,6 +463,7 @@ function renderAuditLog(entries) {
     "memory.update": "更新长期记忆",
     "memory.clear": "清空长期记忆",
     "usage.reset": "重置用户额度",
+    "user.create": "创建用户",
   };
   const visible = Array.isArray(entries) ? entries.slice(0, 8) : [];
   if (!visible.length) {

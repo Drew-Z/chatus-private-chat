@@ -3651,6 +3651,32 @@ body.sidebar-open {
   padding-top: 2px;
 }
 
+.created-access-code {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #b7d9cc;
+  border-radius: 7px;
+  background: #edf7f3;
+}
+
+.created-access-code > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.created-access-code span {
+  color: #687078;
+  font-size: 12px;
+}
+
+[data-theme="dark"] .created-access-code {
+  border-color: #356653;
+  background: #203c34;
+}
+
 .admin-body .form-actions button,
 .admin-body .inline-field-action button,
 .admin-body .access-code-tools button {

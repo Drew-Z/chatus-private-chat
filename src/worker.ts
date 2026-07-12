@@ -600,6 +600,9 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
   if (url.pathname === "/api/admin/config" && request.method === "PUT") {
     return handlePutAdminConfig(request, env);
   }
+  if (url.pathname === "/api/admin/users" && request.method === "POST") {
+    return handleCreateAdminUser(request, env);
+  }
 
   if (url.pathname === "/api/admin/config" && request.method === "DELETE") {
     await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
@@ -916,6 +919,30 @@ async function handleAdminResetUsage(request: Request, env: Env): Promise<Respon
   ]);
   await appendAdminAudit(env, "usage.reset", label);
   return jsonResponse({ ok: true, label, day });
+}
+
+async function handleCreateAdminUser(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ label?: unknown; user?: unknown }>(request);
+  const label = typeof body.label === "string" ? body.label.trim() : "";
+  if (!/^[A-Za-z0-9._-]+$/.test(label)) {
+    return jsonResponse({ error: "invalid_label", message: "label 只能包含字母、数字、点、下划线和短横线" }, 400);
+  }
+  const [{ config }, { accessCodes }] = await Promise.all([loadEditableConfig(env), loadEditableAccessCodes(env)]);
+  if (config.users?.[label] || parseAccessCodes(accessCodes).some((entry) => entry.label === label)) {
+    return jsonResponse({ error: "user_exists", message: "该 label 已存在" }, 409);
+  }
+  const user = normalizeUserConfig(body.user);
+  const nextConfig = { ...config, users: { ...(config.users || {}), [label]: user } };
+  const validation = validateAppConfig(nextConfig);
+  if (!validation.ok) return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
+  const accessCode = randomToken();
+  const nextAccessCodes = accessCodes.trim() ? `${accessCodes.trim()},${label}:${accessCode}` : `${label}:${accessCode}`;
+  await Promise.all([
+    env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(nextConfig)),
+    env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes),
+  ]);
+  await appendAdminAudit(env, "user.create", label);
+  return jsonResponse({ ok: true, label, accessCode, config: nextConfig });
 }
 
 async function handleFeedback(request: Request, env: Env, session: Session): Promise<Response> {
