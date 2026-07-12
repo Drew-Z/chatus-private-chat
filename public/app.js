@@ -265,7 +265,38 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest(".model-picker")) closeModelPicker();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeModelPicker();
+  if (chatView.hidden) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    openSidebar();
+    sessionSearch?.focus();
+    sessionSearch?.select();
+    return;
+  }
+  if (event.altKey && event.key.toLowerCase() === "n") {
+    event.preventDefault();
+    if (offlineMode) return showStatusToast("离线只读模式下不能新建会话");
+    if (isBusy) return showStatusToast("请先停止当前生成");
+    createNewSession();
+    closeSidebar();
+    promptInput.focus();
+    return;
+  }
+  if (event.key === "Escape") {
+    if (modelPickerMenu && !modelPickerMenu.hidden) {
+      closeModelPicker();
+      modelPickerTrigger?.focus();
+      return;
+    }
+    if (document.activeElement === sessionSearch && sessionSearch.value) {
+      sessionSearch.value = "";
+      sessionFilter = "";
+      renderChatList();
+      promptInput.focus();
+      return;
+    }
+    closeSidebar();
+  }
 });
 imageInput.addEventListener("change", async () => {
   await addImageFiles(imageInput.files);
