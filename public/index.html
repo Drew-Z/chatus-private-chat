@@ -4,27 +4,35 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex,nofollow,noarchive" />
+    <meta name="theme-color" content="#f7f8fa" />
     <title>Chatus</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body class="chat-product-body">
     <main class="app-shell">
       <section class="login-view" id="loginView" hidden>
-        <form class="login-panel" id="loginForm">
+        <div class="login-brand">
           <div class="brand-mark">C</div>
-          <h1>Chatus</h1>
+          <strong>Chatus</strong>
+        </div>
+        <form class="login-panel" id="loginForm">
+          <div class="login-copy">
+            <span class="login-eyebrow">PRIVATE AI WORKSPACE</span>
+            <h1>欢迎回来</h1>
+            <p>使用你的专属访问码继续对话。</p>
+          </div>
           <label for="accessCode">访问码</label>
-          <input id="accessCode" name="accessCode" type="password" autocomplete="current-password" required />
-          <button type="submit">进入</button>
+          <input id="accessCode" name="accessCode" type="password" autocomplete="current-password" placeholder="输入访问码" required />
+          <button type="submit">进入 Chatus</button>
           <p class="status-line" id="loginStatus" role="status"></p>
         </form>
       </section>
 
       <section class="chat-view" id="chatView" hidden>
         <div class="mobile-bar" id="mobileBar">
-          <button class="ghost-button compact" id="openSidebarButton" type="button" title="菜单">菜单</button>
-          <strong id="mobileTitle">聊天</strong>
-          <button class="ghost-button compact" id="mobileNewChatButton" type="button">新会话</button>
+          <button class="icon-control" id="openSidebarButton" type="button" title="打开菜单" aria-label="打开菜单">☰</button>
+          <strong id="mobileTitle">新会话</strong>
+          <button class="icon-control" id="mobileNewChatButton" type="button" title="新会话" aria-label="新会话">＋</button>
         </div>
         <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
 
@@ -32,82 +40,84 @@
           <div class="side-top">
             <div class="brand-row">
               <div class="brand-mark small">C</div>
-              <div>
+              <div class="brand-copy">
                 <strong>Chatus</strong>
-                <span id="userLabel"></span>
+                <span>私人 AI 工作台</span>
               </div>
-              <button class="ghost-button compact side-close" id="closeSidebarButton" type="button" title="关闭">关闭</button>
+              <button class="icon-control side-close" id="closeSidebarButton" type="button" title="关闭" aria-label="关闭">×</button>
             </div>
-            <div class="side-actions">
-              <button class="ghost-button" id="newChatButton" type="button">新会话</button>
+
+            <button class="new-chat-primary" id="newChatButton" type="button"><span>＋</span> 新会话</button>
+            <div class="session-search-wrap">
+              <span aria-hidden="true">⌕</span>
               <input class="session-search" id="sessionSearch" type="search" placeholder="搜索会话" autocomplete="off" />
             </div>
+            <div class="side-section-label">最近对话</div>
             <div class="chat-list" id="chatList" aria-label="历史会话"></div>
           </div>
-          <div class="usage-block">
-            <span>今日剩余</span>
-            <strong id="usageText">--</strong>
-          </div>
-          <div class="route-block">
-            <label for="routeSelect">线路</label>
-            <select id="routeSelect"></select>
-            <label id="userApiKeyLabel" for="userApiKeyInput">API Key</label>
-            <input
-              id="userApiKeyInput"
-              type="password"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="使用自己的 key"
-            />
-          </div>
-          <div class="memory-block">
-            <label for="memoryInput">长期记忆</label>
-            <textarea id="memoryInput" rows="4" maxlength="4000" spellcheck="false" placeholder="偏好、背景、禁忌……"></textarea>
-            <div class="memory-actions">
-              <button class="ghost-button compact" id="suggestMemoryButton" type="button">建议写入</button>
-              <button class="ghost-button compact" id="saveMemoryButton" type="button">保存</button>
-              <span id="memoryStatus" role="status"></span>
-            </div>
-            <div class="memory-suggest" id="memorySuggestBox" hidden>
-              <pre id="memorySuggestText"></pre>
-              <div class="memory-actions">
-                <button class="ghost-button compact" id="applyMemorySuggestButton" type="button">追加到记忆</button>
-                <button class="plain-button compact" id="dismissMemorySuggestButton" type="button">忽略</button>
+
+          <div class="side-footer">
+            <details class="side-tool memory-tool">
+              <summary><span>记忆</span><small id="memoryStatus" role="status">读取中</small></summary>
+              <div class="memory-block">
+                <label for="memoryInput">长期记忆</label>
+                <textarea id="memoryInput" rows="4" maxlength="4000" spellcheck="false" placeholder="偏好、背景、习惯或需要长期记住的信息"></textarea>
+                <div class="memory-actions">
+                  <button class="ghost-button compact" id="suggestMemoryButton" type="button">智能建议</button>
+                  <button class="ghost-button compact" id="saveMemoryButton" type="button">保存</button>
+                </div>
+                <div class="memory-suggest" id="memorySuggestBox" hidden>
+                  <pre id="memorySuggestText"></pre>
+                  <div class="memory-actions">
+                    <button class="ghost-button compact" id="applyMemorySuggestButton" type="button">追加</button>
+                    <button class="plain-button compact" id="dismissMemorySuggestButton" type="button">忽略</button>
+                  </div>
+                </div>
               </div>
+            </details>
+            <div class="account-row">
+              <div class="account-avatar" aria-hidden="true">U</div>
+              <div class="account-copy"><strong id="userLabel"></strong><span>今日剩余 <b id="usageText">--</b></span></div>
+              <button class="icon-control" id="logoutButton" type="button" title="退出登录" aria-label="退出登录">↪</button>
             </div>
           </div>
-          <button class="plain-button" id="logoutButton" type="button">退出</button>
         </aside>
 
         <section class="conversation">
           <header class="chat-header">
-            <div>
-              <h1 id="chatTitle">聊天</h1>
+            <div class="route-block">
+              <label for="routeSelect">当前模型</label>
+              <select id="routeSelect" aria-label="选择模型"></select>
+              <label id="userApiKeyLabel" for="userApiKeyInput">个人 API Key</label>
+              <input id="userApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="使用自己的 API Key" />
+            </div>
+            <div class="chat-heading">
+              <h1 id="chatTitle">新会话</h1>
               <p id="connectionState">已连接</p>
             </div>
             <div class="header-actions">
-              <button class="ghost-button compact" id="exportButton" type="button">导出</button>
-              <button class="ghost-button compact" id="clearButton" type="button">清空</button>
+              <button class="icon-control" id="exportButton" type="button" title="导出会话" aria-label="导出会话">⇩</button>
+              <button class="icon-control" id="clearButton" type="button" title="清空会话" aria-label="清空会话">⌫</button>
             </div>
           </header>
 
           <div class="message-list" id="messageList" aria-live="polite"></div>
 
           <form class="composer" id="chatForm">
-            <div class="drop-hint" id="dropHint" hidden>放开以添加图片</div>
-            <div class="attachment-row" id="attachmentRow"></div>
-            <div class="composer-bar">
-              <label class="icon-button" for="imageInput" title="添加图片">
-                <span>+</span>
-              </label>
-              <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
-              <textarea id="promptInput" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行" required></textarea>
-              <button class="send-button" id="sendButton" type="submit">发送</button>
-              <button class="stop-button" id="stopButton" type="button" hidden>停止</button>
-            </div>
-            <div class="composer-meta">
-              <span id="composerHint">支持粘贴/拖拽图片</span>
-              <span id="composerCount"></span>
+            <div class="composer-inner">
+              <div class="drop-hint" id="dropHint" hidden>放开以添加图片</div>
+              <div class="attachment-row" id="attachmentRow"></div>
+              <div class="composer-bar">
+                <label class="icon-button" for="imageInput" title="添加图片" aria-label="添加图片">＋</label>
+                <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+                <textarea id="promptInput" rows="1" placeholder="给 Chatus 发送消息" required></textarea>
+                <button class="send-button" id="sendButton" type="submit" title="发送" aria-label="发送">↑</button>
+                <button class="stop-button" id="stopButton" type="button" title="停止生成" aria-label="停止生成" hidden>■</button>
+              </div>
+              <div class="composer-meta">
+                <span id="composerHint">支持粘贴或拖拽图片</span>
+                <span id="composerCount"></span>
+              </div>
             </div>
           </form>
         </section>

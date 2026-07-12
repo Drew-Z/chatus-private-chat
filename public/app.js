@@ -247,6 +247,8 @@ async function showChat(existingSession) {
   selectedRouteId = chooseRoute(session.defaultRoute);
   hasUserSystemPrompt = Boolean(session.hasUserSystemPrompt);
   userLabel.textContent = currentUser;
+  const accountAvatar = document.querySelector(".account-avatar");
+  if (accountAvatar) accountAvatar.textContent = currentUser.slice(0, 1).toUpperCase() || "U";
   updateUsage(session.usage);
   renderRoutes();
   updateConnectionState("同步会话中");
@@ -790,7 +792,8 @@ function renderRoutes() {
   for (const route of routes) {
     const option = document.createElement("option");
     option.value = route.id;
-    option.textContent = route.label || route.model || route.id;
+    const label = route.label || route.id;
+    option.textContent = route.model && route.model !== label ? `${label} · ${route.model}` : label;
     routeSelect.append(option);
   }
   routeSelect.value = selectedRouteId;
@@ -909,6 +912,10 @@ function flushRender(forceScroll) {
 function renderMessages(forceScroll = true) {
   const nearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 120;
   messageList.textContent = "";
+  if (!messages.length) {
+    renderEmptyChat();
+    return;
+  }
   messages.forEach((message, index) => {
     const node = document.createElement("article");
     node.className = `message ${message.role}`;
@@ -948,6 +955,42 @@ function renderMessages(forceScroll = true) {
     messageList.append(node);
   });
   if (forceScroll || nearBottom) messageList.scrollTop = messageList.scrollHeight;
+}
+
+function renderEmptyChat() {
+  const route = getSelectedRoute();
+  const empty = document.createElement("section");
+  empty.className = "empty-chat";
+  const mark = document.createElement("div");
+  mark.className = "empty-chat-mark";
+  mark.textContent = "C";
+  const title = document.createElement("h2");
+  title.textContent = `你好，${currentUser || "朋友"}`;
+  const copy = document.createElement("p");
+  copy.textContent = route ? `正在使用 ${route.label || route.model || route.id}，从一个具体任务开始吧。` : "从一个具体任务开始吧。";
+  const suggestions = document.createElement("div");
+  suggestions.className = "empty-suggestions";
+  const prompts = [
+    "帮我梳理一个复杂问题，并列出下一步行动",
+    "阅读一段内容，提炼重点并给出改进建议",
+    "为一个想法设计三种可执行的实现方案",
+    "检查一段代码或文字，找出问题并优化",
+  ];
+  for (const prompt of prompts) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "empty-suggestion";
+    button.textContent = prompt;
+    button.addEventListener("click", () => {
+      promptInput.value = prompt;
+      autoResizePrompt();
+      updateComposerMeta();
+      promptInput.focus();
+    });
+    suggestions.append(button);
+  }
+  empty.append(mark, title, copy, suggestions);
+  messageList.append(empty);
 }
 
 function actionButton(label, onClick) {
