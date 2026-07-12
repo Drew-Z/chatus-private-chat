@@ -1828,6 +1828,9 @@ function renderMessages(forceScroll = true) {
     const actions = document.createElement("div");
     actions.className = "message-actions";
     if (message.role === "assistant" || message.role === "user") actions.append(actionButton("复制", () => copyMessage(message)));
+    if ((message.role === "assistant" || message.role === "user") && !isBusy && !offlineMode) {
+      actions.append(actionButton("分支", () => branchConversationAt(index)));
+    }
     if (message.role === "user" && !isBusy && !offlineMode) {
       actions.append(actionButton("编辑", () => editUserMessage(index)));
       actions.append(actionButton("重发", () => resendFromUser(index)));
@@ -1899,6 +1902,46 @@ function actionButton(label, onClick, active = false) {
   button.textContent = label;
   button.addEventListener("click", onClick);
   return button;
+}
+
+function branchConversationAt(index) {
+  if (offlineMode || isBusy) return;
+  const source = getActiveSession();
+  const branchMessages = messages
+    .slice(0, index + 1)
+    .filter((message) => message.role !== "error")
+    .map((message) => normalizeMessage(structuredClone(message)));
+  if (!branchMessages.length) return showStatusToast("这里还不能创建分支");
+
+  const now = Date.now();
+  const baseTitle = source.title && source.title !== "新会话" ? source.title : deriveSessionTitle(branchMessages);
+  const branch = {
+    id: createId(),
+    title: `${baseTitle.replace(/ · 分支(?: \d+)?$/, "").slice(0, 68)} · 分支`,
+    createdAt: now,
+    updatedAt: now,
+    summary: "",
+    summaryUntil: 0,
+    pinned: false,
+    routeId: source.routeId || selectedRouteId,
+    messages: branchMessages,
+  };
+  sessions = [branch, ...sessions].sort(compareSessions).slice(0, MAX_SESSIONS);
+  activeSessionId = branch.id;
+  messages = branch.messages;
+  attachments = [];
+  localStorage.setItem(activeSessionStorageKey(), branch.id);
+  restoreSessionRoute(branch);
+  restoreActiveDraft();
+  hideMemorySuggest();
+  saveSessions({ immediate: true });
+  renderAttachments();
+  renderChatList();
+  renderMessages(true);
+  updateChatTitle();
+  closeSidebar();
+  showStatusToast("已创建对话分支，原会话保持不变");
+  promptInput.focus();
 }
 
 async function rateAssistant(message, rating) {

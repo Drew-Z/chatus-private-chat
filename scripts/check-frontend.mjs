@@ -64,6 +64,8 @@ assert(chatScript.includes("bootView.hidden = true;"), "app.js: startup state mu
 assert(chatScript.includes("preserveCloudConflict(chat, data.currentChat)"), "app.js: cloud save conflicts must preserve both versions");
 assert(chatScript.includes("restoreSessionRoute(session)"), "app.js: switching chats must restore the chat model");
 assert(chatScript.includes("active.routeId = routeId"), "app.js: model changes must persist on the active chat");
+assert(chatScript.includes("branchConversationAt(index)"), "app.js: messages must support non-destructive conversation branching");
+assert(chatScript.includes("原会话保持不变"), "app.js: branching must explain that the source chat is preserved");
 assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
 assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: login throttling needs a retry countdown");
 assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily rate limits must remain distinct");
