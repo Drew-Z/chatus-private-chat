@@ -143,6 +143,7 @@ generateAccessCodeButton?.addEventListener("click", () => {
   const entry = `${label}:${code}`;
   const current = accessCodesInput.value.trim();
   accessCodesInput.value = current ? `${current},${entry}` : entry;
+  markDirty("access");
   renderAccessEntries();
   if (newAccessLabel) newAccessLabel.value = "";
   setStatus(`已为 ${label} 生成访问码，记得点击保存`);
@@ -1016,9 +1017,11 @@ function renderStats() {
     memoryBtn.type = "button";
     memoryBtn.className = "ghost-button compact";
     memoryBtn.textContent = "记忆";
-    memoryBtn.addEventListener("click", () => {
+    memoryBtn.addEventListener("click", async () => {
       if (memoryUserSelect) {
+        if (user.label !== selectedMemoryUser && !(await confirmDiscardChanges("切换记忆用户"))) return;
         memoryUserSelect.value = user.label;
+        selectedMemoryUser = user.label;
         loadAdminMemory();
       }
     });
@@ -1222,7 +1225,8 @@ function renderRouteHealthList() {
     model.className = "route-health-model";
     model.textContent = config.routes[routeId]?.model || routeId;
     row.append(indicator, copy, model);
-    row.addEventListener("click", () => {
+    row.addEventListener("click", async () => {
+      if (routeId !== selectedRoute && !(await confirmDiscardChanges("切换线路"))) return;
       selectedRoute = routeId;
       routeAdminSelect.value = routeId;
       populateRouteForm();
@@ -1584,7 +1588,10 @@ async function fetchRouteModels() {
       option.value = model;
       routeModelOptions.append(option);
     }
-    if (!routeModelInput.value.trim() && models[0]) routeModelInput.value = models[0];
+    if (!routeModelInput.value.trim() && models[0]) {
+      routeModelInput.value = models[0];
+      markDirty("route");
+    }
     setRouteHealth(`已拉取 ${models.length} 个模型，点击模型名输入框即可选择`);
     routeModelInput.focus();
     try {

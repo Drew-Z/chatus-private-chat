@@ -90,6 +90,7 @@ for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('window.addEventListener("beforeunload"'), "admin.js: unsaved configuration needs a page-leave warning");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("confirmDiscardChanges"), "admin.js: internal navigation must protect unsaved configuration");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('markDirty("access")'), "admin.js: generated access codes must be marked unsaved");
 
 console.log("Frontend structure checks passed");
 
