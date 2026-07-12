@@ -42,6 +42,40 @@ button {
   min-height: 100vh;
 }
 
+.boot-view {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+  justify-items: center;
+  gap: 9px;
+  color: var(--text);
+}
+
+.boot-view[hidden] {
+  display: none;
+}
+
+.boot-brand {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 3px;
+  place-items: center;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 8px;
+  font-weight: 800;
+}
+
+.boot-view strong {
+  font-size: 17px;
+}
+
+.boot-view span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .login-view {
   display: grid;
   min-height: 100vh;

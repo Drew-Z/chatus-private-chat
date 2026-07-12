@@ -52,6 +52,7 @@ assert(chatScript.includes('connectionState.classList.add("route-unhealthy")'), 
 assert(chatScript.includes("近期巡检异常，失败时会尝试备用线路"), "app.js: unhealthy route selection must explain fallback");
 assert(chatScript.includes('openModelPicker(event.key === "ArrowUp" ? "last" : "selected")'), "app.js: model picker trigger needs arrow-key navigation");
 assert(chatScript.includes('event.key === "Tab"'), "app.js: model picker must close when keyboard focus leaves");
+assert(chatScript.includes("bootView.hidden = true;"), "app.js: startup state must resolve into an application view");
 
 console.log("Frontend structure checks passed");
 

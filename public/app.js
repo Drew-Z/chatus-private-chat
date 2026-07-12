@@ -2,6 +2,7 @@ import { renderMarkdown } from "./markdown.js";
 
 const loginView = document.querySelector("#loginView");
 const chatView = document.querySelector("#chatView");
+const bootView = document.querySelector("#bootView");
 const loginForm = document.querySelector("#loginForm");
 const loginStatus = document.querySelector("#loginStatus");
 const accessCode = document.querySelector("#accessCode");
@@ -415,6 +416,7 @@ async function boot() {
 }
 
 function showLogin() {
+  bootView.hidden = true;
   chatView.hidden = true;
   loginView.hidden = false;
   accessCode.focus();
@@ -439,6 +441,7 @@ function expireUserSession() {
 
 async function showChat(existingSession, readOnlyOffline = false) {
   sessionExpired = false;
+  bootView.hidden = true;
   loginView.hidden = true;
   chatView.hidden = false;
   setOfflineMode(readOnlyOffline);
