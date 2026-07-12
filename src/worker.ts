@@ -781,11 +781,23 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
 async function handleGetAdminConfig(env: Env): Promise<Response> {
   const { config, source } = await loadEditableConfig(env);
-  return jsonResponse({ config, source });
+  return jsonResponse({ config, source, revision: await configRevision(config) });
 }
 
 async function handlePutAdminConfig(request: Request, env: Env): Promise<Response> {
-  const body = await readJson<{ config?: unknown }>(request);
+  const body = await readJson<{ config?: unknown; expectedRevision?: unknown }>(request);
+  const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision : "";
+  if (expectedRevision) {
+    const current = await loadEditableConfig(env);
+    const currentRevision = await configRevision(current.config);
+    if (currentRevision !== expectedRevision) {
+      return jsonResponse({
+        error: "config_conflict",
+        message: "配置已在其他标签页或设备更新，请刷新后重新编辑",
+        currentRevision,
+      }, 409);
+    }
+  }
   const normalized = normalizeAppConfig(body.config);
   const validation = validateAppConfig(normalized);
   if (!validation.ok) {
@@ -794,7 +806,11 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
 
   await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(normalized));
   await appendAdminAudit(env, "config.update");
-  return jsonResponse({ ok: true, config: normalized, source: "kv" });
+  return jsonResponse({ ok: true, config: normalized, source: "kv", revision: await configRevision(normalized) });
+}
+
+async function configRevision(config: AppConfig): Promise<string> {
+  return secretFingerprint(JSON.stringify(config));
 }
 
 async function handleGetAdminAccessCodes(env: Env): Promise<Response> {

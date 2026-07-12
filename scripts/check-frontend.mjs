@@ -91,6 +91,8 @@ assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('wi
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("confirmDiscardChanges"), "admin.js: internal navigation must protect unsaved configuration");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('markDirty("access")'), "admin.js: generated access codes must be marked unsaved");
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("expectedRevision: configRevision"), "admin.js: config saves must reject stale editors");
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("attemptSaveConfig"), "admin.js: form save failures need visible feedback");
 
 console.log("Frontend structure checks passed");
 

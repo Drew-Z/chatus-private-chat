@@ -600,6 +600,28 @@ describe("Worker API", () => {
     await expect(userWithoutRoute.json()).resolves.toMatchObject({ message: "用户 friend 至少需要一条已启用的允许线路" });
   });
 
+  it("rejects stale admin configuration updates", async () => {
+    const cookie = await adminLogin();
+    const initialResponse = await apiRequest("/api/admin/config", cookie);
+    const initial = await initialResponse.json() as any;
+    expect(initial.revision).toMatch(/^[0-9a-f]{64}$/);
+
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      ...initial.config,
+      users: { ...(initial.config.users || {}), concurrent: { displayName: "Concurrent edit" } },
+    }));
+
+    const stale = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: initial.config, expectedRevision: initial.revision }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "config_conflict" });
+    const stored = await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json");
+    expect(stored.users.concurrent.displayName).toBe("Concurrent edit");
+  });
+
   it("requires the route health task to return the correct answer", async () => {
     const cookie = await adminLogin();
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({

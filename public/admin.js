@@ -105,6 +105,7 @@ let selectedMemoryUser = "";
 let currentAdminSection = "overview";
 let savedAccessCodes = "";
 let savedMemory = "";
+let configRevision = "";
 const dirtyScopes = new Set();
 
 for (const item of adminNavItems) {
@@ -244,7 +245,7 @@ userForm.addEventListener("submit", async (event) => {
   }
 
   newUserLabel.value = "";
-  await saveConfigObject("用户配置已保存");
+  await attemptSaveConfig("用户配置已保存");
 });
 
 copyCreatedAccessCode?.addEventListener("click", async () => {
@@ -269,7 +270,7 @@ deleteUserButton.addEventListener("click", async () => {
   syncConfigFromEditor();
   delete config.users?.[selectedUser];
   selectedUser = DEFAULT_USER;
-  await saveConfigObject("用户配置已删除");
+  await attemptSaveConfig("用户配置已删除");
 });
 
 revokeUserSessionsButton?.addEventListener("click", async () => {
@@ -335,7 +336,7 @@ routeForm.addEventListener("submit", async (event) => {
   });
   if (!routeEnabledInput.checked) repairDisabledRouteAssignments(routeId);
   selectedRoute = routeId;
-  await saveConfigObject("线路配置已保存");
+  await attemptSaveConfig("线路配置已保存");
 });
 
 deleteRouteButton.addEventListener("click", async () => {
@@ -352,7 +353,7 @@ deleteRouteButton.addEventListener("click", async () => {
   const fallbackRoute = Object.keys(config.routes)[0] || "";
   pruneRouteFromUsers(selectedRoute, fallbackRoute);
   selectedRoute = fallbackRoute;
-  await saveConfigObject("线路已删除");
+  await attemptSaveConfig("线路已删除");
 });
 
 saveAccessCodesButton.addEventListener("click", async () => {
@@ -441,6 +442,7 @@ async function loadDashboard(message = "") {
   ]);
 
   config = normalizeClientConfig(configData.config);
+  configRevision = configData.revision || "";
   stats = statsData;
   routeHealth = healthData?.routes || {};
   coreHealth = coreHealthData;
@@ -1290,12 +1292,23 @@ function syncConfigFromEditor() {
 async function saveConfigObject(message) {
   const data = await api("/api/admin/config", {
     method: "PUT",
-    body: JSON.stringify({ config }),
+    body: JSON.stringify({ config, expectedRevision: configRevision }),
   });
   config = normalizeClientConfig(data.config);
+  configRevision = data.revision || configRevision;
   configJsonInput.value = JSON.stringify(config, null, 2);
   clearDirty("user", "route", "config");
   await loadDashboard(message);
+}
+
+async function attemptSaveConfig(message) {
+  try {
+    await saveConfigObject(message);
+    return true;
+  } catch (error) {
+    setStatus(error.message || "配置保存失败", true);
+    return false;
+  }
 }
 
 function normalizeClientConfig(value) {
