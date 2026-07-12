@@ -6,6 +6,7 @@
     <meta name="robots" content="noindex,nofollow,noarchive" />
     <meta name="theme-color" content="#f7f8fa" />
     <title>Chatus</title>
+    <script src="/theme.js"></script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="chat-product-body">
@@ -75,6 +76,7 @@
                 </div>
               </div>
             </details>
+            <button class="side-tool-button" id="settingsButton" type="button"><span>外观</span><small id="themeSummary">跟随系统</small></button>
             <div class="account-row">
               <div class="account-avatar" aria-hidden="true">U</div>
               <div class="account-copy"><strong id="userLabel"></strong><span>今日剩余 <b id="usageText">--</b></span></div>
@@ -146,6 +148,20 @@
           <button class="ghost-button" value="cancel" type="submit">取消</button>
           <button class="dialog-primary" id="appDialogConfirm" value="confirm" type="submit">确认</button>
         </div>
+      </form>
+    </dialog>
+    <dialog class="app-dialog settings-dialog" id="settingsDialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <h2>外观</h2>
+          <button class="icon-control" value="close" type="submit" aria-label="关闭">×</button>
+        </div>
+        <fieldset class="theme-options" id="themeOptions">
+          <legend>主题</legend>
+          <label><input type="radio" name="theme" value="system" /><span>跟随系统</span></label>
+          <label><input type="radio" name="theme" value="light" /><span>浅色</span></label>
+          <label><input type="radio" name="theme" value="dark" /><span>深色</span></label>
+        </fieldset>
       </form>
     </dialog>
     <script src="/app.js" type="module"></script>

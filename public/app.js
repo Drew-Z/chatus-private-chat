@@ -5,6 +5,7 @@ const chatView = document.querySelector("#chatView");
 const loginForm = document.querySelector("#loginForm");
 const loginStatus = document.querySelector("#loginStatus");
 const accessCode = document.querySelector("#accessCode");
+const loginSubmitButton = loginForm.querySelector("button[type='submit']");
 const userLabel = document.querySelector("#userLabel");
 const usageText = document.querySelector("#usageText");
 const messageList = document.querySelector("#messageList");
@@ -50,6 +51,10 @@ const appDialogDescription = document.querySelector("#appDialogDescription");
 const appDialogInput = document.querySelector("#appDialogInput");
 const appDialogConfirm = document.querySelector("#appDialogConfirm");
 const statusToast = document.querySelector("#statusToast");
+const settingsButton = document.querySelector("#settingsButton");
+const settingsDialog = document.querySelector("#settingsDialog");
+const themeOptions = document.querySelector("#themeOptions");
+const themeSummary = document.querySelector("#themeSummary");
 
 const LEGACY_STORAGE_KEY = "chatus.messages.v1";
 const SESSIONS_STORAGE_PREFIX = "chatus.sessions.v3.";
@@ -94,17 +99,44 @@ loginForm.addEventListener("submit", async (event) => {
   loginStatus.textContent = "";
   const code = accessCode.value.trim();
   if (!code) return;
-  const response = await fetch("/api/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
-  if (!response.ok) {
-    loginStatus.textContent = "访问码不可用";
-    return;
+  setLoginBusy(true);
+  try {
+    const response = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!response.ok) {
+      loginStatus.textContent = response.status >= 500 ? "服务暂时不可用，请稍后重试" : "访问码不可用";
+      return;
+    }
+    accessCode.value = "";
+    await showChat();
+  } catch {
+    loginStatus.textContent = navigator.onLine ? "连接失败，请稍后重试" : "当前网络已断开";
+  } finally {
+    setLoginBusy(false);
   }
-  accessCode.value = "";
-  await showChat();
+});
+
+settingsButton?.addEventListener("click", () => {
+  syncThemeControls();
+  settingsDialog?.showModal();
+});
+themeOptions?.addEventListener("change", (event) => {
+  const value = event.target?.value;
+  if (!value) return;
+  window.ChatusTheme?.setPreference(value);
+  syncThemeControls();
+});
+window.addEventListener("chatus:theme", () => syncThemeControls());
+window.addEventListener("offline", () => {
+  if (!chatView.hidden) showStatusToast("网络已断开，已保留本地内容");
+  else loginStatus.textContent = "当前网络已断开";
+});
+window.addEventListener("online", () => {
+  if (!chatView.hidden) showStatusToast("网络已恢复");
+  else if (loginStatus.textContent === "当前网络已断开") loginStatus.textContent = "";
 });
 
 document.querySelector("#logoutButton").addEventListener("click", async () => {
@@ -268,9 +300,15 @@ chatForm.addEventListener("submit", async (event) => {
   maybeRefreshSummary();
 });
 async function boot() {
-  const response = await fetch("/api/session");
-  if (response.ok) await showChat(await response.json());
-  else showLogin();
+  syncThemeControls();
+  try {
+    const response = await fetch("/api/session");
+    if (response.ok) await showChat(await response.json());
+    else showLogin();
+  } catch {
+    showLogin();
+    loginStatus.textContent = navigator.onLine ? "无法连接服务，请稍后重试" : "当前网络已断开";
+  }
 }
 
 function showLogin() {
@@ -282,7 +320,12 @@ function showLogin() {
 async function showChat(existingSession) {
   loginView.hidden = true;
   chatView.hidden = false;
-  const session = existingSession || (await (await fetch("/api/session")).json());
+  let session = existingSession;
+  if (!session) {
+    const response = await fetch("/api/session");
+    if (!response.ok) throw new Error("session_unavailable");
+    session = await response.json();
+  }
   currentUser = session.user || "friend";
   routes = Array.isArray(session.routes) ? session.routes : [];
   selectedRouteId = chooseRoute(session.defaultRoute);
@@ -301,6 +344,22 @@ async function showChat(existingSession) {
   updateConnectionState();
   updateComposerMeta();
   promptInput.focus();
+}
+
+function setLoginBusy(busy) {
+  loginForm.setAttribute("aria-busy", String(busy));
+  loginSubmitButton.disabled = busy;
+  loginSubmitButton.textContent = busy ? "正在进入…" : "进入 Chatus";
+  accessCode.disabled = busy;
+}
+
+function syncThemeControls() {
+  const preference = window.ChatusTheme?.getPreference?.() || "system";
+  const labels = { system: "跟随系统", light: "浅色", dark: "深色" };
+  if (themeSummary) themeSummary.textContent = labels[preference] || labels.system;
+  for (const input of themeOptions?.querySelectorAll("input[name='theme']") || []) {
+    input.checked = input.value === preference;
+  }
 }
 
 async function streamChat(assistantMessage) {
