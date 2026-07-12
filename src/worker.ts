@@ -26,6 +26,7 @@ type Session = {
 type AdminSession = {
   createdAt: number;
   lastSeen: number;
+  tokenFingerprint: string;
 };
 
 type AccessEntry = {
@@ -651,7 +652,7 @@ async function handleAdminLogin(request: Request, env: Env, url: URL): Promise<R
 
   const now = Date.now();
   const sessionToken = randomToken();
-  const session: AdminSession = { createdAt: now, lastSeen: now };
+  const session: AdminSession = { createdAt: now, lastSeen: now, tokenFingerprint: await secretFingerprint(expected) };
   await env.CHAT_STORE.put(`admin:${sessionToken}`, JSON.stringify(session), {
     expirationTtl: ADMIN_SESSION_TTL_SECONDS,
   });
@@ -2609,7 +2610,16 @@ async function getAdminSession(request: Request, env: Env): Promise<AdminSession
 
   try {
     const session = JSON.parse(raw) as AdminSession;
-    return Number.isFinite(session.createdAt) ? session : null;
+    const expected = env.ADMIN_TOKEN?.trim() || "";
+    if (
+      !Number.isFinite(session.createdAt) ||
+      !session.tokenFingerprint ||
+      !(await secureCompare(session.tokenFingerprint, await secretFingerprint(expected)))
+    ) {
+      await env.CHAT_STORE.delete(`admin:${token}`);
+      return null;
+    }
+    return session;
   } catch {
     await env.CHAT_STORE.delete(`admin:${token}`);
     return null;
@@ -3013,6 +3023,12 @@ async function secureCompare(actual: string, expected: string): Promise<boolean>
 function numberEnv(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function secretFingerprint(value: string): Promise<string> {
+  if (!value) return "";
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function positiveCount(value: string | null): number {

@@ -388,6 +388,19 @@ describe("Worker API", () => {
     expect(sessionResponse.headers.get("X-Request-ID")).not.toBe(loginResponse.headers.get("X-Request-ID"));
   });
 
+  it("invalidates an admin session when its token fingerprint no longer matches", async () => {
+    const cookie = await adminLogin();
+    const sessionToken = cookie.split("=", 2)[1];
+    const key = `admin:${sessionToken}`;
+    const session = await env.CHAT_STORE.get<Record<string, unknown>>(key, "json");
+    expect(session?.tokenFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    await env.CHAT_STORE.put(key, JSON.stringify({ ...session, tokenFingerprint: "0".repeat(64) }));
+
+    const response = await apiRequest("/api/admin/session", cookie);
+    expect(response.status).toBe(401);
+    await expect(env.CHAT_STORE.get(key)).resolves.toBeNull();
+  });
+
   it("blocks trivial probe prompts before contacting an upstream", async () => {
     const { cookie, label } = await login();
     await env.CHAT_STORE.put(
