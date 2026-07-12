@@ -45,6 +45,7 @@ const routeImagesInput = document.querySelector("#routeImagesInput");
 const routeRequiresKeyInput = document.querySelector("#routeRequiresKeyInput");
 const deleteRouteButton = document.querySelector("#deleteRouteButton");
 const accessCodesInput = document.querySelector("#accessCodesInput");
+const accessEntryList = document.querySelector("#accessEntryList");
 const saveAccessCodesButton = document.querySelector("#saveAccessCodesButton");
 const resetAccessCodesButton = document.querySelector("#resetAccessCodesButton");
 const configJsonInput = document.querySelector("#configJsonInput");
@@ -100,8 +101,9 @@ generateAccessCodeButton?.addEventListener("click", () => {
   const entry = `${label}:${code}`;
   const current = accessCodesInput.value.trim();
   accessCodesInput.value = current ? `${current},${entry}` : entry;
+  renderAccessEntries();
   if (newAccessLabel) newAccessLabel.value = "";
-  setStatus(`已生成 ${entry}，记得点击保存访问码`);
+  setStatus(`已为 ${label} 生成访问码，记得点击保存`);
 });
 
 loadMemoryButton?.addEventListener("click", () => loadAdminMemory());
@@ -115,6 +117,7 @@ memoryUserSelect?.addEventListener("change", () => loadAdminMemory());
 healthRouteButton?.addEventListener("click", () => checkRouteHealth());
 healthAllRoutesButton?.addEventListener("click", () => checkAllRoutesHealth());
 fetchRouteModelsButton?.addEventListener("click", () => fetchRouteModels());
+accessCodesInput?.addEventListener("input", () => renderAccessEntries());
 
 bootAdmin();
 
@@ -332,6 +335,7 @@ async function loadDashboard(message = "") {
   renderProductionStatus(releaseData);
   configJsonInput.value = JSON.stringify(config, null, 2);
   accessCodesInput.value = accessData.accessCodes || "";
+  renderAccessEntries();
 
   configSourceText.textContent = sourceLabel(configData.source);
   accessSourceText.textContent = sourceLabel(accessData.source);
@@ -344,6 +348,78 @@ async function loadDashboard(message = "") {
   renderUserPicker();
   renderRoutePicker();
   setStatus(message || "已同步");
+}
+
+function renderAccessEntries() {
+  if (!accessEntryList) return;
+  accessEntryList.textContent = "";
+  const entries = parseAccessEntries(accessCodesInput.value);
+  for (const [index, entry] of entries.entries()) {
+    const row = document.createElement("div");
+    row.className = "access-entry-row";
+    const avatar = document.createElement("span");
+    avatar.className = "access-entry-avatar";
+    avatar.textContent = entry.label.slice(0, 1).toUpperCase() || "U";
+    const copy = document.createElement("div");
+    copy.className = "access-entry-copy";
+    const label = document.createElement("strong");
+    label.textContent = entry.label;
+    const masked = document.createElement("small");
+    masked.textContent = `访问码 ·•••• ${entry.code.slice(-4)}`;
+    copy.append(label, masked);
+    const actions = document.createElement("div");
+    actions.className = "access-entry-actions";
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "plain-button compact";
+    copyButton.textContent = "复制";
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(entry.code);
+        setStatus(`${entry.label} 的访问码已复制`);
+      } catch {
+        setStatus("复制失败，请使用下方文本编辑器", true);
+      }
+    });
+    const revokeButton = document.createElement("button");
+    revokeButton.type = "button";
+    revokeButton.className = "plain-button compact danger-action";
+    revokeButton.textContent = "撤销";
+    revokeButton.addEventListener("click", () => revokeAccessEntry(index, entry));
+    actions.append(copyButton, revokeButton);
+    row.append(avatar, copy, actions);
+    accessEntryList.append(row);
+  }
+}
+
+function parseAccessEntries(value) {
+  return String(value || "").split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
+    const separator = part.indexOf(":");
+    return separator === -1
+      ? { label: "friend", code: part }
+      : { label: part.slice(0, separator).trim() || "friend", code: part.slice(separator + 1).trim() };
+  }).filter((entry) => entry.code);
+}
+
+async function revokeAccessEntry(index, entry) {
+  const entries = parseAccessEntries(accessCodesInput.value);
+  if (entries.length <= 1) return setStatus("至少需要保留一个访问码", true);
+  if (!(await confirmAdminAction("撤销访问码？", `${entry.label} 将无法再使用这个访问码登录。已有登录会话会在过期前保持有效。`, "撤销"))) return;
+  const previousValue = accessCodesInput.value;
+  entries.splice(index, 1);
+  accessCodesInput.value = entries.map((item) => `${item.label}:${item.code}`).join(",");
+  renderAccessEntries();
+  try {
+    await api("/api/admin/access-codes", {
+      method: "PUT",
+      body: JSON.stringify({ accessCodes: accessCodesInput.value }),
+    });
+    await loadDashboard("访问码已撤销");
+  } catch (error) {
+    accessCodesInput.value = previousValue;
+    renderAccessEntries();
+    setStatus(error.message || "撤销失败", true);
+  }
 }
 
 async function fetchRelease() {

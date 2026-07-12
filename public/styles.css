@@ -3176,6 +3176,97 @@ body.sidebar-open {
   font-weight: 400;
 }
 
+.access-entry-list {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0;
+}
+
+.access-entry-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 54px;
+  padding: 9px 11px;
+  color: #25292d;
+  background: #f7f8f9;
+  border: 1px solid #e2e5e7;
+  border-radius: 7px;
+}
+
+.access-entry-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #176b52;
+  background: #e8f2ee;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.access-entry-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.access-entry-copy strong,
+.access-entry-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.access-entry-copy strong {
+  font-size: 12px;
+}
+
+.access-entry-copy small {
+  color: #687078;
+  font-size: 11px;
+}
+
+.access-entry-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.admin-body .access-entry-actions .plain-button:not(.danger-action) {
+  color: #41474e;
+}
+
+[data-theme="dark"] .access-entry-row {
+  color: #e7e9eb;
+  background: #282c30;
+  border-color: #3b4045;
+}
+
+[data-theme="dark"] .access-entry-avatar {
+  color: #8bd0b5;
+  background: #233b33;
+}
+
+[data-theme="dark"] .access-entry-copy small {
+  color: #a5abb1;
+}
+
+[data-theme="dark"] .admin-body .access-entry-actions .plain-button:not(.danger-action) {
+  color: #d3d7da;
+}
+
+@media (max-width: 560px) {
+  .access-entry-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .access-entry-actions {
+    grid-column: 2;
+  }
+}
+
 .admin-body .form-grid input:focus,
 .admin-body .form-grid select:focus,
 .admin-body textarea:focus {
