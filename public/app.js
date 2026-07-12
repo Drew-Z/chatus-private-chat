@@ -827,9 +827,10 @@ function getActiveSession() {
   return session;
 }
 
-function activateSession(id) {
+function activateSession(id, searchQuery = "") {
   const session = sessions.find((item) => item.id === id);
   if (!session) return;
+  const targetMessageId = searchQuery ? findSearchMessageId(session, searchQuery) : "";
   activeSessionId = id;
   messages = session.messages;
   attachments = [];
@@ -840,7 +841,25 @@ function activateSession(id) {
   renderMessages(true);
   updateChatTitle();
   closeSidebar();
-  promptInput.focus();
+  if (targetMessageId) {
+    requestAnimationFrame(() => focusSearchMessage(targetMessageId));
+  } else {
+    promptInput.focus();
+  }
+}
+
+function findSearchMessageId(session, query) {
+  const match = session.messages.find((message) => extractText(message.content).toLowerCase().includes(query));
+  return match?.id || "";
+}
+
+function focusSearchMessage(messageId) {
+  const target = [...messageList.querySelectorAll(".message")].find((node) => node.dataset.messageId === messageId);
+  if (!target) return;
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+  target.classList.add("search-hit");
+  setTimeout(() => target.classList.remove("search-hit"), 1800);
 }
 
 async function deleteSession(id) {
@@ -1034,7 +1053,7 @@ function renderChatList() {
       open.append(pinMark);
     }
     open.title = session.summary ? `${session.title}\n${session.summary}` : session.title || "新会话";
-    open.addEventListener("click", () => activateSession(session.id));
+    open.addEventListener("click", () => activateSession(session.id, sessionFilter));
     const menu = document.createElement("details");
     menu.className = "chat-list-menu";
     const summary = document.createElement("summary");

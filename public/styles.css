@@ -2103,6 +2103,24 @@ body.sidebar-open {
   border-radius: 7px;
 }
 
+.chat-product-body .message.search-hit {
+  outline: 3px solid rgba(23, 107, 82, 0.2);
+  outline-offset: 5px;
+  border-radius: 5px;
+  animation: search-hit-fade 1.8s ease-out;
+}
+
+@keyframes search-hit-fade {
+  0%, 35% { outline-color: rgba(23, 107, 82, 0.42); }
+  100% { outline-color: rgba(23, 107, 82, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-product-body .message.search-hit {
+    animation: none;
+  }
+}
+
 .chat-product-body .message-actions {
   margin-top: 8px;
   opacity: 0;
