@@ -36,7 +36,9 @@ async function runChecks() {
   const admin = await request(`/admin?smoke=${marker}`);
   assert(admin.status === 200, `admin: expected 200, got ${admin.status}`);
   assertSecurityHeaders(admin, "admin");
-  assert((await admin.text()).includes('id="adminLoginView"'), "admin: login view missing");
+  const adminHtml = await admin.text();
+  assert(adminHtml.includes('id="adminLoginView"'), "admin: login view missing");
+  assert(adminHtml.includes('id="releaseGrid"') || adminHtml.includes('class="release-grid"'), "admin: production status panel missing");
 
   const session = await request("/api/session");
   assert(session.status === 401, `session: expected 401, got ${session.status}`);

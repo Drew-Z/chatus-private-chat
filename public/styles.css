@@ -2994,6 +2994,84 @@ body.sidebar-open {
   grid-column: 1 / -1;
 }
 
+.release-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.release-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px;
+  background: #f6f7f8;
+  border: 1px solid #e5e7e9;
+  border-radius: 7px;
+}
+
+.release-grid span,
+.diagnostic-list small {
+  color: #687078;
+  font-size: 11px;
+}
+
+.release-grid strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-title .status-ok {
+  color: #176b52;
+}
+
+.diagnostic-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.diagnostic-list > div {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+
+.diagnostic-list > div > div {
+  display: grid;
+  gap: 2px;
+}
+
+.diagnostic-list strong {
+  font-size: 12px;
+}
+
+.diagnostic-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  background: #b27a25;
+  border-radius: 50%;
+}
+
+.diagnostic-dot.ok {
+  background: #238263;
+}
+
+[data-theme="dark"] .release-grid > div {
+  background: #282c30;
+  border-color: #3b4045;
+}
+
+[data-theme="dark"] .release-grid span,
+[data-theme="dark"] .diagnostic-list small {
+  color: #a5abb1;
+}
+
 .admin-user-panel,
 .admin-route-panel {
   max-width: 980px;

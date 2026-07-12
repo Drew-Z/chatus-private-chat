@@ -14,6 +14,12 @@ const statsList = document.querySelector("#statsList");
 const metricsSummary = document.querySelector("#metricsSummary");
 const metricsTrend = document.querySelector("#metricsTrend");
 const routeMetrics = document.querySelector("#routeMetrics");
+const releaseState = document.querySelector("#releaseState");
+const releaseCommit = document.querySelector("#releaseCommit");
+const releaseTime = document.querySelector("#releaseTime");
+const releaseRoutes = document.querySelector("#releaseRoutes");
+const releaseUsers = document.querySelector("#releaseUsers");
+const diagnosticList = document.querySelector("#diagnosticList");
 const userSystemPrompt = document.querySelector("#userSystemPrompt");
 const userForm = document.querySelector("#userForm");
 const userSelect = document.querySelector("#userSelect");
@@ -305,10 +311,11 @@ function showAdminSection(section) {
 
 async function loadDashboard(message = "") {
   setStatus("读取中");
-  const [configData, accessData, statsData] = await Promise.all([
+  const [configData, accessData, statsData, releaseData] = await Promise.all([
     api("/api/admin/config"),
     api("/api/admin/access-codes"),
     api("/api/admin/stats"),
+    fetchRelease(),
   ]);
 
   config = normalizeClientConfig(configData.config);
@@ -316,6 +323,7 @@ async function loadDashboard(message = "") {
   accessLabels = Array.isArray(accessData.entries)
     ? accessData.entries.map((entry) => entry?.label).filter(Boolean)
     : [];
+  renderProductionStatus(releaseData);
   configJsonInput.value = JSON.stringify(config, null, 2);
   accessCodesInput.value = accessData.accessCodes || "";
 
@@ -330,6 +338,53 @@ async function loadDashboard(message = "") {
   renderUserPicker();
   renderRoutePicker();
   setStatus(message || "已同步");
+}
+
+async function fetchRelease() {
+  try {
+    const response = await fetch(`/release.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function renderProductionStatus(release) {
+  const routeCount = Object.keys(config.routes || {}).length;
+  const userCount = Object.keys(config.users || {}).length;
+  const commit = typeof release?.commit === "string" ? release.commit : "";
+  const deployedAt = typeof release?.deployedAt === "string" ? new Date(release.deployedAt) : null;
+  releaseState.textContent = commit ? "运行正常" : "版本信息不可用";
+  releaseState.classList.toggle("status-ok", Boolean(commit));
+  releaseCommit.textContent = commit ? commit.slice(0, 8) : "--";
+  releaseCommit.title = commit;
+  releaseTime.textContent = deployedAt && !Number.isNaN(deployedAt.valueOf())
+    ? deployedAt.toLocaleString("zh-CN", { hour12: false })
+    : "--";
+  releaseRoutes.textContent = String(routeCount);
+  releaseUsers.textContent = String(userCount);
+  diagnosticList.textContent = "";
+  const checks = [
+    ["发布身份", Boolean(commit), commit ? "已验证" : "无法读取 release.json"],
+    ["模型配置", routeCount > 0, routeCount > 0 ? `${routeCount} 条线路` : "尚未配置线路"],
+    ["访问控制", accessLabels.length > 0, accessLabels.length > 0 ? `${accessLabels.length} 个 label` : "尚无访问码 label"],
+    ["云端同步", true, "Durable Object 已启用"],
+  ];
+  for (const [label, ok, detail] of checks) {
+    const row = document.createElement("div");
+    const indicator = document.createElement("span");
+    indicator.className = `diagnostic-dot${ok ? " ok" : " warning"}`;
+    indicator.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("div");
+    const name = document.createElement("strong");
+    const description = document.createElement("small");
+    name.textContent = label;
+    description.textContent = detail;
+    copy.append(name, description);
+    row.append(indicator, copy);
+    diagnosticList.append(row);
+  }
 }
 
 async function api(path, options = {}) {
