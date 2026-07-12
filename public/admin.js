@@ -398,7 +398,7 @@ function renderAccessEntries() {
 }
 
 async function rotateAccessEntry(index, entry) {
-  if (!(await confirmAdminAction("轮换访问码？", `${entry.label} 的旧访问码将立即失效，新访问码会自动复制。已有登录会话会在过期前保持有效。`, "轮换"))) return;
+  if (!(await confirmAdminAction("轮换访问码？", `${entry.label} 的旧访问码将立即失效，该用户当前已登录的会话也会全部注销。新访问码会自动复制。`, "轮换"))) return;
   const entries = parseAccessEntries(accessCodesInput.value);
   if (!entries[index]) return setStatus("访问码列表已变化，请刷新后重试", true);
   const previousValue = accessCodesInput.value;
@@ -406,21 +406,29 @@ async function rotateAccessEntry(index, entry) {
   entries[index] = { ...entries[index], code: nextCode };
   accessCodesInput.value = entries.map((item) => `${item.label}:${item.code}`).join(",");
   renderAccessEntries();
+  let accessSaved = false;
   try {
     await api("/api/admin/access-codes", {
       method: "PUT",
       body: JSON.stringify({ accessCodes: accessCodesInput.value }),
     });
+    accessSaved = true;
+    const revoked = await revokeLabelSessions(entry.label);
     let copied = false;
     try {
       await navigator.clipboard.writeText(nextCode);
       copied = true;
     } catch {}
-    await loadDashboard(copied ? `${entry.label} 的访问码已轮换并复制` : `${entry.label} 的访问码已轮换，请点击复制`);
+    const sessionText = revoked === null ? " · 会话注销失败，请稍后重试" : ` · 注销 ${revoked} 个会话`;
+    await loadDashboard((copied
+      ? `${entry.label} 的访问码已轮换并复制`
+      : `${entry.label} 的访问码已轮换，请点击复制`) + sessionText);
   } catch (error) {
-    accessCodesInput.value = previousValue;
-    renderAccessEntries();
-    setStatus(error.message || "轮换失败", true);
+    if (!accessSaved) {
+      accessCodesInput.value = previousValue;
+      renderAccessEntries();
+    }
+    setStatus(accessSaved ? "访问码已轮换，但后台刷新失败" : error.message || "轮换失败", true);
   }
 }
 
@@ -436,21 +444,38 @@ function parseAccessEntries(value) {
 async function revokeAccessEntry(index, entry) {
   const entries = parseAccessEntries(accessCodesInput.value);
   if (entries.length <= 1) return setStatus("至少需要保留一个访问码", true);
-  if (!(await confirmAdminAction("撤销访问码？", `${entry.label} 将无法再使用这个访问码登录。已有登录会话会在过期前保持有效。`, "撤销"))) return;
+  if (!(await confirmAdminAction("撤销访问码？", `${entry.label} 将无法再使用这个访问码登录，该用户当前已登录的会话也会全部注销。`, "撤销"))) return;
   const previousValue = accessCodesInput.value;
   entries.splice(index, 1);
   accessCodesInput.value = entries.map((item) => `${item.label}:${item.code}`).join(",");
   renderAccessEntries();
+  let accessSaved = false;
   try {
     await api("/api/admin/access-codes", {
       method: "PUT",
       body: JSON.stringify({ accessCodes: accessCodesInput.value }),
     });
-    await loadDashboard("访问码已撤销");
+    accessSaved = true;
+    const revoked = await revokeLabelSessions(entry.label);
+    await loadDashboard(revoked === null ? "访问码已撤销 · 会话注销失败，请稍后重试" : `访问码已撤销 · 注销 ${revoked} 个会话`);
   } catch (error) {
-    accessCodesInput.value = previousValue;
-    renderAccessEntries();
-    setStatus(error.message || "撤销失败", true);
+    if (!accessSaved) {
+      accessCodesInput.value = previousValue;
+      renderAccessEntries();
+    }
+    setStatus(accessSaved ? "访问码已撤销，但后台刷新失败" : error.message || "撤销失败", true);
+  }
+}
+
+async function revokeLabelSessions(label) {
+  try {
+    const data = await api("/api/admin/sessions/revoke", {
+      method: "POST",
+      body: JSON.stringify({ label }),
+    });
+    return Number(data.revoked) || 0;
+  } catch {
+    return null;
   }
 }
 

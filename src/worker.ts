@@ -611,6 +611,14 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleAdminResetUsage(request, env);
   }
 
+  if (url.pathname === "/api/admin/sessions/revoke" && request.method === "POST") {
+    const body = await readJson<{ label?: unknown }>(request);
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    if (!label) return jsonResponse({ error: "label_required" }, 400);
+    const revoked = await revokeSessionsByLabel(env, label);
+    return jsonResponse({ ok: true, label, revoked });
+  }
+
   if (url.pathname === "/api/admin/route-health" && request.method === "POST") {
     return handleAdminRouteHealth(request, env);
   }
@@ -2642,6 +2650,27 @@ async function recordChatMetric(
   },
 ): Promise<void> {
   await getUserState(env, args.label).recordMetric(args);
+}
+
+async function revokeSessionsByLabel(env: Env, label: string): Promise<number> {
+  let revoked = 0;
+  let cursor: string | undefined;
+  do {
+    const result = await env.CHAT_STORE.list({ prefix: "session:", cursor, limit: 100 });
+    cursor = result.list_complete ? undefined : result.cursor;
+    const records = await Promise.all(result.keys.map(async (key) => ({ key: key.name, raw: await env.CHAT_STORE.get(key.name) })));
+    const matches = records.filter(({ raw }) => {
+      if (!raw) return false;
+      try {
+        return (JSON.parse(raw) as Session).label === label;
+      } catch {
+        return false;
+      }
+    });
+    await Promise.all(matches.map(({ key }) => env.CHAT_STORE.delete(key)));
+    revoked += matches.length;
+  } while (cursor);
+  return revoked;
 }
 
 function utcDayString(daysAgo = 0): string {

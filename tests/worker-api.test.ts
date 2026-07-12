@@ -257,4 +257,21 @@ describe("Worker API", () => {
       fetchSpy.mockRestore();
     }
   });
+
+  it("revokes every active session for a user label", async () => {
+    const label = `revoke-${crypto.randomUUID()}`;
+    const first = await login(label);
+    const second = await login(label);
+    const adminCookie = await adminLogin();
+
+    const revoke = await apiRequest("/api/admin/sessions/revoke", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    expect(revoke.status).toBe(200);
+    await expect(revoke.json()).resolves.toMatchObject({ ok: true, label, revoked: 2 });
+    expect((await apiRequest("/api/session", first.cookie)).status).toBe(401);
+    expect((await apiRequest("/api/session", second.cookie)).status).toBe(401);
+  });
 });
