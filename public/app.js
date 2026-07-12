@@ -1295,6 +1295,8 @@ function renderRoutes() {
     badges.className = "model-option-badges";
     if (route.supportsImages !== false) badges.append(modelBadge("图片"));
     if (route.allowUserKey || route.requiresUserKey) badges.append(modelBadge(route.requiresUserKey ? "需 Key" : "可用 Key"));
+    const healthLabel = route.healthStatus === "healthy" ? "近期正常" : route.healthStatus === "unhealthy" ? "近期异常" : "未检查";
+    badges.append(modelBadge(healthLabel, `health-${route.healthStatus || "unknown"}`));
     button.append(icon, copy, badges);
     button.addEventListener("click", () => {
       selectRoute(route.id);
@@ -1309,8 +1311,9 @@ function renderRoutes() {
   updateRouteControls();
 }
 
-function modelBadge(text) {
+function modelBadge(text, className = "") {
   const badge = document.createElement("small");
+  if (className) badge.classList.add(className);
   badge.textContent = text;
   return badge;
 }

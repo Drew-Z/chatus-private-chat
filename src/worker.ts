@@ -76,6 +76,8 @@ type PublicRoute = {
   allowUserKey: boolean;
   requiresUserKey: boolean;
   supportsImages: boolean;
+  healthStatus?: "healthy" | "unhealthy" | "unknown";
+  healthCheckedAt?: string;
 };
 
 type RouteAccess = {
@@ -413,12 +415,15 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/session" && request.method === "GET") {
     const config = await loadAppConfig(env);
     const access = getRouteAccess(config, session.label, env);
-    const usage = await getUsage(env, session, access.user);
+    const [usage, routes] = await Promise.all([
+      getUsage(env, session, access.user),
+      Promise.all(access.routes.map((route) => withPublicRouteHealth(env, route))),
+    ]);
     return jsonResponse({
       authenticated: true,
       user: session.label,
       usage,
-      routes: access.routes,
+      routes,
       defaultRoute: access.defaultRoute,
       allowBringYourOwnKey: Boolean(access.user.allowBringYourOwnKey),
       hasUserSystemPrompt: Boolean(access.user.systemPrompt?.trim()),
@@ -1162,6 +1167,26 @@ async function saveRouteHealth(env: Env, routeId: string, result: unknown): Prom
 
 function routeHealthKey(routeId: string): string {
   return `route-health:${encodeURIComponent(routeId)}`;
+}
+
+async function withPublicRouteHealth(env: Env, route: PublicRoute): Promise<PublicRoute> {
+  const raw = await env.CHAT_STORE.get(routeHealthKey(route.id));
+  if (!raw) return { ...route, healthStatus: "unknown" };
+  try {
+    const health = JSON.parse(raw) as { ok?: unknown; checkedAt?: unknown };
+    const checkedAt = typeof health.checkedAt === "string" ? health.checkedAt : "";
+    const checkedTime = Date.parse(checkedAt);
+    if (!Number.isFinite(checkedTime) || Date.now() - checkedTime > 86_400_000) {
+      return { ...route, healthStatus: "unknown" };
+    }
+    return {
+      ...route,
+      healthStatus: health.ok === true ? "healthy" : "unhealthy",
+      healthCheckedAt: checkedAt,
+    };
+  } catch {
+    return { ...route, healthStatus: "unknown" };
+  }
 }
 
 type CloudChat = {

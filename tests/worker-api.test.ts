@@ -44,14 +44,32 @@ describe("Worker API", () => {
     await Promise.all([
       env.CHAT_STORE.delete(ACCESS_CODES_KEY),
       env.CHAT_STORE.delete(ROUTES_CONFIG_KEY),
+      env.CHAT_STORE.delete("route-health:default"),
     ]);
   });
 
   it("creates a cookie session and restores it", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://session.example/v1",
+          model: "session-model",
+          apiKey: "session-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+    }));
     const { cookie, label } = await login();
+    await env.CHAT_STORE.put("route-health:default", JSON.stringify({ ok: false, checkedAt: new Date().toISOString() }));
     const response = await apiRequest("/api/session", cookie);
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ authenticated: true, user: label });
+    await expect(response.json()).resolves.toMatchObject({
+      authenticated: true,
+      user: label,
+      routes: [{ id: "default", healthStatus: "unhealthy" }],
+    });
   });
 
   it("adds hardened security headers to assets and session cookies", async () => {

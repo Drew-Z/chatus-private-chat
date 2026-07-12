@@ -1978,6 +1978,21 @@ body.sidebar-open {
   white-space: nowrap;
 }
 
+.model-option-badges .health-healthy {
+  color: #176b52;
+  background: #e7f2ed;
+}
+
+.model-option-badges .health-unhealthy {
+  color: #9f3d32;
+  background: #faeae7;
+}
+
+.model-option-badges .health-unknown {
+  color: #6d747b;
+  background: #f0f1f2;
+}
+
 .chat-product-body .route-block select:hover {
   background-color: #eceff1;
 }
@@ -2689,6 +2704,16 @@ body.sidebar-open {
 [data-theme="dark"] .model-option-badges small {
   color: #b1b7bd;
   background: #33383d;
+}
+
+[data-theme="dark"] .model-option-badges .health-healthy {
+  color: #8bd0b5;
+  background: #233b33;
+}
+
+[data-theme="dark"] .model-option-badges .health-unhealthy {
+  color: #efa096;
+  background: #422a27;
 }
 
 [data-theme="dark"] .chat-product-body .message.user {
