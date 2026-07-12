@@ -834,6 +834,7 @@ function normalizeMessage(item) {
     content: item.content,
     routeId: typeof item.routeId === "string" ? item.routeId : "",
     fallback: item.fallback === true,
+    rating: item.rating === "up" || item.rating === "down" ? item.rating : "",
     createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now(),
   };
 }
@@ -1559,7 +1560,11 @@ function renderMessages(forceScroll = true) {
       actions.append(actionButton("编辑", () => editUserMessage(index)));
       actions.append(actionButton("重发", () => resendFromUser(index)));
     }
-    if (message.role === "assistant" && !isBusy && !offlineMode) actions.append(actionButton("重新生成", () => regenerateAssistant(index)));
+    if (message.role === "assistant" && !isBusy && !offlineMode) {
+      actions.append(actionButton("有帮助", () => rateAssistant(message, "up"), message.rating === "up"));
+      actions.append(actionButton("需改进", () => rateAssistant(message, "down"), message.rating === "down"));
+      actions.append(actionButton("重新生成", () => regenerateAssistant(index)));
+    }
     if (message.role === "error" && !isBusy && !offlineMode) actions.append(actionButton("重试", () => retryLastFailed()));
     if (actions.childNodes.length) node.append(actions);
     messageList.append(node);
@@ -1613,13 +1618,37 @@ function renderEmptyChat() {
   messageList.append(empty);
 }
 
-function actionButton(label, onClick) {
+function actionButton(label, onClick, active = false) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "msg-action";
+  button.classList.toggle("active", active);
   button.textContent = label;
   button.addEventListener("click", onClick);
   return button;
+}
+
+async function rateAssistant(message, rating) {
+  if (!activeSessionId || !message.id || !message.routeId) return showStatusToast("这条回答缺少线路信息，暂时无法评价");
+  const previous = message.rating || "";
+  message.rating = rating;
+  saveMessages();
+  renderMessages(false);
+  try {
+    const response = await fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating, routeId: message.routeId, chatId: activeSessionId, messageId: message.id }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || data.error || "反馈失败");
+    showStatusToast(rating === "up" ? "感谢你的反馈" : "已记录，后续会继续改进");
+  } catch (error) {
+    message.rating = previous;
+    saveMessages();
+    renderMessages(false);
+    showStatusToast(error.message || "反馈失败");
+  }
 }
 
 async function copyMessage(message) {

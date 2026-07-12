@@ -21,6 +21,8 @@ const releaseRoutes = document.querySelector("#releaseRoutes");
 const releaseUsers = document.querySelector("#releaseUsers");
 const diagnosticList = document.querySelector("#diagnosticList");
 const auditList = document.querySelector("#auditList");
+const feedbackSummary = document.querySelector("#feedbackSummary");
+const feedbackList = document.querySelector("#feedbackList");
 const attentionPanel = document.querySelector("#attentionPanel");
 const attentionSummary = document.querySelector("#attentionSummary");
 const attentionList = document.querySelector("#attentionList");
@@ -343,19 +345,21 @@ function showAdminSection(section) {
 
 async function loadDashboard(message = "") {
   setStatus("读取中");
-  const [configData, accessData, statsData, releaseData, healthData, auditData] = await Promise.all([
+  const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData] = await Promise.all([
     api("/api/admin/config"),
     api("/api/admin/access-codes"),
     api("/api/admin/stats"),
     fetchRelease(),
     api("/api/admin/route-health"),
     api("/api/admin/audit"),
+    api("/api/admin/feedback"),
   ]);
 
   config = normalizeClientConfig(configData.config);
   stats = statsData;
   routeHealth = healthData?.routes || {};
   renderAuditLog(auditData?.entries || []);
+  renderFeedback(feedbackData?.entries || []);
   accessLabels = Array.isArray(accessData.entries)
     ? accessData.entries.map((entry) => entry?.label).filter(Boolean)
     : [];
@@ -376,6 +380,32 @@ async function loadDashboard(message = "") {
   renderUserPicker();
   renderRoutePicker();
   setStatus(message || "已同步");
+}
+
+function renderFeedback(entries) {
+  if (!feedbackList || !feedbackSummary) return;
+  const items = Array.isArray(entries) ? entries : [];
+  const positive = items.filter((item) => item.rating === "up").length;
+  feedbackSummary.textContent = items.length ? `${positive}/${items.length} 有帮助` : "暂无评价";
+  feedbackList.textContent = "";
+  if (!items.length) {
+    feedbackList.append(textNode("朋友评价回答后会显示在这里"));
+    return;
+  }
+  for (const entry of items.slice(0, 8)) {
+    const row = document.createElement("div");
+    row.className = `feedback-row ${entry.rating === "up" ? "positive" : "negative"}`;
+    const marker = document.createElement("span");
+    marker.textContent = entry.rating === "up" ? "+" : "−";
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${entry.label || "用户"} · ${entry.rating === "up" ? "有帮助" : "需改进"}`;
+    const detail = document.createElement("small");
+    detail.textContent = `${routeLabel(entry.routeId)} · ${relativeTime(entry.at)}`;
+    copy.append(title, detail);
+    row.append(marker, copy);
+    feedbackList.append(row);
+  }
 }
 
 function renderAuditLog(entries) {

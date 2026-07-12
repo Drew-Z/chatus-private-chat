@@ -6,6 +6,7 @@ import worker from "../src/worker";
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ADMIN_AUDIT_KEY = "config:admin_audit";
+const FEEDBACK_KEY = "feedback:recent";
 
 async function login(label = `tester-${crypto.randomUUID()}`) {
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, `${label}:test-access-code`);
@@ -51,6 +52,7 @@ describe("Worker API", () => {
       env.CHAT_STORE.delete(ROUTES_CONFIG_KEY),
       env.CHAT_STORE.delete("route-health:default"),
       env.CHAT_STORE.delete(ADMIN_AUDIT_KEY),
+      env.CHAT_STORE.delete(FEEDBACK_KEY),
     ]);
   });
 
@@ -148,6 +150,48 @@ describe("Worker API", () => {
       model: "scheduled-model",
     });
     fetchMock.mockRestore();
+  });
+
+  it("stores privacy-safe answer feedback and updates duplicate ratings", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        feedback: {
+          label: "Feedback",
+          type: "openai-chat",
+          baseUrl: "https://feedback.example/v1",
+          model: "feedback-model",
+          apiKey: "feedback-key",
+        },
+      },
+      defaults: { defaultRoute: "feedback", allowedRoutes: ["feedback"] },
+    }));
+    const { cookie, label } = await login();
+    const metadata = { routeId: "feedback", chatId: "chat-1", messageId: "message-1" };
+
+    const first = await apiRequest("/api/feedback", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...metadata, rating: "down", content: "private conversation text" }),
+    });
+    expect(first.status).toBe(200);
+    const second = await apiRequest("/api/feedback", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...metadata, rating: "up" }),
+    });
+    expect(second.status).toBe(200);
+
+    const adminCookie = await adminLogin();
+    const response = await apiRequest("/api/admin/feedback", adminCookie);
+    const payload = await response.json();
+    expect(payload.entries).toHaveLength(1);
+    expect(payload.entries[0]).toMatchObject({ label, rating: "up", ...metadata });
+    expect(JSON.stringify(payload)).not.toContain("private conversation text");
+
+    const deleted = await apiRequest("/api/user-data", cookie, { method: "DELETE" });
+    expect(deleted.status).toBe(200);
+    const afterDelete = await apiRequest("/api/admin/feedback", adminCookie);
+    await expect(afterDelete.json()).resolves.toMatchObject({ entries: [] });
   });
 
   it("adds hardened security headers to assets and session cookies", async () => {

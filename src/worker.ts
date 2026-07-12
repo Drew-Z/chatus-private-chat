@@ -12,6 +12,7 @@ type ChatMessage = {
   routeId?: string;
   fallback?: boolean;
   createdAt?: number;
+  rating?: "up" | "down";
 };
 
 type Session = {
@@ -138,6 +139,8 @@ const MAX_CLOUD_MESSAGES = 120;
 const MAX_CLOUD_SESSION_BYTES = 1_800_000;
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const ADMIN_AUDIT_KEY = "config:admin_audit";
+const FEEDBACK_KEY = "feedback:recent";
+const MAX_FEEDBACK_ENTRIES = 100;
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -438,6 +441,9 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/chat" && request.method === "POST") {
     return handleChat(request, env, session);
   }
+  if (url.pathname === "/api/feedback" && request.method === "POST") {
+    return handleFeedback(request, env, session);
+  }
 
   if (url.pathname === "/api/memory" && request.method === "GET") {
     return handleGetMemory(env, session);
@@ -473,7 +479,11 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (url.pathname === "/api/user-data" && request.method === "DELETE") {
     await getUserState(env, session.label).replaceChats([]);
-    await env.CHAT_STORE.delete(memoryKey(session.label));
+    const feedback = await loadFeedback(env);
+    await Promise.all([
+      env.CHAT_STORE.delete(memoryKey(session.label)),
+      env.CHAT_STORE.put(FEEDBACK_KEY, JSON.stringify(feedback.filter((entry) => entry.label !== session.label))),
+    ]);
     return jsonResponse({ ok: true });
   }
 
@@ -626,6 +636,9 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
   if (url.pathname === "/api/admin/audit" && request.method === "GET") {
     return jsonResponse({ entries: await loadAdminAudit(env) });
+  }
+  if (url.pathname === "/api/admin/feedback" && request.method === "GET") {
+    return jsonResponse({ entries: await loadFeedback(env) });
   }
 
   if (url.pathname === "/api/admin/sessions/revoke" && request.method === "POST") {
@@ -899,6 +912,34 @@ async function handleAdminResetUsage(request: Request, env: Env): Promise<Respon
   ]);
   await appendAdminAudit(env, "usage.reset", label);
   return jsonResponse({ ok: true, label, day });
+}
+
+async function handleFeedback(request: Request, env: Env, session: Session): Promise<Response> {
+  const body = await readJson<{ rating?: unknown; routeId?: unknown; chatId?: unknown; messageId?: unknown }>(request);
+  if (body.rating !== "up" && body.rating !== "down") return jsonResponse({ error: "invalid_rating" }, 400);
+  const routeId = typeof body.routeId === "string" ? body.routeId.trim().slice(0, 100) : "";
+  const chatId = typeof body.chatId === "string" ? body.chatId.trim().slice(0, 100) : "";
+  const messageId = typeof body.messageId === "string" ? body.messageId.trim().slice(0, 100) : "";
+  if (!routeId || !chatId || !messageId) return jsonResponse({ error: "feedback_metadata_required" }, 400);
+  const config = await loadAppConfig(env);
+  if (!config.routes[routeId]) return jsonResponse({ error: "route_not_found" }, 404);
+  const entries = await loadFeedback(env);
+  const id = `${session.label}:${chatId}:${messageId}`;
+  const entry = { id, label: session.label, rating: body.rating, routeId, chatId, messageId, at: new Date().toISOString() };
+  const next = [entry, ...entries.filter((item) => item.id !== id)].slice(0, MAX_FEEDBACK_ENTRIES);
+  await env.CHAT_STORE.put(FEEDBACK_KEY, JSON.stringify(next));
+  return jsonResponse({ ok: true, rating: body.rating });
+}
+
+async function loadFeedback(env: Env): Promise<Array<{ id: string; label: string; rating: "up" | "down"; routeId: string; chatId: string; messageId: string; at: string }>> {
+  const raw = await env.CHAT_STORE.get(FEEDBACK_KEY);
+  if (!raw) return [];
+  try {
+    const entries = JSON.parse(raw);
+    return Array.isArray(entries) ? entries.slice(0, MAX_FEEDBACK_ENTRIES) : [];
+  } catch {
+    return [];
+  }
 }
 
 async function handleMemorySuggest(request: Request, env: Env, session: Session): Promise<Response> {
@@ -1470,6 +1511,7 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
       routeId: role === "assistant" && typeof item.routeId === "string" ? item.routeId.slice(0, 80) : undefined,
       fallback: role === "assistant" && item.fallback === true,
       createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
+      rating: item.rating === "up" || item.rating === "down" ? item.rating : undefined,
     });
   }
   return output;
