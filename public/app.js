@@ -104,6 +104,7 @@ let syncStatusText = "";
 let hasUserSystemPrompt = false;
 let statusToastTimer = null;
 let offlineMode = false;
+let currentUsage = null;
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -312,6 +313,10 @@ chatForm.addEventListener("submit", async (event) => {
     return;
   }
   if (isBusy) return;
+  if (currentUsage?.remaining === 0) {
+    showStatusToast("今天的消息额度已用完，请明天再试");
+    return;
+  }
   const text = promptInput.value.trim();
   const route = getSelectedRoute();
   if (!text && !attachments.length) return;
@@ -442,7 +447,7 @@ function setOfflineMode(nextOffline) {
   offlineMode = Boolean(nextOffline);
   chatView.classList.toggle("offline-mode", offlineMode);
   promptInput.disabled = offlineMode || isBusy;
-  sendButton.disabled = offlineMode || isBusy;
+  sendButton.disabled = offlineMode || isBusy || currentUsage?.remaining === 0;
   imageInput.disabled = offlineMode || isBusy || getSelectedRoute()?.supportsImages === false;
   memoryInput.readOnly = offlineMode;
   saveMemoryButton.disabled = offlineMode;
@@ -503,8 +508,7 @@ async function streamChat(assistantMessage) {
     });
     const remaining = response.headers.get("X-RateLimit-Remaining");
     if (remaining !== null) {
-      const limitText = usageText.textContent.includes("/") ? usageText.textContent.split("/")[1] : "";
-      usageText.textContent = limitText ? `${remaining}/${limitText}` : remaining;
+      updateUsage({ remaining: Number(remaining), limit: currentUsage?.limit });
     }
     usedRoute = response.headers.get("X-Chatus-Route") || selectedRouteId;
     lastRouteUsed = usedRoute;
@@ -1584,7 +1588,7 @@ function setBusy(nextBusy) {
   sendButton.hidden = nextBusy;
   stopButton.hidden = !nextBusy;
   promptInput.disabled = offlineMode || nextBusy;
-  sendButton.disabled = offlineMode || nextBusy;
+  sendButton.disabled = offlineMode || nextBusy || currentUsage?.remaining === 0;
   routeSelect.disabled = nextBusy || routes.length <= 1;
   modelPickerTrigger.disabled = nextBusy || routes.length <= 1;
   if (nextBusy) closeModelPicker();
@@ -1593,8 +1597,22 @@ function setBusy(nextBusy) {
   if (suggestMemoryButton) suggestMemoryButton.disabled = offlineMode || nextBusy;
 }
 function updateUsage(usage) {
-  if (!usage) { usageText.textContent = "--"; return; }
-  usageText.textContent = `${usage.remaining}/${usage.limit}`;
+  const accountRow = document.querySelector(".account-row");
+  if (!usage || !Number.isFinite(Number(usage.remaining))) {
+    currentUsage = null;
+    usageText.textContent = "--";
+    accountRow?.classList.remove("usage-low", "usage-empty");
+    return;
+  }
+  const remaining = Math.max(0, Number(usage.remaining));
+  const limit = Number.isFinite(Number(usage.limit)) ? Number(usage.limit) : currentUsage?.limit;
+  currentUsage = { remaining, limit };
+  usageText.textContent = Number.isFinite(limit) ? `${remaining}/${limit}` : String(remaining);
+  const low = Number.isFinite(limit) && limit > 0 && remaining > 0 && remaining / limit <= 0.1;
+  accountRow?.classList.toggle("usage-low", low);
+  accountRow?.classList.toggle("usage-empty", remaining === 0);
+  accountRow?.setAttribute("title", remaining === 0 ? "今日消息额度已用完" : low ? "今日消息额度即将用完" : "");
+  if (!isBusy) sendButton.disabled = offlineMode || remaining === 0;
 }
 function showInlineError(message) {
   messages.push({ id: createId(), role: "error", content: message });
