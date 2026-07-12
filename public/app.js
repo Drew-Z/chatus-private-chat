@@ -1009,8 +1009,18 @@ function createSession(initialMessages = []) {
 }
 
 function createNewSession() {
+  const reusable = sessions.find((session) => session.messages.length === 0 && !session.pinned);
+  if (reusable) {
+    activateSession(reusable.id);
+    showStatusToast("已切换到空白会话");
+    return;
+  }
+  if (sessions.length >= MAX_SESSIONS) {
+    showStatusToast(`最多保留 ${MAX_SESSIONS} 个会话，请先删除不需要的会话`);
+    return;
+  }
   const session = createSession();
-  sessions = [session, ...sessions].slice(0, MAX_SESSIONS);
+  sessions = [session, ...sessions];
   activeSessionId = session.id;
   messages = session.messages;
   restoreSessionRoute(session);
@@ -1966,6 +1976,9 @@ function actionButton(label, onClick, active = false) {
 
 function branchConversationAt(index) {
   if (offlineMode || isBusy) return;
+  if (sessions.length >= MAX_SESSIONS) {
+    return showStatusToast(`最多保留 ${MAX_SESSIONS} 个会话，请先删除一个会话再创建分支`);
+  }
   const source = getActiveSession();
   const branchMessages = messages
     .slice(0, index + 1)
@@ -1986,7 +1999,7 @@ function branchConversationAt(index) {
     routeId: source.routeId || selectedRouteId,
     messages: branchMessages,
   };
-  sessions = [branch, ...sessions].sort(compareSessions).slice(0, MAX_SESSIONS);
+  sessions = [branch, ...sessions].sort(compareSessions);
   activeSessionId = branch.id;
   messages = branch.messages;
   attachments = [];
@@ -2375,6 +2388,7 @@ async function importSessionBackup() {
   try {
     const payload = JSON.parse(await file.text());
     if (payload?.product !== "Chatus" || !Array.isArray(payload.conversations)) throw new Error("invalid_backup");
+    if (payload.conversations.length > MAX_SESSIONS) throw new Error("backup_session_limit");
     const imported = normalizeImportedSessions(payload.conversations);
     if (!imported.length) throw new Error("empty_backup");
     if (!(await confirmAction({
@@ -2387,7 +2401,8 @@ async function importSessionBackup() {
       const existing = byId.get(session.id);
       if (!existing || session.updatedAt >= existing.updatedAt) byId.set(session.id, session);
     }
-    const merged = [...byId.values()].sort(compareSessions).slice(0, MAX_SESSIONS);
+    if (byId.size > MAX_SESSIONS) throw new Error("merged_session_limit");
+    const merged = [...byId.values()].sort(compareSessions);
     const response = await fetchWithTimeout("/api/chats/migrate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2408,13 +2423,18 @@ async function importSessionBackup() {
     showStatusToast(`已导入 ${imported.length} 个会话`);
   } catch (error) {
     const known = error.message === "invalid_backup" || error.message === "empty_backup";
-    showStatusToast(known ? "这不是有效的 Chatus 对话备份" : error.message || "导入失败");
+    const capacityError = error.message === "backup_session_limit" || error.message === "merged_session_limit";
+    showStatusToast(known
+      ? "这不是有效的 Chatus 对话备份"
+      : capacityError
+        ? `导入后会超过 ${MAX_SESSIONS} 个会话，请先删除部分会话`
+        : error.message || "导入失败");
   } finally {
     importAllButton.disabled = false;
   }
 }
 function normalizeImportedSessions(input) {
-  const prepared = input.slice(0, MAX_SESSIONS).map((item) => {
+  const prepared = input.map((item) => {
     if (!item || typeof item !== "object") return null;
     const createdAt = parseBackupTime(item.createdAt);
     const updatedAt = parseBackupTime(item.updatedAt);
