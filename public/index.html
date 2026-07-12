@@ -155,6 +155,25 @@
         </div>
       </form>
     </dialog>
+    <dialog class="app-dialog feedback-dialog" id="feedbackDialog">
+      <form method="dialog" id="feedbackForm">
+        <div class="dialog-heading">
+          <h2>哪里需要改进？</h2>
+          <button class="icon-control" value="cancel" type="submit" aria-label="关闭">×</button>
+        </div>
+        <fieldset class="feedback-options">
+          <label><input type="radio" name="feedbackReason" value="inaccurate" required /><span>内容不准确</span></label>
+          <label><input type="radio" name="feedbackReason" value="misunderstood" /><span>没有理解问题</span></label>
+          <label><input type="radio" name="feedbackReason" value="verbose" /><span>回答太啰嗦</span></label>
+          <label><input type="radio" name="feedbackReason" value="format" /><span>格式或排版问题</span></label>
+          <label><input type="radio" name="feedbackReason" value="other" /><span>其他原因</span></label>
+        </fieldset>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="submit">取消</button>
+          <button class="dialog-primary" value="confirm" type="submit">提交反馈</button>
+        </div>
+      </form>
+    </dialog>
     <dialog class="app-dialog settings-dialog" id="settingsDialog">
       <form method="dialog">
         <div class="dialog-heading">

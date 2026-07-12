@@ -3306,6 +3306,41 @@ body.sidebar-open {
   color: #687078;
 }
 
+.feedback-options {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 18px;
+  padding: 0;
+  border: 0;
+}
+
+.feedback-options label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #e2e6e9;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.feedback-options label:has(input:checked) {
+  color: #176b52;
+  border-color: #7fb6a4;
+  background: #edf7f3;
+}
+
+[data-theme="dark"] .feedback-options label {
+  border-color: #3a3e44;
+}
+
+[data-theme="dark"] .feedback-options label:has(input:checked) {
+  color: #8bd6bb;
+  border-color: #356653;
+  background: #203c34;
+}
+
 [data-theme="dark"] .feedback-row {
   border-color: #34373d;
 }

@@ -64,6 +64,8 @@ const importAllButton = document.querySelector("#importAllButton");
 const importAllInput = document.querySelector("#importAllInput");
 const clearOfflineDataButton = document.querySelector("#clearOfflineDataButton");
 const deleteUserDataButton = document.querySelector("#deleteUserDataButton");
+const feedbackDialog = document.querySelector("#feedbackDialog");
+const feedbackForm = document.querySelector("#feedbackForm");
 
 const LEGACY_STORAGE_KEY = "chatus.messages.v1";
 const SESSIONS_STORAGE_PREFIX = "chatus.sessions.v3.";
@@ -835,6 +837,7 @@ function normalizeMessage(item) {
     routeId: typeof item.routeId === "string" ? item.routeId : "",
     fallback: item.fallback === true,
     rating: item.rating === "up" || item.rating === "down" ? item.rating : "",
+    ratingReason: typeof item.ratingReason === "string" ? item.ratingReason : "",
     createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now(),
   };
 }
@@ -1630,25 +1633,42 @@ function actionButton(label, onClick, active = false) {
 
 async function rateAssistant(message, rating) {
   if (!activeSessionId || !message.id || !message.routeId) return showStatusToast("这条回答缺少线路信息，暂时无法评价");
+  const reason = rating === "down" ? await chooseFeedbackReason() : "";
+  if (rating === "down" && !reason) return;
   const previous = message.rating || "";
+  const previousReason = message.ratingReason || "";
   message.rating = rating;
+  message.ratingReason = reason;
   saveMessages();
   renderMessages(false);
   try {
     const response = await fetch("/api/feedback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rating, routeId: message.routeId, chatId: activeSessionId, messageId: message.id }),
+      body: JSON.stringify({ rating, reason, routeId: message.routeId, chatId: activeSessionId, messageId: message.id }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || data.error || "反馈失败");
     showStatusToast(rating === "up" ? "感谢你的反馈" : "已记录，后续会继续改进");
   } catch (error) {
     message.rating = previous;
+    message.ratingReason = previousReason;
     saveMessages();
     renderMessages(false);
     showStatusToast(error.message || "反馈失败");
   }
+}
+
+function chooseFeedbackReason() {
+  if (!feedbackDialog || !feedbackForm || typeof feedbackDialog.showModal !== "function") return Promise.resolve("other");
+  feedbackForm.reset();
+  feedbackDialog.showModal();
+  return new Promise((resolve) => {
+    feedbackDialog.addEventListener("close", () => {
+      if (feedbackDialog.returnValue !== "confirm") return resolve("");
+      resolve(new FormData(feedbackForm).get("feedbackReason")?.toString() || "");
+    }, { once: true });
+  });
 }
 
 async function copyMessage(message) {

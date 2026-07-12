@@ -401,7 +401,14 @@ function renderFeedback(entries) {
     const title = document.createElement("strong");
     title.textContent = `${entry.label || "用户"} · ${entry.rating === "up" ? "有帮助" : "需改进"}`;
     const detail = document.createElement("small");
-    detail.textContent = `${routeLabel(entry.routeId)} · ${relativeTime(entry.at)}`;
+    const reasonLabels = {
+      inaccurate: "内容不准确",
+      misunderstood: "没有理解问题",
+      verbose: "回答太啰嗦",
+      format: "格式或排版问题",
+      other: "其他原因",
+    };
+    detail.textContent = `${routeLabel(entry.routeId)}${entry.reason ? ` · ${reasonLabels[entry.reason] || entry.reason}` : ""} · ${relativeTime(entry.at)}`;
     copy.append(title, detail);
     row.append(marker, copy);
     feedbackList.append(row);

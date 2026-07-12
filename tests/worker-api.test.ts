@@ -171,9 +171,12 @@ describe("Worker API", () => {
     const first = await apiRequest("/api/feedback", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...metadata, rating: "down", content: "private conversation text" }),
+      body: JSON.stringify({ ...metadata, rating: "down", reason: "inaccurate", content: "private conversation text" }),
     });
     expect(first.status).toBe(200);
+    await expect(env.CHAT_STORE.get(FEEDBACK_KEY, "json")).resolves.toMatchObject([
+      { label, rating: "down", reason: "inaccurate", ...metadata },
+    ]);
     const second = await apiRequest("/api/feedback", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

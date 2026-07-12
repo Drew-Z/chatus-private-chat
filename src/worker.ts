@@ -13,6 +13,7 @@ type ChatMessage = {
   fallback?: boolean;
   createdAt?: number;
   rating?: "up" | "down";
+  ratingReason?: string;
 };
 
 type Session = {
@@ -915,8 +916,11 @@ async function handleAdminResetUsage(request: Request, env: Env): Promise<Respon
 }
 
 async function handleFeedback(request: Request, env: Env, session: Session): Promise<Response> {
-  const body = await readJson<{ rating?: unknown; routeId?: unknown; chatId?: unknown; messageId?: unknown }>(request);
+  const body = await readJson<{ rating?: unknown; reason?: unknown; routeId?: unknown; chatId?: unknown; messageId?: unknown }>(request);
   if (body.rating !== "up" && body.rating !== "down") return jsonResponse({ error: "invalid_rating" }, 400);
+  const allowedReasons = new Set(["inaccurate", "misunderstood", "verbose", "format", "other"]);
+  const reason = body.rating === "down" && typeof body.reason === "string" && allowedReasons.has(body.reason) ? body.reason : "";
+  if (body.rating === "down" && !reason) return jsonResponse({ error: "feedback_reason_required" }, 400);
   const routeId = typeof body.routeId === "string" ? body.routeId.trim().slice(0, 100) : "";
   const chatId = typeof body.chatId === "string" ? body.chatId.trim().slice(0, 100) : "";
   const messageId = typeof body.messageId === "string" ? body.messageId.trim().slice(0, 100) : "";
@@ -925,13 +929,13 @@ async function handleFeedback(request: Request, env: Env, session: Session): Pro
   if (!config.routes[routeId]) return jsonResponse({ error: "route_not_found" }, 404);
   const entries = await loadFeedback(env);
   const id = `${session.label}:${chatId}:${messageId}`;
-  const entry = { id, label: session.label, rating: body.rating, routeId, chatId, messageId, at: new Date().toISOString() };
+  const entry = { id, label: session.label, rating: body.rating, reason, routeId, chatId, messageId, at: new Date().toISOString() };
   const next = [entry, ...entries.filter((item) => item.id !== id)].slice(0, MAX_FEEDBACK_ENTRIES);
   await env.CHAT_STORE.put(FEEDBACK_KEY, JSON.stringify(next));
   return jsonResponse({ ok: true, rating: body.rating });
 }
 
-async function loadFeedback(env: Env): Promise<Array<{ id: string; label: string; rating: "up" | "down"; routeId: string; chatId: string; messageId: string; at: string }>> {
+async function loadFeedback(env: Env): Promise<Array<{ id: string; label: string; rating: "up" | "down"; reason?: string; routeId: string; chatId: string; messageId: string; at: string }>> {
   const raw = await env.CHAT_STORE.get(FEEDBACK_KEY);
   if (!raw) return [];
   try {
@@ -1512,6 +1516,7 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
       fallback: role === "assistant" && item.fallback === true,
       createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
       rating: item.rating === "up" || item.rating === "down" ? item.rating : undefined,
+      ratingReason: typeof item.ratingReason === "string" ? item.ratingReason : undefined,
     });
   }
   return output;
