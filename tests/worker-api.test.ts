@@ -80,6 +80,22 @@ describe("Worker API", () => {
     });
   });
 
+  it("reports core binding health without exposing configuration details", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "health-user:health-access-code");
+    const response = await exports.default.fetch(new Request("https://example.test/healthz"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    const payload = await response.json();
+    expect(payload).toEqual({
+      status: "ok",
+      checks: { kv: true, durableObject: true, configured: true },
+    });
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain("health-access-code");
+    expect(serialized).not.toContain("baseUrl");
+    expect(serialized).not.toContain("model");
+  });
+
   it("returns a display name without changing the stable user label", async () => {
     const label = `named-${crypto.randomUUID()}`;
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({

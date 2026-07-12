@@ -265,6 +265,10 @@ export class UserState extends DurableObject<Env> {
     this.ctx.storage.sql.exec("DELETE FROM login_failures");
   }
 
+  async healthCheck(): Promise<boolean> {
+    return this.ctx.storage.sql.exec<{ ok: number }>("SELECT 1 AS ok").one().ok === 1;
+  }
+
   async resetUsage(day: string): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM usage WHERE day = ?", day);
   }
@@ -395,6 +399,9 @@ export default {
     if (url.pathname === "/robots.txt") {
       return textResponse("User-agent: *\nDisallow: /\n", 200, "text/plain");
     }
+    if (url.pathname === "/healthz" && request.method === "GET") {
+      return handleHealthCheck(env);
+    }
 
     if (url.pathname.startsWith("/api/")) {
       return handleApi(request, env, url);
@@ -407,6 +414,26 @@ export default {
     ctx.waitUntil(runScheduledRouteHealthChecks(env));
   },
 };
+
+async function handleHealthCheck(env: Env): Promise<Response> {
+  try {
+    const [config, accessCodes, kvProbe, durableObject] = await Promise.all([
+      loadAppConfig(env),
+      loadAccessCodes(env),
+      env.CHAT_STORE.get("health:probe"),
+      getUserState(env, "health:probe").healthCheck(),
+    ]);
+    void kvProbe;
+    const configured = Object.values(config.routes).some((route) => route.enabled !== false) && parseAccessCodes(accessCodes).length > 0;
+    const ok = Boolean(durableObject && configured);
+    return jsonResponse({
+      status: ok ? "ok" : "degraded",
+      checks: { kv: true, durableObject: Boolean(durableObject), configured },
+    }, ok ? 200 : 503);
+  } catch {
+    return jsonResponse({ status: "degraded", checks: { kv: false, durableObject: false, configured: false } }, 503);
+  }
+}
 
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method === "OPTIONS") {

@@ -26,6 +26,16 @@ function assertSecurityHeaders(response, label) {
 
 async function runChecks() {
   const marker = Date.now();
+  const health = await request(`/healthz?smoke=${marker}`);
+  assert(health.status === 200, `health: expected 200, got ${health.status}`);
+  assertSecurityHeaders(health, "health");
+  assert(health.headers.get("cache-control")?.includes("no-store"), "health: cache must be disabled");
+  const healthBody = await health.json();
+  assert(healthBody.status === "ok", "health: worker is degraded");
+  assert(healthBody.checks?.kv === true, "health: KV check failed");
+  assert(healthBody.checks?.durableObject === true, "health: Durable Object check failed");
+  assert(healthBody.checks?.configured === true, "health: configuration check failed");
+
   const home = await request(`/?smoke=${marker}`);
   assert(home.status === 200, `home: expected 200, got ${home.status}`);
   assertSecurityHeaders(home, "home");
