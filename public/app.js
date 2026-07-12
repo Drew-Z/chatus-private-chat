@@ -45,6 +45,9 @@ const mobileTitle = document.querySelector("#mobileTitle");
 const dropHint = document.querySelector("#dropHint");
 const composerCount = document.querySelector("#composerCount");
 const composerHint = document.querySelector("#composerHint");
+const newChatButton = document.querySelector("#newChatButton");
+const mobileNewChatButton = document.querySelector("#mobileNewChatButton");
+const clearButton = document.querySelector("#clearButton");
 const appDialog = document.querySelector("#appDialog");
 const appDialogForm = document.querySelector("#appDialogForm");
 const appDialogTitle = document.querySelector("#appDialogTitle");
@@ -61,6 +64,8 @@ const LEGACY_STORAGE_KEY = "chatus.messages.v1";
 const SESSIONS_STORAGE_PREFIX = "chatus.sessions.v3.";
 const ACTIVE_SESSION_PREFIX = "chatus.activeSession.v3.";
 const ROUTE_STORAGE_KEY = "chatus.route.v1";
+const SESSION_SNAPSHOT_KEY = "chatus.sessionSnapshot.v1";
+const MEMORY_STORAGE_PREFIX = "chatus.memory.v1.";
 const MAX_ATTACHMENTS = 4;
 const MAX_SESSIONS = 30;
 const MAX_STORED_MESSAGES = 120;
@@ -93,6 +98,7 @@ let cloudSaveQueued = false;
 let syncStatusText = "";
 let hasUserSystemPrompt = false;
 let statusToastTimer = null;
+let offlineMode = false;
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -111,8 +117,9 @@ loginForm.addEventListener("submit", async (event) => {
       loginStatus.textContent = response.status >= 500 ? "服务暂时不可用，请稍后重试" : "访问码不可用";
       return;
     }
+    const session = await response.json();
     accessCode.value = "";
-    await showChat();
+    await showChat(session);
   } catch {
     loginStatus.textContent = navigator.onLine ? "连接失败，请稍后重试" : "当前网络已断开";
   } finally {
@@ -132,16 +139,21 @@ themeOptions?.addEventListener("change", (event) => {
 });
 window.addEventListener("chatus:theme", () => syncThemeControls());
 window.addEventListener("offline", () => {
-  if (!chatView.hidden) showStatusToast("网络已断开，已保留本地内容");
+  if (!chatView.hidden) {
+    setOfflineMode(true);
+    showStatusToast("网络已断开，已切换为本地只读模式");
+  }
   else loginStatus.textContent = "当前网络已断开";
 });
 window.addEventListener("online", () => {
-  if (!chatView.hidden) showStatusToast("网络已恢复");
+  if (!chatView.hidden && offlineMode) reconnectSession();
+  else if (!chatView.hidden) showStatusToast("网络已恢复");
   else if (loginStatus.textContent === "当前网络已断开") loginStatus.textContent = "";
 });
 
 document.querySelector("#logoutButton").addEventListener("click", async () => {
-  await fetch("/api/logout", { method: "POST" });
+  const previousUser = currentUser;
+  await fetch("/api/logout", { method: "POST" }).catch(() => null);
   currentUser = "";
   sessions = [];
   activeSessionId = "";
@@ -151,23 +163,28 @@ document.querySelector("#logoutButton").addEventListener("click", async () => {
   renderAttachments();
   renderChatList();
   memoryInput.value = "";
+  localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+  localStorage.removeItem(memoryStorageKey(previousUser));
   memoryStatus.textContent = "";
   hideMemorySuggest();
   showLogin();
 });
 
-document.querySelector("#newChatButton").addEventListener("click", () => {
+newChatButton.addEventListener("click", () => {
+  if (offlineMode) return showStatusToast("离线只读模式下不能新建会话");
   createNewSession();
   closeSidebar();
   promptInput.focus();
 });
 
-document.querySelector("#mobileNewChatButton")?.addEventListener("click", () => {
+mobileNewChatButton?.addEventListener("click", () => {
+  if (offlineMode) return showStatusToast("离线只读模式下不能新建会话");
   createNewSession();
   promptInput.focus();
 });
 
-document.querySelector("#clearButton").addEventListener("click", async () => {
+clearButton.addEventListener("click", async () => {
+  if (offlineMode) return showStatusToast("离线只读模式下不能清空会话");
   if (!messages.length) return;
   if (!(await confirmAction({ title: "清空当前会话？", description: "所有消息将被移除，此操作无法撤销。", confirmLabel: "清空", destructive: true }))) return;
   messages = [];
@@ -280,6 +297,10 @@ chatForm.addEventListener("drop", async (event) => {
 stopButton.addEventListener("click", () => abortController?.abort());
 chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (offlineMode) {
+    showStatusToast("当前为离线只读模式");
+    return;
+  }
   if (isBusy) return;
   const text = promptInput.value.trim();
   const route = getSelectedRoute();
@@ -314,8 +335,14 @@ async function boot() {
     if (response.ok) await showChat(await response.json());
     else showLogin();
   } catch {
-    showLogin();
-    loginStatus.textContent = navigator.onLine ? "无法连接服务，请稍后重试" : "当前网络已断开";
+    const snapshot = loadSessionSnapshot();
+    if (snapshot) {
+      await showChat(snapshot, true);
+      showStatusToast("服务暂时不可用，正在查看本地内容");
+    } else {
+      showLogin();
+      loginStatus.textContent = navigator.onLine ? "无法连接服务，请稍后重试" : "当前网络已断开";
+    }
   }
 }
 
@@ -325,9 +352,10 @@ function showLogin() {
   accessCode.focus();
 }
 
-async function showChat(existingSession) {
+async function showChat(existingSession, readOnlyOffline = false) {
   loginView.hidden = true;
   chatView.hidden = false;
+  setOfflineMode(readOnlyOffline);
   let session = existingSession;
   if (!session) {
     const response = await fetch("/api/session");
@@ -344,14 +372,82 @@ async function showChat(existingSession) {
   updateUsage(session.usage);
   renderRoutes();
   updateConnectionState("同步会话中");
-  await loadUserSessions();
+  await loadUserSessions({ offline: offlineMode });
   renderChatList();
   renderMessages(true);
   updateChatTitle();
-  await loadMemory();
+  await loadMemory({ offline: offlineMode });
+  if (!offlineMode) cacheSessionSnapshot(session);
   updateConnectionState();
   updateComposerMeta();
-  promptInput.focus();
+  setOfflineMode(offlineMode);
+  if (!offlineMode) promptInput.focus();
+}
+
+function cacheSessionSnapshot(session) {
+  try {
+    localStorage.setItem(
+      SESSION_SNAPSHOT_KEY,
+      JSON.stringify({
+        user: session.user || currentUser,
+        routes: Array.isArray(session.routes) ? session.routes : routes,
+        defaultRoute: session.defaultRoute || selectedRouteId,
+        usage: session.usage || null,
+        hasUserSystemPrompt: Boolean(session.hasUserSystemPrompt),
+        cachedAt: Date.now(),
+      }),
+    );
+  } catch {}
+}
+
+function loadSessionSnapshot() {
+  try {
+    const snapshot = JSON.parse(localStorage.getItem(SESSION_SNAPSHOT_KEY) || "null");
+    if (!snapshot?.user || !Array.isArray(snapshot.routes) || !snapshot.routes.length) return null;
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+async function reconnectSession() {
+  showStatusToast("网络已恢复，正在重新验证会话");
+  try {
+    const response = await fetch("/api/session");
+    if (!response.ok) {
+      localStorage.removeItem(SESSION_SNAPSHOT_KEY);
+      showLogin();
+      loginStatus.textContent = "会话已失效，请重新输入访问码";
+      return;
+    }
+    await showChat(await response.json(), false);
+    showStatusToast("已恢复在线模式");
+  } catch {
+    setOfflineMode(true);
+    showStatusToast("重新连接失败，继续使用本地只读模式");
+  }
+}
+
+function setOfflineMode(nextOffline) {
+  offlineMode = Boolean(nextOffline);
+  chatView.classList.toggle("offline-mode", offlineMode);
+  promptInput.disabled = offlineMode || isBusy;
+  sendButton.disabled = offlineMode || isBusy;
+  imageInput.disabled = offlineMode || isBusy || getSelectedRoute()?.supportsImages === false;
+  memoryInput.readOnly = offlineMode;
+  saveMemoryButton.disabled = offlineMode;
+  newChatButton.disabled = offlineMode;
+  if (mobileNewChatButton) mobileNewChatButton.disabled = offlineMode;
+  clearButton.disabled = offlineMode;
+  if (suggestMemoryButton) suggestMemoryButton.disabled = offlineMode || isBusy;
+  if (composerHint) {
+    composerHint.textContent = offlineMode
+      ? "离线只读，网络恢复后可继续发送"
+      : getSelectedRoute()?.supportsImages === false
+        ? "当前线路不支持图片"
+        : "支持粘贴或拖拽图片";
+  }
+  updateConnectionState();
 }
 
 function setLoginBusy(busy) {
@@ -456,7 +552,12 @@ async function streamChat(assistantMessage) {
   }
 }
 
-async function loadMemory() {
+async function loadMemory(options = {}) {
+  if (options.offline) {
+    memoryInput.value = localStorage.getItem(memoryStorageKey()) || "";
+    memoryStatus.textContent = memoryInput.value ? "本地缓存" : "离线不可用";
+    return;
+  }
   memoryStatus.textContent = "读取中";
   saveMemoryButton.disabled = true;
   if (suggestMemoryButton) suggestMemoryButton.disabled = true;
@@ -466,12 +567,13 @@ async function loadMemory() {
     const data = await response.json();
     memoryInput.maxLength = Number(data.maxChars) || 4000;
     memoryInput.value = data.memory || "";
+    localStorage.setItem(memoryStorageKey(), memoryInput.value);
     memoryStatus.textContent = memoryInput.value ? "已加载" : "空";
   } catch {
     memoryStatus.textContent = "读取失败";
   } finally {
-    saveMemoryButton.disabled = false;
-    if (suggestMemoryButton) suggestMemoryButton.disabled = false;
+    saveMemoryButton.disabled = offlineMode;
+    if (suggestMemoryButton) suggestMemoryButton.disabled = offlineMode;
   }
 }
 
@@ -487,11 +589,12 @@ async function saveMemory() {
     if (!response.ok) throw new Error("save_failed");
     const data = await response.json();
     memoryInput.value = data.memory || "";
+    localStorage.setItem(memoryStorageKey(), memoryInput.value);
     memoryStatus.textContent = "已保存";
   } catch {
     memoryStatus.textContent = "保存失败";
   } finally {
-    saveMemoryButton.disabled = false;
+    saveMemoryButton.disabled = offlineMode;
   }
 }
 
@@ -540,13 +643,13 @@ function hideMemorySuggest() {
   if (memorySuggestBox) memorySuggestBox.hidden = true;
   if (memorySuggestText) memorySuggestText.textContent = "";
 }
-async function loadUserSessions() {
+async function loadUserSessions(options = {}) {
   const local = loadLocalSessions();
   sessions = local;
   activeSessionId = chooseActiveSessionId();
   messages = getActiveSession().messages;
 
-  if (!cloudSyncEnabled) return;
+  if (!cloudSyncEnabled || options.offline) return;
 
   try {
     const response = await fetch("/api/chats");
@@ -720,6 +823,7 @@ function activateSession(id) {
 }
 
 async function deleteSession(id) {
+  if (offlineMode) return showStatusToast("离线只读模式下不能删除会话");
   const session = sessions.find((item) => item.id === id);
   if (!session) return;
   if (!(await confirmAction({ title: "删除这个会话？", description: `“${session.title || "新会话"}”将从本地和云端移除。`, confirmLabel: "删除", destructive: true }))) return;
@@ -908,6 +1012,7 @@ function renderChatList() {
 }
 
 async function renameSession(id) {
+  if (offlineMode) return showStatusToast("离线只读模式下不能重命名会话");
   const session = sessions.find((item) => item.id === id);
   if (!session) return;
   const next = await promptAction({
@@ -930,6 +1035,9 @@ async function renameSession(id) {
 
 function sessionsStorageKey() {
   return `${SESSIONS_STORAGE_PREFIX}${encodeURIComponent(currentUser || "friend")}`;
+}
+function memoryStorageKey(user = currentUser) {
+  return `${MEMORY_STORAGE_PREFIX}${encodeURIComponent(user || "friend")}`;
 }
 function activeSessionStorageKey() {
   return `${ACTIVE_SESSION_PREFIX}${encodeURIComponent(currentUser || "friend")}`;
@@ -1039,10 +1147,16 @@ function updateRouteControls() {
     userApiKeyInput.type = "password";
   }
   const supportsImages = route?.supportsImages !== false;
-  imageInput.disabled = !supportsImages || isBusy;
-  imageInputLabel.classList.toggle("disabled", !supportsImages);
-  imageInputLabel.title = supportsImages ? "添加图片" : "当前线路不支持图片";
-  if (composerHint) composerHint.textContent = supportsImages ? "支持粘贴/拖拽图片" : "当前线路不支持图片";
+  imageInput.disabled = offlineMode || !supportsImages || isBusy;
+  imageInputLabel.classList.toggle("disabled", offlineMode || !supportsImages);
+  imageInputLabel.title = offlineMode ? "离线模式下不能添加图片" : supportsImages ? "添加图片" : "当前线路不支持图片";
+  if (composerHint) {
+    composerHint.textContent = offlineMode
+      ? "离线只读，网络恢复后可继续发送"
+      : supportsImages
+        ? "支持粘贴或拖拽图片"
+        : "当前线路不支持图片";
+  }
   if (!supportsImages && attachments.length) {
     attachments = [];
     renderAttachments();
@@ -1059,6 +1173,10 @@ function updateConnectionState(prefix) {
   const route = getSelectedRoute();
   if (prefix) {
     connectionState.textContent = prefix;
+    return;
+  }
+  if (offlineMode) {
+    connectionState.textContent = "离线 · 本地只读";
     return;
   }
   const label = lastRouteUsed ? routeLabelById(lastRouteUsed) : route?.label;
@@ -1176,12 +1294,12 @@ function renderMessages(forceScroll = true) {
     const actions = document.createElement("div");
     actions.className = "message-actions";
     if (message.role === "assistant" || message.role === "user") actions.append(actionButton("复制", () => copyMessage(message)));
-    if (message.role === "user" && !isBusy) {
+    if (message.role === "user" && !isBusy && !offlineMode) {
       actions.append(actionButton("编辑", () => editUserMessage(index)));
       actions.append(actionButton("重发", () => resendFromUser(index)));
     }
-    if (message.role === "assistant" && !isBusy) actions.append(actionButton("重新生成", () => regenerateAssistant(index)));
-    if (message.role === "error" && !isBusy) actions.append(actionButton("重试", () => retryLastFailed()));
+    if (message.role === "assistant" && !isBusy && !offlineMode) actions.append(actionButton("重新生成", () => regenerateAssistant(index)));
+    if (message.role === "error" && !isBusy && !offlineMode) actions.append(actionButton("重试", () => retryLastFailed()));
     if (actions.childNodes.length) node.append(actions);
     messageList.append(node);
   });
@@ -1254,6 +1372,7 @@ async function copyMessage(message) {
 }
 
 async function editUserMessage(index) {
+  if (offlineMode) return;
   const message = messages[index];
   if (!message || message.role !== "user") return;
   const next = await promptAction({
@@ -1309,6 +1428,7 @@ function promptAction(options) {
 }
 
 function resendFromUser(index) {
+  if (offlineMode) return;
   const message = messages[index];
   if (!message || message.role !== "user") return;
   messages = messages.slice(0, index + 1);
@@ -1320,6 +1440,7 @@ function resendFromUser(index) {
 }
 
 function regenerateAssistant(index) {
+  if (offlineMode) return;
   const message = messages[index];
   if (!message || message.role !== "assistant") return;
   let userIndex = index - 1;
@@ -1334,6 +1455,7 @@ function regenerateAssistant(index) {
 }
 
 function retryLastFailed() {
+  if (offlineMode) return;
   const lastErrorIndex = [...messages].map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "error")?.i;
   if (lastErrorIndex == null) return;
   messages = messages.slice(0, lastErrorIndex);
@@ -1398,13 +1520,14 @@ function setBusy(nextBusy) {
   isBusy = nextBusy;
   sendButton.hidden = nextBusy;
   stopButton.hidden = !nextBusy;
-  promptInput.disabled = nextBusy;
+  promptInput.disabled = offlineMode || nextBusy;
+  sendButton.disabled = offlineMode || nextBusy;
   routeSelect.disabled = nextBusy || routes.length <= 1;
   modelPickerTrigger.disabled = nextBusy || routes.length <= 1;
   if (nextBusy) closeModelPicker();
-  userApiKeyInput.disabled = nextBusy;
-  imageInput.disabled = nextBusy || getSelectedRoute()?.supportsImages === false;
-  if (suggestMemoryButton) suggestMemoryButton.disabled = nextBusy;
+  userApiKeyInput.disabled = offlineMode || nextBusy;
+  imageInput.disabled = offlineMode || nextBusy || getSelectedRoute()?.supportsImages === false;
+  if (suggestMemoryButton) suggestMemoryButton.disabled = offlineMode || nextBusy;
 }
 function updateUsage(usage) {
   if (!usage) { usageText.textContent = "--"; return; }

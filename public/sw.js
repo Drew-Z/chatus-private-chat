@@ -39,13 +39,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  const update = fetch(request).then(async (response) => {
+  const network = fetch(request).then(async (response) => {
     if (response.ok && response.type === "basic") {
       const cache = await caches.open(CACHE_NAME);
       await cache.put(request, response.clone());
     }
     return response;
   });
-  event.waitUntil(update.then(() => undefined).catch(() => undefined));
-  event.respondWith(caches.match(request, { ignoreSearch: true }).then((cached) => cached || update));
+  event.waitUntil(network.then(() => undefined).catch(() => undefined));
+  event.respondWith(network.catch(() => caches.match(request, { ignoreSearch: true })));
 });

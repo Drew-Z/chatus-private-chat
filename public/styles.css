@@ -1374,6 +1374,15 @@ body.sidebar-open {
   background: #08090a;
 }
 
+.new-chat-primary:disabled,
+.icon-control:disabled,
+.send-button:disabled,
+.ghost-button:disabled,
+.plain-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .new-chat-primary span {
   font-size: 19px;
   font-weight: 400;
@@ -2112,6 +2121,16 @@ body.sidebar-open {
   box-shadow: 0 8px 28px rgba(24, 29, 34, 0.11);
 }
 
+.offline-mode .composer-inner {
+  background: #f4f5f6;
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.offline-mode .composer textarea {
+  cursor: not-allowed;
+}
+
 .chat-product-body .composer-bar {
   grid-template-columns: 36px minmax(0, 1fr) 36px;
   gap: 5px;
@@ -2482,6 +2501,11 @@ body.sidebar-open {
   background: #202327;
   border-color: #41464b;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] .offline-mode .composer-inner {
+  background: #1b1e21;
+  border-color: #454b50;
 }
 
 [data-theme="dark"] .chat-product-body .composer textarea {
