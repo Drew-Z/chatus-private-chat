@@ -1846,7 +1846,21 @@ body.sidebar-open {
   box-shadow: 0 8px 24px rgba(19, 23, 27, 0.16);
   transform: translateX(-50%);
   font-size: 12px;
-  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.status-toast button {
+  flex: none;
+  padding: 2px 4px;
+  color: #a9ead5;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
 }
 
 .app-update-prompt {

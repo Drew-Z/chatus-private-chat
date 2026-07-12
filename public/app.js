@@ -111,6 +111,7 @@ let cloudSaveQueued = false;
 let syncStatusText = "";
 let hasUserSystemPrompt = false;
 let statusToastTimer = null;
+let pendingSessionDeletion = null;
 let offlineMode = false;
 let currentUsage = null;
 let sessionExpired = false;
@@ -1083,29 +1084,70 @@ async function deleteSession(id) {
   const session = sessions.find((item) => item.id === id);
   if (!session) return;
   if (!(await confirmAction({ title: "删除这个会话？", description: `“${session.title || "新会话"}”将从本地和云端移除。`, confirmLabel: "删除", destructive: true }))) return;
+  if (pendingSessionDeletion) await commitPendingSessionDeletion();
+  const wasActive = activeSessionId === id;
   sessions = sessions.filter((session) => session.id !== id);
-  removeDraft(currentUser, id);
   if (!sessions.length) sessions = [createSession()];
-  if (activeSessionId === id) {
+  if (wasActive) {
     activeSessionId = sessions[0].id;
     messages = sessions[0].messages;
+    restoreSessionRoute(sessions[0]);
     restoreActiveDraft();
   }
   saveSessionsLocalOnly();
-  if (cloudSyncEnabled) {
-    fetchWithTimeout(`/api/chats?id=${encodeURIComponent(id)}`, { method: "DELETE" })
-      .then(async (response) => {
-        if (handleUnauthorizedResponse(response)) return;
-        if (!response.ok) setSyncStatus("云端删除失败，本地已删除");
-        else setSyncStatus("会话已删除");
-      })
-      .catch(() => setSyncStatus("云端删除失败，本地已删除"));
-  }
-  // Ensure remaining active chat still synced.
-  saveSessions({ immediate: true });
   renderChatList();
   renderMessages(true);
   updateChatTitle();
+  const timer = setTimeout(() => commitPendingSessionDeletion(), 6000);
+  pendingSessionDeletion = { session, wasActive, timer };
+  showUndoToast(`已删除“${session.title || "新会话"}”`, undoPendingSessionDeletion);
+}
+
+async function commitPendingSessionDeletion() {
+  const pending = pendingSessionDeletion;
+  if (!pending) return;
+  pendingSessionDeletion = null;
+  clearTimeout(pending.timer);
+  removeDraft(currentUser, pending.session.id);
+  if (!cloudSyncEnabled) return;
+  try {
+    const response = await fetchWithTimeout(`/api/chats?id=${encodeURIComponent(pending.session.id)}`, { method: "DELETE" });
+    if (handleUnauthorizedResponse(response)) return;
+    if (!response.ok) restoreFailedSessionDeletion(pending);
+    else setSyncStatus("会话已删除");
+  } catch {
+    restoreFailedSessionDeletion(pending);
+  }
+}
+
+function restoreFailedSessionDeletion(pending) {
+  sessions = [pending.session, ...sessions.filter((session) => session.id !== pending.session.id)]
+    .sort(compareSessions)
+    .slice(0, MAX_SESSIONS);
+  saveSessionsLocalOnly();
+  renderChatList();
+  setSyncStatus("云端删除失败，会话已恢复，请稍后重试");
+}
+
+function undoPendingSessionDeletion() {
+  const pending = pendingSessionDeletion;
+  if (!pending) return;
+  pendingSessionDeletion = null;
+  clearTimeout(pending.timer);
+  sessions = [pending.session, ...sessions.filter((session) => session.id !== pending.session.id)]
+    .sort(compareSessions)
+    .slice(0, MAX_SESSIONS);
+  if (pending.wasActive) {
+    activeSessionId = pending.session.id;
+    messages = pending.session.messages;
+    restoreSessionRoute(pending.session);
+    restoreActiveDraft();
+  }
+  saveSessionsLocalOnly();
+  renderChatList();
+  renderMessages(true);
+  updateChatTitle();
+  showStatusToast("删除已撤销");
 }
 
 function saveMessages() {
@@ -1257,6 +1299,24 @@ function showStatusToast(text) {
     statusToast.hidden = true;
     statusToastTimer = null;
   }, 2200);
+}
+
+function showUndoToast(text, onUndo) {
+  if (!statusToast) return;
+  if (statusToastTimer) clearTimeout(statusToastTimer);
+  statusToast.textContent = "";
+  const label = document.createElement("span");
+  label.textContent = text;
+  const undo = document.createElement("button");
+  undo.type = "button";
+  undo.textContent = "撤销";
+  undo.addEventListener("click", onUndo, { once: true });
+  statusToast.append(label, undo);
+  statusToast.hidden = false;
+  statusToastTimer = setTimeout(() => {
+    statusToast.hidden = true;
+    statusToastTimer = null;
+  }, 6000);
 }
 
 function renderChatList() {
