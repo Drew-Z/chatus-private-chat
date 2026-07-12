@@ -1010,10 +1010,23 @@ function renderChatList() {
     const open = document.createElement("button");
     open.type = "button";
     open.className = "chat-list-main";
+    const copy = document.createElement("span");
+    copy.className = "chat-list-copy";
     const title = document.createElement("span");
     title.className = "chat-list-title";
-    title.textContent = session.title || "新会话";
-    open.append(title);
+    appendHighlightedText(title, session.title || "新会话", sessionFilter);
+    copy.append(title);
+    if (sessionFilter) {
+      const snippetText = sessionSearchSnippet(session, sessionFilter);
+      if (snippetText) {
+        open.classList.add("has-snippet");
+        const snippet = document.createElement("small");
+        snippet.className = "chat-list-snippet";
+        appendHighlightedText(snippet, snippetText, sessionFilter);
+        copy.append(snippet);
+      }
+    }
+    open.append(copy);
     if (session.pinned) {
       const pinMark = document.createElement("span");
       pinMark.className = "chat-pin-mark";
@@ -1091,6 +1104,35 @@ function compareSessions(a, b) {
 function sessionSearchText(session) {
   const messageText = session.messages.map((message) => extractText(message.content)).join("\n");
   return `${session.title}\n${session.summary || ""}\n${messageText}`.toLowerCase();
+}
+
+function sessionSearchSnippet(session, query) {
+  const source = [session.summary || "", ...session.messages.map((message) => extractText(message.content))]
+    .filter(Boolean)
+    .join(" · ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const index = source.toLowerCase().indexOf(query);
+  if (index < 0) return "";
+  const start = Math.max(0, index - 30);
+  const end = Math.min(source.length, index + query.length + 38);
+  return `${start > 0 ? "…" : ""}${source.slice(start, end)}${end < source.length ? "…" : ""}`;
+}
+
+function appendHighlightedText(parent, text, query) {
+  if (!query) return parent.append(document.createTextNode(text));
+  const lower = text.toLowerCase();
+  let cursor = 0;
+  let index = lower.indexOf(query, cursor);
+  while (index !== -1) {
+    if (index > cursor) parent.append(document.createTextNode(text.slice(cursor, index)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(index, index + query.length);
+    parent.append(mark);
+    cursor = index + query.length;
+    index = lower.indexOf(query, cursor);
+  }
+  if (cursor < text.length) parent.append(document.createTextNode(text.slice(cursor)));
 }
 
 async function renameSession(id) {
