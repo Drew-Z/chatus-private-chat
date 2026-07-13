@@ -750,9 +750,10 @@ async function streamChat(assistantMessage) {
       buffer = lines.pop() || "";
       for (const line of lines) {
         const chunk = parseStreamLine(line);
-        if (!chunk) continue;
+        if (chunk.finishReason) assistantMessage.finishReason = chunk.finishReason;
+        if (!chunk.text) continue;
         received = true;
-        assistantMessage.content += chunk;
+        assistantMessage.content += chunk.text;
         scheduleRender();
       }
     }
@@ -1005,6 +1006,7 @@ function normalizeMessage(item) {
     fallback: item.fallback === true,
     rating: item.rating === "up" || item.rating === "down" ? item.rating : "",
     ratingReason: typeof item.ratingReason === "string" ? item.ratingReason : "",
+    finishReason: typeof item.finishReason === "string" ? item.finishReason : "",
     createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now(),
   };
 }
@@ -1815,14 +1817,18 @@ function updateConnectionState(prefix) {
   connectionState.textContent = label ? `已连接 · ${label}${promptMark}` : `已连接${promptMark}`;
 }
 function parseStreamLine(line) {
-  if (!line.startsWith("data:")) return "";
+  if (!line.startsWith("data:")) return { text: "", finishReason: "" };
   const data = line.slice(5).trim();
-  if (!data || data === "[DONE]") return "";
+  if (!data || data === "[DONE]") return { text: "", finishReason: "" };
   try {
     const json = JSON.parse(data);
-    return json.choices?.[0]?.delta?.content || json.choices?.[0]?.message?.content || "";
+    const choice = json.choices?.[0] || {};
+    return {
+      text: choice.delta?.content || choice.message?.content || "",
+      finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : "",
+    };
   } catch {
-    return "";
+    return { text: "", finishReason: "" };
   }
 }
 function buildUserContent(text, files) {
@@ -1951,6 +1957,7 @@ function renderMessages(forceScroll = true) {
       actions.append(actionButton("重发", () => resendFromUser(index)));
     }
     if (message.role === "assistant" && !isBusy && !offlineMode) {
+      if (message.finishReason === "length") actions.append(actionButton("继续生成", () => continueAssistant(index)));
       actions.append(actionButton("有帮助", () => rateAssistant(message, "up"), message.rating === "up"));
       actions.append(actionButton("需改进", () => rateAssistant(message, "down"), message.rating === "down"));
       actions.append(actionButton("重新生成", () => regenerateAssistant(index)));
@@ -2225,6 +2232,25 @@ function regenerateAssistant(index) {
   saveMessages();
   renderMessages(true);
   showStatusToast("已创建重新生成分支，原会话保持不变");
+  streamChat(assistantMessage).then(() => maybeRefreshSummary());
+}
+
+function continueAssistant(index) {
+  if (offlineMode) return;
+  const message = messages[index];
+  if (!message || message.role !== "assistant" || message.finishReason !== "length") return;
+  if (!createResponseBranch(index, "继续")) return;
+  messages.push({
+    id: createId(),
+    role: "user",
+    content: "请从刚才因长度限制而中断的位置继续，不要重复已经输出的内容。",
+    createdAt: Date.now(),
+  });
+  const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
+  messages.push(assistantMessage);
+  saveMessages();
+  renderMessages(true);
+  showStatusToast("已创建继续生成分支，原会话保持不变");
   streamChat(assistantMessage).then(() => maybeRefreshSummary());
 }
 

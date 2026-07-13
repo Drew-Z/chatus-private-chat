@@ -14,6 +14,7 @@ type ChatMessage = {
   createdAt?: number;
   rating?: "up" | "down";
   ratingReason?: string;
+  finishReason?: string;
 };
 
 type Session = {
@@ -1728,6 +1729,8 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
         content,
         routeId: role === "assistant" && typeof item.routeId === "string" ? item.routeId.slice(0, 80) : undefined,
         fallback: role === "assistant" && item.fallback === true,
+        finishReason:
+          role === "assistant" && typeof item.finishReason === "string" ? item.finishReason.slice(0, 40) : undefined,
         createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
       });
       continue;
@@ -1755,6 +1758,8 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
       content: parts,
       routeId: role === "assistant" && typeof item.routeId === "string" ? item.routeId.slice(0, 80) : undefined,
       fallback: role === "assistant" && item.fallback === true,
+      finishReason:
+        role === "assistant" && typeof item.finishReason === "string" ? item.finishReason.slice(0, 40) : undefined,
       createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
       rating: item.rating === "up" || item.rating === "down" ? item.rating : undefined,
       ratingReason: typeof item.ratingReason === "string" ? item.ratingReason : undefined,
@@ -2674,6 +2679,10 @@ function anthropicPayloadToOpenAiChunk(payload: string, eventName: string): stri
       return openAiSseChunk(`\n[upstream error: ${message}]`);
     }
 
+    if (parsed.type === "message_delta" && isRecord(parsed.delta) && typeof parsed.delta.stop_reason === "string") {
+      return openAiFinishChunk(parsed.delta.stop_reason === "max_tokens" ? "length" : parsed.delta.stop_reason);
+    }
+
     if (parsed.type === "message_stop" || eventName === "message_stop") {
       return "data: [DONE]\n\n";
     }
@@ -2687,6 +2696,12 @@ function anthropicPayloadToOpenAiChunk(payload: string, eventName: string): stri
 function openAiSseChunk(text: string): string {
   return `data: ${JSON.stringify({
     choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+  })}\n\n`;
+}
+
+function openAiFinishChunk(finishReason: string): string {
+  return `data: ${JSON.stringify({
+    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
   })}\n\n`;
 }
 
