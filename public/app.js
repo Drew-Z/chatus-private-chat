@@ -104,13 +104,14 @@ let selectedRouteId = "";
 let sessionFilter = "";
 let isBusy = false;
 let renderTimer = null;
+const summaryInFlight = new Set();
 let pendingSuggestion = "";
 let memoryRevision = "";
 let lastRouteUsed = "";
 let cloudSyncEnabled = true;
-let cloudSaveTimer = null;
+const cloudSaveTimers = new Map();
 let cloudSaveInFlight = false;
-let cloudSaveQueued = false;
+const cloudSaveQueue = new Map();
 let syncStatusText = "";
 let hasUserSystemPrompt = false;
 let statusToastTimer = null;
@@ -1236,7 +1237,7 @@ function queueCloudSave(chat, immediate = false) {
   if (!cloudSyncEnabled || !chat) return;
   const run = async () => {
     if (cloudSaveInFlight) {
-      cloudSaveQueued = true;
+      cloudSaveQueue.set(chat.id, chat);
       return;
     }
     cloudSaveInFlight = true;
@@ -1259,28 +1260,31 @@ function queueCloudSave(chat, immediate = false) {
       setSyncStatus("云端保存失败，已保留本地");
     } finally {
       cloudSaveInFlight = false;
-      if (cloudSaveQueued) {
-        cloudSaveQueued = false;
-        const latest = getActiveSession();
-        queueCloudSave(latest, true);
+      if (cloudSaveQueue.size) {
+        const [nextId, nextChat] = cloudSaveQueue.entries().next().value;
+        cloudSaveQueue.delete(nextId);
+        queueCloudSave(nextChat, true);
       }
     }
   };
 
   if (immediate) {
-    if (cloudSaveTimer) {
-      clearTimeout(cloudSaveTimer);
-      cloudSaveTimer = null;
+    const timer = cloudSaveTimers.get(chat.id);
+    if (timer) {
+      clearTimeout(timer);
+      cloudSaveTimers.delete(chat.id);
     }
     run();
     return;
   }
 
-  if (cloudSaveTimer) clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = setTimeout(() => {
-    cloudSaveTimer = null;
+  const existingTimer = cloudSaveTimers.get(chat.id);
+  if (existingTimer) clearTimeout(existingTimer);
+  const timer = setTimeout(() => {
+    cloudSaveTimers.delete(chat.id);
     run();
   }, 500);
+  cloudSaveTimers.set(chat.id, timer);
 }
 
 async function preserveCloudConflict(localChat, remoteValue) {
@@ -2693,17 +2697,20 @@ function downloadBlob(content, filename, type) {
 }
 async function maybeRefreshSummary() {
   const active = getActiveSession();
-  const chatMessages = messages.filter((m) => m.role === "user" || m.role === "assistant");
+  const sessionId = active.id;
+  if (summaryInFlight.has(sessionId)) return;
+  const chatMessages = active.messages.filter((m) => m.role === "user" || m.role === "assistant");
   if (chatMessages.length < 6) return;
   if (chatMessages.length - (active.summaryUntil || 0) < SUMMARY_EVERY) return;
   const sliceStart = Math.max(0, (active.summaryUntil || 0) - 2);
   const batch = chatMessages.slice(sliceStart);
   if (batch.length < 4) return;
+  summaryInFlight.add(sessionId);
   try {
     const payload = {
       messages: batch.map(({ role, content }) => ({ role, content })),
       previousSummary: active.summary || "",
-      routeId: selectedRouteId,
+      routeId: active.routeId || selectedRouteId,
     };
     const userApiKey = userApiKeyInput.value.trim();
     if (userApiKey) payload.userApiKey = userApiKey;
@@ -2715,15 +2722,21 @@ async function maybeRefreshSummary() {
     if (handleUnauthorizedResponse(response)) return;
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data.summary) {
-      setSyncStatus(data.message || "摘要更新失败，将继续使用现有上下文");
+      if (activeSessionId === sessionId) setSyncStatus(data.message || "摘要更新失败，将继续使用现有上下文");
       return;
     }
-    active.summary = String(data.summary).trim();
-    active.summaryUntil = chatMessages.length;
-    saveSessions();
+    const target = sessions.find((session) => session.id === sessionId);
+    if (!target) return;
+    target.summary = String(data.summary).trim();
+    target.summaryUntil = chatMessages.length;
+    target.updatedAt = Math.max(Date.now(), Number(target.updatedAt || 0) + 1);
+    saveSessionsLocalOnly();
+    queueCloudSave(target, true);
     renderChatList();
-    setSyncStatus("会话摘要已更新");
+    if (activeSessionId === sessionId) setSyncStatus("会话摘要已更新");
   } catch {
-    setSyncStatus("摘要更新失败，将继续使用现有上下文");
+    if (activeSessionId === sessionId) setSyncStatus("摘要更新失败，将继续使用现有上下文");
+  } finally {
+    summaryInFlight.delete(sessionId);
   }
 }

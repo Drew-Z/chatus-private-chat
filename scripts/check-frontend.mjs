@@ -81,6 +81,11 @@ assert(chatScript.includes("已切换到空白会话"), "app.js: new chat should
 assert(chatScript.includes("merged_session_limit"), "app.js: imports must not silently evict existing chats");
 assert(chatScript.includes("expectedRevision: memoryRevision"), "app.js: memory saves must reject stale editors");
 assert(chatScript.includes("MEMORY_DRAFT_PREFIX"), "app.js: unsaved memory edits need user-scoped local drafts");
+assert(chatScript.includes("summaryInFlight.has(sessionId)"), "app.js: a chat must not run overlapping summary updates");
+assert(chatScript.includes("sessions.find((session) => session.id === sessionId)"), "app.js: summary results must return to their source chat");
+assert(chatScript.includes("queueCloudSave(target, true)"), "app.js: summary updates must sync the source chat, not the currently open chat");
+assert(chatScript.includes("cloudSaveQueue.set(chat.id, chat)"), "app.js: concurrent cloud saves must retain each chat identity");
+assert(chatScript.includes("cloudSaveTimers.set(chat.id, timer)"), "app.js: save debouncing must be isolated per chat");
 assert(chatScript.includes("已恢复未保存修改"), "app.js: restored memory drafts need visible status");
 assert(chatScript.includes("formatVersion: 3"), "app.js: full backups need the current schema version");
 assert(chatScript.includes("unsupported_backup_version"), "app.js: newer backup formats must be rejected safely");
