@@ -6,7 +6,7 @@
 
 ## Overview
 
-This directory contains guidelines for frontend development. Fill in each file with your project's specific conventions.
+These guidelines describe the current framework-free browser frontend and its Cloudflare Worker boundary. Read the relevant topic before editing `public/`, `src/worker.ts`, frontend tests, or browser build checks.
 
 ---
 
@@ -14,25 +14,27 @@ This directory contains guidelines for frontend development. Fill in each file w
 
 | Guide | Description | Status |
 |-------|-------------|--------|
-| [Directory Structure](./directory-structure.md) | Module organization and file layout | To fill |
-| [Component Guidelines](./component-guidelines.md) | Component patterns, props, composition | To fill |
-| [Hook Guidelines](./hook-guidelines.md) | Custom hooks, data fetching patterns | To fill |
-| [State Management](./state-management.md) | Local state, global state, server state | To fill |
-| [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
-| [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
+| [Directory Structure](./directory-structure.md) | Static assets, page controllers, Worker and tests | Ready |
+| [Component Guidelines](./component-guidelines.md) | DOM-region rendering and accessibility patterns | Ready |
+| [Hook Guidelines](./hook-guidelines.md) | Browser events, lifecycle and fetch patterns | Ready |
+| [State Management](./state-management.md) | Module, local-storage and server-state boundaries | Ready |
+| [Quality Guidelines](./quality-guidelines.md) | Checks, security, testing and review gates | Ready |
+| [Type Safety](./type-safety.md) | Strict Worker TypeScript and runtime validation | Ready |
 
 ---
 
-## How to Fill These Guidelines
+## Pre-Development Checklist
 
-For each guideline file:
+- Read `directory-structure.md` before creating or moving frontend files.
+- Read `component-guidelines.md`, `hook-guidelines.md`, and `state-management.md` for changes to page behavior.
+- Read `type-safety.md` for Worker/API/storage contract changes.
+- Always read `quality-guidelines.md` before implementation and review.
 
-1. Document your project's **actual conventions** (not ideals)
-2. Include **code examples** from your codebase
-3. List **forbidden patterns** and why
-4. Add **common mistakes** your team has made
+## Quality Check
 
-The goal is to help AI assistants and new team members understand how YOUR project works.
+- Confirm the implementation matches the applicable topic guides.
+- Run every command listed in `quality-guidelines.md` before shipping.
+- Verify privacy, conflict handling, accessibility, and release/service-worker contracts when touched.
 
 ---
 

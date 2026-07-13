@@ -1,59 +1,41 @@
 # Component Guidelines
 
-> How components are built in this project.
-
----
-
 ## Overview
 
-<!--
-Document your project's component conventions here.
-
-Questions to answer:
-- What component patterns do you use?
-- How are props defined?
-- How do you handle composition?
-- What accessibility standards apply?
--->
-
-(To be filled by the team)
-
----
+The frontend does not use React or another component runtime. A "component" is an HTML region identified by stable IDs/classes plus JavaScript functions that render or update it.
 
 ## Component Structure
 
-<!-- Standard structure of a component file -->
+- Define stable markup in `public/index.html` or `public/admin.html`.
+- Resolve required DOM nodes near the top of the paired page script with `querySelector`.
+- Keep rendering in named functions that derive DOM output from application state.
+- Attach event listeners once during module initialization; update state and call the relevant render function.
+- Prefer native controls and `<dialog>` for modal interactions.
 
-(To be filled by the team)
+Examples in `public/app.js` include the session list, model picker, settings dialog, message list, and shared application dialog.
 
----
+## Data and Parameter Conventions
 
-## Props Conventions
-
-<!-- How props should be defined and typed -->
-
-(To be filled by the team)
-
----
+- Page modules use module-scoped state instead of prop objects.
+- Reusable helpers accept explicit values and return data or DOM-safe output. See `renderMarkdown` in `public/markdown.js` and `buildAdminReportCsv` in `public/admin-report.js`.
+- Pass the owning entity explicitly for asynchronous work. Cloud saves and summaries retain the chat/session ID so results do not update whichever chat happens to be active later.
 
 ## Styling Patterns
 
-<!-- How styles are applied (CSS modules, styled-components, Tailwind, etc.) -->
-
-(To be filled by the team)
-
----
+- Put visual rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in `app.js`, `admin.js`, and `theme.js`.
+- Toggle semantic classes and attributes such as `hidden`, `aria-expanded`, and status classes.
+- Keep shared page styling in the single stylesheet instead of inline style attributes.
 
 ## Accessibility
 
-<!-- A11y requirements and patterns -->
-
-(To be filled by the team)
-
----
+- Preserve visible `:focus-visible` treatment for keyboard users.
+- Keep keyboard behavior for menus and dialogs, including arrow navigation, Escape/Tab closure, and focus restoration.
+- Respect `prefers-reduced-motion`; scrolling falls back to `auto` when reduced motion is requested.
+- Use labels, native buttons, forms, and dialogs before custom clickable containers.
 
 ## Common Mistakes
 
-<!-- Component-related mistakes your team has made -->
-
-(To be filled by the team)
+- Adding a `querySelector("#id")` without adding the ID to the paired HTML; `npm run check:frontend` rejects this.
+- Updating DOM from a stale async result without checking the source chat or current revision.
+- Applying inline styles, which weakens the Content Security Policy.
+- Replacing destructive actions without preserving undo, conflict, or confirmation behavior already present in the UI.

@@ -1,51 +1,33 @@
 # Hook Guidelines
 
-> How hooks are used in this project.
-
----
-
 ## Overview
 
-<!--
-Document your project's hook conventions here.
+There are no React-style custom hooks. In this frontend, hooks are browser lifecycle and event listeners wired by the page modules.
 
-Questions to answer:
-- What custom hooks do you have?
-- How do you handle data fetching?
-- What are the naming conventions?
-- How do you share stateful logic?
--->
+## Event Patterns
 
-(To be filled by the team)
-
----
-
-## Custom Hook Patterns
-
-<!-- How to create and structure custom hooks -->
-
-(To be filled by the team)
-
----
+- Register listeners once at module initialization with `addEventListener`.
+- Event handlers should validate input, update module state, then call focused render/persistence helpers.
+- Use `beforeunload` only for real unsaved state. `public/admin.js` warns when configuration editors are dirty.
+- Keep service-worker lifecycle behavior in `public/pwa.js` and `public/sw.js`, not in page controllers.
 
 ## Data Fetching
 
-<!-- How data fetching is handled (React Query, SWR, etc.) -->
-
-(To be filled by the team)
-
----
+- Use `fetch` directly; there is no client data-fetching library or cache framework.
+- Use the shared page-level request helper for JSON endpoints, credentials, response parsing, and bounded timeouts.
+- Non-streaming requests use `fetchWithTimeout`; streaming `/api/chat` remains user-cancellable through its AbortController and does not use a fixed timeout.
+- Surface rate-limit type and retry timing to the UI instead of collapsing daily and minute limits into one error.
+- Preserve optimistic-concurrency fields such as `expectedRevision` and `expectedUpdatedAt` on writes and deletes.
 
 ## Naming Conventions
 
-<!-- Hook naming rules (use*, etc.) -->
-
-(To be filled by the team)
-
----
+- Name handlers and helpers by action: `saveActiveDraft`, `restoreActiveDraft`, `commitPendingSessionDeletion`.
+- Use `on...` only when the function is specifically an event callback; otherwise prefer a domain action name.
+- Keep listener wiring close enough to initialization that duplicate registration is easy to spot.
 
 ## Common Mistakes
 
-<!-- Hook-related mistakes your team has made -->
-
-(To be filled by the team)
+- Starting overlapping async work for the same entity; use in-flight sets/maps where the code already does so for summaries and cloud saves.
+- Allowing deleted chats to re-enter a delayed save queue.
+- Assuming the active chat is still the source of an async result.
+- Adding periodic or lifecycle behavior without cleanup, deduplication, or a visibility/focus check.

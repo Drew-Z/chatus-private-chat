@@ -1,51 +1,36 @@
 # State Management
 
-> How state is managed in this project.
-
----
-
 ## Overview
 
-<!--
-Document your project's state management conventions here.
-
-Questions to answer:
-- What state management solution do you use?
-- How is local vs global state decided?
-- How do you handle server state?
-- What are the patterns for derived state?
--->
-
-(To be filled by the team)
-
----
+State is managed with module-scoped JavaScript values, browser storage, and server APIs. There is no global-state library.
 
 ## State Categories
 
-<!-- Local state, global state, server state, URL state -->
+- **Ephemeral UI state:** open dialogs, selected menu item, in-flight requests, pending deletion timers.
+- **Active page state:** session arrays, active session ID, route selection, memory revision, admin editor revisions.
+- **Device persistence:** user-scoped drafts and session snapshots in `localStorage`.
+- **Server state:** chats, memory, configuration, access codes, audit data, and usage returned by Worker APIs.
+- **Durable concurrency state:** per-user chat/quota state in the `UserState` Durable Object.
 
-(To be filled by the team)
+## State Rules
 
----
-
-## When to Use Global State
-
-<!-- Criteria for promoting state to global -->
-
-(To be filled by the team)
-
----
+- Scope locally persisted values by user label where data belongs to a signed-in user.
+- Clear user drafts on logout and account deletion paths.
+- Keep derived UI state derived; do not persist values that can be recalculated from sessions/configuration.
+- Store timers, queues, and in-flight operations per entity using `Map`/`Set`, not one global slot.
+- Keep the newest server version during conflicts and preserve a recognizable local conflict copy when necessary.
 
 ## Server State
 
-<!-- How server data is cached and synchronized -->
-
-(To be filled by the team)
-
----
+- Fetch authoritative state at login/startup and after conflict responses.
+- Debounce cloud saves per chat ID.
+- Send revision/version preconditions on mutations.
+- Route delayed async results back to their source session rather than the currently active session.
+- Backup restore and device merge are distinct operations; do not silently evict existing chats on import.
 
 ## Common Mistakes
 
-<!-- State management mistakes your team has made -->
-
-(To be filled by the team)
+- Using a single debounce timer for multiple chats.
+- Persisting unsaved memory/config edits without a revision, then overwriting a newer editor.
+- Reusing local data across users because a storage key lacks the user prefix.
+- Mutating history destructively instead of creating branches for edit, regenerate, or resend flows.
