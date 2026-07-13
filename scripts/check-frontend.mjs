@@ -9,7 +9,7 @@ const pages = [
   { html: "public/admin.html", script: "public/admin.js" },
 ];
 
-for (const file of ["public/app.js", "public/admin.js", "public/markdown.js", "public/theme.js", "public/pwa.js", "public/sw.js"]) {
+for (const file of ["public/app.js", "public/admin.js", "public/admin-report.js", "public/markdown.js", "public/theme.js", "public/pwa.js", "public/sw.js"]) {
   execFileSync(process.execPath, ["--check", file], { cwd: root, stdio: "inherit" });
 }
 
@@ -53,6 +53,8 @@ assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: update
 const chatScript = await readFile(path.join(root, "public/app.js"), "utf8");
 const styles = await readFile(path.join(root, "public/styles.css"), "utf8");
 assert(chatScript.includes('./markdown.js?v=development'), "app.js: markdown module must share the release fingerprint");
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('./admin-report.js?v=development'), "admin.js: report module must share the release fingerprint");
+assert(serviceWorker.includes('"/admin-report.js"'), "sw.js: offline admin shell must include the report module");
 assert(chatScript.includes('promptInput.addEventListener("input", () => saveActiveDraft())'), "app.js: missing draft input persistence");
 assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft restoration");
 assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout must clear local drafts");

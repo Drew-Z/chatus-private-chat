@@ -1,3 +1,5 @@
+import { buildAdminReportCsv } from "./admin-report.js?v=development";
+
 const adminLoginView = document.querySelector("#adminLoginView");
 const adminView = document.querySelector("#adminView");
 const adminLoginForm = document.querySelector("#adminLoginForm");
@@ -8,6 +10,7 @@ const adminSourceText = document.querySelector("#adminSourceText");
 const configSourceText = document.querySelector("#configSourceText");
 const accessSourceText = document.querySelector("#accessSourceText");
 const refreshAdminButton = document.querySelector("#refreshAdminButton");
+const exportReportButton = document.querySelector("#exportReportButton");
 const adminLogoutButton = document.querySelector("#adminLogoutButton");
 const statsDay = document.querySelector("#statsDay");
 const statsList = document.querySelector("#statsList");
@@ -196,6 +199,8 @@ refreshAdminButton.addEventListener("click", async () => {
   if (!(await confirmDiscardChanges("刷新数据"))) return;
   loadDashboard();
 });
+
+exportReportButton?.addEventListener("click", () => exportAdminReport());
 
 adminLogoutButton.addEventListener("click", async () => {
   if (!(await confirmDiscardChanges("退出后台"))) return;
@@ -1060,6 +1065,19 @@ function renderStats() {
   }
 
   renderMemoryUserPicker();
+}
+
+function exportAdminReport() {
+  if (!stats) return setStatus("运营数据尚未加载", true);
+  const csv = buildAdminReportCsv(stats, new Date());
+  const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `chatus-report-${stats.day || new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+  setStatus("运营报表已导出，不包含密钥、Prompt、记忆或对话内容");
 }
 function renderUserPicker() {
   const labels = getUserLabels();

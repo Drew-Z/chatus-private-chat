@@ -1,10 +1,11 @@
-const CACHE_NAME = "chatus-shell-v3";
+const CACHE_NAME = "chatus-shell-v4";
 const SHELL_ASSETS = [
   "/",
   "/admin",
   "/styles.css",
   "/app.js",
   "/admin.js",
+  "/admin-report.js",
   "/markdown.js",
   "/theme.js",
   "/pwa.js",
