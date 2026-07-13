@@ -51,9 +51,11 @@ const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?
 assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: updates must not activate during install");
 
 const chatScript = await readFile(path.join(root, "public/app.js"), "utf8");
+const adminScript = await readFile(path.join(root, "public/admin.js"), "utf8");
+const adminHtml = await readFile(path.join(root, "public/admin.html"), "utf8");
 const styles = await readFile(path.join(root, "public/styles.css"), "utf8");
 assert(chatScript.includes('./markdown.js?v=development'), "app.js: markdown module must share the release fingerprint");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('./admin-report.js?v=development'), "admin.js: report module must share the release fingerprint");
+assert(adminScript.includes('./admin-report.js?v=development'), "admin.js: report module must share the release fingerprint");
 assert(serviceWorker.includes('"/admin-report.js"'), "sw.js: offline admin shell must include the report module");
 assert(chatScript.includes('promptInput.addEventListener("input", () => saveActiveDraft())'), "app.js: missing draft input persistence");
 assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft restoration");
@@ -112,15 +114,26 @@ for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
   const source = await readFile(path.join(root, file), "utf8");
   assert(!source.includes(".style."), `${file}: inline styles weaken the CSP`);
 }
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('window.addEventListener("beforeunload"'), "admin.js: unsaved configuration needs a page-leave warning");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("confirmDiscardChanges"), "admin.js: internal navigation must protect unsaved configuration");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('markDirty("access")'), "admin.js: generated access codes must be marked unsaved");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("expectedRevision: configRevision"), "admin.js: config saves must reject stale editors");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('method: "DELETE",\n    body: JSON.stringify({ expectedRevision: configRevision })'), "admin.js: config resets must reject stale editors");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("attemptSaveConfig"), "admin.js: form save failures need visible feedback");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("expectedRevision: accessRevision"), "admin.js: access-code saves must reject stale editors");
-assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("expectedRevision: memoryRevision"), "admin.js: memory saves must reject stale editors");
+assert(adminScript.includes('window.addEventListener("beforeunload"'), "admin.js: unsaved configuration needs a page-leave warning");
+assert(adminScript.includes("confirmDiscardChanges"), "admin.js: internal navigation must protect unsaved configuration");
+assert(adminScript.includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
+assert(adminScript.includes('markDirty("access")'), "admin.js: generated access codes must be marked unsaved");
+assert(adminScript.includes("expectedRevision: configRevision"), "admin.js: config saves must reject stale editors");
+assert(adminScript.includes('method: "DELETE",\n    body: JSON.stringify({ expectedRevision: configRevision })'), "admin.js: config resets must reject stale editors");
+assert(adminScript.includes("attemptSaveConfig"), "admin.js: form save failures need visible feedback");
+assert(adminScript.includes("expectedRevision: accessRevision"), "admin.js: access-code saves must reject stale editors");
+assert(adminScript.includes("expectedRevision: memoryRevision"), "admin.js: memory saves must reject stale editors");
+assert(adminHtml.includes('id="routeSecretInput" type="password" autocomplete="new-password"'), "admin.html: managed route key must use a write-only password input");
+assert(adminScript.includes("/api/admin/route-secrets/"), "admin.js: managed route keys need the authenticated vault API");
+assert((adminScript.match(/clearRouteSecretInput\(\)/g) || []).length >= 5, "admin.js: route key input must be cleared across save and navigation transitions");
+const routeSaveStart = adminScript.indexOf('routeForm.addEventListener("submit"');
+const routeSaveEnd = adminScript.indexOf("deleteRouteButton.addEventListener", routeSaveStart);
+const routeSaveSource = adminScript.slice(routeSaveStart, routeSaveEnd);
+assert(routeSaveSource && !routeSaveSource.includes("routeSecretInput"), "admin.js: raw route keys must never enter route configuration");
+const modelFetchStart = adminScript.indexOf("async function fetchRouteModels()");
+const modelFetchEnd = adminScript.indexOf("function setRouteHealth", modelFetchStart);
+const modelFetchSource = adminScript.slice(modelFetchStart, modelFetchEnd);
+assert(modelFetchSource && !modelFetchSource.includes("routeSecretInput"), "admin.js: model listing must send only the route key reference");
 
 console.log("Frontend structure checks passed");
 

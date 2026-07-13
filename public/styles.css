@@ -3808,6 +3808,21 @@ a:focus-visible,
   box-shadow: 0 0 0 3px rgba(23, 107, 82, 0.1);
 }
 
+.route-secret-action {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.route-secret-status {
+  min-height: 16px;
+  color: #687078;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.route-secret-status.is-error {
+  color: #a13d2d;
+}
+
 .admin-body .check-line {
   align-self: end;
   min-height: 40px;
@@ -4041,7 +4056,27 @@ a:focus-visible,
   color: #a5abb1;
 }
 
+[data-theme="dark"] .route-secret-status {
+  color: #a5abb1;
+}
+
+[data-theme="dark"] .route-secret-status.is-error {
+  color: #e28f82;
+}
+
 @media (max-width: 560px) {
+  .route-secret-action {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-secret-action input {
+    grid-column: 1 / -1;
+  }
+
+  .route-secret-action button {
+    width: 100%;
+  }
+
   .route-health-row {
     grid-template-columns: 8px minmax(0, 1fr);
   }

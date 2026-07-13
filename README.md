@@ -132,8 +132,8 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 字段说明：
 
 - `type`: 目前支持 `openai-chat` 和 `anthropic-messages`。
-- `apiKeyRef`: 从 Worker secret/env 读取 key，例如 `UPSTREAM_GROK_MAIN_KEY`。
-- `apiKey`: 也可以直接写在 `ROUTES_CONFIG` 里，适合只想维护一个 GitHub Secret 的私有小项目。
+- `apiKeyRef`: 线路密钥的稳定逻辑名称，例如 `UPSTREAM_GROK_MAIN_KEY`。Worker 会依次查找后台加密密钥和同名 Worker Secret。
+- `apiKey`: 仅为旧配置兼容保留。新配置不要把明文 key 写进 `ROUTES_CONFIG`。
 - `requiresUserKey`: 设为 `true` 时，这条线路必须由朋友填写自己的 API key。
 - `allowUserKey`: 设为 `false` 时，即使用户开启 BYOK，这条线路也不允许覆盖服务端 key。
 - `enabled`: 设为 `false` 可临时停用线路；配置和统计会保留，但用户不可选择、fallback 不会调用、自动巡检会跳过。
@@ -150,6 +150,7 @@ CLOUDFLARE_ACCOUNT_ID  当前 Cloudflare 账号 ID
 ACCESS_CODES           聊天窗口访问码
 ADMIN_TOKEN            管理后台登录 token，用于 /admin.html
 ROUTES_CONFIG          多线路配置，推荐设置
+ROUTE_KEYS_MASTER_KEY  可选但推荐，后台加密管理线路 key 的一次性主密钥
 WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态线路 key
 SYSTEM_PROMPT          可选，默认系统提示词
 BLOCKED_PROMPTS        可选，全局屏蔽的短提示词列表
@@ -162,15 +163,15 @@ UPSTREAM_API_KEY       可选，旧单线路 fallback
 f04d5c8ecf3260827f1ea87b22454ae8
 ```
 
-如果 `ROUTES_CONFIG` 使用 `apiKeyRef`，还需要把对应 key 配成 Cloudflare Worker Secret，例如：
+若要在管理后台直接新增和轮换线路 key，先生成 32 个随机字节的 Base64 值：
 
 ```bash
-npx wrangler secret put UPSTREAM_GROK_MAIN_KEY
-npx wrangler secret put UPSTREAM_GROK_BACKUP_KEY
-npx wrangler secret put ANTHROPIC_KEY
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-也可以把这些动态 key 集中放进 GitHub Secret `WORKER_SECRETS_JSON`，让 Actions 部署时一起上传：
+把输出仅保存为 GitHub Secret `ROUTE_KEYS_MASTER_KEY`，再通过 `Deploy to Cloudflare` 工作流发布一次。之后可以在 `/admin.html` 的线路编辑器中填写 `API Key Ref`，输入新密钥并点击“保存密钥”；密钥会使用 AES-GCM 加密后写入 KV，页面和 API 都不会读回明文。
+
+已有 Worker Secret 仍然兼容。也可以把这些动态 key 集中放进 GitHub Secret `WORKER_SECRETS_JSON`，让 Actions 部署时一起上传：
 
 ```json
 {
@@ -180,7 +181,7 @@ npx wrangler secret put ANTHROPIC_KEY
 }
 ```
 
-两种方式选一种就行。`wrangler deploy --secrets-file` 会上传本次文件里的 secrets，同时保留 Worker 上已有的其他 secrets。
+托管密钥优先于同名 Worker Secret；删除托管密钥后会自动恢复使用 Worker Secret。生产发布只通过 GitHub Actions，不要从本机 Wrangler 账号部署。更换 `ROUTE_KEYS_MASTER_KEY` 后，原有托管密钥无法解密，需要在后台逐条重新录入。
 
 `BLOCKED_PROMPTS` 可以填逗号分隔：
 
@@ -210,10 +211,11 @@ https://你的 Worker 域名/admin.html
 - 编辑访问码，格式仍是 `friend:code-one,alice:code-two`。
 - 用表单快速配置某个朋友可用的线路、默认模型、每日额度、每分钟额度、是否允许 BYOK。
 - 用表单新增/修改线路的 `baseUrl`、`model`、`apiKeyRef`、协议类型、fallback 和图片支持。
+- 在不重新部署的情况下新增、替换或删除后台加密线路 key；后台只显示配置状态，不回显密钥。
 - 直接编辑完整 `ROUTES_CONFIG` JSON，处理 `headers`、`authHeader`、`directEndpoint` 等高级字段。
 - 删除 KV 覆盖配置，恢复到 GitHub/Cloudflare Secret 中的默认配置。
 
-后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。上游 API Key 仍建议放在 Worker Secret / `WORKER_SECRETS_JSON` 里，后台线路只填写 `apiKeyRef`。
+后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。线路密钥解析优先级为：用户 BYOK（允许时）→ 旧式 `apiKey` → 后台加密密钥 → 同名 Worker Secret。`requiresUserKey` 会阻止使用所有服务端密钥。
 
 ## 会话与记忆
 

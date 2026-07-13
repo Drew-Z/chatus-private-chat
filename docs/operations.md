@@ -42,13 +42,33 @@ https://chatus.ciallobill.qzz.io/release.json
 - 已删除会话重新出现：先确认生产版本；当前版本会取消前端保存队列，并用单会话墓碑与账户级删除时间线拒绝旧设备数据。不要通过清空墓碑解决同步问题。
 - 核心健康异常：先检查 KV 和 Durable Object 绑定，再检查 `ACCESS_CODES` 与至少一条启用线路是否存在。
 
+## 后台线路密钥
+
+首次启用时，在可信环境运行以下命令生成 32 字节随机主密钥：
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+把输出仅保存到 GitHub Secret `ROUTE_KEYS_MASTER_KEY`，通过 `Deploy to Cloudflare` 发布一次。不要把主密钥写入 `.env`、任务文档、issue、聊天记录或截图。
+
+之后的普通线路 key 操作不需要重新部署：
+
+1. 在 `/admin.html` 打开“模型线路”，填写稳定的 `API Key Ref`。
+2. 在“后台线路密钥”中输入新 key 并保存。输入框会立即清空，后台只显示配置来源和更新时间。
+3. 保存后可直接拉取模型并执行健康检查。
+4. 删除托管密钥只会删除 KV 中的 AES-GCM 密文；若存在同名 Worker Secret，会自动恢复使用它。
+
+若状态显示“无法解密”或“记录损坏”，不要复制 KV 内容排查，也不要尝试记录密文。确认主密钥是否被更换，然后删除该托管项并重新录入。托管密钥的优先级高于同名 Worker Secret；损坏的托管项不会静默回退到另一个值。
+
 ## 密钥轮换
 
-1. 在 GitHub Secrets 更新 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG` 或 `WORKER_SECRETS_JSON`。
-2. 手动运行 `Deploy to Cloudflare`，或推送一个经过检查的提交。
-3. 验证工作流和生产 smoke 成功。
-4. 轮换访问码会使对应 label 的现有登录会话失效；轮换管理员 Token 会使全部旧后台会话在下一次请求时失效。
-5. 不把真实访问码、上游 Key、管理员 Token 或完整 Secret JSON 写入 issue、日志、截图和仓库文件。
+1. 普通上游线路 key：直接在管理后台替换并立即运行模型拉取与线路巡检，不需要部署。
+2. `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、兼容用 `WORKER_SECRETS_JSON`：在 GitHub Secrets 更新后运行 `Deploy to Cloudflare`。
+3. `ROUTE_KEYS_MASTER_KEY`：更换后旧托管密钥无法解密。先记录需要重新录入的 `apiKeyRef` 名称，再更新 GitHub Secret、通过 Actions 发布，并在后台逐条重新录入线路 key。
+4. 验证工作流、生产 smoke、模型拉取和线路巡检成功。
+5. 轮换访问码会使对应 label 的现有登录会话失效；轮换管理员 Token 会使全部旧后台会话在下一次请求时失效。
+6. 不把真实访问码、上游 Key、管理员 Token、主密钥或完整 Secret JSON 写入 issue、日志、截图和仓库文件。
 
 ## 回滚
 
@@ -66,7 +86,7 @@ git push origin main
 - 用户可在设置中导出全部会话 JSON。手动导入使用 `restore` 语义，可恢复明确选择的旧备份；后台自动同步只使用 `merge`，不会绕过删除时间线。
 - 用户可删除本机缓存、退出所有设备或永久删除全部数据。永久删除会清除对话、摘要、记忆、反馈、用量和指标，注销全部设备，并阻止删除前的本地副本回流。
 - 长期记忆可由用户或管理员查看和编辑。
-- 访问码与线路配置的后台覆盖保存在 KV；删除覆盖后会恢复 GitHub/Worker Secret 中的配置。
+- 访问码与线路配置的后台覆盖保存在 KV；删除覆盖后会恢复 GitHub/Worker Secret 中的配置。后台线路 key 以 AES-GCM 密文单独保存在 KV，主密钥只存在于 Worker Secret。
 - Durable Object 保存用量、指标、云端会话和删除时间线。SQLite 表通过构造器中的幂等 `CREATE TABLE IF NOT EXISTS` 升级；新增或重命名 Durable Object 类绑定时才增加 Wrangler migration tag，任何已经上线的 tag 都不能修改。
 
 ## 开发流程

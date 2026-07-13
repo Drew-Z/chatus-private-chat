@@ -55,6 +55,10 @@ const routeModelInput = document.querySelector("#routeModelInput");
 const routeModelOptions = document.querySelector("#routeModelOptions");
 const fetchRouteModelsButton = document.querySelector("#fetchRouteModelsButton");
 const routeKeyRefInput = document.querySelector("#routeKeyRefInput");
+const routeSecretInput = document.querySelector("#routeSecretInput");
+const saveRouteSecretButton = document.querySelector("#saveRouteSecretButton");
+const deleteRouteSecretButton = document.querySelector("#deleteRouteSecretButton");
+const routeSecretStatus = document.querySelector("#routeSecretStatus");
 const routeFallbacksInput = document.querySelector("#routeFallbacksInput");
 const routeImagesInput = document.querySelector("#routeImagesInput");
 const routeEnabledInput = document.querySelector("#routeEnabledInput");
@@ -111,6 +115,9 @@ let savedMemory = "";
 let memoryRevision = "";
 let configRevision = "";
 let accessRevision = "";
+let routeSecrets = {};
+let routeSecretMasterReady = false;
+let routeSecretMasterMessage = "";
 const dirtyScopes = new Set();
 
 for (const item of adminNavItems) {
@@ -129,8 +136,12 @@ for (const [element, scope] of [
   [configJsonInput, "config"],
   [adminMemoryInput, "memory"],
 ]) {
-  element?.addEventListener("input", () => markDirty(scope));
-  element?.addEventListener("change", () => markDirty(scope));
+  element?.addEventListener("input", (event) => {
+    if (event.target !== routeSecretInput) markDirty(scope);
+  });
+  element?.addEventListener("change", (event) => {
+    if (event.target !== routeSecretInput) markDirty(scope);
+  });
 }
 
 window.addEventListener("beforeunload", (event) => {
@@ -173,6 +184,15 @@ memoryUserSelect?.addEventListener("change", async () => {
 healthRouteButton?.addEventListener("click", () => checkRouteHealth());
 healthAllRoutesButton?.addEventListener("click", () => checkAllRoutesHealth());
 fetchRouteModelsButton?.addEventListener("click", () => fetchRouteModels());
+saveRouteSecretButton?.addEventListener("click", () => saveRouteSecret());
+deleteRouteSecretButton?.addEventListener("click", () => deleteRouteSecret());
+routeKeyRefInput?.addEventListener("input", () => renderRouteSecretStatus());
+routeSecretInput?.addEventListener("input", () => renderRouteSecretStatus());
+routeSecretInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveRouteSecret();
+});
 accessCodesInput?.addEventListener("input", () => renderAccessEntries());
 
 bootAdmin();
@@ -414,6 +434,7 @@ async function bootAdmin() {
 }
 
 function showLogin() {
+  clearRouteSecretInput();
   clearDirty();
   adminView.hidden = true;
   adminLoginView.hidden = false;
@@ -442,8 +463,9 @@ function showAdminSection(section) {
 }
 
 async function loadDashboard(message = "") {
+  clearRouteSecretInput();
   setStatus("读取中");
-  const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData, coreHealthData] = await Promise.all([
+  const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData, coreHealthData, routeSecretsData] = await Promise.all([
     api("/api/admin/config"),
     api("/api/admin/access-codes"),
     api("/api/admin/stats"),
@@ -452,6 +474,7 @@ async function loadDashboard(message = "") {
     api("/api/admin/audit"),
     api("/api/admin/feedback"),
     fetchCoreHealth(),
+    api("/api/admin/route-secrets"),
   ]);
 
   config = normalizeClientConfig(configData.config);
@@ -459,6 +482,13 @@ async function loadDashboard(message = "") {
   stats = statsData;
   routeHealth = healthData?.routes || {};
   coreHealth = coreHealthData;
+  routeSecretMasterReady = routeSecretsData?.masterKeyReady === true;
+  routeSecretMasterMessage = routeSecretsData?.masterKeyMessage || "";
+  routeSecrets = Object.fromEntries(
+    (Array.isArray(routeSecretsData?.items) ? routeSecretsData.items : [])
+      .filter((item) => item?.apiKeyRef)
+      .map((item) => [item.apiKeyRef, item]),
+  );
   renderAuditLog(auditData?.entries || []);
   renderFeedback(feedbackData?.entries || []);
   accessLabels = Array.isArray(accessData.entries)
@@ -1283,6 +1313,7 @@ function relativeTime(value) {
 }
 
 function populateRouteForm() {
+  clearRouteSecretInput();
   const route = selectedRoute === "__new" ? {} : config.routes?.[selectedRoute] || {};
   routeIdInput.value = selectedRoute === "__new" ? "" : selectedRoute;
   routeLabelInput.value = route.label || "";
@@ -1295,7 +1326,57 @@ function populateRouteForm() {
   routeEnabledInput.checked = route.enabled !== false;
   routeRequiresKeyInput.checked = Boolean(route.requiresUserKey);
   deleteRouteButton.disabled = selectedRoute === "__new";
+  renderRouteSecretStatus();
   renderStoredRouteHealth(selectedRoute);
+}
+
+function renderRouteSecretStatus(message = "", isError = false) {
+  if (!routeSecretStatus) return;
+  const apiKeyRef = routeKeyRefInput.value.trim();
+  const validRef = /^[A-Z][A-Z0-9_]{1,63}$/.test(apiKeyRef);
+  const item = validRef ? routeSecrets[apiKeyRef] : null;
+  const route = selectedRoute === "__new" ? null : config.routes?.[selectedRoute];
+  const hasLegacyKey = Boolean(route?.apiKey && route?.apiKeyRef === apiKeyRef);
+
+  saveRouteSecretButton.disabled = !routeSecretMasterReady || !validRef || !routeSecretInput.value.trim();
+  deleteRouteSecretButton.disabled = !item?.managed;
+
+  let statusMessage = message;
+  let statusError = isError;
+  if (!statusMessage) {
+    if (!apiKeyRef) {
+      statusMessage = "先填写 API Key Ref";
+    } else if (!validRef) {
+      statusMessage = "仅支持大写字母、数字和下划线，且必须以字母开头";
+      statusError = true;
+    } else if (hasLegacyKey) {
+      statusMessage = "当前线路使用旧式配置 Key；保存后台密钥后仍会优先使用旧式 Key";
+    } else if (item?.source === "managed" && item.status === "configured") {
+      statusMessage = `后台密钥已配置${item.updatedAt ? ` · ${formatRouteSecretTime(item.updatedAt)}` : ""}`;
+    } else if (item?.source === "managed" && item.status === "unavailable") {
+      statusMessage = item.message || "后台密钥不可用，请重新录入";
+      statusError = true;
+    } else if (item?.source === "worker") {
+      statusMessage = "使用 Worker Secret；保存后将改用后台加密密钥";
+    } else if (!routeSecretMasterReady) {
+      statusMessage = routeSecretMasterMessage || "尚未配置线路密钥主密钥";
+      statusError = true;
+    } else {
+      statusMessage = "尚未配置后台密钥";
+    }
+  }
+
+  routeSecretStatus.textContent = statusMessage;
+  routeSecretStatus.classList.toggle("is-error", statusError);
+}
+
+function formatRouteSecretTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "更新时间未知" : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function clearRouteSecretInput() {
+  if (routeSecretInput) routeSecretInput.value = "";
 }
 
 function renderStoredRouteHealth(routeId) {
@@ -1515,6 +1596,77 @@ function generateAccessCode() {
   const bytes = new Uint8Array(18);
   crypto.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function saveRouteSecret() {
+  const apiKeyRef = routeKeyRefInput.value.trim();
+  const apiKey = routeSecretInput.value.trim();
+  if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(apiKeyRef)) {
+    renderRouteSecretStatus("请先填写有效的 API Key Ref", true);
+    routeKeyRefInput.focus();
+    return;
+  }
+  if (!apiKey) {
+    renderRouteSecretStatus("请输入要保存的线路密钥", true);
+    routeSecretInput.focus();
+    return;
+  }
+
+  let resultMessage = "";
+  let resultError = false;
+  saveRouteSecretButton.disabled = true;
+  renderRouteSecretStatus("正在加密保存…");
+  try {
+    const data = await api(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        apiKey,
+        expectedRevision: routeSecrets[apiKeyRef]?.revision || undefined,
+      }),
+    });
+    if (data.item) routeSecrets[apiKeyRef] = data.item;
+    resultMessage = "后台线路密钥已保存";
+    setStatus(resultMessage);
+  } catch (error) {
+    resultMessage = error.message || "线路密钥保存失败";
+    resultError = true;
+    setStatus(resultMessage, true);
+  } finally {
+    clearRouteSecretInput();
+    renderRouteSecretStatus(resultMessage, resultError);
+  }
+}
+
+async function deleteRouteSecret() {
+  clearRouteSecretInput();
+  const apiKeyRef = routeKeyRefInput.value.trim();
+  const item = routeSecrets[apiKeyRef];
+  if (!item?.managed) {
+    renderRouteSecretStatus("当前没有可删除的后台密钥", true);
+    return;
+  }
+  if (!(await confirmAdminAction(
+    "删除后台线路密钥？",
+    item.environmentFallback
+      ? `${apiKeyRef} 将恢复使用同名 Worker Secret。`
+      : `${apiKeyRef} 删除后将不可用于服务端请求。`,
+    "删除密钥",
+  ))) return;
+
+  deleteRouteSecretButton.disabled = true;
+  renderRouteSecretStatus("正在删除…");
+  try {
+    const data = await api(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ expectedRevision: item.revision || undefined }),
+    });
+    if (data.item) routeSecrets[apiKeyRef] = data.item;
+    renderRouteSecretStatus(data.item?.source === "worker" ? "后台密钥已删除，已恢复 Worker Secret" : "后台密钥已删除");
+    setStatus("后台线路密钥已删除");
+  } catch (error) {
+    renderRouteSecretStatus(error.message || "线路密钥删除失败", true);
+    setStatus(error.message || "线路密钥删除失败", true);
+  }
 }
 
 async function checkRouteHealth() {

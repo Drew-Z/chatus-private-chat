@@ -42,6 +42,7 @@ jobs:
           SYSTEM_PROMPT: ${{ secrets.SYSTEM_PROMPT }}
           BLOCKED_PROMPTS: ${{ secrets.BLOCKED_PROMPTS }}
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ROUTE_KEYS_MASTER_KEY: ${{ secrets.ROUTE_KEYS_MASTER_KEY }}
           WORKER_SECRETS_JSON: ${{ secrets.WORKER_SECRETS_JSON }}
         run: |
           node - <<'NODE'
@@ -54,6 +55,13 @@ jobs:
           }
           if (process.env.ROUTES_CONFIG) {
             JSON.parse(process.env.ROUTES_CONFIG);
+          }
+          if (process.env.ROUTE_KEYS_MASTER_KEY) {
+            const normalized = process.env.ROUTE_KEYS_MASTER_KEY.trim();
+            const decoded = Buffer.from(normalized, "base64");
+            if (decoded.length !== 32 || decoded.toString("base64") !== normalized) {
+              throw new Error("ROUTE_KEYS_MASTER_KEY must be Base64-encoded 32 random bytes");
+            }
           }
           const extraSecrets = process.env.WORKER_SECRETS_JSON
             ? JSON.parse(process.env.WORKER_SECRETS_JSON)
@@ -73,6 +81,7 @@ jobs:
             "SYSTEM_PROMPT",
             "BLOCKED_PROMPTS",
             "ADMIN_TOKEN",
+            "ROUTE_KEYS_MASTER_KEY",
           ];
           const secrets = Object.fromEntries(
             keys

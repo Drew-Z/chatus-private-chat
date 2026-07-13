@@ -9,6 +9,7 @@ export default defineConfig({
         bindings: {
           ADMIN_TOKEN: "test-admin-token",
           TEST_ROUTE_KEY: "test-route-key",
+          ROUTE_KEYS_MASTER_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
         },
       },
     }),

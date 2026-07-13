@@ -191,7 +191,7 @@
         <section class="admin-panel admin-route-panel" data-admin-section="routes" hidden>
           <div class="panel-title">
             <h2>线路模型</h2>
-            <span>API Key 建议只填 apiKeyRef</span>
+            <span>线路 Key 由后台加密管理</span>
           </div>
           <form class="admin-form" id="routeForm">
             <div class="form-grid">
@@ -229,6 +229,15 @@
               <label>
                 API Key Ref
                 <input id="routeKeyRefInput" autocomplete="off" placeholder="LINE_A_KEY" />
+              </label>
+              <label class="wide-field">
+                后台线路密钥
+                <span class="inline-field-action route-secret-action">
+                  <input id="routeSecretInput" type="password" autocomplete="new-password" placeholder="输入新密钥或替换现有密钥" />
+                  <button class="ghost-button compact" id="saveRouteSecretButton" type="button" disabled>保存密钥</button>
+                  <button class="plain-button compact" id="deleteRouteSecretButton" type="button" disabled>删除</button>
+                </span>
+                <small class="route-secret-status" id="routeSecretStatus" role="status"></small>
               </label>
               <label>
                 Fallbacks

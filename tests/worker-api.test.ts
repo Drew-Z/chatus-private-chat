@@ -7,6 +7,16 @@ const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ADMIN_AUDIT_KEY = "config:admin_audit";
 const FEEDBACK_KEY = "feedback:recent";
+const ROUTE_SECRET_PREFIX = "route-secret:";
+
+async function clearRouteSecrets() {
+  let cursor: string | undefined;
+  do {
+    const page = await env.CHAT_STORE.list({ prefix: ROUTE_SECRET_PREFIX, cursor, limit: 100 });
+    await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+}
 
 async function login(label = `tester-${crypto.randomUUID()}`) {
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, `${label}:test-access-code`);
@@ -43,6 +53,14 @@ async function adminLogin() {
   return cookie!;
 }
 
+async function putRouteSecret(cookie: string, apiKeyRef: string, apiKey: string, expectedRevision?: string) {
+  return apiRequest(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, cookie, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey, expectedRevision }),
+  });
+}
+
 describe("Worker API", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -53,6 +71,7 @@ describe("Worker API", () => {
       env.CHAT_STORE.delete("route-health:default"),
       env.CHAT_STORE.delete(ADMIN_AUDIT_KEY),
       env.CHAT_STORE.delete(FEEDBACK_KEY),
+      clearRouteSecrets(),
     ]);
   });
 
@@ -279,6 +298,8 @@ describe("Worker API", () => {
   });
 
   it("runs scheduled route health checks and persists results", async () => {
+    const adminCookie = await adminLogin();
+    expect((await putRouteSecret(adminCookie, "SCHEDULED_TEST_KEY", "scheduled-managed-test-key")).status).toBe(200);
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {
         scheduled: {
@@ -286,7 +307,7 @@ describe("Worker API", () => {
           type: "openai-chat",
           baseUrl: "https://scheduled.example/v1",
           model: "scheduled-model",
-          apiKey: "scheduled-key",
+          apiKeyRef: "SCHEDULED_TEST_KEY",
         },
       },
       defaults: { defaultRoute: "scheduled", allowedRoutes: ["scheduled"] },
@@ -300,6 +321,7 @@ describe("Worker API", () => {
     await waitOnExecutionContext(ctx);
 
     expect(fetchMock).toHaveBeenCalledOnce();
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer scheduled-managed-test-key");
     await expect(env.CHAT_STORE.get("route-health:scheduled", "json")).resolves.toMatchObject({
       ok: true,
       routeId: "scheduled",
@@ -619,6 +641,240 @@ describe("Worker API", () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
+  it("requires an admin session for managed route-secret APIs", async () => {
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets"))).status).toBe(401);
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "test-private-value" }),
+    }))).status).toBe(401);
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {
+      method: "DELETE",
+    }))).status).toBe(401);
+  });
+
+  it("encrypts, rotates and deletes managed route keys without exposing plaintext", async () => {
+    const cookie = await adminLogin();
+    const apiKeyRef = "MANAGED_TEST_KEY";
+    const apiKey = "managed-test-route-key-value";
+
+    const created = await putRouteSecret(cookie, apiKeyRef, apiKey);
+    const createdPayload = await created.json() as any;
+    expect(created.status, JSON.stringify(createdPayload)).toBe(200);
+    expect(createdPayload.item).toMatchObject({
+      apiKeyRef,
+      source: "managed",
+      status: "configured",
+      managed: true,
+    });
+    expect(JSON.stringify(createdPayload)).not.toContain(apiKey);
+    expect(JSON.stringify(createdPayload)).not.toContain("ciphertext");
+
+    const storageKey = `${ROUTE_SECRET_PREFIX}${encodeURIComponent(apiKeyRef)}`;
+    const firstRaw = await env.CHAT_STORE.get(storageKey);
+    expect(firstRaw).toBeTruthy();
+    expect(firstRaw).not.toContain(apiKey);
+    const firstRecord = JSON.parse(firstRaw!);
+    expect(firstRecord).toMatchObject({ version: 1, algorithm: "AES-GCM" });
+    expect(firstRecord.iv).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    expect(firstRecord.ciphertext).toMatch(/^[A-Za-z0-9+/]+=*$/);
+
+    const listed = await apiRequest("/api/admin/route-secrets", cookie);
+    const listedText = await listed.text();
+    expect(listed.status).toBe(200);
+    expect(listedText).not.toContain(apiKey);
+    expect(listedText).not.toContain("ciphertext");
+    const listedPayload = JSON.parse(listedText);
+    expect(listedPayload.masterKeyReady).toBe(true);
+    expect(listedPayload.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiKeyRef, source: "managed", status: "configured" }),
+    ]));
+
+    const replaced = await putRouteSecret(cookie, apiKeyRef, apiKey, createdPayload.item.revision);
+    const replacedPayload = await replaced.json() as any;
+    expect(replaced.status, JSON.stringify(replacedPayload)).toBe(200);
+    const secondRaw = await env.CHAT_STORE.get(storageKey);
+    expect(secondRaw).toBeTruthy();
+    expect(secondRaw).not.toBe(firstRaw);
+    const secondRecord = JSON.parse(secondRaw!);
+    expect(secondRecord.iv).not.toBe(firstRecord.iv);
+    expect(secondRecord.ciphertext).not.toBe(firstRecord.ciphertext);
+
+    const stale = await putRouteSecret(cookie, apiKeyRef, "stale-test-value", createdPayload.item.revision);
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "route_secret_conflict" });
+    await expect(env.CHAT_STORE.get(storageKey)).resolves.toBe(secondRaw);
+
+    const fromBase64 = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+    const decrypt = (keyBytes: Uint8Array, additionalData: string) => crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "AES-GCM" },
+      false,
+      ["decrypt"],
+    ).then((key) => crypto.subtle.decrypt({
+      name: "AES-GCM",
+      iv: fromBase64(secondRecord.iv),
+      additionalData: new TextEncoder().encode(additionalData),
+    }, key, fromBase64(secondRecord.ciphertext)));
+    await expect(decrypt(new Uint8Array(32).fill(9), `chatus:route-secret:v1:${apiKeyRef}`)).rejects.toBeTruthy();
+    await expect(decrypt(
+      Uint8Array.from({ length: 32 }, (_, index) => index),
+      "chatus:route-secret:v1:DIFFERENT_TEST_KEY",
+    )).rejects.toBeTruthy();
+
+    const removed = await apiRequest(`/api/admin/route-secrets/${apiKeyRef}`, cookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedRevision: replacedPayload.item.revision }),
+    });
+    expect(removed.status).toBe(200);
+    await expect(env.CHAT_STORE.get(storageKey)).resolves.toBeNull();
+    const audit = await apiRequest("/api/admin/audit", cookie).then((response) => response.json()) as any;
+    expect(audit.entries.slice(0, 3)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "route-secret.update", target: apiKeyRef }),
+      expect.objectContaining({ action: "route-secret.delete", target: apiKeyRef }),
+    ]));
+    expect(JSON.stringify(audit)).not.toContain(apiKey);
+  });
+
+  it("rejects a managed ciphertext moved to a different key reference", async () => {
+    const cookie = await adminLogin();
+    const sourceRef = "SOURCE_TEST_KEY";
+    const targetRef = "TARGET_TEST_KEY";
+    expect((await putRouteSecret(cookie, sourceRef, "source-managed-test-value")).status).toBe(200);
+    const raw = await env.CHAT_STORE.get(`${ROUTE_SECRET_PREFIX}${sourceRef}`);
+    await env.CHAT_STORE.put(`${ROUTE_SECRET_PREFIX}${targetRef}`, raw!);
+
+    const response = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "openai-chat",
+        baseUrl: "https://moved.example/v1",
+        apiKeyRef: targetRef,
+      }),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ error: "decrypt_failed" });
+
+    const listed = await apiRequest("/api/admin/route-secrets", cookie).then((item) => item.json()) as any;
+    expect(listed.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiKeyRef: targetRef, source: "managed", status: "unavailable" }),
+    ]));
+  });
+
+  it("reports missing or changed master keys without breaking Worker Secret fallback", async () => {
+    const cookie = await adminLogin();
+    const apiKeyRef = "MASTER_MISMATCH_TEST_KEY";
+    expect((await putRouteSecret(cookie, apiKeyRef, "master-mismatch-test-value")).status).toBe(200);
+    const withMasterKey = (masterKey: string | undefined) => new Proxy(env, {
+      get(target, property, receiver) {
+        if (property === "ROUTE_KEYS_MASTER_KEY") return masterKey;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const directAdminRequest = (path: string, customEnv: typeof env, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers);
+      headers.set("Cookie", cookie);
+      if (init.body) headers.set("Content-Type", "application/json");
+      return worker.fetch(new Request(`https://example.test${path}`, { ...init, headers }), customEnv);
+    };
+
+    const changedMaster = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)));
+    const unreadable = await directAdminRequest(
+      "/api/admin/route-models",
+      withMasterKey(changedMaster),
+      {
+        method: "POST",
+        body: JSON.stringify({
+          type: "openai-chat",
+          baseUrl: "https://master-mismatch.example/v1",
+          apiKeyRef,
+        }),
+      },
+    );
+    expect(unreadable.status).toBe(503);
+    await expect(unreadable.json()).resolves.toMatchObject({ error: "decrypt_failed" });
+
+    const missingMaster = withMasterKey(undefined);
+    const cannotWrite = await directAdminRequest(
+      "/api/admin/route-secrets/NEW_MASTER_TEST_KEY",
+      missingMaster,
+      { method: "PUT", body: JSON.stringify({ apiKey: "new-master-test-value" }) },
+    );
+    expect(cannotWrite.status).toBe(503);
+    await expect(cannotWrite.json()).resolves.toMatchObject({ error: "master_key_unavailable" });
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ id: "fallback-model" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const fallback = await directAdminRequest(
+      "/api/admin/route-models",
+      missingMaster,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          type: "openai-chat",
+          baseUrl: "https://worker-fallback.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        }),
+      },
+    );
+    expect(fallback.status).toBe(200);
+    expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer test-route-key");
+  });
+
+  it("prefers managed route keys over Worker Secrets and legacy route keys over managed keys", async () => {
+    const cookie = await adminLogin();
+    const managedValue = "managed-model-list-test-key";
+    expect((await putRouteSecret(cookie, "TEST_ROUTE_KEY", managedValue)).status).toBe(200);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        legacy: {
+          label: "Legacy",
+          type: "openai-chat",
+          baseUrl: "https://legacy-models.example/v1",
+          model: "legacy-model",
+          apiKey: "legacy-model-list-test-key",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      defaults: { defaultRoute: "legacy", allowedRoutes: ["legacy"] },
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ data: [{ id: "model-a" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const managed = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "openai-chat",
+        baseUrl: "https://managed-models.example/v1",
+        apiKeyRef: "TEST_ROUTE_KEY",
+      }),
+    });
+    expect(managed.status).toBe(200);
+    expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe(`Bearer ${managedValue}`);
+
+    const legacy = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        routeId: "legacy",
+        type: "openai-chat",
+        baseUrl: "https://legacy-models.example/v1",
+        apiKeyRef: "TEST_ROUTE_KEY",
+      }),
+    });
+    expect(legacy.status).toBe(200);
+    expect(new Headers(fetchSpy.mock.calls[1]?.[1]?.headers).get("Authorization")).toBe("Bearer legacy-model-list-test-key");
+  });
+
   it("fetches and normalizes models through the admin API", async () => {
     const cookie = await adminLogin();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
@@ -648,6 +904,112 @@ describe("Worker API", () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it("uses managed route keys for route access, manual health checks and chat requests", async () => {
+    const adminCookie = await adminLogin();
+    const apiKeyRef = "END_TO_END_TEST_KEY";
+    const managedKey = "managed-end-to-end-test-key";
+    expect((await putRouteSecret(adminCookie, apiKeyRef, managedKey)).status).toBe(200);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        managed: {
+          label: "Managed",
+          type: "openai-chat",
+          baseUrl: "https://managed-route.example/v1",
+          model: "managed-model",
+          apiKeyRef,
+        },
+      },
+      defaults: { defaultRoute: "managed", allowedRoutes: ["managed"] },
+    }));
+    let fetchCount = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      fetchCount += 1;
+      return fetchCount === 1
+        ? new Response(JSON.stringify({ choices: [{ message: { content: "391" } }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response('data: {"choices":[{"delta":{"content":"完成"}}]}\n\n', {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+    });
+
+    const health = await apiRequest("/api/admin/route-health", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeId: "managed" }),
+    });
+    expect(health.status).toBe(200);
+
+    const { cookie } = await login();
+    const session = await apiRequest("/api/session", cookie);
+    expect(session.status).toBe(200);
+    await expect(session.json()).resolves.toMatchObject({ routes: [{ id: "managed" }], defaultRoute: "managed" });
+
+    const chat = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId: "managed", messages: [{ role: "user", content: "完成一个简短任务" }] }),
+    });
+    expect(chat.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchSpy.mock.calls) {
+      expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${managedKey}`);
+    }
+  });
+
+  it("keeps user BYOK precedence and requiresUserKey blocking with a managed key present", async () => {
+    const adminCookie = await adminLogin();
+    const apiKeyRef = "BYOK_TEST_KEY";
+    expect((await putRouteSecret(adminCookie, apiKeyRef, "managed-byok-test-key")).status).toBe(200);
+    const label = `byok-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        byok: {
+          label: "BYOK",
+          type: "openai-chat",
+          baseUrl: "https://byok.example/v1",
+          model: "byok-model",
+          apiKeyRef,
+          requiresUserKey: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "byok",
+        allowedRoutes: ["byok"],
+        allowBringYourOwnKey: true,
+      },
+      users: { [label]: { allowBringYourOwnKey: true } },
+    }));
+    const { cookie } = await login(label);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("data: done\n\n", {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+
+    const missing = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId: "byok", messages: [{ role: "user", content: "执行 BYOK 测试" }] }),
+    });
+    expect(missing.status).toBe(400);
+    await expect(missing.json()).resolves.toMatchObject({ error: "user_api_key_required", routeId: "byok" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const supplied = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "byok",
+        userApiKey: "user-supplied-test-key",
+        messages: [{ role: "user", content: "执行 BYOK 测试" }],
+      }),
+    });
+    expect(supplied.status).toBe(200);
+    expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer user-supplied-test-key");
   });
 
   it("persists the latest route health result", async () => {

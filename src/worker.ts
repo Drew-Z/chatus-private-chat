@@ -93,6 +93,27 @@ type RouteAccess = {
   user: UserConfig;
 };
 
+type EncryptedRouteSecret = {
+  version: 1;
+  algorithm: "AES-GCM";
+  iv: string;
+  ciphertext: string;
+  updatedAt: string;
+};
+
+type RouteSecretSource = "managed" | "worker" | "legacy" | "missing";
+
+type RouteSecretMetadata = {
+  apiKeyRef: string;
+  source: RouteSecretSource;
+  status: "configured" | "unavailable" | "missing";
+  managed: boolean;
+  environmentFallback: boolean;
+  updatedAt?: string;
+  revision?: string;
+  message?: string;
+};
+
 type AnthropicContentBlock =
   | { type: "text"; text: string }
   | {
@@ -126,6 +147,7 @@ type Env = {
   DEFAULT_MAX_TOKENS?: string;
   BLOCKED_PROMPTS?: string;
   ADMIN_TOKEN?: string;
+  ROUTE_KEYS_MASTER_KEY?: string;
   [key: string]: unknown;
 };
 
@@ -150,6 +172,20 @@ const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
+const ROUTE_SECRET_PREFIX = "route-secret:";
+const ROUTE_SECRET_AAD_PREFIX = "chatus:route-secret:v1:";
+const ROUTE_SECRET_REF_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
+const MAX_ROUTE_SECRET_CHARS = 8_192;
+
+class RouteSecretError extends Error {
+  constructor(
+    readonly code: "master_key_unavailable" | "invalid_record" | "decrypt_failed",
+    message: string,
+  ) {
+    super(message);
+    this.name = "RouteSecretError";
+  }
+}
 
 type UsageResult =
   | { ok: true; remaining: number }
@@ -564,7 +600,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (url.pathname === "/api/session" && request.method === "GET") {
     const config = await loadAppConfig(env);
-    const access = getRouteAccess(config, session.label, env);
+    const access = await getRouteAccess(config, session.label, env);
     const [usage, routes] = await Promise.all([
       getUsage(env, session, access.user),
       Promise.all(access.routes.map((route) => withPublicRouteHealth(env, route))),
@@ -776,6 +812,19 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
   if (url.pathname === "/api/admin/config" && request.method === "PUT") {
     return handlePutAdminConfig(request, env);
   }
+
+  if (url.pathname === "/api/admin/route-secrets" && request.method === "GET") {
+    return handleGetAdminRouteSecrets(env);
+  }
+
+  const routeSecretRef = routeSecretRefFromAdminPath(url.pathname);
+  if (routeSecretRef && request.method === "PUT") {
+    return handlePutAdminRouteSecret(request, env, routeSecretRef);
+  }
+  if (routeSecretRef && request.method === "DELETE") {
+    return handleDeleteAdminRouteSecret(request, env, routeSecretRef);
+  }
+
   if (url.pathname === "/api/admin/users" && request.method === "POST") {
     return handleCreateAdminUser(request, env);
   }
@@ -888,6 +937,169 @@ async function configRevisionConflict(env: Env, expectedValue: unknown): Promise
     message: "配置已在其他标签页或设备更新，请刷新后重新编辑",
     currentRevision,
   }, 409);
+}
+
+function routeSecretRefFromAdminPath(pathname: string): string | null {
+  const prefix = "/api/admin/route-secrets/";
+  if (!pathname.startsWith(prefix)) return null;
+  try {
+    return decodeURIComponent(pathname.slice(prefix.length));
+  } catch {
+    return "";
+  }
+}
+
+async function handleGetAdminRouteSecrets(env: Env): Promise<Response> {
+  const config = await loadAppConfig(env);
+  const refs = new Set(
+    Object.values(config.routes)
+      .map((route) => route.apiKeyRef?.trim() || "")
+      .filter((ref) => ROUTE_SECRET_REF_PATTERN.test(ref)),
+  );
+  let cursor: string | undefined;
+  do {
+    const page = await env.CHAT_STORE.list({ prefix: ROUTE_SECRET_PREFIX, cursor, limit: 100 });
+    for (const key of page.keys) {
+      const encodedRef = key.name.slice(ROUTE_SECRET_PREFIX.length);
+      try {
+        const ref = decodeURIComponent(encodedRef);
+        if (ROUTE_SECRET_REF_PATTERN.test(ref)) refs.add(ref);
+      } catch {
+        // Invalid historical keys remain inaccessible and are not exposed by the admin API.
+      }
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+
+  const [masterKey, items] = await Promise.all([
+    inspectRouteMasterKey(env),
+    Promise.all([...refs].sort().map((ref) => inspectRouteSecret(env, ref))),
+  ]);
+  return jsonResponse({
+    masterKeyReady: masterKey.ready,
+    ...(masterKey.message ? { masterKeyMessage: masterKey.message } : {}),
+    items,
+  });
+}
+
+async function handlePutAdminRouteSecret(request: Request, env: Env, apiKeyRef: string): Promise<Response> {
+  if (!ROUTE_SECRET_REF_PATTERN.test(apiKeyRef)) {
+    return jsonResponse({
+      error: "invalid_api_key_ref",
+      message: "API Key Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
+    }, 400);
+  }
+
+  const body = await readJson<{ apiKey?: unknown; expectedRevision?: unknown }>(request);
+  const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+  if (!apiKey) {
+    return jsonResponse({ error: "api_key_required", message: "请输入要保存的线路密钥" }, 400);
+  }
+  if (apiKey.length > MAX_ROUTE_SECRET_CHARS) {
+    return jsonResponse({ error: "api_key_too_long", message: "线路密钥长度超出限制" }, 400);
+  }
+
+  const conflict = await routeSecretRevisionConflict(env, apiKeyRef, body.expectedRevision);
+  if (conflict) return conflict;
+
+  try {
+    const record = await encryptRouteSecret(env, apiKeyRef, apiKey);
+    await env.CHAT_STORE.put(routeSecretKey(apiKeyRef), JSON.stringify(record));
+    await appendAdminAudit(env, "route-secret.update", apiKeyRef);
+    return jsonResponse({ ok: true, item: await inspectRouteSecret(env, apiKeyRef) });
+  } catch (error) {
+    return routeSecretAdminErrorResponse(error);
+  }
+}
+
+async function handleDeleteAdminRouteSecret(request: Request, env: Env, apiKeyRef: string): Promise<Response> {
+  if (!ROUTE_SECRET_REF_PATTERN.test(apiKeyRef)) {
+    return jsonResponse({
+      error: "invalid_api_key_ref",
+      message: "API Key Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
+    }, 400);
+  }
+  const body = await readJson<{ expectedRevision?: unknown }>(request);
+  const conflict = await routeSecretRevisionConflict(env, apiKeyRef, body.expectedRevision);
+  if (conflict) return conflict;
+  await env.CHAT_STORE.delete(routeSecretKey(apiKeyRef));
+  await appendAdminAudit(env, "route-secret.delete", apiKeyRef);
+  return jsonResponse({ ok: true, item: await inspectRouteSecret(env, apiKeyRef) });
+}
+
+async function routeSecretRevisionConflict(
+  env: Env,
+  apiKeyRef: string,
+  expectedValue: unknown,
+): Promise<Response | null> {
+  const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
+  if (!expectedRevision) return null;
+  const raw = await env.CHAT_STORE.get(routeSecretKey(apiKeyRef));
+  const currentRevision = raw ? await secretFingerprint(raw) : "";
+  if (currentRevision === expectedRevision) return null;
+  return jsonResponse({
+    error: "route_secret_conflict",
+    message: "线路密钥已在其他标签页或设备更新，请刷新后重试",
+    currentRevision,
+  }, 409);
+}
+
+async function inspectRouteMasterKey(env: Env): Promise<{ ready: boolean; message?: string }> {
+  try {
+    await importRouteMasterKey(env);
+    return { ready: true };
+  } catch (error) {
+    return {
+      ready: false,
+      message: error instanceof RouteSecretError ? error.message : "线路密钥主密钥不可用",
+    };
+  }
+}
+
+async function inspectRouteSecret(env: Env, apiKeyRef: string): Promise<RouteSecretMetadata> {
+  const raw = await env.CHAT_STORE.get(routeSecretKey(apiKeyRef));
+  const environmentFallback = typeof env[apiKeyRef] === "string" && Boolean(String(env[apiKeyRef]).trim());
+  if (!raw) {
+    return {
+      apiKeyRef,
+      source: environmentFallback ? "worker" : "missing",
+      status: environmentFallback ? "configured" : "missing",
+      managed: false,
+      environmentFallback,
+    };
+  }
+
+  const revision = await secretFingerprint(raw);
+  try {
+    const record = parseEncryptedRouteSecret(raw);
+    await decryptRouteSecretRecord(env, apiKeyRef, record);
+    return {
+      apiKeyRef,
+      source: "managed",
+      status: "configured",
+      managed: true,
+      environmentFallback,
+      updatedAt: record.updatedAt,
+      revision,
+    };
+  } catch (error) {
+    return {
+      apiKeyRef,
+      source: "managed",
+      status: "unavailable",
+      managed: true,
+      environmentFallback,
+      revision,
+      message: error instanceof RouteSecretError ? error.message : "后台线路密钥不可用",
+    };
+  }
+}
+
+function routeSecretAdminErrorResponse(error: unknown): Response {
+  if (error instanceof RouteSecretError) {
+    return jsonResponse({ error: error.code, message: error.message }, 503);
+  }
+  return jsonResponse({ error: "route_secret_operation_failed", message: "线路密钥操作失败" }, 500);
 }
 
 async function handleGetAdminAccessCodes(env: Env): Promise<Response> {
@@ -1432,7 +1644,20 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
 }
 
 async function checkRouteHealth(env: Env, routeId: string, route: RouteConfig) {
-  const apiKey = resolveRouteKey(route, env, "");
+  let apiKey = "";
+  try {
+    apiKey = await resolveRouteKey(route, env, "");
+  } catch (error) {
+    const result = {
+      ok: false,
+      routeId,
+      error: error instanceof RouteSecretError ? error.code : "route_secret_unavailable",
+      message: error instanceof RouteSecretError ? error.message : "后台线路密钥不可用",
+      checkedAt: new Date().toISOString(),
+    };
+    await saveRouteHealth(env, routeId, result);
+    return result;
+  }
   if (!apiKey) {
     const result = {
       ok: false,
@@ -1500,7 +1725,9 @@ async function checkRouteHealth(env: Env, routeId: string, route: RouteConfig) {
 }
 
 function healthCheckStatus(error: unknown): number {
-  return error === "missing_key" ? 400 : 502;
+  if (error === "missing_key") return 400;
+  if (error === "master_key_unavailable" || error === "invalid_record" || error === "decrypt_failed") return 503;
+  return 502;
 }
 
 async function runScheduledRouteHealthChecks(env: Env): Promise<void> {
@@ -1601,7 +1828,12 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
     model: existing?.model || "model-list",
     apiKeyRef,
   };
-  const apiKey = resolveRouteKey(route, env, "");
+  let apiKey = "";
+  try {
+    apiKey = await resolveRouteKey(route, env, "");
+  } catch (error) {
+    return routeSecretAdminErrorResponse(error);
+  }
   if (!apiKey) {
     return jsonResponse(
       { error: "missing_key", message: "无法读取线路密钥，请检查 API Key Ref 是否对应 Worker Secret" },
@@ -1838,7 +2070,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
   }
 
   const config = await loadAppConfig(env);
-  const access = getRouteAccess(config, session.label, env);
+  const access = await getRouteAccess(config, session.label, env);
   if (!access.routes.length) {
     return jsonResponse({ error: "no_routes_available" }, 403);
   }
@@ -1912,7 +2144,17 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     const publicRoute = access.routes.find((item) => item.id === routeId);
     if (!route || !publicRoute) continue;
 
-    const key = resolveRouteKey(route, env, publicRoute.allowUserKey ? userApiKey : "");
+    let key = "";
+    try {
+      key = await resolveRouteKey(route, env, publicRoute.allowUserKey ? userApiKey : "");
+    } catch (error) {
+      lastError = {
+        routeId,
+        status: 500,
+        message: error instanceof RouteSecretError ? error.message : "route key is unavailable",
+      };
+      continue;
+    }
     if (!key) {
       if (publicRoute.requiresUserKey) {
         return jsonResponse({ error: "user_api_key_required", routeId }, 400);
@@ -2158,14 +2400,21 @@ function normalizeUserConfig(value: unknown): UserConfig {
   return output;
 }
 
-function getRouteAccess(config: AppConfig, label: string, env: Env): RouteAccess {
+async function getRouteAccess(config: AppConfig, label: string, env: Env): Promise<RouteAccess> {
   const user = getEffectiveUserConfig(config, label);
   const allowedIds = user.allowedRoutes?.length ? user.allowedRoutes : Object.keys(config.routes);
-  const routes = allowedIds
-    .map((id): PublicRoute | null => {
+  const routes = (await Promise.all(
+    allowedIds.map(async (id): Promise<PublicRoute | null> => {
       const route = config.routes[id];
       if (!route || route.enabled === false) return null;
-      const hasServerKey = !route.requiresUserKey && Boolean(resolveRouteKey(route, env, ""));
+      let hasServerKey = false;
+      if (!route.requiresUserKey) {
+        try {
+          hasServerKey = Boolean(await resolveRouteKey(route, env, ""));
+        } catch {
+          hasServerKey = false;
+        }
+      }
       const allowUserKey = Boolean(user.allowBringYourOwnKey && route.allowUserKey !== false);
       if (!hasServerKey && !allowUserKey) return null;
 
@@ -2178,8 +2427,8 @@ function getRouteAccess(config: AppConfig, label: string, env: Env): RouteAccess
         requiresUserKey: Boolean(route.requiresUserKey || !hasServerKey),
         supportsImages: route.supportsImages !== false,
       };
-    })
-    .filter((route): route is PublicRoute => Boolean(route));
+    }),
+  )).filter((route): route is PublicRoute => Boolean(route));
 
   const defaultRoute =
     user.defaultRoute && routes.some((route) => route.id === user.defaultRoute)
@@ -2201,14 +2450,154 @@ function buildRoutePlan(selectedRoute: string, config: AppConfig, access: RouteA
   return [...new Set(plan)];
 }
 
-function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): string {
+async function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): Promise<string> {
   if (userApiKey && route.allowUserKey !== false) return userApiKey;
   if (route.requiresUserKey) return "";
   if (route.apiKey) return route.apiKey;
-  if (route.apiKeyRef && typeof env[route.apiKeyRef] === "string") {
-    return String(env[route.apiKeyRef]);
+  const apiKeyRef = route.apiKeyRef?.trim() || "";
+  if (apiKeyRef && ROUTE_SECRET_REF_PATTERN.test(apiKeyRef)) {
+    const managed = await loadManagedRouteSecret(env, apiKeyRef);
+    if (managed !== null) return managed;
+  }
+  if (apiKeyRef && typeof env[apiKeyRef] === "string") {
+    return String(env[apiKeyRef]);
   }
   return "";
+}
+
+async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<string | null> {
+  const raw = await env.CHAT_STORE.get(routeSecretKey(apiKeyRef));
+  if (!raw) return null;
+  return decryptRouteSecretRecord(env, apiKeyRef, parseEncryptedRouteSecret(raw));
+}
+
+async function encryptRouteSecret(env: Env, apiKeyRef: string, apiKey: string): Promise<EncryptedRouteSecret> {
+  const key = await importRouteMasterKey(env);
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const plaintext = new TextEncoder().encode(apiKey);
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv,
+      additionalData: routeSecretAdditionalData(apiKeyRef),
+    },
+    key,
+    plaintext,
+  );
+  return {
+    version: 1,
+    algorithm: "AES-GCM",
+    iv: bytesToBase64(iv),
+    ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function decryptRouteSecretRecord(
+  env: Env,
+  apiKeyRef: string,
+  record: EncryptedRouteSecret,
+): Promise<string> {
+  const key = await importRouteMasterKey(env);
+  try {
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(record.iv),
+        additionalData: routeSecretAdditionalData(apiKeyRef),
+      },
+      key,
+      base64ToBytes(record.ciphertext),
+    );
+    const apiKey = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(plaintext);
+    if (!apiKey) throw new Error("empty route secret");
+    return apiKey;
+  } catch (error) {
+    if (error instanceof RouteSecretError) throw error;
+    throw new RouteSecretError(
+      "decrypt_failed",
+      "后台线路密钥无法解密；如主密钥已轮换，请重新录入该密钥",
+    );
+  }
+}
+
+async function importRouteMasterKey(env: Env): Promise<CryptoKey> {
+  const encoded = env.ROUTE_KEYS_MASTER_KEY?.trim() || "";
+  if (!encoded) {
+    throw new RouteSecretError(
+      "master_key_unavailable",
+      "未配置 ROUTE_KEYS_MASTER_KEY，暂时无法保存后台线路密钥",
+    );
+  }
+
+  let raw: Uint8Array;
+  try {
+    raw = base64ToBytes(encoded);
+  } catch {
+    throw new RouteSecretError(
+      "master_key_unavailable",
+      "ROUTE_KEYS_MASTER_KEY 格式无效，应为 32 字节随机值的 Base64 编码",
+    );
+  }
+  if (raw.byteLength !== 32) {
+    throw new RouteSecretError(
+      "master_key_unavailable",
+      "ROUTE_KEYS_MASTER_KEY 长度无效，应为 32 字节随机值的 Base64 编码",
+    );
+  }
+
+  try {
+    return await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  } catch {
+    throw new RouteSecretError("master_key_unavailable", "ROUTE_KEYS_MASTER_KEY 无法导入");
+  }
+}
+
+function parseEncryptedRouteSecret(raw: string): EncryptedRouteSecret {
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      !isRecord(parsed) ||
+      parsed.version !== 1 ||
+      parsed.algorithm !== "AES-GCM" ||
+      typeof parsed.iv !== "string" ||
+      typeof parsed.ciphertext !== "string" ||
+      typeof parsed.updatedAt !== "string" ||
+      !Number.isFinite(Date.parse(parsed.updatedAt)) ||
+      base64ToBytes(parsed.iv).byteLength !== 12 ||
+      base64ToBytes(parsed.ciphertext).byteLength < 16
+    ) {
+      throw new Error("invalid encrypted route secret");
+    }
+    return parsed as EncryptedRouteSecret;
+  } catch {
+    throw new RouteSecretError("invalid_record", "后台线路密钥记录损坏，请删除后重新录入");
+  }
+}
+
+function routeSecretAdditionalData(apiKeyRef: string): Uint8Array {
+  return new TextEncoder().encode(`${ROUTE_SECRET_AAD_PREFIX}${apiKeyRef}`);
+}
+
+function routeSecretKey(apiKeyRef: string): string {
+  return `${ROUTE_SECRET_PREFIX}${encodeURIComponent(apiKeyRef)}`;
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    throw new Error("invalid base64");
+  }
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function bytesToBase64(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 async function buildMessagesWithSystem(
@@ -2266,7 +2655,7 @@ async function completeWithUserRoute(
   | { ok: false; error: string; message: string; status: number; routeId?: string }
 > {
   const config = await loadAppConfig(env);
-  const access = getRouteAccess(config, session.label, env);
+  const access = await getRouteAccess(config, session.label, env);
   if (!access.routes.length) {
     return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
   }
@@ -2294,7 +2683,14 @@ async function completeWithUserRoute(
     const publicRoute = access.routes.find((item) => item.id === routeId);
     if (!route || !publicRoute) continue;
 
-    const key = resolveRouteKey(route, env, publicRoute.allowUserKey ? userApiKey : "");
+    let key = "";
+    try {
+      key = await resolveRouteKey(route, env, publicRoute.allowUserKey ? userApiKey : "");
+    } catch (error) {
+      lastError = error instanceof RouteSecretError ? error.message : "route key is unavailable";
+      lastRouteId = routeId;
+      continue;
+    }
     if (!key) {
       if (publicRoute.requiresUserKey) {
         return {
