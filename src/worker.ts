@@ -1246,7 +1246,7 @@ async function handleSessionSummary(request: Request, env: Env, session: Session
     messages: prompt,
     maxTokens: 700,
     temperature: 0.2,
-    consumeQuota: true,
+    consumeQuota: false,
   });
   if (!result.ok) {
     return jsonResponse({ error: result.error, message: result.message, routeId: result.routeId }, result.status);

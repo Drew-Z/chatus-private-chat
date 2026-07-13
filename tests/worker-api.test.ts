@@ -532,6 +532,46 @@ describe("Worker API", () => {
     await expect(response.json()).resolves.toMatchObject({ error: "forbidden" });
   });
 
+  it("does not charge the user message quota for automatic session summaries", async () => {
+    const routeConfig = {
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://summary.example/v1",
+          model: "summary-model",
+          apiKey: "summary-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"], dailyMessageLimit: 5 },
+    };
+    const adminCookie = await adminLogin();
+    const currentConfig = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json());
+    const savedConfig = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: routeConfig, expectedRevision: currentConfig.revision }),
+    });
+    expect(savedConfig.status).toBe(200);
+    const { cookie } = await login();
+    const before = await apiRequest("/api/session", cookie).then((response) => response.json());
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "用户正在测试长期会话摘要。" } }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    const response = await apiRequest("/api/session-summary", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "请持续记住这个测试任务" }] }),
+    });
+    const summaryPayload = await response.json();
+    expect(response.status, JSON.stringify(summaryPayload)).toBe(200);
+    expect(summaryPayload).toMatchObject({ summary: "用户正在测试长期会话摘要。" });
+    const after = await apiRequest("/api/session", cookie).then((sessionResponse) => sessionResponse.json());
+    expect(after.usage.remaining).toBe(before.usage.remaining);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
   it("fetches and normalizes models through the admin API", async () => {
     const cookie = await adminLogin();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
