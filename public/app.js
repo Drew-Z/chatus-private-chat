@@ -2079,21 +2079,50 @@ async function editUserMessage(index) {
   if (offlineMode) return;
   const message = messages[index];
   if (!message || message.role !== "user") return;
+  if (sessions.length >= MAX_SESSIONS) {
+    return showStatusToast(`最多保留 ${MAX_SESSIONS} 个会话，请先删除一个会话再编辑历史消息`);
+  }
   const next = await promptAction({
     title: "编辑消息",
-    description: "保存后将从这条消息重新生成后续回答。",
+    description: "将创建新的编辑分支并重新生成回答，原会话保持不变。",
     value: extractText(message.content),
-    confirmLabel: "保存并重发",
+    confirmLabel: "创建分支并重发",
     rows: 5,
   });
   if (next === null) return;
+  if (!next.trim()) return showStatusToast("编辑后的消息不能为空");
+  const source = getActiveSession();
   const images = extractImages(message.content).map((url, i) => ({ name: `image-${i + 1}`, url }));
-  messages = messages.slice(0, index);
-  messages.push({ id: createId(), role: "user", content: buildUserContent(next.trim(), images), createdAt: Date.now() });
+  const now = Date.now();
+  const editedMessages = messages.slice(0, index).map((item) => normalizeMessage(structuredClone(item)));
+  editedMessages.push({ id: createId(), role: "user", content: buildUserContent(next.trim(), images), createdAt: now });
+  const baseTitle = source.title && source.title !== "新会话" ? source.title : deriveSessionTitle(editedMessages);
+  const branch = {
+    id: createId(),
+    title: `${baseTitle.replace(/ · 编辑$/, "").slice(0, 68)} · 编辑`,
+    createdAt: now,
+    updatedAt: now,
+    summary: "",
+    summaryUntil: 0,
+    pinned: false,
+    routeId: source.routeId || selectedRouteId,
+    messages: editedMessages,
+  };
+  sessions = [branch, ...sessions].sort(compareSessions);
+  activeSessionId = branch.id;
+  messages = branch.messages;
+  attachments = [];
+  localStorage.setItem(activeSessionStorageKey(), branch.id);
+  restoreSessionRoute(branch);
+  restoreActiveDraft();
   const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
+  renderAttachments();
   renderMessages(true);
+  updateChatTitle();
+  closeSidebar();
+  showStatusToast("已创建编辑分支，原会话保持不变");
   streamChat(assistantMessage).then(() => maybeRefreshSummary());
 }
 

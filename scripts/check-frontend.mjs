@@ -66,6 +66,7 @@ assert(chatScript.includes("restoreSessionRoute(session)"), "app.js: switching c
 assert(chatScript.includes("active.routeId = routeId"), "app.js: model changes must persist on the active chat");
 assert(chatScript.includes("branchConversationAt(index)"), "app.js: messages must support non-destructive conversation branching");
 assert(chatScript.includes("原会话保持不变"), "app.js: branching must explain that the source chat is preserved");
+assert(chatScript.includes("已创建编辑分支"), "app.js: editing history must preserve the original chat");
 assert(chatScript.includes("commitPendingSessionDeletion"), "app.js: cloud chat deletion must be delayed for undo");
 assert(chatScript.includes("undoPendingSessionDeletion"), "app.js: deleted chats must be recoverable during the undo window");
 assert(chatScript.includes("expectedUpdatedAt="), "app.js: chat deletion must not remove a newer cloud version");
