@@ -385,6 +385,7 @@ export class UserState extends DurableObject<Env> {
       summaryUntil: chat.summaryUntil,
       pinned: chat.pinned,
       routeId: chat.routeId,
+      parentChatId: chat.parentChatId,
       messages: chat.messages,
     });
     this.ctx.storage.sql.exec(
@@ -1515,6 +1516,7 @@ type CloudChat = {
   summaryUntil: number;
   pinned: boolean;
   routeId?: string;
+  parentChatId?: string;
   messages: ChatMessage[];
 };
 
@@ -1673,6 +1675,7 @@ function summarizeChat(chat: CloudChat) {
     summaryUntil: chat.summaryUntil,
     pinned: chat.pinned,
     routeId: chat.routeId,
+    parentChatId: chat.parentChatId,
     messageCount: chat.messages.length,
   };
 }
@@ -1693,6 +1696,7 @@ function normalizeCloudChat(value: unknown): CloudChat | null {
   const summaryUntil = Number.isFinite(value.summaryUntil) ? Number(value.summaryUntil) : 0;
   const pinned = value.pinned === true;
   const routeId = typeof value.routeId === "string" ? value.routeId.trim().slice(0, 80) : undefined;
+  const parentChatId = typeof value.parentChatId === "string" ? value.parentChatId.trim().slice(0, 80) : undefined;
 
   return {
     id,
@@ -1703,6 +1707,7 @@ function normalizeCloudChat(value: unknown): CloudChat | null {
     summaryUntil,
     pinned,
     routeId,
+    parentChatId,
     messages,
   };
 }

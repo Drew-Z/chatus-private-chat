@@ -22,12 +22,13 @@ describe("UserState", () => {
       summary: "",
       summaryUntil: 0,
       routeId: "line-a",
+      parentChatId: "chat-parent",
       messages: [{ role: "user" as const, content: "hello" }],
       serializedBytes: 200,
     };
 
     expect(await state.upsertChat({ ...base, updatedAt: 20 })).toEqual({ accepted: true });
     expect(await state.upsertChat({ ...base, title: "older", updatedAt: 10 })).toEqual({ accepted: false });
-    expect(await state.listChats()).toMatchObject([{ id: "chat-1", title: "first", updatedAt: 20, routeId: "line-a" }]);
+    expect(await state.listChats()).toMatchObject([{ id: "chat-1", title: "first", updatedAt: 20, routeId: "line-a", parentChatId: "chat-parent" }]);
   });
 });

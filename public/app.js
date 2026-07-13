@@ -42,6 +42,7 @@ const sidebarBackdrop = document.querySelector("#sidebarBackdrop");
 const openSidebarButton = document.querySelector("#openSidebarButton");
 const closeSidebarButton = document.querySelector("#closeSidebarButton");
 const chatTitle = document.querySelector("#chatTitle");
+const branchOriginButton = document.querySelector("#branchOriginButton");
 const mobileTitle = document.querySelector("#mobileTitle");
 const dropHint = document.querySelector("#dropHint");
 const composerCount = document.querySelector("#composerCount");
@@ -229,6 +230,13 @@ clearButton.addEventListener("click", async () => {
 
 document.querySelector("#exportButton")?.addEventListener("click", () => exportActiveSession());
 exportAllButton?.addEventListener("click", () => exportAllSessions());
+branchOriginButton?.addEventListener("click", () => {
+  const parentId = getActiveSession().parentChatId;
+  if (!parentId || !sessions.some((session) => session.id === parentId)) {
+    return showStatusToast("原会话已删除或不在当前会话列表中");
+  }
+  activateSession(parentId);
+});
 importAllButton?.addEventListener("click", () => importAllInput?.click());
 importAllInput?.addEventListener("change", () => importSessionBackup());
 clearOfflineDataButton?.addEventListener("click", () => clearOfflineData());
@@ -966,6 +974,7 @@ function normalizeSessions(input) {
       summaryUntil: Number.isFinite(item.summaryUntil) ? item.summaryUntil : 0,
       pinned: item.pinned === true,
       routeId: typeof item.routeId === "string" ? item.routeId : "",
+      parentChatId: typeof item.parentChatId === "string" ? item.parentChatId : "",
       messages: Array.isArray(item.messages) ? item.messages.slice(-MAX_STORED_MESSAGES).map(normalizeMessage) : [],
     }))
     .sort(compareSessions)
@@ -1007,6 +1016,7 @@ function createSession(initialMessages = []) {
     summaryUntil: 0,
     pinned: false,
     routeId: selectedRouteId,
+    parentChatId: "",
     messages: trimmedMessages,
   };
 }
@@ -2005,6 +2015,7 @@ function branchConversationAt(index) {
     summaryUntil: 0,
     pinned: false,
     routeId: source.routeId || selectedRouteId,
+    parentChatId: source.id,
     messages: branchMessages,
   };
   sessions = [branch, ...sessions].sort(compareSessions);
@@ -2106,6 +2117,7 @@ async function editUserMessage(index) {
     summaryUntil: 0,
     pinned: false,
     routeId: source.routeId || selectedRouteId,
+    parentChatId: source.id,
     messages: editedMessages,
   };
   sessions = [branch, ...sessions].sort(compareSessions);
@@ -2211,6 +2223,7 @@ function createResponseBranch(endIndex, suffix) {
     summaryUntil: 0,
     pinned: false,
     routeId: source.routeId || selectedRouteId,
+    parentChatId: source.id,
     messages: branchMessages,
   };
   sessions = [branch, ...sessions].sort(compareSessions);
@@ -2396,9 +2409,11 @@ function updateComposerMeta() {
   composerCount.textContent = attach ? `${textLen} 字 · ${attach} 图` : textLen ? `${textLen} 字` : "";
 }
 function updateChatTitle() {
-  const title = getActiveSession().title || "聊天";
+  const active = getActiveSession();
+  const title = active.title || "聊天";
   if (chatTitle) chatTitle.textContent = title;
   if (mobileTitle) mobileTitle.textContent = title;
+  if (branchOriginButton) branchOriginButton.hidden = !active.parentChatId;
 }
 function formatMessageTime(value) {
   const date = new Date(value);
@@ -2453,6 +2468,7 @@ function exportAllSessions() {
       summaryUntil: Number(session.summaryUntil) || 0,
       pinned: Boolean(session.pinned),
       routeId: session.routeId || "",
+      parentChatId: session.parentChatId || "",
       messages: session.messages.filter((message) => message.role !== "error"),
     })),
   };
@@ -2531,6 +2547,7 @@ function normalizeImportedSessions(input) {
       updatedAt: Number.isFinite(updatedAt) ? updatedAt : Number.isFinite(createdAt) ? createdAt : Date.now(),
       summaryUntil: Number.isFinite(item.summaryUntil) ? Number(item.summaryUntil) : 0,
       routeId: typeof item.routeId === "string" ? item.routeId : "",
+      parentChatId: typeof item.parentChatId === "string" ? item.parentChatId : "",
     };
   }).filter(Boolean);
   return normalizeSessions(prepared);
