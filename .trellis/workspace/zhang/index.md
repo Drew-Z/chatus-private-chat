@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-07-13
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~139 | Active |
+| `journal-1.md` | ~172 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-07-13 | Clarify filtered model suggestions | `1b7e597` | `main` |
 | 4 | 2026-07-13 | Encrypted route key management | `c046cf2` | `main` |
 | 3 | 2026-07-13 | Document Trellis Git tracking policy | `74518c3` | `main` |
 | 2 | 2026-07-13 | Complete frontend guideline bootstrap | `3cdf5d6` | `main` |

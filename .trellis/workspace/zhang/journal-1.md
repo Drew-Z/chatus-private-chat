@@ -137,3 +137,36 @@ Added admin-managed AES-GCM route keys, unified asynchronous key resolution acro
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Clarify filtered model suggestions
+
+**Date**: 2026-07-13
+**Task**: Clarify filtered model suggestions
+**Branch**: `main`
+
+### Summary
+
+Explained native datalist filtering when the fetched model total exceeds visible suggestions, added a frontend regression assertion, and documented the browser behavior.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1b7e597` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
