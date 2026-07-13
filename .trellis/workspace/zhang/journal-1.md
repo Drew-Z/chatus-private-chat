@@ -104,3 +104,36 @@ Documented the shared-versus-local Trellis Git boundary, added the project instr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Encrypted route key management
+
+**Date**: 2026-07-13
+**Task**: Encrypted route key management
+**Branch**: `main`
+
+### Summary
+
+Added admin-managed AES-GCM route keys, unified asynchronous key resolution across model listing, chat and health checks, added UI and regression coverage, and documented GitHub Actions setup and rotation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c046cf2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
