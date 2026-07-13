@@ -2365,7 +2365,9 @@ function exportActiveSession() {
 function exportAllSessions() {
   const payload = {
     product: "Chatus",
+    formatVersion: 2,
     exportedAt: new Date().toISOString(),
+    release: clientRelease?.commit || "",
     user: currentUser,
     displayName: currentDisplayName,
     conversations: sessions.map((session) => ({
@@ -2374,7 +2376,9 @@ function exportAllSessions() {
       createdAt: new Date(session.createdAt).toISOString(),
       updatedAt: new Date(session.updatedAt).toISOString(),
       summary: session.summary || "",
+      summaryUntil: Number(session.summaryUntil) || 0,
       pinned: Boolean(session.pinned),
+      routeId: session.routeId || "",
       messages: session.messages.filter((message) => message.role !== "error"),
     })),
   };
@@ -2391,6 +2395,9 @@ async function importSessionBackup() {
   try {
     const payload = JSON.parse(await file.text());
     if (payload?.product !== "Chatus" || !Array.isArray(payload.conversations)) throw new Error("invalid_backup");
+    const formatVersion = Number(payload.formatVersion || 1);
+    if (!Number.isInteger(formatVersion) || formatVersion < 1) throw new Error("invalid_backup");
+    if (formatVersion > 2) throw new Error("unsupported_backup_version");
     if (payload.conversations.length > MAX_SESSIONS) throw new Error("backup_session_limit");
     const imported = normalizeImportedSessions(payload.conversations);
     if (!imported.length) throw new Error("empty_backup");
@@ -2429,9 +2436,11 @@ async function importSessionBackup() {
     const capacityError = error.message === "backup_session_limit" || error.message === "merged_session_limit";
     showStatusToast(known
       ? "这不是有效的 Chatus 对话备份"
-      : capacityError
-        ? `导入后会超过 ${MAX_SESSIONS} 个会话，请先删除部分会话`
-        : error.message || "导入失败");
+      : error.message === "unsupported_backup_version"
+        ? "该备份来自更新版本的 Chatus，请更新页面后再导入"
+        : capacityError
+          ? `导入后会超过 ${MAX_SESSIONS} 个会话，请先删除部分会话`
+          : error.message || "导入失败");
   } finally {
     importAllButton.disabled = false;
   }
@@ -2446,6 +2455,8 @@ function normalizeImportedSessions(input) {
       id: typeof item.id === "string" && item.id ? item.id : createId(),
       createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
       updatedAt: Number.isFinite(updatedAt) ? updatedAt : Number.isFinite(createdAt) ? createdAt : Date.now(),
+      summaryUntil: Number.isFinite(item.summaryUntil) ? Number(item.summaryUntil) : 0,
+      routeId: typeof item.routeId === "string" ? item.routeId : "",
     };
   }).filter(Boolean);
   return normalizeSessions(prepared);

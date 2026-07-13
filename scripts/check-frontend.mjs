@@ -71,6 +71,9 @@ assert(chatScript.includes("undoPendingSessionDeletion"), "app.js: deleted chats
 assert(chatScript.includes("已切换到空白会话"), "app.js: new chat should reuse an existing blank session");
 assert(chatScript.includes("merged_session_limit"), "app.js: imports must not silently evict existing chats");
 assert(chatScript.includes("expectedRevision: memoryRevision"), "app.js: memory saves must reject stale editors");
+assert(chatScript.includes("formatVersion: 2"), "app.js: full backups need an explicit schema version");
+assert(chatScript.includes("unsupported_backup_version"), "app.js: newer backup formats must be rejected safely");
+assert(chatScript.includes("routeId: session.routeId"), "app.js: backups must preserve each chat model");
 assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
 assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: login throttling needs a retry countdown");
 assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily rate limits must remain distinct");
