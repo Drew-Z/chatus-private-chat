@@ -3245,6 +3245,9 @@ function securityHeaders(init: HeadersInit = {}): Headers {
   headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
+  headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  headers.set("Cross-Origin-Resource-Policy", "same-origin");
+  headers.set("Origin-Agent-Cluster", "?1");
   headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
   headers.set(
     "Content-Security-Policy",

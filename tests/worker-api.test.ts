@@ -361,6 +361,9 @@ describe("Worker API", () => {
     expect(assetResponse.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(assetResponse.headers.get("Strict-Transport-Security")).toBe("max-age=31536000; includeSubDomains");
     expect(assetResponse.headers.get("Referrer-Policy")).toBe("no-referrer");
+    expect(assetResponse.headers.get("Cross-Origin-Opener-Policy")).toBe("same-origin");
+    expect(assetResponse.headers.get("Cross-Origin-Resource-Policy")).toBe("same-origin");
+    expect(assetResponse.headers.get("Origin-Agent-Cluster")).toBe("?1");
     expect(assetResponse.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/i);
 
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "security-user:test-access-code");
