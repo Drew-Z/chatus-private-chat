@@ -2680,19 +2680,17 @@ async function deleteAllUserData() {
     localStorage.removeItem(memoryStorageKey());
     localStorage.removeItem(SESSION_SNAPSHOT_KEY);
     clearUserDrafts(currentUser);
-    sessions = [createSession()];
-    activeSessionId = sessions[0].id;
-    messages = sessions[0].messages;
-    restoreActiveDraft();
+    sessions = [];
+    activeSessionId = "";
+    messages = [];
     memoryInput.value = "";
     memoryRevision = "";
     memoryStatus.textContent = "暂无长期记忆";
-    saveSessionsLocalOnly();
-    renderChatList();
-    renderMessages(true);
-    updateChatTitle();
     settingsDialog?.close();
-    showStatusToast("全部对话与长期记忆已删除");
+    currentUser = "";
+    currentDisplayName = "";
+    showLogin();
+    loginStatus.textContent = "全部数据已永久删除，所有设备均已退出";
   } catch {
     showStatusToast("删除失败，请稍后重试");
   } finally {

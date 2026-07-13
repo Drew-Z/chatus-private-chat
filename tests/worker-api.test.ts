@@ -517,7 +517,7 @@ describe("Worker API", () => {
   });
 
   it("deletes all user conversations and long-term memory", async () => {
-    const { cookie } = await login();
+    const { cookie, label } = await login();
     await apiRequest("/api/memory", cookie, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -531,8 +531,19 @@ describe("Worker API", () => {
 
     const remove = await apiRequest("/api/user-data", cookie, { method: "DELETE" });
     expect(remove.status).toBe(200);
-    await expect(apiRequest("/api/chats", cookie).then((response) => response.json())).resolves.toMatchObject({ chats: [] });
-    await expect(apiRequest("/api/memory", cookie).then((response) => response.json())).resolves.toMatchObject({ memory: "" });
+    expect(remove.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    expect((await apiRequest("/api/chats", cookie)).status).toBe(401);
+    expect((await apiRequest("/api/memory", cookie)).status).toBe(401);
+
+    const next = await login(label);
+    await expect(apiRequest("/api/chats", next.cookie).then((response) => response.json())).resolves.toMatchObject({ chats: [] });
+    await expect(apiRequest("/api/memory", next.cookie).then((response) => response.json())).resolves.toMatchObject({ memory: "" });
+    const staleUpload = await apiRequest("/api/chats", next.cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat: { id: "delete-me", title: "旧设备副本", createdAt: 10, updatedAt: 20, messages: [] } }),
+    });
+    await expect(staleUpload.json()).resolves.toMatchObject({ accepted: false, currentChat: null, chats: [] });
   });
 
   it("rejects auxiliary model calls without the web client marker", async () => {

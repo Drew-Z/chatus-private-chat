@@ -88,6 +88,7 @@ assert(chatScript.includes("cloudSaveQueue.set(chat.id, chat)"), "app.js: concur
 assert(chatScript.includes("cloudSaveTimers.set(chat.id, timer)"), "app.js: save debouncing must be isolated per chat");
 assert(chatScript.includes("deletedSessionIds.has(chat.id)"), "app.js: deleted chats must not re-enter the cloud save queue");
 assert(chatScript.includes("cancelQueuedCloudSave(id)"), "app.js: deleting a chat must cancel its queued saves");
+assert(chatScript.includes("所有设备均已退出"), "app.js: deleting all data must disclose account-wide session revocation");
 assert(chatScript.includes("已恢复未保存修改"), "app.js: restored memory drafts need visible status");
 assert(chatScript.includes("formatVersion: 3"), "app.js: full backups need the current schema version");
 assert(chatScript.includes("unsupported_backup_version"), "app.js: newer backup formats must be rejected safely");

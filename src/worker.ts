@@ -206,6 +206,10 @@ export class UserState extends DurableObject<Env> {
           id TEXT PRIMARY KEY,
           deleted_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS user_state (
+          key TEXT PRIMARY KEY,
+          value INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS chats_updated_at ON chats(updated_at DESC);
       `);
     });
@@ -339,6 +343,10 @@ export class UserState extends DurableObject<Env> {
 
   async upsertChat(chat: StoredChat): Promise<{ accepted: boolean }> {
     if (chat.serializedBytes > MAX_CLOUD_SESSION_BYTES) return { accepted: false };
+    const purgeAt = this.ctx.storage.sql
+      .exec<{ value: number }>("SELECT value FROM user_state WHERE key = 'chats_purged_at'")
+      .toArray()[0]?.value || 0;
+    if (chat.updatedAt <= purgeAt) return { accepted: false };
     const tombstone = this.ctx.storage.sql
       .exec<{ deleted_at: number }>("SELECT deleted_at FROM deleted_chats WHERE id = ?", chat.id)
       .toArray()[0];
@@ -359,6 +367,7 @@ export class UserState extends DurableObject<Env> {
   async replaceChats(chats: StoredChat[]): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM chats");
     this.ctx.storage.sql.exec("DELETE FROM deleted_chats");
+    this.ctx.storage.sql.exec("DELETE FROM user_state WHERE key = 'chats_purged_at'");
     for (const chat of chats.slice(0, MAX_CLOUD_SESSIONS)) this.writeChat(chat);
   }
 
@@ -367,6 +376,18 @@ export class UserState extends DurableObject<Env> {
     if (count > 0) return false;
     for (const chat of chats.slice(0, MAX_CLOUD_SESSIONS)) this.writeChat(chat);
     return true;
+  }
+
+  async purgeUserData(nowMs = Date.now()): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM chats");
+    this.ctx.storage.sql.exec("DELETE FROM deleted_chats");
+    this.ctx.storage.sql.exec("DELETE FROM usage");
+    this.ctx.storage.sql.exec("DELETE FROM bursts");
+    this.ctx.storage.sql.exec("DELETE FROM metrics");
+    this.ctx.storage.sql.exec(
+      "INSERT INTO user_state(key, value) VALUES ('chats_purged_at', ?) ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
+      nowMs,
+    );
   }
 
   async deleteChat(id: string, expectedUpdatedAt = 0): Promise<{ deleted: boolean; conflict: boolean; currentChat?: CloudChat }> {
@@ -606,13 +627,21 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   if (url.pathname === "/api/user-data" && request.method === "DELETE") {
-    await getUserState(env, session.label).replaceChats([]);
-    const feedback = await loadFeedback(env);
+    const [revoked, feedback] = await Promise.all([
+      revokeSessionsByLabel(env, session.label),
+      loadFeedback(env),
+      getUserState(env, session.label).purgeUserData(),
+    ]);
     await Promise.all([
       env.CHAT_STORE.delete(memoryKey(session.label)),
       env.CHAT_STORE.put(FEEDBACK_KEY, JSON.stringify(feedback.filter((entry) => entry.label !== session.label))),
+      ...Array.from({ length: METRICS_DAYS }, (_, index) =>
+        env.CHAT_STORE.delete(usageKey(session.label, utcDayString(index))),
+      ),
     ]);
-    return jsonResponse({ ok: true });
+    return jsonResponse({ ok: true, revoked }, 200, {
+      "Set-Cookie": buildSessionCookie("", 0, url.protocol === "https:"),
+    });
   }
 
   return jsonResponse({ error: "not_found" }, 404);
