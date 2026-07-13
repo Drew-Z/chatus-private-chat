@@ -500,6 +500,20 @@ describe("Worker API", () => {
     const remove = await apiRequest("/api/chats?id=chat-1&expectedUpdatedAt=21", cookie, { method: "DELETE" });
     expect(remove.status).toBe(200);
     await expect(remove.json()).resolves.toMatchObject({ deleted: true, chats: [] });
+
+    const delayedSave = await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat: { ...chat, title: "延迟上传", updatedAt: 21 } }),
+    });
+    await expect(delayedSave.json()).resolves.toMatchObject({ accepted: false, currentChat: null, chats: [] });
+
+    const staleMerge = await apiRequest("/api/chats/migrate", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "merge", chats: [{ ...chat, title: "旧设备迁移", updatedAt: 21 }] }),
+    });
+    await expect(staleMerge.json()).resolves.toMatchObject({ mode: "merge", chats: [] });
   });
 
   it("deletes all user conversations and long-term memory", async () => {

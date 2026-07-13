@@ -202,6 +202,10 @@ export class UserState extends DurableObject<Env> {
           message_count INTEGER NOT NULL,
           content TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS deleted_chats (
+          id TEXT PRIMARY KEY,
+          deleted_at INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS chats_updated_at ON chats(updated_at DESC);
       `);
     });
@@ -335,6 +339,11 @@ export class UserState extends DurableObject<Env> {
 
   async upsertChat(chat: StoredChat): Promise<{ accepted: boolean }> {
     if (chat.serializedBytes > MAX_CLOUD_SESSION_BYTES) return { accepted: false };
+    const tombstone = this.ctx.storage.sql
+      .exec<{ deleted_at: number }>("SELECT deleted_at FROM deleted_chats WHERE id = ?", chat.id)
+      .toArray()[0];
+    if (tombstone && chat.updatedAt <= tombstone.deleted_at) return { accepted: false };
+    if (tombstone) this.ctx.storage.sql.exec("DELETE FROM deleted_chats WHERE id = ?", chat.id);
     const existing = this.ctx.storage.sql
       .exec<{ updated_at: number }>("SELECT updated_at FROM chats WHERE id = ?", chat.id)
       .toArray()[0];
@@ -349,6 +358,7 @@ export class UserState extends DurableObject<Env> {
 
   async replaceChats(chats: StoredChat[]): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM chats");
+    this.ctx.storage.sql.exec("DELETE FROM deleted_chats");
     for (const chat of chats.slice(0, MAX_CLOUD_SESSIONS)) this.writeChat(chat);
   }
 
@@ -363,7 +373,10 @@ export class UserState extends DurableObject<Env> {
     const row = this.ctx.storage.sql
       .exec<{ updated_at: number; content: string }>("SELECT updated_at, content FROM chats WHERE id = ?", id)
       .toArray()[0];
-    if (!row) return { deleted: false, conflict: false };
+    if (!row) {
+      this.writeDeletionTombstone(id, Date.now());
+      return { deleted: false, conflict: false };
+    }
     if (expectedUpdatedAt > 0 && row.updated_at > expectedUpdatedAt) {
       try {
         const currentChat = normalizeCloudChat(JSON.parse(row.content));
@@ -373,7 +386,20 @@ export class UserState extends DurableObject<Env> {
       }
     }
     this.ctx.storage.sql.exec("DELETE FROM chats WHERE id = ?", id);
+    this.writeDeletionTombstone(id, Math.max(Date.now(), row.updated_at));
     return { deleted: true, conflict: false };
+  }
+
+  private writeDeletionTombstone(id: string, deletedAt: number): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO deleted_chats(id, deleted_at) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET deleted_at = MAX(deleted_at, excluded.deleted_at)",
+      id,
+      deletedAt,
+    );
+    this.ctx.storage.sql.exec("DELETE FROM deleted_chats WHERE deleted_at < ?", Date.now() - 90 * 24 * 60 * 60 * 1000);
+    this.ctx.storage.sql.exec(
+      "DELETE FROM deleted_chats WHERE id NOT IN (SELECT id FROM deleted_chats ORDER BY deleted_at DESC LIMIT 500)",
+    );
   }
 
   private writeChat(chat: StoredChat): void {
@@ -1339,22 +1365,14 @@ async function handleMigrateChats(request: Request, env: Env, session: Session):
   }
 
   const mode = body.mode === "replace" ? "replace" : "merge";
-  const existing = mode === "replace" ? [] : await loadChatSessions(env, session.label);
-  const byId = new Map<string, CloudChat>();
-  for (const chat of existing) byId.set(chat.id, chat);
-  for (const chat of incoming) {
-    const prev = byId.get(chat.id);
-    if (!prev || chat.updatedAt >= prev.updatedAt) byId.set(chat.id, chat);
+  const state = getUserState(env, session.label);
+  const storedChats = incoming.map(toStoredChat) as StoredChat[];
+  if (mode === "replace") {
+    await state.replaceChats(storedChats);
+  } else {
+    for (const chat of storedChats) await state.upsertChat(chat);
   }
-
-  const chats = [...byId.values()]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, MAX_CLOUD_SESSIONS);
-  const storedChats = chats.map(toStoredChat);
-  if (storedChats.some((chat) => !chat)) {
-    return jsonResponse({ error: "chat_too_large", message: "部分会话内容过大" }, 413);
-  }
-  await getUserState(env, session.label).replaceChats(storedChats as StoredChat[]);
+  const chats = await state.listChats();
   return jsonResponse({
     ok: true,
     mode,

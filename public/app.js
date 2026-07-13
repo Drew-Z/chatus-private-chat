@@ -112,6 +112,7 @@ let cloudSyncEnabled = true;
 const cloudSaveTimers = new Map();
 let cloudSaveInFlight = false;
 const cloudSaveQueue = new Map();
+const deletedSessionIds = new Set();
 let syncStatusText = "";
 let hasUserSystemPrompt = false;
 let statusToastTimer = null;
@@ -1126,6 +1127,8 @@ async function deleteSession(id) {
   if (!(await confirmAction({ title: "删除这个会话？", description: `“${session.title || "新会话"}”将从本地和云端移除。`, confirmLabel: "删除", destructive: true }))) return;
   if (pendingSessionDeletion) await commitPendingSessionDeletion();
   const wasActive = activeSessionId === id;
+  deletedSessionIds.add(id);
+  cancelQueuedCloudSave(id);
   sessions = sessions.filter((session) => session.id !== id);
   if (!sessions.length) sessions = [createSession()];
   if (wasActive) {
@@ -1165,6 +1168,7 @@ async function commitPendingSessionDeletion() {
 }
 
 function restoreFailedSessionDeletion(pending, currentChat = null) {
+  deletedSessionIds.delete(pending.session.id);
   const restored = currentChat ? normalizeSessions([currentChat])[0] || pending.session : pending.session;
   sessions = [restored, ...sessions.filter((session) => session.id !== pending.session.id)]
     .sort(compareSessions)
@@ -1179,6 +1183,7 @@ function undoPendingSessionDeletion() {
   if (!pending) return;
   pendingSessionDeletion = null;
   clearTimeout(pending.timer);
+  deletedSessionIds.delete(pending.session.id);
   sessions = [pending.session, ...sessions.filter((session) => session.id !== pending.session.id)]
     .sort(compareSessions)
     .slice(0, MAX_SESSIONS);
@@ -1234,7 +1239,7 @@ function saveSessions(options = {}) {
 }
 
 function queueCloudSave(chat, immediate = false) {
-  if (!cloudSyncEnabled || !chat) return;
+  if (!cloudSyncEnabled || !chat || deletedSessionIds.has(chat.id)) return;
   const run = async () => {
     if (cloudSaveInFlight) {
       cloudSaveQueue.set(chat.id, chat);
@@ -1285,6 +1290,13 @@ function queueCloudSave(chat, immediate = false) {
     run();
   }, 500);
   cloudSaveTimers.set(chat.id, timer);
+}
+
+function cancelQueuedCloudSave(chatId) {
+  const timer = cloudSaveTimers.get(chatId);
+  if (timer) clearTimeout(timer);
+  cloudSaveTimers.delete(chatId);
+  cloudSaveQueue.delete(chatId);
 }
 
 async function preserveCloudConflict(localChat, remoteValue) {
