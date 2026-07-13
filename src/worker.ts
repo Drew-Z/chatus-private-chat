@@ -358,10 +358,21 @@ export class UserState extends DurableObject<Env> {
     return true;
   }
 
-  async deleteChat(id: string): Promise<boolean> {
-    const before = this.ctx.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM chats WHERE id = ?", id).one().count;
+  async deleteChat(id: string, expectedUpdatedAt = 0): Promise<{ deleted: boolean; conflict: boolean; currentChat?: CloudChat }> {
+    const row = this.ctx.storage.sql
+      .exec<{ updated_at: number; content: string }>("SELECT updated_at, content FROM chats WHERE id = ?", id)
+      .toArray()[0];
+    if (!row) return { deleted: false, conflict: false };
+    if (expectedUpdatedAt > 0 && row.updated_at > expectedUpdatedAt) {
+      try {
+        const currentChat = normalizeCloudChat(JSON.parse(row.content));
+        return currentChat ? { deleted: false, conflict: true, currentChat } : { deleted: false, conflict: true };
+      } catch {
+        return { deleted: false, conflict: true };
+      }
+    }
     this.ctx.storage.sql.exec("DELETE FROM chats WHERE id = ?", id);
-    return before > 0;
+    return { deleted: true, conflict: false };
   }
 
   private writeChat(chat: StoredChat): void {
@@ -1290,10 +1301,21 @@ async function handleDeleteChat(
   if (!id) {
     return jsonResponse({ error: "id_required" }, 400);
   }
+  const expectedUpdatedAt = Number(url.searchParams.get("expectedUpdatedAt") || "0");
   await migrateLegacyChatIndex(env, session.label);
-  const deleted = await getUserState(env, session.label).deleteChat(id);
+  const result = await getUserState(env, session.label).deleteChat(
+    id,
+    Number.isFinite(expectedUpdatedAt) && expectedUpdatedAt > 0 ? expectedUpdatedAt : 0,
+  );
+  if (result.conflict) {
+    return jsonResponse({
+      error: "chat_delete_conflict",
+      message: "该会话已在其他设备更新，已保留较新版本",
+      currentChat: result.currentChat || null,
+    }, 409);
+  }
   const chats = await getUserState(env, session.label).listChats();
-  return jsonResponse({ ok: true, deleted, chats: chats.map(summarizeChat) });
+  return jsonResponse({ ok: true, deleted: result.deleted, chats: chats.map(summarizeChat) });
 }
 
 async function handleMigrateChats(request: Request, env: Env, session: Session): Promise<Response> {

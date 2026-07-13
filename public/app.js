@@ -1124,22 +1124,27 @@ async function commitPendingSessionDeletion() {
   removeDraft(currentUser, pending.session.id);
   if (!cloudSyncEnabled) return;
   try {
-    const response = await fetchWithTimeout(`/api/chats?id=${encodeURIComponent(pending.session.id)}`, { method: "DELETE" });
+    const response = await fetchWithTimeout(
+      `/api/chats?id=${encodeURIComponent(pending.session.id)}&expectedUpdatedAt=${encodeURIComponent(pending.session.updatedAt)}`,
+      { method: "DELETE" },
+    );
     if (handleUnauthorizedResponse(response)) return;
-    if (!response.ok) restoreFailedSessionDeletion(pending);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) restoreFailedSessionDeletion(pending, data.currentChat);
     else setSyncStatus("会话已删除");
   } catch {
     restoreFailedSessionDeletion(pending);
   }
 }
 
-function restoreFailedSessionDeletion(pending) {
-  sessions = [pending.session, ...sessions.filter((session) => session.id !== pending.session.id)]
+function restoreFailedSessionDeletion(pending, currentChat = null) {
+  const restored = currentChat ? normalizeSessions([currentChat])[0] || pending.session : pending.session;
+  sessions = [restored, ...sessions.filter((session) => session.id !== pending.session.id)]
     .sort(compareSessions)
     .slice(0, MAX_SESSIONS);
   saveSessionsLocalOnly();
   renderChatList();
-  setSyncStatus("云端删除失败，会话已恢复，请稍后重试");
+  setSyncStatus(currentChat ? "会话已在其他设备更新，已恢复较新版本" : "云端删除失败，会话已恢复，请稍后重试");
 }
 
 function undoPendingSessionDeletion() {

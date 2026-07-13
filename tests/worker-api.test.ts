@@ -482,7 +482,19 @@ describe("Worker API", () => {
       chats: [{ id: "chat-1", title: "测试会话", pinned: true, messages: [{ role: "user" }, { routeId: "backup", fallback: true, createdAt: 123456 }] }],
     });
 
-    const remove = await apiRequest("/api/chats?id=chat-1", cookie, { method: "DELETE" });
+    await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat: { ...chat, title: "其他设备更新", updatedAt: 21 } }),
+    });
+    const conflictedRemove = await apiRequest("/api/chats?id=chat-1&expectedUpdatedAt=20", cookie, { method: "DELETE" });
+    expect(conflictedRemove.status).toBe(409);
+    await expect(conflictedRemove.json()).resolves.toMatchObject({
+      error: "chat_delete_conflict",
+      currentChat: { id: "chat-1", title: "其他设备更新", updatedAt: 21 },
+    });
+
+    const remove = await apiRequest("/api/chats?id=chat-1&expectedUpdatedAt=21", cookie, { method: "DELETE" });
     expect(remove.status).toBe(200);
     await expect(remove.json()).resolves.toMatchObject({ deleted: true, chats: [] });
   });

@@ -68,6 +68,7 @@ assert(chatScript.includes("branchConversationAt(index)"), "app.js: messages mus
 assert(chatScript.includes("原会话保持不变"), "app.js: branching must explain that the source chat is preserved");
 assert(chatScript.includes("commitPendingSessionDeletion"), "app.js: cloud chat deletion must be delayed for undo");
 assert(chatScript.includes("undoPendingSessionDeletion"), "app.js: deleted chats must be recoverable during the undo window");
+assert(chatScript.includes("expectedUpdatedAt="), "app.js: chat deletion must not remove a newer cloud version");
 assert(chatScript.includes("已切换到空白会话"), "app.js: new chat should reuse an existing blank session");
 assert(chatScript.includes("merged_session_limit"), "app.js: imports must not silently evict existing chats");
 assert(chatScript.includes("expectedRevision: memoryRevision"), "app.js: memory saves must reject stale editors");
