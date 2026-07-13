@@ -640,6 +640,26 @@ describe("Worker API", () => {
     await expect(env.CHAT_STORE.get(ACCESS_CODES_KEY)).resolves.toBe("friend:rotated-code");
   });
 
+  it("rejects stale long-term memory updates", async () => {
+    const label = `memory-${crypto.randomUUID()}`;
+    const key = `memory:${encodeURIComponent(label)}`;
+    await env.CHAT_STORE.put(key, "original memory");
+    const cookie = await adminLogin();
+    const initialResponse = await apiRequest(`/api/admin/memory?label=${encodeURIComponent(label)}`, cookie);
+    const initial = await initialResponse.json() as any;
+    expect(initial.revision).toMatch(/^[0-9a-f]{64}$/);
+
+    await env.CHAT_STORE.put(key, "newer memory");
+    const stale = await apiRequest("/api/admin/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, memory: "stale memory", expectedRevision: initial.revision }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "memory_conflict" });
+    await expect(env.CHAT_STORE.get(key)).resolves.toBe("newer memory");
+  });
+
   it("requires the route health task to return the correct answer", async () => {
     const cookie = await adminLogin();
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({

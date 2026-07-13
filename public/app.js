@@ -103,6 +103,7 @@ let sessionFilter = "";
 let isBusy = false;
 let renderTimer = null;
 let pendingSuggestion = "";
+let memoryRevision = "";
 let lastRouteUsed = "";
 let cloudSyncEnabled = true;
 let cloudSaveTimer = null;
@@ -787,6 +788,7 @@ async function loadMemory(options = {}) {
     if (handleUnauthorizedResponse(response)) return;
     if (!response.ok) throw new Error("load_failed");
     const data = await response.json();
+    memoryRevision = data.revision || "";
     memoryInput.maxLength = Number(data.maxChars) || 4000;
     memoryInput.value = data.memory || "";
     localStorage.setItem(memoryStorageKey(), memoryInput.value);
@@ -806,16 +808,17 @@ async function saveMemory() {
     const response = await fetchWithTimeout("/api/memory", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ memory: memoryInput.value }),
+      body: JSON.stringify({ memory: memoryInput.value, expectedRevision: memoryRevision }),
     });
     if (handleUnauthorizedResponse(response)) return;
-    if (!response.ok) throw new Error("save_failed");
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || "保存失败");
+    memoryRevision = data.revision || memoryRevision;
     memoryInput.value = data.memory || "";
     localStorage.setItem(memoryStorageKey(), memoryInput.value);
     memoryStatus.textContent = "已保存";
-  } catch {
-    memoryStatus.textContent = "保存失败";
+  } catch (error) {
+    memoryStatus.textContent = error.message || "保存失败";
   } finally {
     saveMemoryButton.disabled = offlineMode;
   }

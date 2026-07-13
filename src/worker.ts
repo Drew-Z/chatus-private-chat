@@ -1007,13 +1007,16 @@ async function handleGetMemory(env: Env, session: Session): Promise<Response> {
   const memory = (await env.CHAT_STORE.get(memoryKey(session.label))) || "";
   return jsonResponse({
     memory,
+    revision: await secretFingerprint(memory),
     maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS),
   });
 }
 
 async function handlePutMemory(request: Request, env: Env, session: Session): Promise<Response> {
   const maxChars = numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS);
-  const body = await readJson<{ memory?: unknown }>(request);
+  const body = await readJson<{ memory?: unknown; expectedRevision?: unknown }>(request);
+  const conflict = await memoryRevisionConflict(env, session.label, body.expectedRevision);
+  if (conflict) return conflict;
   const memory = typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "";
 
   if (memory) {
@@ -1022,7 +1025,7 @@ async function handlePutMemory(request: Request, env: Env, session: Session): Pr
     await env.CHAT_STORE.delete(memoryKey(session.label));
   }
 
-  return jsonResponse({ ok: true, memory, maxChars });
+  return jsonResponse({ ok: true, memory, revision: await secretFingerprint(memory), maxChars });
 }
 
 async function handleAdminGetMemory(request: Request, env: Env, url: URL): Promise<Response> {
@@ -1034,17 +1037,20 @@ async function handleAdminGetMemory(request: Request, env: Env, url: URL): Promi
   return jsonResponse({
     label,
     memory,
+    revision: await secretFingerprint(memory),
     maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS),
   });
 }
 
 async function handleAdminPutMemory(request: Request, env: Env): Promise<Response> {
   const maxChars = numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS);
-  const body = await readJson<{ label?: unknown; memory?: unknown }>(request);
+  const body = await readJson<{ label?: unknown; memory?: unknown; expectedRevision?: unknown }>(request);
   const label = typeof body.label === "string" ? body.label.trim() : "";
   if (!label) {
     return jsonResponse({ error: "label_required" }, 400);
   }
+  const conflict = await memoryRevisionConflict(env, label, body.expectedRevision);
+  if (conflict) return conflict;
   const memory = typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "";
   if (memory) {
     await env.CHAT_STORE.put(memoryKey(label), memory);
@@ -1052,7 +1058,20 @@ async function handleAdminPutMemory(request: Request, env: Env): Promise<Respons
     await env.CHAT_STORE.delete(memoryKey(label));
   }
   await appendAdminAudit(env, memory ? "memory.update" : "memory.clear", label);
-  return jsonResponse({ ok: true, label, memory, maxChars });
+  return jsonResponse({ ok: true, label, memory, revision: await secretFingerprint(memory), maxChars });
+}
+
+async function memoryRevisionConflict(env: Env, label: string, expectedValue: unknown): Promise<Response | null> {
+  const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
+  if (!expectedRevision) return null;
+  const memory = (await env.CHAT_STORE.get(memoryKey(label))) || "";
+  const currentRevision = await secretFingerprint(memory);
+  if (currentRevision === expectedRevision) return null;
+  return jsonResponse({
+    error: "memory_conflict",
+    message: "长期记忆已在其他设备更新，请重新读取后再编辑",
+    currentRevision,
+  }, 409);
 }
 
 async function handleAdminResetUsage(request: Request, env: Env): Promise<Response> {

@@ -105,6 +105,7 @@ let selectedMemoryUser = "";
 let currentAdminSection = "overview";
 let savedAccessCodes = "";
 let savedMemory = "";
+let memoryRevision = "";
 let configRevision = "";
 let accessRevision = "";
 const dirtyScopes = new Set();
@@ -1459,6 +1460,7 @@ async function loadAdminMemory() {
     const data = await api(`/api/admin/memory?label=${encodeURIComponent(memoryUserSelect.value)}`);
     adminMemoryInput.maxLength = Number(data.maxChars) || 4000;
     adminMemoryInput.value = data.memory || "";
+    memoryRevision = data.revision || "";
     savedMemory = adminMemoryInput.value;
     setStatus(`已读取 ${memoryUserSelect.value} 的记忆`);
   } catch (error) {
@@ -1470,13 +1472,15 @@ async function saveAdminMemory(isClear = false) {
   if (!memoryUserSelect?.value) return;
   setStatus("保存记忆中");
   try {
-    await api("/api/admin/memory", {
+    const data = await api("/api/admin/memory", {
       method: "PUT",
       body: JSON.stringify({
         label: memoryUserSelect.value,
         memory: adminMemoryInput.value,
+        expectedRevision: memoryRevision,
       }),
     });
+    memoryRevision = data.revision || memoryRevision;
     savedMemory = adminMemoryInput.value;
     clearDirty("memory");
     setStatus(isClear ? `已清空 ${memoryUserSelect.value} 的记忆` : `已保存 ${memoryUserSelect.value} 的记忆`);
