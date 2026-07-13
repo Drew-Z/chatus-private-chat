@@ -2575,12 +2575,13 @@ async function importSessionBackup() {
     const response = await fetchWithTimeout("/api/chats/migrate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chats: imported, mode: "merge" }),
+      body: JSON.stringify({ chats: imported, mode: "restore" }),
     });
     if (handleUnauthorizedResponse(response)) return;
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || "cloud_import_failed");
-    sessions = merged;
+    sessions = normalizeSessions(data.chats || []);
+    if (!sessions.length) throw new Error("cloud_import_failed");
     activeSessionId = sessions[0].id;
     messages = sessions[0].messages;
     restoreActiveDraft();

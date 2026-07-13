@@ -544,6 +544,28 @@ describe("Worker API", () => {
       body: JSON.stringify({ chat: { id: "delete-me", title: "旧设备副本", createdAt: 10, updatedAt: 20, messages: [] } }),
     });
     await expect(staleUpload.json()).resolves.toMatchObject({ accepted: false, currentChat: null, chats: [] });
+
+    const restored = await apiRequest("/api/chats/migrate", next.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "restore",
+        chats: [{ id: "delete-me", title: "从备份恢复", createdAt: 10, updatedAt: 20, messages: [] }],
+      }),
+    }).then((response) => response.json());
+    expect(restored).toMatchObject({ mode: "restore", chats: [{ id: "delete-me", title: "从备份恢复" }] });
+    expect(restored.chats[0].updatedAt).toBeGreaterThan(20);
+
+    const oldDeviceMerge = await apiRequest("/api/chats/migrate", next.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "merge",
+        chats: [{ id: "other-old-chat", title: "旧设备残留", createdAt: 10, updatedAt: 20, messages: [] }],
+      }),
+    }).then((response) => response.json());
+    expect(oldDeviceMerge.chats).toHaveLength(1);
+    expect(oldDeviceMerge.chats[0]).toMatchObject({ id: "delete-me", title: "从备份恢复" });
   });
 
   it("rejects auxiliary model calls without the web client marker", async () => {

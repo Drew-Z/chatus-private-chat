@@ -1393,9 +1393,13 @@ async function handleMigrateChats(request: Request, env: Env, session: Session):
     incoming.push(chat);
   }
 
-  const mode = body.mode === "replace" ? "replace" : "merge";
+  const mode = body.mode === "replace" ? "replace" : body.mode === "restore" ? "restore" : "merge";
+  const restoreBase = Date.now();
+  const preparedIncoming = mode === "restore"
+    ? incoming.map((chat, index) => ({ ...chat, updatedAt: restoreBase + index + 1 }))
+    : incoming;
   const state = getUserState(env, session.label);
-  const storedChats = incoming.map(toStoredChat) as StoredChat[];
+  const storedChats = preparedIncoming.map(toStoredChat) as StoredChat[];
   if (mode === "replace") {
     await state.replaceChats(storedChats);
   } else {

@@ -92,6 +92,7 @@ assert(chatScript.includes("所有设备均已退出"), "app.js: deleting all da
 assert(chatScript.includes("已恢复未保存修改"), "app.js: restored memory drafts need visible status");
 assert(chatScript.includes("formatVersion: 3"), "app.js: full backups need the current schema version");
 assert(chatScript.includes("unsupported_backup_version"), "app.js: newer backup formats must be rejected safely");
+assert(chatScript.includes('mode: "restore"'), "app.js: explicit backup imports must use restore semantics");
 assert(chatScript.includes("routeId: session.routeId"), "app.js: backups must preserve each chat model");
 assert(chatScript.includes("跨用户导入"), "app.js: backup imports must disclose a different source user");
 assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
