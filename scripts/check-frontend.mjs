@@ -77,6 +77,8 @@ assert(chatScript.includes("expectedUpdatedAt="), "app.js: chat deletion must no
 assert(chatScript.includes("已切换到空白会话"), "app.js: new chat should reuse an existing blank session");
 assert(chatScript.includes("merged_session_limit"), "app.js: imports must not silently evict existing chats");
 assert(chatScript.includes("expectedRevision: memoryRevision"), "app.js: memory saves must reject stale editors");
+assert(chatScript.includes("MEMORY_DRAFT_PREFIX"), "app.js: unsaved memory edits need user-scoped local drafts");
+assert(chatScript.includes("已恢复未保存修改"), "app.js: restored memory drafts need visible status");
 assert(chatScript.includes("formatVersion: 2"), "app.js: full backups need an explicit schema version");
 assert(chatScript.includes("unsupported_backup_version"), "app.js: newer backup formats must be rejected safely");
 assert(chatScript.includes("routeId: session.routeId"), "app.js: backups must preserve each chat model");

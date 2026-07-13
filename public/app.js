@@ -78,6 +78,7 @@ const ACTIVE_SESSION_PREFIX = "chatus.activeSession.v3.";
 const ROUTE_STORAGE_KEY = "chatus.route.v1";
 const SESSION_SNAPSHOT_KEY = "chatus.sessionSnapshot.v1";
 const MEMORY_STORAGE_PREFIX = "chatus.memory.v1.";
+const MEMORY_DRAFT_PREFIX = "chatus.memoryDraft.v1.";
 const DRAFT_STORAGE_PREFIX = "chatus.draft.v1.";
 const MAX_ATTACHMENTS = 4;
 const MAX_SESSIONS = 30;
@@ -180,10 +181,12 @@ window.addEventListener("online", () => {
   else if (loginStatus.textContent === "当前网络已断开") loginStatus.textContent = "";
 });
 promptInput.addEventListener("input", () => saveActiveDraft());
+memoryInput.addEventListener("input", () => saveMemoryDraft());
 
 document.querySelector("#logoutButton").addEventListener("click", async () => {
   const previousUser = currentUser;
   clearUserDrafts(previousUser);
+  localStorage.removeItem(memoryStorageKey(previousUser));
   await fetchWithTimeout("/api/logout", { method: "POST" }).catch(() => null);
   currentUser = "";
   currentDisplayName = "";
@@ -249,6 +252,7 @@ applyMemorySuggestButton?.addEventListener("click", () => {
   if (!pendingSuggestion) return;
   const existing = memoryInput.value.trim();
   memoryInput.value = existing ? `${existing}\n${pendingSuggestion}` : pendingSuggestion;
+  saveMemoryDraft();
   hideMemorySuggest();
   memoryStatus.textContent = "已追加，记得保存";
 });
@@ -784,8 +788,9 @@ async function streamChat(assistantMessage) {
 
 async function loadMemory(options = {}) {
   if (options.offline) {
-    memoryInput.value = localStorage.getItem(memoryStorageKey()) || "";
-    memoryStatus.textContent = memoryInput.value ? "本地缓存" : "离线不可用";
+    const draft = localStorage.getItem(memoryDraftStorageKey());
+    memoryInput.value = draft ?? localStorage.getItem(memoryStorageKey()) ?? "";
+    memoryStatus.textContent = draft !== null ? "已恢复未保存修改" : memoryInput.value ? "本地缓存" : "离线不可用";
     return;
   }
   memoryStatus.textContent = "读取中";
@@ -798,9 +803,17 @@ async function loadMemory(options = {}) {
     const data = await response.json();
     memoryRevision = data.revision || "";
     memoryInput.maxLength = Number(data.maxChars) || 4000;
-    memoryInput.value = data.memory || "";
-    localStorage.setItem(memoryStorageKey(), memoryInput.value);
-    memoryStatus.textContent = memoryInput.value ? "已加载" : "空";
+    const savedMemory = data.memory || "";
+    localStorage.setItem(memoryStorageKey(), savedMemory);
+    const draft = localStorage.getItem(memoryDraftStorageKey());
+    if (draft !== null && draft !== savedMemory) {
+      memoryInput.value = draft;
+      memoryStatus.textContent = "已恢复未保存修改";
+    } else {
+      memoryInput.value = savedMemory;
+      localStorage.removeItem(memoryDraftStorageKey());
+      memoryStatus.textContent = memoryInput.value ? "已加载" : "空";
+    }
   } catch {
     memoryStatus.textContent = "读取失败";
   } finally {
@@ -824,6 +837,7 @@ async function saveMemory() {
     memoryRevision = data.revision || memoryRevision;
     memoryInput.value = data.memory || "";
     localStorage.setItem(memoryStorageKey(), memoryInput.value);
+    localStorage.removeItem(memoryDraftStorageKey());
     memoryStatus.textContent = "已保存";
   } catch (error) {
     memoryStatus.textContent = error.message || "保存失败";
@@ -1530,6 +1544,9 @@ function sessionsStorageKey() {
 function memoryStorageKey(user = currentUser) {
   return `${MEMORY_STORAGE_PREFIX}${encodeURIComponent(user || "friend")}`;
 }
+function memoryDraftStorageKey(user = currentUser) {
+  return `${MEMORY_DRAFT_PREFIX}${encodeURIComponent(user || "friend")}`;
+}
 function activeSessionStorageKey() {
   return `${ACTIVE_SESSION_PREFIX}${encodeURIComponent(currentUser || "friend")}`;
 }
@@ -1542,6 +1559,15 @@ function saveActiveDraft() {
   try {
     if (value) localStorage.setItem(draftStorageKey(), value);
     else localStorage.removeItem(draftStorageKey());
+  } catch {}
+}
+function saveMemoryDraft() {
+  if (!currentUser) return;
+  const maxChars = Number(memoryInput.maxLength) > 0 ? Number(memoryInput.maxLength) : 4000;
+  const value = memoryInput.value.slice(0, maxChars);
+  try {
+    if (value) localStorage.setItem(memoryDraftStorageKey(), value);
+    else localStorage.removeItem(memoryDraftStorageKey());
   } catch {}
 }
 function restoreActiveDraft() {
@@ -1566,6 +1592,7 @@ function clearUserDrafts(user) {
   if (!user) return;
   const prefix = `${DRAFT_STORAGE_PREFIX}${encodeURIComponent(user)}.`;
   try {
+    localStorage.removeItem(memoryDraftStorageKey(user));
     for (let index = localStorage.length - 1; index >= 0; index -= 1) {
       const key = localStorage.key(index);
       if (key?.startsWith(prefix)) localStorage.removeItem(key);
@@ -2561,6 +2588,7 @@ async function clearOfflineData() {
   if (!(await confirmAction({ title: "清除本机缓存？", description: "将移除当前设备保存的会话副本和离线页面缓存。重新联网后仍可从云端同步。", confirmLabel: "清除" }))) return;
   localStorage.removeItem(sessionsStorageKey());
   localStorage.removeItem(activeSessionStorageKey());
+  localStorage.removeItem(memoryStorageKey());
   localStorage.removeItem(SESSION_SNAPSHOT_KEY);
   clearUserDrafts(currentUser);
   if ("caches" in window) await caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))).catch(() => null);
@@ -2576,6 +2604,7 @@ async function logoutAllDevices() {
     if (!response.ok) throw new Error("revoke_failed");
     localStorage.removeItem(SESSION_SNAPSHOT_KEY);
     clearUserDrafts(currentUser);
+    localStorage.removeItem(memoryStorageKey());
     settingsDialog?.close();
     currentUser = "";
     currentDisplayName = "";
@@ -2605,6 +2634,7 @@ async function deleteAllUserData() {
     messages = sessions[0].messages;
     restoreActiveDraft();
     memoryInput.value = "";
+    memoryRevision = "";
     memoryStatus.textContent = "暂无长期记忆";
     saveSessionsLocalOnly();
     renderChatList();
