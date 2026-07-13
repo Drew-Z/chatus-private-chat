@@ -71,3 +71,36 @@ Replaced all frontend Trellis spec placeholders with codebase-backed conventions
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Document Trellis Git tracking policy
+
+**Date**: 2026-07-13
+**Task**: Document Trellis Git tracking policy
+**Branch**: `main`
+
+### Summary
+
+Documented the shared-versus-local Trellis Git boundary, added the project instruction, verified scoped ignore behavior, and passed the complete project quality gate.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `74518c3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
