@@ -622,6 +622,24 @@ describe("Worker API", () => {
     expect(stored.users.concurrent.displayName).toBe("Concurrent edit");
   });
 
+  it("rejects stale admin configuration resets", async () => {
+    const cookie = await adminLogin();
+    const initialResponse = await apiRequest("/api/admin/config", cookie);
+    const initial = await initialResponse.json() as any;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      ...initial.config,
+      users: { ...(initial.config.users || {}), retained: { displayName: "Retained" } },
+    }));
+
+    const stale = await apiRequest("/api/admin/config", cookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedRevision: initial.revision }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(env.CHAT_STORE.get(ROUTES_CONFIG_KEY)).resolves.not.toBeNull();
+  });
+
   it("rejects stale access-code updates", async () => {
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "friend:original-code");
     const cookie = await adminLogin();

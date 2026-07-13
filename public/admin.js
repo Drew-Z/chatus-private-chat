@@ -390,7 +390,10 @@ saveConfigButton.addEventListener("click", async () => {
 
 resetConfigButton.addEventListener("click", async () => {
   if (!(await confirmAdminAction("恢复 Secret 配置？", "后台保存的用户和线路配置将被删除，当前 Secret 配置会重新生效。", "恢复"))) return;
-  await api("/api/admin/config", { method: "DELETE" });
+  await api("/api/admin/config", {
+    method: "DELETE",
+    body: JSON.stringify({ expectedRevision: configRevision }),
+  });
   selectedUser = DEFAULT_USER;
   selectedRoute = "";
   await loadDashboard("已恢复 Secret 里的配置");

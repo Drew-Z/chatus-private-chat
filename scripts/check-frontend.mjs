@@ -93,6 +93,7 @@ assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("co
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('markDirty("access")'), "admin.js: generated access codes must be marked unsaved");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("expectedRevision: configRevision"), "admin.js: config saves must reject stale editors");
+assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes('method: "DELETE",\n    body: JSON.stringify({ expectedRevision: configRevision })'), "admin.js: config resets must reject stale editors");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("attemptSaveConfig"), "admin.js: form save failures need visible feedback");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("expectedRevision: accessRevision"), "admin.js: access-code saves must reject stale editors");
 assert((await readFile(path.join(root, "public/admin.js"), "utf8")).includes("expectedRevision: memoryRevision"), "admin.js: memory saves must reject stale editors");

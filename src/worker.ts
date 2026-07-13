@@ -713,6 +713,9 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
   }
 
   if (url.pathname === "/api/admin/config" && request.method === "DELETE") {
+    const body = await readJson<{ expectedRevision?: unknown }>(request);
+    const conflict = await configRevisionConflict(env, body.expectedRevision);
+    if (conflict) return conflict;
     await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
     await appendAdminAudit(env, "config.reset");
     return jsonResponse({ ok: true });
@@ -789,18 +792,8 @@ async function handleGetAdminConfig(env: Env): Promise<Response> {
 
 async function handlePutAdminConfig(request: Request, env: Env): Promise<Response> {
   const body = await readJson<{ config?: unknown; expectedRevision?: unknown }>(request);
-  const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision : "";
-  if (expectedRevision) {
-    const current = await loadEditableConfig(env);
-    const currentRevision = await configRevision(current.config);
-    if (currentRevision !== expectedRevision) {
-      return jsonResponse({
-        error: "config_conflict",
-        message: "配置已在其他标签页或设备更新，请刷新后重新编辑",
-        currentRevision,
-      }, 409);
-    }
-  }
+  const conflict = await configRevisionConflict(env, body.expectedRevision);
+  if (conflict) return conflict;
   const normalized = normalizeAppConfig(body.config);
   const validation = validateAppConfig(normalized);
   if (!validation.ok) {
@@ -814,6 +807,19 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
 
 async function configRevision(config: AppConfig): Promise<string> {
   return secretFingerprint(JSON.stringify(config));
+}
+
+async function configRevisionConflict(env: Env, expectedValue: unknown): Promise<Response | null> {
+  const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
+  if (!expectedRevision) return null;
+  const current = await loadEditableConfig(env);
+  const currentRevision = await configRevision(current.config);
+  if (currentRevision === expectedRevision) return null;
+  return jsonResponse({
+    error: "config_conflict",
+    message: "配置已在其他标签页或设备更新，请刷新后重新编辑",
+    currentRevision,
+  }, 409);
 }
 
 async function handleGetAdminAccessCodes(env: Env): Promise<Response> {
