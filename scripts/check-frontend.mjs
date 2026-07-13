@@ -134,6 +134,7 @@ const modelFetchStart = adminScript.indexOf("async function fetchRouteModels()")
 const modelFetchEnd = adminScript.indexOf("function setRouteHealth", modelFetchStart);
 const modelFetchSource = adminScript.slice(modelFetchStart, modelFetchEnd);
 assert(modelFetchSource && !modelFetchSource.includes("routeSecretInput"), "admin.js: model listing must send only the route key reference");
+assert(modelFetchSource.includes("当前输入会筛选下拉选项，清空模型名可查看全部"), "admin.js: filtered datalist results must explain why the visible option count can be smaller");
 
 console.log("Frontend structure checks passed");
 

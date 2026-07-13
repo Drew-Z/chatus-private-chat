@@ -1787,7 +1787,10 @@ async function fetchRouteModels() {
       routeModelInput.value = models[0];
       markDirty("route");
     }
-    setRouteHealth(`已拉取 ${models.length} 个模型，点击模型名输入框即可选择`);
+    const filteredHint = routeModelInput.value.trim() && models.length > 1
+      ? "；当前输入会筛选下拉选项，清空模型名可查看全部"
+      : "，点击模型名输入框即可选择";
+    setRouteHealth(`已拉取 ${models.length} 个模型${filteredHint}`);
     routeModelInput.focus();
     try {
       routeModelInput.showPicker?.();

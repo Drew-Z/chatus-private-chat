@@ -39,3 +39,4 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Updating DOM from a stale async result without checking the source chat or current revision.
 - Applying inline styles, which weakens the Content Security Policy.
 - Replacing destructive actions without preserving undo, conflict, or confirmation behavior already present in the UI.
+- Treating a native `datalist` popup as an unfiltered list. Browsers filter suggestions by the input's current value, so a fetched total can exceed the visible options. Preserve the current value, but make status copy distinguish the total result count from the filtered suggestion view and explain that clearing the input reveals all options.
