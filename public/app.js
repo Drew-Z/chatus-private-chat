@@ -2164,11 +2164,12 @@ function resendFromUser(index) {
   if (offlineMode) return;
   const message = messages[index];
   if (!message || message.role !== "user") return;
-  messages = messages.slice(0, index + 1);
+  if (!createResponseBranch(index, "重发")) return;
   const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
   renderMessages(true);
+  showStatusToast("已创建重发分支，原会话保持不变");
   streamChat(assistantMessage).then(() => maybeRefreshSummary());
 }
 
@@ -2179,12 +2180,51 @@ function regenerateAssistant(index) {
   let userIndex = index - 1;
   while (userIndex >= 0 && messages[userIndex].role !== "user") userIndex -= 1;
   if (userIndex < 0) return;
-  messages = messages.slice(0, userIndex + 1);
+  if (!createResponseBranch(userIndex, "重新生成")) return;
   const assistantMessage = { id: createId(), role: "assistant", content: "", createdAt: Date.now() };
   messages.push(assistantMessage);
   saveMessages();
   renderMessages(true);
+  showStatusToast("已创建重新生成分支，原会话保持不变");
   streamChat(assistantMessage).then(() => maybeRefreshSummary());
+}
+
+function createResponseBranch(endIndex, suffix) {
+  if (sessions.length >= MAX_SESSIONS) {
+    showStatusToast(`最多保留 ${MAX_SESSIONS} 个会话，请先删除一个会话再${suffix}`);
+    return false;
+  }
+  const source = getActiveSession();
+  const branchMessages = messages
+    .slice(0, endIndex + 1)
+    .filter((message) => message.role !== "error")
+    .map((message) => normalizeMessage(structuredClone(message)));
+  if (!branchMessages.length) return false;
+  const now = Date.now();
+  const baseTitle = source.title && source.title !== "新会话" ? source.title : deriveSessionTitle(branchMessages);
+  const branch = {
+    id: createId(),
+    title: `${baseTitle.replace(new RegExp(` · ${suffix}$`), "").slice(0, 64)} · ${suffix}`,
+    createdAt: now,
+    updatedAt: now,
+    summary: "",
+    summaryUntil: 0,
+    pinned: false,
+    routeId: source.routeId || selectedRouteId,
+    messages: branchMessages,
+  };
+  sessions = [branch, ...sessions].sort(compareSessions);
+  activeSessionId = branch.id;
+  messages = branch.messages;
+  attachments = [];
+  localStorage.setItem(activeSessionStorageKey(), branch.id);
+  restoreSessionRoute(branch);
+  restoreActiveDraft();
+  renderAttachments();
+  renderChatList();
+  updateChatTitle();
+  closeSidebar();
+  return true;
 }
 
 function retryLastFailed() {
