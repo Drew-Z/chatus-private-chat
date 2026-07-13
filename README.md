@@ -271,6 +271,14 @@ chatus_private_chat -> 677a99ca03f14921ac091851fb95a8da
 
 ## 开发
 
+项目已初始化 Trellis Codex 工作流：
+
+- `.trellis/`：工作流、规格、任务和开发者记录
+- `.agents/skills/trellis-*`：Codex 可调用的 Trellis 技能
+- `.codex/hooks.json`：在用户提交消息时注入当前 Trellis 状态
+
+首次初始化或更新后需要重新打开 Codex 项目任务，让命令列表重新加载。用户级 `config.toml` 必须启用 `[features].hooks = true`；可通过 `/hooks` 检查 hook 状态。Codex 中也可以直接调用 `$trellis-start`、`$trellis-continue`、`$trellis-check` 和 `$trellis-finish-work`。
+
 ```bash
 npm install
 npm run dev

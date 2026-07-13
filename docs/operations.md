@@ -71,5 +71,6 @@ git push origin main
 
 ## 开发流程
 
-- 当前仓库没有 Trellis 配置或 `.trellis` 规格目录，迭代由 Codex 持续目标、任务计划、测试门禁和 GitHub Actions 驱动。
-- 若后续接入 Trellis，应把产品需求、验收标准和里程碑放入 Trellis；本文件继续作为生产运行手册，不在两处重复维护同一操作步骤。
+- 当前仓库已启用 Trellis Codex 集成。复杂改动应在 `.trellis/tasks/` 保存需求、设计、执行和验收上下文，并在修改前读取相应 `.trellis/spec/`。
+- Codex 项目命令与 hooks 在任务启动时加载；初始化或更新 `.codex/` 后需要重新打开项目任务。`/hooks` 用于查看审批状态，Trellis 工作流能力通过项目级 Trellis 命令或 `$trellis-*` 技能调用。
+- 本文件继续作为生产运行手册；Trellis 负责任务过程和可复用工程规范，不在两处重复维护同一操作步骤。
