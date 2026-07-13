@@ -219,16 +219,16 @@ mobileNewChatButton?.addEventListener("click", () => {
 });
 
 clearButton.addEventListener("click", async () => {
-  if (offlineMode) return showStatusToast("离线只读模式下不能清空会话");
+  if (offlineMode) return showStatusToast("离线只读模式下不能开始空白会话");
   if (!messages.length) return;
-  if (!(await confirmAction({ title: "清空当前会话？", description: "所有消息将被移除，此操作无法撤销。", confirmLabel: "清空", destructive: true }))) return;
-  messages = [];
-  const active = getActiveSession();
-  active.summary = "";
-  active.summaryUntil = 0;
-  saveMessages();
-  renderMessages();
-  updateChatTitle();
+  if (!(await confirmAction({
+    title: "开始空白会话？",
+    description: "当前会话和全部消息会保留在历史记录中。",
+    confirmLabel: "开始新会话",
+  }))) return;
+  const before = activeSessionId;
+  createNewSession();
+  if (activeSessionId !== before) showStatusToast("已开始空白会话，原会话保持不变");
 });
 
 document.querySelector("#exportButton")?.addEventListener("click", () => exportActiveSession());

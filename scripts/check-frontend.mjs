@@ -71,6 +71,7 @@ assert(chatScript.includes("createResponseBranch(userIndex, \"重新生成\")"),
 assert(chatScript.includes("createResponseBranch(index, \"重发\")"), "app.js: resending must preserve the original chat");
 assert(chatScript.includes("parentChatId: source.id"), "app.js: branches must retain their source chat");
 assert(chatScript.includes("branchOriginButton.hidden = !active.parentChatId"), "app.js: branch navigation must reflect the active chat");
+assert(chatScript.includes("已开始空白会话，原会话保持不变"), "app.js: clearing must not destroy chat history");
 assert(chatScript.includes("commitPendingSessionDeletion"), "app.js: cloud chat deletion must be delayed for undo");
 assert(chatScript.includes("undoPendingSessionDeletion"), "app.js: deleted chats must be recoverable during the undo window");
 assert(chatScript.includes("expectedUpdatedAt="), "app.js: chat deletion must not remove a newer cloud version");
