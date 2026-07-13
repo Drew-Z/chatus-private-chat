@@ -2481,7 +2481,7 @@ function exportActiveSession() {
 function exportAllSessions() {
   const payload = {
     product: "Chatus",
-    formatVersion: 2,
+    formatVersion: 3,
     exportedAt: new Date().toISOString(),
     release: clientRelease?.commit || "",
     user: currentUser,
@@ -2514,13 +2514,13 @@ async function importSessionBackup() {
     if (payload?.product !== "Chatus" || !Array.isArray(payload.conversations)) throw new Error("invalid_backup");
     const formatVersion = Number(payload.formatVersion || 1);
     if (!Number.isInteger(formatVersion) || formatVersion < 1) throw new Error("invalid_backup");
-    if (formatVersion > 2) throw new Error("unsupported_backup_version");
+    if (formatVersion > 3) throw new Error("unsupported_backup_version");
     if (payload.conversations.length > MAX_SESSIONS) throw new Error("backup_session_limit");
     const imported = normalizeImportedSessions(payload.conversations);
     if (!imported.length) throw new Error("empty_backup");
     if (!(await confirmAction({
       title: `导入 ${imported.length} 个会话？`,
-      description: "备份会与当前会话合并；ID 相同的会话保留更新时间较新的版本，并同步到云端。",
+      description: describeBackupImport(payload),
       confirmLabel: "导入",
     }))) return;
     const byId = new Map(sessions.map((session) => [session.id, session]));
@@ -2561,6 +2561,15 @@ async function importSessionBackup() {
   } finally {
     importAllButton.disabled = false;
   }
+}
+function describeBackupImport(payload) {
+  const sourceUser = typeof payload.user === "string" ? payload.user.trim().slice(0, 80) : "未知用户";
+  const exportedAt = parseBackupTime(payload.exportedAt);
+  const time = Number.isFinite(exportedAt)
+    ? new Date(exportedAt).toLocaleString("zh-CN", { hour12: false })
+    : "时间未知";
+  const crossUser = sourceUser !== "未知用户" && sourceUser !== currentUser;
+  return `来源：${sourceUser} · 导出：${time}${crossUser ? " · 跨用户导入" : ""}。备份会与当前会话合并，ID 相同的会话保留较新版本并同步到云端。`;
 }
 function normalizeImportedSessions(input) {
   const prepared = input.map((item) => {

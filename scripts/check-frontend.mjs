@@ -80,9 +80,10 @@ assert(chatScript.includes("merged_session_limit"), "app.js: imports must not si
 assert(chatScript.includes("expectedRevision: memoryRevision"), "app.js: memory saves must reject stale editors");
 assert(chatScript.includes("MEMORY_DRAFT_PREFIX"), "app.js: unsaved memory edits need user-scoped local drafts");
 assert(chatScript.includes("已恢复未保存修改"), "app.js: restored memory drafts need visible status");
-assert(chatScript.includes("formatVersion: 2"), "app.js: full backups need an explicit schema version");
+assert(chatScript.includes("formatVersion: 3"), "app.js: full backups need the current schema version");
 assert(chatScript.includes("unsupported_backup_version"), "app.js: newer backup formats must be rejected safely");
 assert(chatScript.includes("routeId: session.routeId"), "app.js: backups must preserve each chat model");
+assert(chatScript.includes("跨用户导入"), "app.js: backup imports must disclose a different source user");
 assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
 assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: login throttling needs a retry countdown");
 assert(chatScript.includes('data.reset === "daily"'), "app.js: minute and daily rate limits must remain distinct");
