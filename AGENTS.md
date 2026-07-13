@@ -24,5 +24,6 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 - Production deployments must run through GitHub Actions; do not deploy production from a local Wrangler account.
 - Never commit or print access codes, API keys, tokens, conversation content, or stored memories.
+- Keep `.trellis/spec/`, `.trellis/tasks/`, and `.trellis/workspace/` in Git; never commit `.trellis/.developer` or `.trellis/.runtime/`.
 - Before shipping, run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 - Preserve unrelated user changes in a dirty worktree.
