@@ -38,3 +38,36 @@ Registered the project-local Codex SessionStart hook, verified hook protocol out
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Complete frontend guideline bootstrap
+
+**Date**: 2026-07-13
+**Task**: Complete frontend guideline bootstrap
+**Branch**: `main`
+
+### Summary
+
+Replaced all frontend Trellis spec placeholders with codebase-backed conventions and examples, validated the full project quality gate, and archived the initial bootstrap task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3cdf5d6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
