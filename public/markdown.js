@@ -93,6 +93,41 @@ export function renderMarkdown(source) {
       continue;
     }
 
+    const table = parseMarkdownTable(lines, i);
+    if (table) {
+      flushPara();
+      flushList();
+      const wrap = document.createElement("div");
+      wrap.className = "md-table-wrap";
+      const tableEl = document.createElement("table");
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      table.headers.forEach((value, index) => {
+        const cell = document.createElement("th");
+        cell.scope = "col";
+        cell.style.textAlign = table.alignments[index];
+        cell.append(renderInline(value));
+        headRow.append(cell);
+      });
+      thead.append(headRow);
+      const tbody = document.createElement("tbody");
+      for (const row of table.rows) {
+        const rowEl = document.createElement("tr");
+        row.forEach((value, index) => {
+          const cell = document.createElement("td");
+          cell.style.textAlign = table.alignments[index];
+          cell.append(renderInline(value));
+          rowEl.append(cell);
+        });
+        tbody.append(rowEl);
+      }
+      tableEl.append(thead, tbody);
+      wrap.append(tableEl);
+      root.append(wrap);
+      i = table.nextIndex;
+      continue;
+    }
+
     const ul = line.match(/^[-*+]\s+(.+)$/);
     const ol = line.match(/^\d+\.\s+(.+)$/);
     if (ul || ol) {
@@ -148,6 +183,57 @@ export function renderMarkdown(source) {
   flushPara();
   flushList();
   return root;
+}
+
+export function parseMarkdownTable(lines, startIndex = 0) {
+  if (!Array.isArray(lines) || startIndex < 0 || startIndex + 1 >= lines.length) return null;
+  const headers = splitTableRow(lines[startIndex]);
+  const separators = splitTableRow(lines[startIndex + 1]);
+  if (headers.length < 2 || separators.length !== headers.length) return null;
+  if (!separators.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, "")))) return null;
+
+  const alignments = separators.map((cell) => {
+    const value = cell.replace(/\s/g, "");
+    if (value.startsWith(":") && value.endsWith(":")) return "center";
+    return value.endsWith(":") ? "right" : "left";
+  });
+  const rows = [];
+  let nextIndex = startIndex + 2;
+  while (nextIndex < lines.length && lines[nextIndex].trim() && hasUnescapedPipe(lines[nextIndex])) {
+    const cells = splitTableRow(lines[nextIndex]);
+    if (cells.length > headers.length) cells.length = headers.length;
+    while (cells.length < headers.length) cells.push("");
+    rows.push(cells);
+    nextIndex += 1;
+  }
+  return { headers, alignments, rows, nextIndex };
+}
+
+function hasUnescapedPipe(value) {
+  return /(^|[^\\])\|/.test(String(value || ""));
+}
+
+function splitTableRow(value) {
+  const source = String(value || "").trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  if (escaped) current += "\\";
+  cells.push(current.trim());
+  return cells;
 }
 
 function renderInline(source) {
