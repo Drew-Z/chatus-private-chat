@@ -18,4 +18,24 @@ describe("buildAdminReportCsv", () => {
     expect(csv).toContain("friend,朋友,启用,10,500,490,line-a,1,否,1,20,10,1,10");
     expect(csv).not.toMatch(/apiKey|baseUrl|systemPrompt|memory[^C]/i);
   });
+
+  it("neutralizes spreadsheet formulas while preserving numeric metrics", () => {
+    const csv = buildAdminReportCsv({
+      day: "2026-07-13",
+      trend: [],
+      routeStats: [{ id: "=CMD()", label: " +SUM(1,1)", model: "@model", ok7d: -1, error7d: 0, errorRate7d: 0 }],
+      users: [{
+        label: "-danger", displayName: "\t=HYPERLINK(\"https://example.test\")", enabled: true,
+        used: 0, dailyLimit: 500, remaining: 500, defaultRoute: "=route", allowedRoutes: [],
+        allowBringYourOwnKey: false, activeSessions: 0, memoryChars: 0, requests7d: 0, errors7d: 0, errorRate7d: 0,
+      }],
+    });
+
+    expect(csv).toContain("'=CMD()");
+    expect(csv).toContain("' +SUM(1,1)");
+    expect(csv).toContain("'@model");
+    expect(csv).toContain("'-danger");
+    expect(csv).toContain("'\t=HYPERLINK");
+    expect(csv).toContain(",-1,0,0");
+  });
 });

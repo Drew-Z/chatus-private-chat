@@ -44,7 +44,8 @@ export function buildAdminReportCsv(stats, generatedAt = new Date()) {
 }
 
 function csvCell(value) {
-  const text = value == null ? "" : String(value);
+  let text = value == null ? "" : String(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  if (typeof value === "string" && /^[\t ]*[=+\-@]/.test(text)) text = `'${text}`;
   if (!/[",\r\n]/.test(text)) return text;
   return `"${text.replace(/"/g, '""')}"`;
 }
