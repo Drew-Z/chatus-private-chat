@@ -170,3 +170,36 @@ Explained native datalist filtering when the fetched model total exceeds visible
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Productize chat workspace
+
+**Date**: 2026-07-15
+**Task**: Productize chat workspace
+**Branch**: `main`
+
+### Summary
+
+Redesigned the signed-in chat workspace with Lucide controls, a 720px reading column, visible message actions, provider-grouped model selection, and an admin model browser with safe batch route creation. Verified desktop/mobile fixtures and all project quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `47d8ca3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
