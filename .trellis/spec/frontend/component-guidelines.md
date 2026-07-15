@@ -29,6 +29,15 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Batch setup may copy an `apiKeyRef`, but it must never read `routeSecretInput`, copy a legacy plaintext `apiKey`, overwrite an existing route ID, or modify `defaults.allowedRoutes` / user `allowedRoutes`.
 - Routes with the same `label` are one provider group in the signed-in model picker. Keep every selectable button discoverable through the shared `.model-option` query so Arrow, Home, End, Escape, and Tab behavior continues to work across groups.
 
+## AI Capability Editors And Tool Timeline
+
+- Keep Skills, tools, and MCP servers in one admin section with native tab, form, checkbox, and password controls. The revisioned config remains the only persisted browser draft.
+- MCP plaintext may be read only by the dedicated secret save action. Clear the password input on save success/failure, auth-type changes, editor/tab/section switches, refresh, login transitions, and discarded edits.
+- Discovery sends only `serverId`, endpoint metadata, auth type, and a saved `secretRef`. New tools and tools whose `schemaFingerprint` changes must be saved with `enabled: false`; unchanged tools preserve their existing enabled state and confirmation policy.
+- Capability chat responses are selected by `X-Chatus-Stream: capability-v1`. Tool approval writes must include `X-Chatus-Client: web` and `{ runId, callId, decision }`; disable or remove the visible approval controls after the first decision.
+- Keep an active capability stream attached to its source chat. Do not allow chat switching, active-chat deletion, logout, or local-data clearing until the user stops the run.
+- Render persisted tool summaries as compact unframed rows in the assistant message. Never reconstruct or persist raw arguments, raw results, remote endpoints, schemas, or credentials in the browser timeline or Markdown export.
+
 ## Styling Patterns
 
 - Put visual rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in `app.js`, `admin.js`, and `theme.js`.

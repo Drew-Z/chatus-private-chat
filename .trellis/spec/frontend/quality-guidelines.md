@@ -44,3 +44,4 @@ git diff --check
 - Does exported or diagnostic data exclude secrets and private content?
 - Are writes protected against stale revisions?
 - Are accessibility behavior and mobile/keyboard paths preserved?
+- For capability work, test the legacy provider stream and `capability-v1` stream separately; verify completed, failed, pending-confirmation, and stale-confirmation states on desktop and 390px touch layouts.

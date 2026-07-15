@@ -26,6 +26,8 @@ State is managed with module-scoped JavaScript values, browser storage, and serv
 - Debounce cloud saves per chat ID.
 - Send revision/version preconditions on mutations.
 - Route delayed async results back to their source session rather than the currently active session.
+- Load conversations before rendering per-conversation capability state. Calling `getActiveSession()` before local/cloud session hydration can create and persist a synthetic blank chat.
+- Normalize selected Skill IDs into the server-projected administrator order and cap them at three; branches copy the ordered selection while new chats start empty.
 - Backup restore and device merge are distinct operations; do not silently evict existing chats on import.
 
 ## Common Mistakes
