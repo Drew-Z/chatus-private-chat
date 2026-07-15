@@ -220,11 +220,12 @@
               </label>
               <label>
                 模型名
-                <span class="inline-field-action">
-                  <input id="routeModelInput" list="routeModelOptions" autocomplete="off" placeholder="model-name" required />
+                <span class="inline-field-action route-model-action">
+                  <input id="routeModelInput" autocomplete="off" placeholder="model-name" required />
                   <button class="plain-button compact" id="fetchRouteModelsButton" type="button">拉取</button>
+                  <button class="plain-button compact" id="browseRouteModelsButton" type="button" disabled>选择</button>
                 </span>
-                <datalist id="routeModelOptions"></datalist>
+                <small class="field-hint">可手动输入，或拉取服务商模型后选择</small>
               </label>
               <label>
                 API Key Ref
@@ -311,6 +312,34 @@
         <div class="dialog-actions">
           <button class="ghost-button" value="cancel" type="submit">取消</button>
           <button class="dialog-primary destructive" id="adminDialogConfirm" value="confirm" type="submit">确认</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="app-dialog route-model-dialog" id="routeModelDialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <h2>选择服务商模型</h2>
+            <p id="routeModelDialogSummary">尚未拉取模型</p>
+          </div>
+          <button class="icon-control" value="cancel" type="submit" aria-label="关闭">×</button>
+        </div>
+        <label class="route-model-search-field">
+          搜索模型
+          <input id="routeModelSearchInput" type="search" autocomplete="off" placeholder="输入模型名筛选" />
+        </label>
+        <div class="route-model-list" id="routeModelList" aria-label="可用模型"></div>
+        <div class="route-model-batch">
+          <label>
+            批量线路 ID 前缀
+            <input id="routeModelPrefixInput" autocomplete="off" placeholder="例如 openrouter" />
+          </label>
+          <span id="routeModelSelectionStatus" role="status">未选择模型</span>
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost-button" value="cancel" type="submit">关闭</button>
+          <button class="dialog-primary" id="batchCreateRoutesButton" type="button" disabled>批量创建线路</button>
         </div>
       </form>
     </dialog>

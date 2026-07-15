@@ -1,5 +1,23 @@
 import { renderMarkdown } from "./markdown.js?v=development";
 
+const ICON_SPRITE = "/icons.svg?v=development";
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+function createIcon(name, className = "ui-icon") {
+  const icon = document.createElementNS(SVG_NAMESPACE, "svg");
+  icon.setAttribute("class", className);
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  const use = document.createElementNS(SVG_NAMESPACE, "use");
+  use.setAttribute("href", `${ICON_SPRITE}#${name}`);
+  icon.append(use);
+  return icon;
+}
+
+function setControlIcon(control, name) {
+  control?.querySelector("use")?.setAttribute("href", `${ICON_SPRITE}#${name}`);
+}
+
 const loginView = document.querySelector("#loginView");
 const chatView = document.querySelector("#chatView");
 const bootView = document.querySelector("#bootView");
@@ -307,6 +325,7 @@ toggleUserApiKey?.addEventListener("click", () => {
   userApiKeyInput.type = showing ? "password" : "text";
   toggleUserApiKey.title = showing ? "显示 API Key" : "隐藏 API Key";
   toggleUserApiKey.setAttribute("aria-label", toggleUserApiKey.title);
+  setControlIcon(toggleUserApiKey, showing ? "eye" : "eye-off");
 });
 document.addEventListener("click", (event) => {
   if (!modelPickerMenu || modelPickerMenu.hidden) return;
@@ -1636,43 +1655,66 @@ function chooseRoute(defaultRoute) {
 function renderRoutes() {
   routeSelect.textContent = "";
   modelPickerMenu.textContent = "";
+  const providerGroups = new Map();
   for (const route of routes) {
-    const option = document.createElement("option");
-    option.value = route.id;
     const label = route.label || route.id;
-    option.textContent = route.model && route.model !== label ? `${label} · ${route.model}` : label;
-    routeSelect.append(option);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `model-option${route.id === selectedRouteId ? " selected" : ""}`;
-    button.id = `model-option-${encodeURIComponent(route.id).replace(/%/g, "-")}`;
-    button.tabIndex = -1;
-    button.setAttribute("role", "option");
-    button.setAttribute("aria-selected", String(route.id === selectedRouteId));
-    const icon = document.createElement("span");
-    icon.className = "model-option-icon";
-    icon.textContent = route.type === "anthropic-messages" ? "A" : "AI";
-    const copy = document.createElement("span");
-    copy.className = "model-option-copy";
-    const name = document.createElement("strong");
-    name.textContent = route.model || label;
-    const meta = document.createElement("span");
-    meta.textContent = label;
-    copy.append(name, meta);
-    const badges = document.createElement("span");
-    badges.className = "model-option-badges";
-    if (route.supportsImages !== false) badges.append(modelBadge("图片"));
-    if (route.allowUserKey || route.requiresUserKey) badges.append(modelBadge(route.requiresUserKey ? "需 Key" : "可用 Key"));
-    const healthLabel = route.healthStatus === "healthy" ? "近期正常" : route.healthStatus === "unhealthy" ? "近期异常" : "未检查";
-    button.setAttribute("aria-label", `${route.model || label}，${label}，${healthLabel}`);
-    badges.append(modelBadge(healthLabel, `health-${route.healthStatus || "unknown"}`));
-    button.append(icon, copy, badges);
-    button.addEventListener("click", () => {
-      selectRoute(route.id);
-      closeModelPicker();
-      promptInput.focus();
-    });
-    modelPickerMenu.append(button);
+    if (!providerGroups.has(label)) providerGroups.set(label, []);
+    providerGroups.get(label).push(route);
+  }
+
+  let groupIndex = 0;
+  for (const [label, providerRoutes] of providerGroups) {
+    const nativeGroup = document.createElement("optgroup");
+    nativeGroup.label = label;
+    const group = document.createElement("div");
+    group.className = "model-provider-group";
+    group.setAttribute("role", "group");
+    const heading = document.createElement("span");
+    heading.className = "model-provider-heading";
+    heading.id = `model-provider-${groupIndex++}`;
+    heading.textContent = label;
+    group.setAttribute("aria-labelledby", heading.id);
+    group.append(heading);
+
+    for (const route of providerRoutes) {
+      const option = document.createElement("option");
+      option.value = route.id;
+      option.textContent = route.model || route.id;
+      nativeGroup.append(option);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `model-option${route.id === selectedRouteId ? " selected" : ""}`;
+      button.id = `model-option-${encodeURIComponent(route.id).replace(/%/g, "-")}`;
+      button.tabIndex = -1;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(route.id === selectedRouteId));
+      const icon = document.createElement("span");
+      icon.className = "model-option-icon";
+      icon.textContent = route.type === "anthropic-messages" ? "A" : "AI";
+      const copy = document.createElement("span");
+      copy.className = "model-option-copy";
+      const name = document.createElement("strong");
+      name.textContent = route.model || label;
+      const meta = document.createElement("span");
+      meta.textContent = route.id;
+      copy.append(name, meta);
+      const badges = document.createElement("span");
+      badges.className = "model-option-badges";
+      if (route.supportsImages !== false) badges.append(modelBadge("图片"));
+      if (route.allowUserKey || route.requiresUserKey) badges.append(modelBadge(route.requiresUserKey ? "需 Key" : "可用 Key"));
+      const healthLabel = route.healthStatus === "healthy" ? "近期正常" : route.healthStatus === "unhealthy" ? "近期异常" : "未检查";
+      button.setAttribute("aria-label", `${route.model || label}，${label}，${healthLabel}`);
+      badges.append(modelBadge(healthLabel, `health-${route.healthStatus || "unknown"}`));
+      button.append(icon, copy, badges);
+      button.addEventListener("click", () => {
+        selectRoute(route.id);
+        closeModelPicker();
+        promptInput.focus();
+      });
+      group.append(button);
+    }
+    routeSelect.append(nativeGroup);
+    modelPickerMenu.append(group);
   }
   routeSelect.value = selectedRouteId;
   routeSelect.disabled = routes.length <= 1;
@@ -1733,9 +1775,10 @@ function openModelPicker(focusTarget = "selected") {
   if (!modelPickerMenu || modelPickerTrigger.disabled) return;
   modelPickerMenu.hidden = false;
   modelPickerTrigger.setAttribute("aria-expanded", "true");
+  const options = [...modelPickerMenu.querySelectorAll(".model-option")];
   const target = focusTarget === "last"
-    ? modelPickerMenu.querySelector(".model-option:last-child")
-    : modelPickerMenu.querySelector(".model-option.selected") || modelPickerMenu.querySelector(".model-option");
+    ? options.at(-1)
+    : options.find((option) => option.classList.contains("selected")) || options[0];
   target?.focus();
   refreshRouteState();
 }
@@ -1922,68 +1965,85 @@ function renderMessages(forceScroll = true) {
     const node = document.createElement("article");
     node.className = `message ${message.role}`;
     node.dataset.messageId = message.id || String(index);
+    let contentTarget = node;
     if (message.role === "assistant") {
+      const avatar = document.createElement("div");
+      avatar.className = "message-avatar";
+      avatar.setAttribute("aria-hidden", "true");
+      avatar.textContent = "C";
+      const header = document.createElement("div");
+      header.className = "message-header";
+      const author = document.createElement("strong");
+      author.className = "message-author";
+      author.textContent = "Chatus";
+      header.append(author, createMessageMeta(message));
       const body = document.createElement("div");
       body.className = "message-body";
       const text = extractText(message.content);
       if (!text.trim()) body.append(document.createTextNode(isBusy && index === messages.length - 1 ? "…" : ""));
       else body.append(renderMarkdown(text));
-      node.append(body);
+      node.append(avatar, header, body);
     } else if (message.role === "error") {
       node.append(document.createTextNode(extractText(message.content) || "错误"));
     } else {
+      const bubble = document.createElement("div");
+      bubble.className = "message-bubble";
       const body = document.createElement("div");
       body.className = "message-body";
       const text = extractText(message.content);
       if (text) body.append(document.createTextNode(text));
-      node.append(body);
+      bubble.append(body);
+      node.append(bubble);
+      contentTarget = bubble;
     }
     for (const image of extractImages(message.content)) {
       const img = document.createElement("img");
       img.src = image;
       img.alt = "";
-      node.append(img);
+      contentTarget.append(img);
     }
-    if (message.role === "assistant" || message.role === "user") {
-      const meta = document.createElement("div");
-      meta.className = "message-meta";
-      if (message.role === "assistant" && message.routeId) {
-        const routeMeta = document.createElement("span");
-        routeMeta.className = `message-route${message.fallback ? " fallback" : ""}`;
-        routeMeta.textContent = message.fallback
-          ? `备用线路 · ${routeLabelById(message.routeId)}`
-          : routeLabelById(message.routeId);
-        meta.append(routeMeta);
-      }
-      const time = document.createElement("time");
-      time.dateTime = new Date(message.createdAt).toISOString();
-      time.textContent = formatMessageTime(message.createdAt);
-      time.title = new Date(message.createdAt).toLocaleString("zh-CN", { hour12: false });
-      meta.append(time);
-      node.append(meta);
-    }
+    if (message.role === "user") contentTarget.append(createMessageMeta(message));
     const actions = document.createElement("div");
     actions.className = "message-actions";
-    if (message.role === "assistant" || message.role === "user") actions.append(actionButton("复制", () => copyMessage(message)));
+    if (message.role === "assistant" || message.role === "user") actions.append(actionButton("copy", "复制", () => copyMessage(message)));
     if ((message.role === "assistant" || message.role === "user") && !isBusy && !offlineMode) {
-      actions.append(actionButton("分支", () => branchConversationAt(index)));
+      actions.append(actionButton("git-branch", "创建分支", () => branchConversationAt(index)));
     }
     if (message.role === "user" && !isBusy && !offlineMode) {
-      actions.append(actionButton("编辑", () => editUserMessage(index)));
-      actions.append(actionButton("重发", () => resendFromUser(index)));
+      actions.append(actionButton("pencil", "编辑消息", () => editUserMessage(index)));
+      actions.append(actionButton("send-horizontal", "重新发送", () => resendFromUser(index)));
     }
     if (message.role === "assistant" && !isBusy && !offlineMode) {
-      if (message.finishReason === "length") actions.append(actionButton("继续生成", () => continueAssistant(index)));
-      actions.append(actionButton("有帮助", () => rateAssistant(message, "up"), message.rating === "up"));
-      actions.append(actionButton("需改进", () => rateAssistant(message, "down"), message.rating === "down"));
-      actions.append(actionButton("重新生成", () => regenerateAssistant(index)));
+      if (message.finishReason === "length") actions.append(actionButton("refresh-cw", "继续生成", () => continueAssistant(index)));
+      actions.append(actionButton("thumbs-up", "有帮助", () => rateAssistant(message, "up"), message.rating === "up"));
+      actions.append(actionButton("thumbs-down", "需要改进", () => rateAssistant(message, "down"), message.rating === "down"));
+      actions.append(actionButton("rotate-cw", "重新生成", () => regenerateAssistant(index)));
     }
-    if (message.role === "error" && !isBusy && !offlineMode) actions.append(actionButton("重试", () => retryLastFailed()));
+    if (message.role === "error" && !isBusy && !offlineMode) actions.append(actionButton("rotate-cw", "重试", () => retryLastFailed()));
     if (actions.childNodes.length) node.append(actions);
     messageList.append(node);
   });
   if (forceScroll || nearBottom) messageList.scrollTop = messageList.scrollHeight;
   updateScrollButton(!nearBottom && isBusy);
+}
+
+function createMessageMeta(message) {
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+  if (message.role === "assistant" && message.routeId) {
+    const routeMeta = document.createElement("span");
+    routeMeta.className = `message-route${message.fallback ? " fallback" : ""}`;
+    routeMeta.textContent = message.fallback
+      ? `备用线路 · ${routeLabelById(message.routeId)}`
+      : routeLabelById(message.routeId);
+    meta.append(routeMeta);
+  }
+  const time = document.createElement("time");
+  time.dateTime = new Date(message.createdAt).toISOString();
+  time.textContent = formatMessageTime(message.createdAt);
+  time.title = new Date(message.createdAt).toLocaleString("zh-CN", { hour12: false });
+  meta.append(time);
+  return meta;
 }
 
 function updateScrollButton(markNewContent = false) {
@@ -2003,24 +2063,34 @@ function renderEmptyChat() {
   mark.className = "empty-chat-mark";
   mark.textContent = "C";
   const title = document.createElement("h2");
-  title.textContent = `你好，${currentDisplayName || currentUser || "朋友"}`;
+  title.textContent = `今天想一起完成什么，${currentDisplayName || currentUser || "朋友"}？`;
   const copy = document.createElement("p");
-  copy.textContent = route ? `正在使用 ${route.label || route.model || route.id}，从一个具体任务开始吧。` : "从一个具体任务开始吧。";
+  copy.textContent = route ? `${route.label || route.model || route.id} 已就绪，从一个具体任务开始吧。` : "从一个具体任务开始吧。";
   const suggestions = document.createElement("div");
   suggestions.className = "empty-suggestions";
   const prompts = [
-    "帮我梳理一个复杂问题，并列出下一步行动",
-    "阅读一段内容，提炼重点并给出改进建议",
-    "为一个想法设计三种可执行的实现方案",
-    "检查一段代码或文字，找出问题并优化",
+    { icon: "list-checks", title: "梳理问题", prompt: "帮我梳理一个复杂问题，并列出下一步行动" },
+    { icon: "file-search", title: "提炼重点", prompt: "阅读一段内容，提炼重点并给出改进建议" },
+    { icon: "lightbulb", title: "设计方案", prompt: "为一个想法设计三种可执行的实现方案" },
+    { icon: "code-xml", title: "检查优化", prompt: "检查一段代码或文字，找出问题并优化" },
   ];
-  for (const prompt of prompts) {
+  for (const item of prompts) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "empty-suggestion";
-    button.textContent = prompt;
+    const iconWrap = document.createElement("span");
+    iconWrap.className = "empty-suggestion-icon";
+    iconWrap.append(createIcon(item.icon));
+    const text = document.createElement("span");
+    text.className = "empty-suggestion-copy";
+    const heading = document.createElement("strong");
+    heading.textContent = item.title;
+    const prompt = document.createElement("span");
+    prompt.textContent = item.prompt;
+    text.append(heading, prompt);
+    button.append(iconWrap, text);
     button.addEventListener("click", () => {
-      promptInput.value = prompt;
+      promptInput.value = item.prompt;
       saveActiveDraft();
       autoResizePrompt();
       updateComposerMeta();
@@ -2032,12 +2102,14 @@ function renderEmptyChat() {
   messageList.append(empty);
 }
 
-function actionButton(label, onClick, active = false) {
+function actionButton(icon, label, onClick, active = false) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "msg-action";
   button.classList.toggle("active", active);
-  button.textContent = label;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.append(createIcon(icon));
   button.addEventListener("click", onClick);
   return button;
 }

@@ -9,6 +9,7 @@ const SHELL_ASSETS = [
   "/markdown.js",
   "/theme.js",
   "/pwa.js",
+  "/icons.svg",
   "/manifest.webmanifest",
   "/icon-192.png",
   "/icon-512.png",

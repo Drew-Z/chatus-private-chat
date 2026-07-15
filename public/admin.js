@@ -52,8 +52,15 @@ const routeLabelInput = document.querySelector("#routeLabelInput");
 const routeTypeInput = document.querySelector("#routeTypeInput");
 const routeBaseUrlInput = document.querySelector("#routeBaseUrlInput");
 const routeModelInput = document.querySelector("#routeModelInput");
-const routeModelOptions = document.querySelector("#routeModelOptions");
 const fetchRouteModelsButton = document.querySelector("#fetchRouteModelsButton");
+const browseRouteModelsButton = document.querySelector("#browseRouteModelsButton");
+const routeModelDialog = document.querySelector("#routeModelDialog");
+const routeModelDialogSummary = document.querySelector("#routeModelDialogSummary");
+const routeModelSearchInput = document.querySelector("#routeModelSearchInput");
+const routeModelList = document.querySelector("#routeModelList");
+const routeModelPrefixInput = document.querySelector("#routeModelPrefixInput");
+const routeModelSelectionStatus = document.querySelector("#routeModelSelectionStatus");
+const batchCreateRoutesButton = document.querySelector("#batchCreateRoutesButton");
 const routeKeyRefInput = document.querySelector("#routeKeyRefInput");
 const routeSecretInput = document.querySelector("#routeSecretInput");
 const saveRouteSecretButton = document.querySelector("#saveRouteSecretButton");
@@ -118,6 +125,8 @@ let accessRevision = "";
 let routeSecrets = {};
 let routeSecretMasterReady = false;
 let routeSecretMasterMessage = "";
+let routeModelSuggestions = [];
+let selectedRouteModels = new Set();
 const dirtyScopes = new Set();
 
 for (const item of adminNavItems) {
@@ -184,9 +193,16 @@ memoryUserSelect?.addEventListener("change", async () => {
 healthRouteButton?.addEventListener("click", () => checkRouteHealth());
 healthAllRoutesButton?.addEventListener("click", () => checkAllRoutesHealth());
 fetchRouteModelsButton?.addEventListener("click", () => fetchRouteModels());
+browseRouteModelsButton?.addEventListener("click", () => openRouteModelDialog());
+routeModelSearchInput?.addEventListener("input", () => renderRouteModelList());
+batchCreateRoutesButton?.addEventListener("click", () => createSelectedModelRoutes());
 saveRouteSecretButton?.addEventListener("click", () => saveRouteSecret());
 deleteRouteSecretButton?.addEventListener("click", () => deleteRouteSecret());
 routeKeyRefInput?.addEventListener("input", () => renderRouteSecretStatus());
+for (const field of [routeTypeInput, routeBaseUrlInput, routeKeyRefInput]) {
+  field?.addEventListener("input", () => invalidateRouteModels());
+  field?.addEventListener("change", () => invalidateRouteModels());
+}
 routeSecretInput?.addEventListener("input", () => renderRouteSecretStatus());
 routeSecretInput?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
@@ -331,15 +347,14 @@ routeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   syncConfigFromEditor();
 
-  const routeId = routeIdInput.value.trim();
+  const editor = readRouteEditor();
+  const routeId = editor.routeId;
   if (!/^[A-Za-z0-9._-]+$/.test(routeId)) {
     setStatus("线路 ID 只能包含字母、数字、点、下划线和短横线", true);
     return;
   }
 
-  const baseUrl = routeBaseUrlInput.value.trim();
-  const model = routeModelInput.value.trim();
-  if (!baseUrl || !model) {
+  if (!editor.baseUrl || !editor.model) {
     setStatus("Base URL 和模型名必填", true);
     return;
   }
@@ -349,18 +364,7 @@ routeForm.addEventListener("submit", async (event) => {
   const existing = config.routes[previous] || config.routes[routeId] || {};
   if (previous && previous !== routeId) delete config.routes[previous];
 
-  config.routes[routeId] = compactObject({
-    ...existing,
-    label: routeLabelInput.value.trim() || routeId,
-    type: routeTypeInput.value,
-    baseUrl,
-    apiKeyRef: routeKeyRefInput.value.trim(),
-    model,
-    fallbacks: splitCsv(routeFallbacksInput.value),
-    enabled: routeEnabledInput.checked,
-    requiresUserKey: routeRequiresKeyInput.checked,
-    supportsImages: routeImagesInput.checked,
-  });
+  config.routes[routeId] = buildRouteFromEditor(editor.model, existing, true);
   if (!routeEnabledInput.checked) repairDisabledRouteAssignments(routeId);
   selectedRoute = routeId;
   await attemptSaveConfig("线路配置已保存");
@@ -1314,6 +1318,7 @@ function relativeTime(value) {
 
 function populateRouteForm() {
   clearRouteSecretInput();
+  invalidateRouteModels();
   const route = selectedRoute === "__new" ? {} : config.routes?.[selectedRoute] || {};
   routeIdInput.value = selectedRoute === "__new" ? "" : selectedRoute;
   routeLabelInput.value = route.label || "";
@@ -1442,6 +1447,39 @@ function pruneRouteFromUsers(routeId, fallbackRoute) {
 function routeLabel(routeId) {
   const route = config.routes?.[routeId];
   return route ? `${route.label || routeId} · ${route.model || routeId}` : routeId;
+}
+
+function readRouteEditor() {
+  return {
+    routeId: routeIdInput.value.trim(),
+    label: routeLabelInput.value.trim(),
+    type: routeTypeInput.value,
+    baseUrl: routeBaseUrlInput.value.trim(),
+    model: routeModelInput.value.trim(),
+    apiKeyRef: routeKeyRefInput.value.trim(),
+    fallbacks: splitCsv(routeFallbacksInput.value),
+    enabled: routeEnabledInput.checked,
+    requiresUserKey: routeRequiresKeyInput.checked,
+    supportsImages: routeImagesInput.checked,
+  };
+}
+
+function buildRouteFromEditor(model, existing = {}, preserveLegacyKey = false) {
+  const editor = readRouteEditor();
+  const inherited = { ...existing };
+  if (!preserveLegacyKey) delete inherited.apiKey;
+  return compactObject({
+    ...inherited,
+    label: editor.label || editor.routeId || model,
+    type: editor.type,
+    baseUrl: editor.baseUrl,
+    apiKeyRef: editor.apiKeyRef,
+    model,
+    fallbacks: editor.fallbacks,
+    enabled: editor.enabled,
+    requiresUserKey: editor.requiresUserKey,
+    supportsImages: editor.supportsImages,
+  });
 }
 
 function splitCsv(value) {
@@ -1777,31 +1815,196 @@ async function fetchRouteModels() {
       }),
     });
     const models = Array.isArray(data.models) ? data.models : [];
-    routeModelOptions.textContent = "";
-    for (const model of models) {
-      const option = document.createElement("option");
-      option.value = model;
-      routeModelOptions.append(option);
-    }
-    if (!routeModelInput.value.trim() && models[0]) {
-      routeModelInput.value = models[0];
-      markDirty("route");
-    }
-    const filteredHint = routeModelInput.value.trim() && models.length > 1
-      ? "；当前输入会筛选下拉选项，清空模型名可查看全部"
-      : "，点击模型名输入框即可选择";
-    setRouteHealth(`已拉取 ${models.length} 个模型${filteredHint}`);
-    routeModelInput.focus();
-    try {
-      routeModelInput.showPicker?.();
-    } catch {
-      // Some browsers only allow the picker from a direct input gesture.
-    }
+    routeModelSuggestions = [...new Set(models.filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim()))];
+    selectedRouteModels = new Set();
+    browseRouteModelsButton.disabled = routeModelSuggestions.length === 0;
+    setRouteHealth(`已拉取 ${routeModelSuggestions.length} 个模型，可搜索、单选或批量创建线路`);
+    openRouteModelDialog();
   } catch (error) {
     setRouteHealth(error.message || "模型列表拉取失败", true);
   } finally {
     fetchRouteModelsButton.disabled = false;
   }
+}
+
+function invalidateRouteModels() {
+  routeModelSuggestions = [];
+  selectedRouteModels = new Set();
+  if (browseRouteModelsButton) browseRouteModelsButton.disabled = true;
+  if (routeModelDialog?.open) routeModelDialog.close();
+  if (routeModelSearchInput) routeModelSearchInput.value = "";
+  if (routeModelPrefixInput) routeModelPrefixInput.value = "";
+  renderRouteModelList();
+}
+
+function openRouteModelDialog() {
+  if (!routeModelDialog || !routeModelSuggestions.length) {
+    setRouteHealth("请先拉取当前服务商的模型列表", true);
+    return;
+  }
+  routeModelSearchInput.value = "";
+  if (!routeModelPrefixInput.value.trim()) routeModelPrefixInput.value = deriveRoutePrefix();
+  renderRouteModelList();
+  if (!routeModelDialog.open) routeModelDialog.showModal();
+  routeModelSearchInput.focus();
+}
+
+function renderRouteModelList() {
+  if (!routeModelList) return;
+  const query = routeModelSearchInput?.value.trim().toLocaleLowerCase() || "";
+  const visible = routeModelSuggestions.filter((model) => model.toLocaleLowerCase().includes(query));
+  routeModelList.textContent = "";
+
+  for (const model of visible) {
+    const row = document.createElement("div");
+    row.className = "route-model-row";
+    const select = document.createElement("input");
+    select.type = "checkbox";
+    select.checked = selectedRouteModels.has(model);
+    select.setAttribute("aria-label", `选择 ${model} 用于批量创建线路`);
+    select.addEventListener("change", () => {
+      if (select.checked) selectedRouteModels.add(model);
+      else selectedRouteModels.delete(model);
+      updateRouteModelSelection();
+    });
+    const use = document.createElement("button");
+    use.type = "button";
+    use.className = "route-model-use";
+    use.textContent = model;
+    use.title = `使用 ${model}`;
+    use.addEventListener("click", () => {
+      routeModelInput.value = model;
+      markDirty("route");
+      routeModelDialog.close();
+      setRouteHealth(`已选择模型 ${model}，保存线路后生效`);
+      routeModelInput.focus();
+    });
+    row.append(select, use);
+    routeModelList.append(row);
+  }
+
+  if (!visible.length) {
+    const empty = document.createElement("p");
+    empty.className = "route-model-empty";
+    empty.textContent = "没有匹配的模型";
+    routeModelList.append(empty);
+  }
+
+  if (routeModelDialogSummary) {
+    routeModelDialogSummary.textContent = query
+      ? `共 ${routeModelSuggestions.length} 个模型，当前显示 ${visible.length} 个`
+      : `共 ${routeModelSuggestions.length} 个模型，打开时始终显示完整列表`;
+  }
+  updateRouteModelSelection();
+}
+
+function updateRouteModelSelection() {
+  const count = selectedRouteModels.size;
+  if (routeModelSelectionStatus) routeModelSelectionStatus.textContent = count ? `已选择 ${count} 个模型` : "未选择模型";
+  if (batchCreateRoutesButton) batchCreateRoutesButton.disabled = count === 0;
+}
+
+async function createSelectedModelRoutes() {
+  const models = [...selectedRouteModels];
+  if (!models.length) return;
+
+  let parsedConfig;
+  try {
+    parsedConfig = normalizeClientConfig(JSON.parse(configJsonInput.value));
+  } catch {
+    setRouteHealth("高级配置 JSON 无法解析，请先修正后再批量创建", true);
+    return;
+  }
+
+  const editor = readRouteEditor();
+  if (!/^https?:\/\//i.test(editor.baseUrl)) {
+    setRouteHealth("请先填写有效的 http(s) Base URL", true);
+    routeModelDialog.close();
+    routeBaseUrlInput.focus();
+    return;
+  }
+  const prefix = normalizeRouteId(routeModelPrefixInput.value);
+  if (!prefix) {
+    routeModelSelectionStatus.textContent = "请填写有效的线路 ID 前缀";
+    routeModelPrefixInput.focus();
+    return;
+  }
+
+  const source = selectedRoute !== "__new" ? parsedConfig.routes?.[selectedRoute] || {} : {};
+  const nextRoutes = { ...(parsedConfig.routes || {}) };
+  const created = [];
+  const skipped = [];
+  for (const model of models) {
+    const duplicate = Object.entries(nextRoutes).find(([, route]) => (
+      (route?.type || "openai-chat") === editor.type
+      && route?.baseUrl === editor.baseUrl
+      && (route?.apiKeyRef || "") === editor.apiKeyRef
+      && route?.model === model
+    ));
+    if (duplicate) {
+      skipped.push(model);
+      continue;
+    }
+    const routeId = uniqueRouteId(`${prefix}-${normalizeRouteId(model) || "model"}`, nextRoutes);
+    nextRoutes[routeId] = buildRouteFromEditor(model, source, false);
+    created.push({ routeId, model });
+  }
+
+  if (!created.length) {
+    routeModelSelectionStatus.textContent = skipped.length ? "所选模型已经存在对应线路" : "没有可创建的线路";
+    return;
+  }
+
+  const previousConfig = config;
+  const previousSelectedRoute = selectedRoute;
+  config = { ...parsedConfig, routes: nextRoutes };
+  selectedRoute = created[0].routeId;
+  batchCreateRoutesButton.disabled = true;
+  const saved = await attemptSaveConfig(
+    `已创建 ${created.length} 条模型线路${skipped.length ? `，跳过 ${skipped.length} 个已有模型` : ""}`,
+  );
+  if (!saved) {
+    config = previousConfig;
+    selectedRoute = previousSelectedRoute;
+    routeModelSelectionStatus.textContent = "保存失败，请检查配置后重试";
+    batchCreateRoutesButton.disabled = false;
+    return;
+  }
+
+  selectedRouteModels = new Set();
+  if (routeModelDialog.open) routeModelDialog.close();
+}
+
+function deriveRoutePrefix() {
+  const label = normalizeRouteId(routeLabelInput.value);
+  if (label) return label;
+  try {
+    const hostname = normalizeRouteId(new URL(routeBaseUrlInput.value).hostname.replace(/^api\./i, ""));
+    if (hostname) return hostname;
+  } catch {}
+  return normalizeRouteId(routeIdInput.value) || "provider";
+}
+
+function normalizeRouteId(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .replace(/-{2,}/g, "-")
+    .slice(0, 72);
+}
+
+function uniqueRouteId(candidate, routes) {
+  const base = candidate.slice(0, 72) || "model";
+  if (!routes[base]) return base;
+  let suffix = 2;
+  let next = "";
+  do {
+    const suffixText = `-${suffix++}`;
+    next = `${base.slice(0, 72 - suffixText.length)}${suffixText}`;
+  } while (routes[next]);
+  return next;
 }
 
 function setRouteHealth(message, isError = false) {

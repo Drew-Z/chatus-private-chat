@@ -51,12 +51,40 @@ const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?
 assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: updates must not activate during install");
 
 const chatScript = await readFile(path.join(root, "public/app.js"), "utf8");
+const chatHtml = await readFile(path.join(root, "public/index.html"), "utf8");
 const adminScript = await readFile(path.join(root, "public/admin.js"), "utf8");
 const adminHtml = await readFile(path.join(root, "public/admin.html"), "utf8");
 const styles = await readFile(path.join(root, "public/styles.css"), "utf8");
+const icons = await readFile(path.join(root, "public/icons.svg"), "utf8");
 assert(chatScript.includes('./markdown.js?v=development'), "app.js: markdown module must share the release fingerprint");
 assert(adminScript.includes('./admin-report.js?v=development'), "admin.js: report module must share the release fingerprint");
 assert(serviceWorker.includes('"/admin-report.js"'), "sw.js: offline admin shell must include the report module");
+assert(serviceWorker.includes('"/icons.svg"'), "sw.js: offline chat shell must include the Lucide sprite");
+assert(icons.includes("lucide-static v1.24.0 - ISC"), "icons.svg: missing Lucide license provenance");
+assert(chatHtml.includes("/icons.svg?v=development#"), "index.html: Lucide sprite references must share the release fingerprint");
+const spriteIconIds = new Set([...icons.matchAll(/<symbol id="([a-z0-9-]+)"/g)].map((match) => match[1]));
+const staticIconNames = [...chatHtml.matchAll(/icons\.svg\?v=development#([a-z0-9-]+)/g)].map((match) => match[1]);
+const actionIconNames = [...chatScript.matchAll(/actionButton\("([a-z0-9-]+)"/g)].map((match) => match[1]);
+const promptIconNames = [...chatScript.matchAll(/icon: "([a-z0-9-]+)"/g)].map((match) => match[1]);
+const referencedIconNames = [...new Set([...staticIconNames, ...actionIconNames, ...promptIconNames, "eye", "eye-off"])];
+const missingIcons = referencedIconNames.filter((name) => !spriteIconIds.has(name));
+assert(!missingIcons.length, `icons.svg: missing referenced symbols: ${missingIcons.join(", ")}`);
+assert(chatScript.includes('button.setAttribute("aria-label", label)'), "app.js: icon-only message actions need accessible names");
+assert(chatScript.includes("function actionButton(icon, label, onClick"), "app.js: message actions must use the shared icon helper");
+assert(styles.includes("@media (hover: hover) and (pointer: fine)"), "styles.css: message action fading must be limited to precise hover pointers");
+assert(styles.includes("opacity: 0.68;"), "styles.css: desktop message actions should remain subtly visible");
+assert(!styles.includes("pointer-events: none;\n    opacity: 0;"), "styles.css: message actions must not require hover to become operable");
+assert(
+  /@media \(max-width: 820px\)[\s\S]*?\.chat-product-body \.message-actions \{\s*pointer-events: auto;\s*opacity: 1;/.test(styles),
+  "styles.css: narrow touch layouts must expose message actions without hover",
+);
+assert(chatScript.includes('group.className = "model-provider-group"'), "app.js: model picker routes must be grouped by provider label");
+assert(chatScript.includes('const options = [...modelPickerMenu.querySelectorAll(".model-option")]'), "app.js: grouped model picker must preserve keyboard option traversal");
+assert(chatScript.includes('bubble.className = "message-bubble"'), "app.js: user messages need a nested visual bubble");
+assert(chatScript.includes("contentTarget.append(createMessageMeta(message))"), "app.js: user metadata should remain inside the visual bubble");
+assert(styles.includes("calc((100% - 720px) / 2)"), "styles.css: the conversation reading column must be 720px");
+assert(styles.includes("width: min(720px, 100%);"), "styles.css: the composer must align with the reading column");
+assert(styles.includes(".dialog-primary:disabled"), "styles.css: batch route creation needs a visible disabled state");
 assert(chatScript.includes('promptInput.addEventListener("input", () => saveActiveDraft())'), "app.js: missing draft input persistence");
 assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft restoration");
 assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout must clear local drafts");
@@ -134,7 +162,24 @@ const modelFetchStart = adminScript.indexOf("async function fetchRouteModels()")
 const modelFetchEnd = adminScript.indexOf("function setRouteHealth", modelFetchStart);
 const modelFetchSource = adminScript.slice(modelFetchStart, modelFetchEnd);
 assert(modelFetchSource && !modelFetchSource.includes("routeSecretInput"), "admin.js: model listing must send only the route key reference");
-assert(modelFetchSource.includes("当前输入会筛选下拉选项，清空模型名可查看全部"), "admin.js: filtered datalist results must explain why the visible option count can be smaller");
+assert(!adminHtml.includes("<datalist"), "admin.html: route models must not use a native datalist");
+const routeModelInputTag = adminHtml.match(/<input[^>]*id="routeModelInput"[^>]*>/)?.[0] || "";
+assert(routeModelInputTag && !/\slist=/.test(routeModelInputTag), "admin.html: route model input must preserve independent manual entry");
+for (const id of ["browseRouteModelsButton", "routeModelDialog", "routeModelSearchInput", "routeModelList", "routeModelPrefixInput", "routeModelSelectionStatus", "batchCreateRoutesButton"]) {
+  assert(adminHtml.includes(`id="${id}"`), `admin.html: missing model chooser control #${id}`);
+}
+const modelListStart = adminScript.indexOf("function renderRouteModelList()");
+const modelListEnd = adminScript.indexOf("function updateRouteModelSelection", modelListStart);
+const modelListSource = adminScript.slice(modelListStart, modelListEnd);
+const modelFilterSource = modelListSource.slice(0, modelListSource.indexOf("for (const model of visible)"));
+assert(modelFilterSource.includes("routeModelSearchInput") && !/\brouteModelInput\b/.test(modelFilterSource), "admin.js: model search must be independent from the selected model field");
+assert(modelListSource.includes("打开时始终显示完整列表"), "admin.js: opening the chooser must expose the full fetched model list");
+const batchCreateStart = adminScript.indexOf("async function createSelectedModelRoutes()");
+const batchCreateEnd = adminScript.indexOf("function deriveRoutePrefix", batchCreateStart);
+const batchCreateSource = adminScript.slice(batchCreateStart, batchCreateEnd);
+assert(batchCreateSource.includes("uniqueRouteId"), "admin.js: batch-created routes need collision-safe IDs");
+assert(!batchCreateSource.includes("routeSecretInput"), "admin.js: batch route creation must never read plaintext route secrets");
+assert(!batchCreateSource.includes("allowedRoutes"), "admin.js: batch route creation must preserve explicit user route permissions");
 
 console.log("Frontend structure checks passed");
 

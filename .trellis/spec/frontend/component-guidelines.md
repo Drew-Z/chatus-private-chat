@@ -20,6 +20,15 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Reusable helpers accept explicit values and return data or DOM-safe output. See `renderMarkdown` in `public/markdown.js` and `buildAdminReportCsv` in `public/admin-report.js`.
 - Pass the owning entity explicitly for asynchronous work. Cloud saves and summaries retain the chat/session ID so results do not update whichever chat happens to be active later.
 
+## Admin Model Discovery And Batch Routes
+
+- Keep `routeModelInput` as an ordinary manual text input. A native `datalist` is not an acceptable full-list browser because the browser filters options using the current input value.
+- Store fetched provider models in module-scoped ephemeral state. Opening the model dialog clears only its dedicated search field and renders the complete fetched list; it must not clear or filter from `routeModelInput`.
+- Invalidate fetched models when the selected route, interface type, Base URL, or API Key Ref changes. Do not persist or log upstream model responses.
+- Keep the runtime contract as one route ID per executable model. Batch setup clones the visible provider editor fields into ordinary route objects and saves them through `/api/admin/config` with `expectedRevision`.
+- Batch setup may copy an `apiKeyRef`, but it must never read `routeSecretInput`, copy a legacy plaintext `apiKey`, overwrite an existing route ID, or modify `defaults.allowedRoutes` / user `allowedRoutes`.
+- Routes with the same `label` are one provider group in the signed-in model picker. Keep every selectable button discoverable through the shared `.model-option` query so Arrow, Home, End, Escape, and Tab behavior continues to work across groups.
+
 ## Styling Patterns
 
 - Put visual rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in `app.js`, `admin.js`, and `theme.js`.
@@ -39,4 +48,6 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Updating DOM from a stale async result without checking the source chat or current revision.
 - Applying inline styles, which weakens the Content Security Policy.
 - Replacing destructive actions without preserving undo, conflict, or confirmation behavior already present in the UI.
-- Treating a native `datalist` popup as an unfiltered list. Browsers filter suggestions by the input's current value, so a fetched total can exceed the visible options. Preserve the current value, but make status copy distinguish the total result count from the filtered suggestion view and explain that clearing the input reveals all options.
+- Reintroducing a native `datalist` for remote model discovery. It couples the selected value to browser filtering and makes the fetched total differ from what administrators can inspect.
+- Building a persisted provider abstraction when the existing route API is sufficient. Preserve route-level health, permission, fallback, and metric boundaries; remove repetitive administration in the UI instead.
+- Hiding message actions at zero opacity or disabling their pointer events until hover. Desktop may use a low-contrast visible state, while touch layouts keep the toolbar fully visible.

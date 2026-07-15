@@ -41,9 +41,9 @@
 
       <section class="chat-view" id="chatView" hidden>
         <div class="mobile-bar" id="mobileBar">
-          <button class="icon-control" id="openSidebarButton" type="button" title="打开菜单" aria-label="打开菜单">☰</button>
+          <button class="icon-control" id="openSidebarButton" type="button" title="打开菜单" aria-label="打开菜单"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#menu"></use></svg></button>
           <strong id="mobileTitle">新会话</strong>
-          <button class="icon-control" id="mobileNewChatButton" type="button" title="新会话" aria-label="新会话">＋</button>
+          <button class="icon-control" id="mobileNewChatButton" type="button" title="新会话" aria-label="新会话"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#plus"></use></svg></button>
         </div>
         <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
 
@@ -55,12 +55,12 @@
                 <strong>Chatus</strong>
                 <span>私人 AI 工作台</span>
               </div>
-              <button class="icon-control side-close" id="closeSidebarButton" type="button" title="关闭" aria-label="关闭">×</button>
+              <button class="icon-control side-close" id="closeSidebarButton" type="button" title="关闭" aria-label="关闭"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#x"></use></svg></button>
             </div>
 
-            <button class="new-chat-primary" id="newChatButton" type="button" aria-keyshortcuts="Alt+N"><span>＋</span> 新会话</button>
+            <button class="new-chat-primary" id="newChatButton" type="button" aria-keyshortcuts="Alt+N"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#plus"></use></svg><span>新会话</span></button>
             <div class="session-search-wrap">
-              <span aria-hidden="true">⌕</span>
+              <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#search"></use></svg>
               <input class="session-search" id="sessionSearch" type="search" placeholder="搜索标题和消息" autocomplete="off" aria-keyshortcuts="Control+K Meta+K" />
             </div>
             <div class="side-section-label">对话</div>
@@ -90,7 +90,7 @@
             <div class="account-row">
               <div class="account-avatar" aria-hidden="true">U</div>
               <div class="account-copy"><strong id="userLabel"></strong><span>今日剩余 <b id="usageText">--</b></span></div>
-              <button class="icon-control" id="logoutButton" type="button" title="退出登录" aria-label="退出登录">↪</button>
+              <button class="icon-control" id="logoutButton" type="button" title="退出登录" aria-label="退出登录"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#log-out"></use></svg></button>
             </div>
           </div>
         </aside>
@@ -103,14 +103,14 @@
               <select id="routeSelect" class="native-route-select" aria-label="选择模型"></select>
               <div class="model-picker">
                 <button class="model-picker-trigger" id="modelPickerTrigger" type="button" aria-haspopup="listbox" aria-controls="modelPickerMenu" aria-expanded="false">
-                  <span class="model-picker-name" id="modelPickerName">选择模型</span><span class="model-picker-chevron">⌄</span>
+                  <span class="model-picker-name" id="modelPickerName">选择模型</span><svg class="ui-icon model-picker-chevron" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#chevron-down"></use></svg>
                 </button>
                 <div class="model-picker-menu" id="modelPickerMenu" role="listbox" aria-label="选择模型" hidden></div>
               </div>
               <label id="userApiKeyLabel" for="userApiKeyInput">个人 API Key</label>
               <div class="user-key-field">
                 <input id="userApiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="使用自己的 API Key" />
-                <button class="key-visibility" id="toggleUserApiKey" type="button" title="显示 API Key" aria-label="显示 API Key">◉</button>
+                <button class="key-visibility" id="toggleUserApiKey" type="button" title="显示 API Key" aria-label="显示 API Key"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#eye"></use></svg></button>
               </div>
             </div>
             <div class="chat-heading">
@@ -118,25 +118,25 @@
               <p id="connectionState">已连接</p>
             </div>
             <div class="header-actions">
-              <button class="icon-control" id="branchOriginButton" type="button" title="返回原会话" aria-label="返回原会话" hidden>↩</button>
-              <button class="icon-control" id="exportButton" type="button" title="导出会话" aria-label="导出会话">⇩</button>
-              <button class="icon-control" id="clearButton" type="button" title="开始空白会话" aria-label="开始空白会话">⌫</button>
+              <button class="icon-control" id="branchOriginButton" type="button" title="返回原会话" aria-label="返回原会话" hidden><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#corner-up-left"></use></svg></button>
+              <button class="icon-control" id="exportButton" type="button" title="导出会话" aria-label="导出会话"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#download"></use></svg></button>
+              <button class="icon-control" id="clearButton" type="button" title="开始空白会话" aria-label="开始空白会话"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#eraser"></use></svg></button>
             </div>
           </header>
 
           <div class="message-list" id="messageList" aria-live="polite"></div>
-          <button class="scroll-bottom-button" id="scrollBottomButton" type="button" title="回到最新消息" aria-label="回到最新消息" hidden>↓</button>
+          <button class="scroll-bottom-button" id="scrollBottomButton" type="button" title="回到最新消息" aria-label="回到最新消息" hidden><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#arrow-down"></use></svg></button>
 
           <form class="composer" id="chatForm">
             <div class="composer-inner">
               <div class="drop-hint" id="dropHint" hidden>放开以添加图片</div>
               <div class="attachment-row" id="attachmentRow"></div>
               <div class="composer-bar">
-                <label class="icon-button" for="imageInput" title="添加图片" aria-label="添加图片">＋</label>
+                <label class="icon-button" for="imageInput" title="添加图片" aria-label="添加图片"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#image-plus"></use></svg></label>
                 <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
                 <textarea id="promptInput" rows="1" placeholder="给 Chatus 发送消息" required></textarea>
-                <button class="send-button" id="sendButton" type="submit" title="发送" aria-label="发送">↑</button>
-                <button class="stop-button" id="stopButton" type="button" title="停止生成" aria-label="停止生成" hidden>■</button>
+                <button class="send-button" id="sendButton" type="submit" title="发送" aria-label="发送"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#arrow-up"></use></svg></button>
+                <button class="stop-button" id="stopButton" type="button" title="停止生成" aria-label="停止生成" hidden><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#square"></use></svg></button>
               </div>
               <div class="composer-meta">
                 <span id="composerHint">支持粘贴或拖拽图片</span>
@@ -152,7 +152,7 @@
       <form method="dialog" id="appDialogForm">
         <div class="dialog-heading">
           <h2 id="appDialogTitle">确认操作</h2>
-          <button class="icon-control" value="cancel" type="submit" aria-label="关闭">×</button>
+          <button class="icon-control" value="cancel" type="submit" aria-label="关闭"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#x"></use></svg></button>
         </div>
         <p id="appDialogDescription"></p>
         <textarea id="appDialogInput" rows="4" hidden></textarea>
@@ -166,7 +166,7 @@
       <form method="dialog" id="feedbackForm">
         <div class="dialog-heading">
           <h2>哪里需要改进？</h2>
-          <button class="icon-control" value="cancel" type="submit" aria-label="关闭">×</button>
+          <button class="icon-control" value="cancel" type="submit" aria-label="关闭"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#x"></use></svg></button>
         </div>
         <fieldset class="feedback-options">
           <label><input type="radio" name="feedbackReason" value="inaccurate" required /><span>内容不准确</span></label>
@@ -185,7 +185,7 @@
       <form method="dialog">
         <div class="dialog-heading">
           <h2>设置</h2>
-          <button class="icon-control" value="close" type="submit" aria-label="关闭">×</button>
+          <button class="icon-control" value="close" type="submit" aria-label="关闭"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#x"></use></svg></button>
         </div>
         <fieldset class="theme-options" id="themeOptions">
           <legend>主题</legend>
