@@ -203,3 +203,37 @@ Redesigned the signed-in chat workspace with Lucide controls, a 720px reading co
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Configurable AI capabilities
+
+**Date**: 2026-07-16
+**Task**: Configurable AI capabilities
+**Branch**: `main`
+
+### Summary
+
+Added administrator-configured Skills, provider-neutral built-in and remote MCP tools, encrypted MCP secret management, conversation-scoped approvals, capability SSE, per-conversation Skill selection, tool timelines, tests, browser verification, and frontend contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `22bbff4` | (see git log) |
+| `a5520a9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
