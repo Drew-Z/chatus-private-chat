@@ -8,11 +8,21 @@ const ROUTES_CONFIG_KEY = "config:routes_config";
 const ADMIN_AUDIT_KEY = "config:admin_audit";
 const FEEDBACK_KEY = "feedback:recent";
 const ROUTE_SECRET_PREFIX = "route-secret:";
+const MCP_SECRET_PREFIX = "mcp-secret:";
 
 async function clearRouteSecrets() {
   let cursor: string | undefined;
   do {
     const page = await env.CHAT_STORE.list({ prefix: ROUTE_SECRET_PREFIX, cursor, limit: 100 });
+    await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+}
+
+async function clearMcpSecrets() {
+  let cursor: string | undefined;
+  do {
+    const page = await env.CHAT_STORE.list({ prefix: MCP_SECRET_PREFIX, cursor, limit: 100 });
     await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
@@ -37,6 +47,14 @@ function apiRequest(path: string, cookie: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("Cookie", cookie);
   return exports.default.fetch(new Request(`https://example.test${path}`, { ...init, headers }));
+}
+
+async function readCapabilityEvents(response: Response): Promise<any[]> {
+  const text = await response.text();
+  return text
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice(6)));
 }
 
 async function adminLogin() {
@@ -72,6 +90,7 @@ describe("Worker API", () => {
       env.CHAT_STORE.delete(ADMIN_AUDIT_KEY),
       env.CHAT_STORE.delete(FEEDBACK_KEY),
       clearRouteSecrets(),
+      clearMcpSecrets(),
     ]);
   });
 
@@ -97,6 +116,328 @@ describe("Worker API", () => {
       user: label,
       routes: [{ id: "default", healthStatus: "unhealthy" }],
     });
+  });
+
+  it("normalizes capability registries and projects only explicitly allowed tools", async () => {
+    const adminCookie = await adminLogin();
+    const configResponse = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          routes: {
+            capable: {
+              label: "Capable",
+              type: "openai-chat",
+              baseUrl: "https://capable.example/v1",
+              model: "capable-model",
+              apiKey: "capable-key",
+              supportsTools: true,
+            },
+          },
+          defaults: {
+            defaultRoute: "capable",
+            allowedRoutes: ["capable"],
+            allowedTools: ["builtin:text_stats"],
+          },
+          mcpServers: {
+            remote: {
+              enabled: true,
+              label: "Remote",
+              endpoint: "https://mcp.example/rpc",
+              authType: "none",
+            },
+            malformed: { endpoint: "http://localhost", authType: "unknown" },
+          },
+          tools: {
+            "builtin:text_stats": {
+              enabled: true,
+              label: "Text stats",
+              inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+              executor: { type: "builtin", name: "text_stats" },
+            },
+            "mcp:remote:lookup": {
+              enabled: true,
+              label: "Lookup",
+              inputSchema: { type: "object", properties: {} },
+              confirmation: "auto",
+              executor: { type: "mcp", serverId: "remote", remoteName: "lookup" },
+            },
+            malformed: { enabled: true, inputSchema: "not-a-schema", executor: { type: "builtin", name: "other" } },
+          },
+          skills: {
+            later: {
+              enabled: true,
+              label: "Later",
+              instructions: "Later instructions",
+              order: 20,
+              toolIds: ["builtin:text_stats", "mcp:remote:lookup"],
+            },
+            first: {
+              enabled: true,
+              label: "First",
+              instructions: "First instructions",
+              order: 10,
+              toolIds: ["builtin:text_stats"],
+            },
+            disabled: { enabled: false, label: "Disabled", instructions: "Hidden" },
+            malformed: { enabled: true, label: "Malformed" },
+          },
+        },
+      }),
+    });
+    expect(configResponse.status).toBe(200);
+    const saved = await configResponse.json() as any;
+    expect(saved.config.mcpServers).not.toHaveProperty("malformed");
+    expect(saved.config.tools).not.toHaveProperty("malformed");
+    expect(saved.config.skills).not.toHaveProperty("malformed");
+    expect(saved.config.tools["mcp:remote:lookup"].confirmation).toBe("first-per-conversation");
+
+    const { cookie } = await login();
+    const session = await apiRequest("/api/session", cookie).then((response) => response.json()) as any;
+    expect(session.routes).toMatchObject([{ id: "capable", supportsTools: true }]);
+    expect(session.tools).toEqual([
+      expect.objectContaining({ id: "builtin:text_stats", source: "builtin", confirmation: "auto" }),
+    ]);
+    expect(session.skills).toMatchObject([
+      { id: "first", toolIds: ["builtin:text_stats"] },
+      { id: "later", toolIds: ["builtin:text_stats"] },
+    ]);
+    expect(JSON.stringify(session)).not.toContain("mcp.example");
+    expect(JSON.stringify(session)).not.toContain("inputSchema");
+  });
+
+  it("adds the disabled built-in tool to legacy editable configs without granting it", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://legacy.example/v1",
+          model: "legacy-model",
+          apiKey: "legacy-key",
+          supportsTools: true,
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+    }));
+    const adminCookie = await adminLogin();
+    const editable = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    expect(editable.config.tools["builtin:text_stats"]).toMatchObject({
+      enabled: false,
+      confirmation: "auto",
+      executor: { type: "builtin", name: "text_stats" },
+    });
+
+    const { cookie } = await login();
+    const session = await apiRequest("/api/session", cookie).then((response) => response.json()) as any;
+    expect(session.tools).toEqual([]);
+  });
+
+  it("caps selected Skills and composes them in administrator order", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://skills.example/v1",
+          model: "skills-model",
+          apiKey: "skills-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      skills: Object.fromEntries([1, 2, 3, 4].map((order) => [`skill-${order}`, {
+        enabled: true,
+        label: `Skill ${order}`,
+        instructions: `instruction-${order}`,
+        order,
+      }])),
+    }));
+    const { cookie } = await login();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () =>
+      new Response("data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } }));
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "default",
+        skillIds: ["skill-4", "skill-2", "skill-3", "skill-1"],
+        messages: [{ role: "user", content: "完成一个带技能的小任务" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    const upstream = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as any;
+    const system = upstream.messages.filter((message: any) => message.role === "system").map((message: any) => message.content).join("\n");
+    expect(system.indexOf("instruction-2")).toBeLessThan(system.indexOf("instruction-3"));
+    expect(system.indexOf("instruction-3")).toBeLessThan(system.indexOf("instruction-4"));
+    expect(system).not.toContain("instruction-1");
+  });
+
+  it("completes an OpenAI-compatible built-in tool round trip", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        tools: {
+          label: "Tools",
+          type: "openai-chat",
+          baseUrl: "https://tools-openai.example/v1",
+          model: "tools-model",
+          apiKey: "tools-key",
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "tools",
+        allowedRoutes: ["tools"],
+        allowedTools: ["builtin:text_stats"],
+      },
+      tools: {
+        "builtin:text_stats": {
+          enabled: true,
+          label: "Text stats",
+          inputSchema: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+            additionalProperties: false,
+          },
+          executor: { type: "builtin", name: "text_stats" },
+        },
+      },
+      skills: {
+        analyze: {
+          enabled: true,
+          label: "Analyze",
+          instructions: "Use text statistics when useful.",
+          toolIds: ["builtin:text_stats"],
+        },
+      },
+    }));
+    const { cookie } = await login();
+    let providerName = "";
+    const requestBodies: any[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      requestBodies.push(body);
+      if (requestBodies.length === 1) {
+        providerName = body.tools[0].function.name;
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call-openai-1",
+                type: "function",
+                function: { name: providerName, arguments: JSON.stringify({ text: "Hello\n世界" }) },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "统计完成" }, finish_reason: "stop" }],
+      }), { headers: { "Content-Type": "application/json" } });
+    });
+
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "tools",
+        chatId: "chat-tools-openai",
+        skillIds: ["analyze"],
+        messages: [{ role: "user", content: "统计这段文本" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Chatus-Stream")).toBe("capability-v1");
+    const events = await readCapabilityEvents(response);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "run", routeId: "tools", fallback: false }),
+      expect.objectContaining({ type: "tool", event: expect.objectContaining({ status: "running", toolId: "builtin:text_stats" }) }),
+      expect.objectContaining({ type: "tool", event: expect.objectContaining({ status: "completed", resultPreview: expect.stringContaining('"words":2') }) }),
+      { type: "assistant_delta", text: "统计完成" },
+      { type: "finish", finishReason: "stop" },
+      { type: "done" },
+    ]));
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]).toMatchObject({ stream: false, tool_choice: "auto" });
+    expect(requestBodies[1].messages.at(-1)).toMatchObject({
+      role: "tool",
+      tool_call_id: "call-openai-1",
+      content: JSON.stringify({ characters: 8, codePoints: 8, words: 2, lines: 2 }),
+    });
+    expect(providerName).toMatch(/^text_stats_[a-f0-9]{10}$/);
+  });
+
+  it("completes an Anthropic built-in tool round trip", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        tools: {
+          label: "Tools",
+          type: "anthropic-messages",
+          baseUrl: "https://tools-anthropic.example",
+          model: "claude-tools",
+          apiKey: "anthropic-key",
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "tools",
+        allowedRoutes: ["tools"],
+        allowedTools: ["builtin:text_stats"],
+      },
+      tools: {
+        "builtin:text_stats": {
+          enabled: true,
+          label: "Text stats",
+          inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+          executor: { type: "builtin", name: "text_stats" },
+        },
+      },
+      skills: {
+        analyze: { enabled: true, label: "Analyze", instructions: "Analyze text.", toolIds: ["builtin:text_stats"] },
+      },
+    }));
+    const { cookie } = await login();
+    const requestBodies: any[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      requestBodies.push(body);
+      if (requestBodies.length === 1) {
+        return new Response(JSON.stringify({
+          content: [{ type: "tool_use", id: "toolu-1", name: body.tools[0].name, input: { text: "one two" } }],
+          stop_reason: "tool_use",
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        content: [{ type: "text", text: "Anthropic 完成" }],
+        stop_reason: "end_turn",
+      }), { headers: { "Content-Type": "application/json" } });
+    });
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "tools",
+        chatId: "chat-tools-anthropic",
+        skillIds: ["analyze"],
+        messages: [{ role: "user", content: "统计单词" }],
+      }),
+    });
+    const events = await readCapabilityEvents(response);
+    expect(events).toEqual(expect.arrayContaining([
+      { type: "assistant_delta", text: "Anthropic 完成" },
+      { type: "finish", finishReason: "end_turn" },
+      { type: "done" },
+    ]));
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0].stream).toBe(false);
+    expect(requestBodies[1].messages.slice(-2)).toMatchObject([
+      { role: "assistant", content: [{ type: "tool_use", id: "toolu-1" }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu-1", content: expect.stringContaining('"words":2') }] },
+    ]);
   });
 
   it("reports core binding health without exposing configuration details", async () => {
@@ -478,9 +819,27 @@ describe("Worker API", () => {
       summary: "",
       summaryUntil: 0,
       pinned: true,
+      skillIds: ["writer", "writer", "analyst", "research", "ignored"],
       messages: [
         { role: "user", content: "完成一个小任务" },
-        { role: "assistant", content: "已完成", routeId: "backup", fallback: true, createdAt: 123456 },
+        {
+          role: "assistant",
+          content: "已完成",
+          routeId: "backup",
+          fallback: true,
+          createdAt: 123456,
+          toolEvents: [{
+            id: "call-1",
+            toolId: "builtin:text_stats",
+            label: "文本统计",
+            source: "builtin",
+            status: "running",
+            argumentSummary: "text: private raw value",
+            resultPreview: "x".repeat(2_100),
+            createdAt: 100,
+            updatedAt: 110,
+          }],
+        },
       ],
     };
     const put = await apiRequest("/api/chats", cookie, {
@@ -503,9 +862,22 @@ describe("Worker API", () => {
 
     const list = await apiRequest("/api/chats", cookie);
     expect(list.status).toBe(200);
-    await expect(list.json()).resolves.toMatchObject({
-      chats: [{ id: "chat-1", title: "测试会话", pinned: true, messages: [{ role: "user" }, { routeId: "backup", fallback: true, createdAt: 123456 }] }],
+    const storedChat = await list.json() as any;
+    expect(storedChat).toMatchObject({
+      chats: [{
+        id: "chat-1",
+        title: "测试会话",
+        pinned: true,
+        skillIds: ["writer", "analyst", "research"],
+        messages: [{ role: "user" }, {
+          routeId: "backup",
+          fallback: true,
+          createdAt: 123456,
+          toolEvents: [{ status: "failed", errorCode: "interrupted", truncated: true }],
+        }],
+      }],
     });
+    expect(storedChat.chats[0].messages[1].toolEvents[0].resultPreview).toHaveLength(2_000);
 
     await apiRequest("/api/chats", cookie, {
       method: "PUT",
@@ -651,6 +1023,12 @@ describe("Worker API", () => {
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {
       method: "DELETE",
     }))).status).toBe(401);
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/mcp-secrets"))).status).toBe(401);
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/mcp-secrets/PRIVATE_TEST_KEY", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret: "test-private-value" }),
+    }))).status).toBe(401);
   });
 
   it("encrypts, rotates and deletes managed route keys without exposing plaintext", async () => {
@@ -736,6 +1114,382 @@ describe("Worker API", () => {
       expect.objectContaining({ action: "route-secret.delete", target: apiKeyRef }),
     ]));
     expect(JSON.stringify(audit)).not.toContain(apiKey);
+  });
+
+  it("isolates MCP secrets in their own encrypted namespace", async () => {
+    const cookie = await adminLogin();
+    const secretRef = "TEST_ROUTE_KEY";
+    const secret = "managed-mcp-secret-value";
+    const created = await apiRequest(`/api/admin/mcp-secrets/${secretRef}`, cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret }),
+    });
+    const createdPayload = await created.json() as any;
+    expect(created.status, JSON.stringify(createdPayload)).toBe(200);
+    expect(createdPayload.item).toMatchObject({
+      secretRef,
+      source: "managed",
+      status: "configured",
+      managed: true,
+      environmentFallback: true,
+    });
+    expect(JSON.stringify(createdPayload)).not.toContain(secret);
+    expect(JSON.stringify(createdPayload)).not.toContain("ciphertext");
+
+    const storageKey = `${MCP_SECRET_PREFIX}${secretRef}`;
+    const raw = await env.CHAT_STORE.get(storageKey);
+    expect(raw).toBeTruthy();
+    expect(raw).not.toContain(secret);
+    const record = JSON.parse(raw!);
+    const fromBase64 = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+    const key = await crypto.subtle.importKey(
+      "raw",
+      Uint8Array.from({ length: 32 }, (_, index) => index),
+      { name: "AES-GCM" },
+      false,
+      ["decrypt"],
+    );
+    const decrypt = (aad: string) => crypto.subtle.decrypt({
+      name: "AES-GCM",
+      iv: fromBase64(record.iv),
+      additionalData: new TextEncoder().encode(aad),
+    }, key, fromBase64(record.ciphertext));
+    const plaintext = await decrypt(`chatus:mcp-secret:v1:${secretRef}`);
+    expect(new TextDecoder().decode(plaintext)).toBe(secret);
+    await expect(decrypt(`chatus:route-secret:v1:${secretRef}`)).rejects.toBeTruthy();
+
+    const listedText = await apiRequest("/api/admin/mcp-secrets", cookie).then((response) => response.text());
+    expect(listedText).not.toContain(secret);
+    expect(listedText).not.toContain("ciphertext");
+    expect(JSON.parse(listedText).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ secretRef, source: "managed", environmentFallback: true }),
+    ]));
+
+    const rotated = await apiRequest(`/api/admin/mcp-secrets/${secretRef}`, cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret: "rotated-mcp-secret", expectedRevision: createdPayload.item.revision }),
+    });
+    const rotatedPayload = await rotated.json() as any;
+    expect(rotated.status).toBe(200);
+    const stale = await apiRequest(`/api/admin/mcp-secrets/${secretRef}`, cookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedRevision: createdPayload.item.revision }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "mcp_secret_conflict" });
+
+    const removed = await apiRequest(`/api/admin/mcp-secrets/${secretRef}`, cookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedRevision: rotatedPayload.item.revision }),
+    });
+    expect(removed.status).toBe(200);
+    await expect(removed.json()).resolves.toMatchObject({
+      item: { secretRef, source: "worker", managed: false, environmentFallback: true },
+    });
+    await expect(env.CHAT_STORE.get(storageKey)).resolves.toBeNull();
+    const audit = await apiRequest("/api/admin/audit", cookie).then((response) => response.json()) as any;
+    expect(audit.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "mcp-secret.update", target: secretRef }),
+      expect.objectContaining({ action: "mcp-secret.delete", target: secretRef }),
+    ]));
+    expect(JSON.stringify(audit)).not.toContain(secret);
+  });
+
+  it("discovers bounded read-only MCP tools using saved secret references", async () => {
+    const cookie = await adminLogin();
+    expect((await apiRequest("/api/admin/mcp-secrets/MCP_DISCOVERY_KEY", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret: "mcp-discovery-secret" }),
+    })).status).toBe(200);
+    const seenHeaders: Headers[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      expect(url.origin).toBe("https://mcp-discovery.example");
+      seenHeaders.push(new Headers(init?.headers));
+      if (init?.method === "DELETE") return new Response(null, { status: 405 });
+      const payload = JSON.parse(String(init?.body));
+      if (payload.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            protocolVersion: payload.params.protocolVersion,
+            capabilities: { tools: {} },
+            serverInfo: { name: "fixture", version: "1.0.0" },
+          },
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (payload.method === "tools/list") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            tools: [
+              {
+                name: "lookup",
+                title: "Lookup",
+                description: "Find public information",
+                inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+                annotations: { readOnlyHint: true, destructiveHint: false },
+                execution: { taskSupport: "forbidden" },
+              },
+              {
+                name: "delete_item",
+                inputSchema: { type: "object", properties: {} },
+                annotations: { readOnlyHint: false, destructiveHint: true },
+              },
+              {
+                name: "slow_task",
+                inputSchema: { type: "object", properties: {} },
+                annotations: { readOnlyHint: true },
+                execution: { taskSupport: "required" },
+              },
+            ],
+          },
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected MCP method ${payload.method}`);
+    });
+    const response = await apiRequest("/api/admin/mcp-discovery", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId: "fixture",
+        label: "Fixture",
+        endpoint: "https://mcp-discovery.example/rpc",
+        authType: "bearer",
+        secretRef: "MCP_DISCOVERY_KEY",
+      }),
+    });
+    const payload = await response.json() as any;
+    expect(response.status, JSON.stringify(payload)).toBe(200);
+    expect(payload).toMatchObject({
+      serverId: "fixture",
+      rejected: 2,
+      tools: [{
+        id: "mcp:fixture:lookup",
+        label: "Lookup",
+        confirmation: "first-per-conversation",
+        executor: { type: "mcp", serverId: "fixture", remoteName: "lookup" },
+      }],
+    });
+    expect(payload.tools[0].schemaFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(seenHeaders.some((headers) => headers.get("Authorization") === "Bearer mcp-discovery-secret")).toBe(true);
+    expect(JSON.stringify(payload)).not.toContain("mcp-discovery-secret");
+    expect(JSON.stringify(payload)).not.toContain("mcp-discovery.example");
+
+    const unsafe = await apiRequest("/api/admin/mcp-discovery", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId: "unsafe",
+        endpoint: "https://127.0.0.1/rpc",
+        authType: "none",
+      }),
+    });
+    expect(unsafe.status).toBe(400);
+    await expect(unsafe.json()).resolves.toMatchObject({ error: "mcp_endpoint_invalid" });
+  });
+
+  it("continues the same capability stream after MCP approval and remembers conversation trust", async () => {
+    const adminCookie = await adminLogin();
+    const schema = { type: "object", properties: { query: { type: "string" } }, required: ["query"] };
+    let mcpCallCount = 0;
+    const providerBodies: any[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      if (url.origin === "https://approval-mcp.example") {
+        if (init?.method === "DELETE") return new Response(null, { status: 405 });
+        const payload = JSON.parse(String(init?.body));
+        if (payload.method === "initialize") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: payload.params.protocolVersion,
+              capabilities: { tools: {} },
+              serverInfo: { name: "approval-fixture", version: "1.0.0" },
+            },
+          }), { headers: { "Content-Type": "application/json" } });
+        }
+        if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+        if (payload.method === "tools/list") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { tools: [{
+              name: "lookup",
+              title: "Lookup",
+              inputSchema: schema,
+              annotations: { readOnlyHint: true, destructiveHint: false },
+              execution: { taskSupport: "forbidden" },
+            }] },
+          }), { headers: { "Content-Type": "application/json" } });
+        }
+        if (payload.method === "tools/call") {
+          mcpCallCount += 1;
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { content: [{ type: "text", text: `result:${payload.params.arguments.query}` }] },
+          }), { headers: { "Content-Type": "application/json" } });
+        }
+        throw new Error(`unexpected MCP method ${payload.method}`);
+      }
+      const body = JSON.parse(String(init?.body));
+      providerBodies.push(body);
+      const previousToolResult = body.messages.some((message: any) => message.role === "tool");
+      if (!previousToolResult) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: `provider-call-${providerBodies.length}`,
+                type: "function",
+                function: { name: body.tools[0].function.name, arguments: JSON.stringify({ query: "approved" }) },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "远程查询完成" }, finish_reason: "stop" }],
+      }), { headers: { "Content-Type": "application/json" } });
+    });
+
+    const discovery = await apiRequest("/api/admin/mcp-discovery", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId: "approval",
+        endpoint: "https://approval-mcp.example/rpc",
+        authType: "none",
+      }),
+    }).then((response) => response.json()) as any;
+    const discoveredTool = discovery.tools[0];
+    expect(discoveredTool.schemaFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        tools: {
+          label: "Tools",
+          type: "openai-chat",
+          baseUrl: "https://approval-provider.example/v1",
+          model: "approval-model",
+          apiKey: "approval-provider-key",
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "tools",
+        allowedRoutes: ["tools"],
+        allowedTools: [discoveredTool.id],
+      },
+      mcpServers: {
+        approval: {
+          enabled: true,
+          label: "Approval",
+          endpoint: "https://approval-mcp.example/rpc",
+          authType: "none",
+        },
+      },
+      tools: { [discoveredTool.id]: { ...discoveredTool, enabled: true } },
+      skills: {
+        remote: {
+          enabled: true,
+          label: "Remote",
+          instructions: "Use the remote lookup tool.",
+          toolIds: [discoveredTool.id],
+        },
+      },
+    }));
+    const { cookie } = await login();
+    const startChat = () => apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "tools",
+        chatId: "conversation-trust",
+        skillIds: ["remote"],
+        messages: [{ role: "user", content: "执行远程查询" }],
+      }),
+    });
+    const response = await startChat();
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const received: any[] = [];
+    let confirmation: any = null;
+    while (!confirmation) {
+      const { value, done } = await reader.read();
+      expect(done).toBe(false);
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() || "";
+      for (const frame of frames) {
+        const line = frame.split(/\r?\n/).find((entry) => entry.startsWith("data: "));
+        if (!line) continue;
+        const event = JSON.parse(line.slice(6));
+        received.push(event);
+        if (event.type === "confirmation_required") confirmation = event;
+      }
+    }
+    expect(mcpCallCount).toBe(0);
+    expect(confirmation.event.argumentSummary).not.toContain("approved");
+    const approved = await apiRequest("/api/tool-approvals", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        runId: confirmation.runId,
+        callId: confirmation.callId,
+        decision: "conversation",
+      }),
+    });
+    expect(approved.status).toBe(200);
+    const replay = await apiRequest("/api/tool-approvals", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        runId: confirmation.runId,
+        callId: confirmation.callId,
+        decision: "once",
+      }),
+    });
+    expect(replay.status).toBe(409);
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+    }
+    for (const frame of buffer.split("\n\n")) {
+      const line = frame.split(/\r?\n/).find((entry) => entry.startsWith("data: "));
+      if (line) received.push(JSON.parse(line.slice(6)));
+    }
+    expect(mcpCallCount).toBe(1);
+    expect(received).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool", event: expect.objectContaining({ status: "approved", confirmation: "conversation" }) }),
+      expect.objectContaining({ type: "tool", event: expect.objectContaining({ status: "completed" }) }),
+      { type: "assistant_delta", text: "远程查询完成" },
+      { type: "done" },
+    ]));
+
+    const trustedResponse = await startChat();
+    const trustedEvents = await readCapabilityEvents(trustedResponse);
+    expect(trustedEvents.some((event) => event.type === "confirmation_required")).toBe(false);
+    expect(mcpCallCount).toBe(2);
+    expect(trustedEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool", event: expect.objectContaining({ status: "approved", confirmation: "conversation" }) }),
+      { type: "assistant_delta", text: "远程查询完成" },
+    ]));
   });
 
   it("rejects a managed ciphertext moved to a different key reference", async () => {

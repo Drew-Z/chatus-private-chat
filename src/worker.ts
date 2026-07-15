@@ -1,4 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
+import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -15,6 +19,7 @@ type ChatMessage = {
   rating?: "up" | "down";
   ratingReason?: string;
   finishReason?: string;
+  toolEvents?: ToolEventSummary[];
 };
 
 type Session = {
@@ -37,6 +42,107 @@ type AccessEntry = {
 
 type ProviderType = "openai-chat" | "anthropic-messages";
 
+type ToolConfirmation = "auto" | "first-per-conversation" | "always";
+
+type ToolExecutor =
+  | { type: "builtin"; name: "text_stats" }
+  | { type: "mcp"; serverId: string; remoteName: string };
+
+type SkillConfig = {
+  enabled?: boolean;
+  label: string;
+  description?: string;
+  instructions: string;
+  toolIds?: string[];
+  order?: number;
+};
+
+type ToolConfig = {
+  enabled?: boolean;
+  label: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  confirmation?: ToolConfirmation;
+  executor: ToolExecutor;
+  schemaFingerprint?: string;
+};
+
+type McpAuthType = "none" | "bearer" | "x-api-key";
+
+type McpServerConfig = {
+  enabled?: boolean;
+  label: string;
+  endpoint: string;
+  authType: McpAuthType;
+  secretRef?: string;
+};
+
+type ToolEventSummary = {
+  id: string;
+  toolId: string;
+  label: string;
+  source: "builtin" | "mcp";
+  status: "pending" | "approved" | "running" | "completed" | "failed" | "denied";
+  argumentSummary?: string;
+  resultPreview?: string;
+  confirmation?: "once" | "conversation";
+  errorCode?: string;
+  createdAt: number;
+  updatedAt: number;
+  truncated?: boolean;
+};
+
+type NormalizedToolDefinition = {
+  id: string;
+  providerName: string;
+  label: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  config: ToolConfig;
+};
+
+type NormalizedToolCall = {
+  providerCallId: string;
+  providerName: string;
+  toolId: string;
+  arguments: unknown;
+  argumentsValid: boolean;
+};
+
+type ModelTurn = {
+  text: string;
+  toolCalls: NormalizedToolCall[];
+  finishReason: string;
+  providerTurn: unknown;
+};
+
+type CapabilityStreamEvent =
+  | { type: "run"; runId: string; routeId: string; fallback: boolean }
+  | { type: "tool"; event: ToolEventSummary }
+  | { type: "confirmation_required"; runId: string; callId: string; event: ToolEventSummary }
+  | { type: "assistant_delta"; text: string }
+  | { type: "finish"; finishReason: string }
+  | { type: "error"; code: string; message: string; retryable: boolean }
+  | { type: "done" };
+
+type ToolApprovalDecision = "once" | "conversation" | "deny";
+
+type CapabilityChatRpcArgs = Omit<CapabilityChatArgs, "env" | "requestSignal"> & { chatId: string };
+
+type PendingToolApproval = {
+  callId: string;
+  toolId: string;
+  resolve: (decision: ToolApprovalDecision) => void;
+  reject: (error: CapabilityError) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+type ActiveCapabilityRun = {
+  chatId: string;
+  controller: AbortController;
+  pendingApproval?: PendingToolApproval;
+};
+
 type RouteConfig = {
   enabled?: boolean;
   label: string;
@@ -55,6 +161,7 @@ type RouteConfig = {
   allowUserKey?: boolean;
   requiresUserKey?: boolean;
   supportsImages?: boolean;
+  supportsTools?: boolean;
 };
 
 type UserConfig = {
@@ -67,12 +174,16 @@ type UserConfig = {
   minuteMessageLimit?: number;
   blockedPrompts?: string[];
   systemPrompt?: string;
+  allowedTools?: string[];
 };
 
 type AppConfig = {
   routes: Record<string, RouteConfig>;
   users?: Record<string, UserConfig>;
   defaults?: UserConfig;
+  skills?: Record<string, SkillConfig>;
+  tools?: Record<string, ToolConfig>;
+  mcpServers?: Record<string, McpServerConfig>;
 };
 
 type PublicRoute = {
@@ -83,8 +194,24 @@ type PublicRoute = {
   allowUserKey: boolean;
   requiresUserKey: boolean;
   supportsImages: boolean;
+  supportsTools: boolean;
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   healthCheckedAt?: string;
+};
+
+type PublicSkill = {
+  id: string;
+  label: string;
+  description: string;
+  toolIds: string[];
+};
+
+type PublicTool = {
+  id: string;
+  label: string;
+  description: string;
+  source: "builtin" | "mcp";
+  confirmation: ToolConfirmation;
 };
 
 type RouteAccess = {
@@ -93,13 +220,15 @@ type RouteAccess = {
   user: UserConfig;
 };
 
-type EncryptedRouteSecret = {
+type EncryptedSecret = {
   version: 1;
   algorithm: "AES-GCM";
   iv: string;
   ciphertext: string;
   updatedAt: string;
 };
+
+type EncryptedRouteSecret = EncryptedSecret;
 
 type RouteSecretSource = "managed" | "worker" | "legacy" | "missing";
 
@@ -113,6 +242,8 @@ type RouteSecretMetadata = {
   revision?: string;
   message?: string;
 };
+
+type McpSecretMetadata = Omit<RouteSecretMetadata, "apiKeyRef"> & { secretRef: string };
 
 type AnthropicContentBlock =
   | { type: "text"; text: string }
@@ -174,8 +305,38 @@ const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTE_SECRET_PREFIX = "route-secret:";
 const ROUTE_SECRET_AAD_PREFIX = "chatus:route-secret:v1:";
+const MCP_SECRET_PREFIX = "mcp-secret:";
+const MCP_SECRET_AAD_PREFIX = "chatus:mcp-secret:v1:";
 const ROUTE_SECRET_REF_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
 const MAX_ROUTE_SECRET_CHARS = 8_192;
+const MAX_SKILLS = 50;
+const MAX_TOOLS = 200;
+const MAX_MCP_SERVERS = 20;
+const MAX_SELECTED_SKILLS = 3;
+const MAX_SKILL_INSTRUCTIONS_CHARS = 8_000;
+const MAX_TOOL_SCHEMA_CHARS = 32_768;
+const MAX_TOOL_EVENTS = 16;
+const MAX_TOOL_ARGUMENT_SUMMARY_CHARS = 500;
+const MAX_TOOL_RESULT_PREVIEW_CHARS = 2_000;
+const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
+const MCP_REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MAX_TOOL_ROUNDS = 4;
+const MAX_TOOL_CALLS = 8;
+const TOOL_CALL_TIMEOUT_MS = 15_000;
+const TOOL_TOTAL_BUDGET_MS = 45_000;
+const MAX_TOOL_RESULT_BYTES = 32 * 1024;
+const TOOL_SCHEMA_VALIDATOR = new CfWorkerJsonSchemaValidator({ draft: "2020-12", shortcircuit: false });
+
+class CapabilityError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable = false,
+  ) {
+    super(message);
+    this.name = "CapabilityError";
+  }
+}
 
 class RouteSecretError extends Error {
   constructor(
@@ -206,8 +367,13 @@ type UserStats = {
 };
 
 export class UserState extends DurableObject<Env> {
+  private readonly runtimeEnv: Env;
+  private readonly activeCapabilityRuns = new Map<string, ActiveCapabilityRun>();
+  private readonly conversationTrust = new Map<string, { toolIds: Set<string>; lastSeenAt: number }>();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.runtimeEnv = env;
     ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS usage (
@@ -315,6 +481,102 @@ export class UserState extends DurableObject<Env> {
     return this.ctx.storage.sql.exec<{ ok: number }>("SELECT 1 AS ok").one().ok === 1;
   }
 
+  async runCapabilityChat(args: CapabilityChatRpcArgs): Promise<Response> {
+    this.pruneConversationTrust();
+    if (this.activeCapabilityRuns.size >= 4) {
+      return capabilityErrorResponse("too_many_active_runs", "当前并行工具会话过多，请稍后重试");
+    }
+    const chatId = normalizeCapabilityId(args.chatId, 80);
+    if (!chatId) return capabilityErrorResponse("invalid_chat_id", "会话 ID 无效");
+    const runId = crypto.randomUUID();
+    const controller = new AbortController();
+    const active: ActiveCapabilityRun = { chatId, controller };
+    this.activeCapabilityRuns.set(runId, active);
+    return createCapabilityChatResponse(
+      { ...args, env: this.runtimeEnv },
+      {
+        runId,
+        controller,
+        requestApproval: (definition, event) => this.waitForToolApproval(runId, definition, event),
+        cleanup: () => this.cleanupCapabilityRun(runId),
+      },
+    );
+  }
+
+  async resolveToolApproval(
+    runId: string,
+    callId: string,
+    decision: ToolApprovalDecision,
+  ): Promise<{ resolved: boolean }> {
+    const active = this.activeCapabilityRuns.get(runId);
+    const pending = active?.pendingApproval;
+    if (!active || !pending || pending.callId !== callId) return { resolved: false };
+    active.pendingApproval = undefined;
+    clearTimeout(pending.timer);
+    if (decision === "conversation") {
+      const trust = this.conversationTrust.get(active.chatId) || { toolIds: new Set<string>(), lastSeenAt: Date.now() };
+      trust.toolIds.add(pending.toolId);
+      trust.lastSeenAt = Date.now();
+      this.conversationTrust.set(active.chatId, trust);
+      this.pruneConversationTrust();
+    }
+    pending.resolve(decision);
+    return { resolved: true };
+  }
+
+  private waitForToolApproval(
+    runId: string,
+    definition: NormalizedToolDefinition,
+    event: ToolEventSummary,
+  ): ToolApprovalDecision | Promise<ToolApprovalDecision> {
+    const active = this.activeCapabilityRuns.get(runId);
+    if (!active) return Promise.reject(new CapabilityError("request_cancelled", "工具会话已结束", true));
+    const policy = normalizedToolConfirmation(definition.config);
+    const trust = this.conversationTrust.get(active.chatId);
+    if (policy === "first-per-conversation" && trust?.toolIds.has(definition.id)) {
+      trust.lastSeenAt = Date.now();
+      return "conversation";
+    }
+    if (active.pendingApproval) {
+      return Promise.reject(new CapabilityError("tool_execution_failed", "同一会话存在重复的待确认工具"));
+    }
+    return new Promise<ToolApprovalDecision>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (active.pendingApproval?.callId === event.id) active.pendingApproval = undefined;
+        reject(new CapabilityError("tool_confirmation_timeout", "工具确认已超时，请重试"));
+      }, 120_000);
+      active.pendingApproval = { callId: event.id, toolId: definition.id, resolve, reject, timer };
+      active.controller.signal.addEventListener("abort", () => {
+        if (active.pendingApproval?.callId === event.id) active.pendingApproval = undefined;
+        clearTimeout(timer);
+        reject(new CapabilityError("request_cancelled", "工具会话已取消", true));
+      }, { once: true });
+    });
+  }
+
+  private cleanupCapabilityRun(runId: string): void {
+    const active = this.activeCapabilityRuns.get(runId);
+    if (!active) return;
+    const pending = active.pendingApproval;
+    if (pending) {
+      clearTimeout(pending.timer);
+      pending.reject(new CapabilityError("request_cancelled", "工具会话已结束", true));
+    }
+    active.controller.abort("run_finished");
+    this.activeCapabilityRuns.delete(runId);
+  }
+
+  private pruneConversationTrust(now = Date.now()): void {
+    for (const [chatId, trust] of this.conversationTrust) {
+      if (now - trust.lastSeenAt > 2 * 60 * 60 * 1_000) this.conversationTrust.delete(chatId);
+    }
+    while (this.conversationTrust.size > 30) {
+      const oldest = [...this.conversationTrust.entries()].sort((left, right) => left[1].lastSeenAt - right[1].lastSeenAt)[0];
+      if (!oldest) break;
+      this.conversationTrust.delete(oldest[0]);
+    }
+  }
+
   async resetUsage(day: string): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM usage WHERE day = ?", day);
   }
@@ -415,6 +677,8 @@ export class UserState extends DurableObject<Env> {
   }
 
   async purgeUserData(nowMs = Date.now()): Promise<void> {
+    for (const runId of [...this.activeCapabilityRuns.keys()]) this.cleanupCapabilityRun(runId);
+    this.conversationTrust.clear();
     this.ctx.storage.sql.exec("DELETE FROM chats");
     this.ctx.storage.sql.exec("DELETE FROM deleted_chats");
     this.ctx.storage.sql.exec("DELETE FROM usage");
@@ -470,6 +734,7 @@ export class UserState extends DurableObject<Env> {
       pinned: chat.pinned,
       routeId: chat.routeId,
       parentChatId: chat.parentChatId,
+      skillIds: chat.skillIds,
       messages: chat.messages,
     });
     this.ctx.storage.sql.exec(
@@ -601,6 +866,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   if (url.pathname === "/api/session" && request.method === "GET") {
     const config = await loadAppConfig(env);
     const access = await getRouteAccess(config, session.label, env);
+    const capabilities = getPublicCapabilities(config, access.user);
     const [usage, routes] = await Promise.all([
       getUsage(env, session, access.user),
       Promise.all(access.routes.map((route) => withPublicRouteHealth(env, route))),
@@ -614,11 +880,16 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       defaultRoute: access.defaultRoute,
       allowBringYourOwnKey: Boolean(access.user.allowBringYourOwnKey),
       hasUserSystemPrompt: Boolean(access.user.systemPrompt?.trim()),
+      skills: capabilities.skills,
+      tools: capabilities.tools,
     });
   }
 
   if (url.pathname === "/api/chat" && request.method === "POST") {
     return handleChat(request, env, session);
+  }
+  if (url.pathname === "/api/tool-approvals" && request.method === "POST") {
+    return handleToolApproval(request, env, session);
   }
   if (url.pathname === "/api/feedback" && request.method === "POST") {
     return handleFeedback(request, env, session);
@@ -825,6 +1096,18 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleDeleteAdminRouteSecret(request, env, routeSecretRef);
   }
 
+  if (url.pathname === "/api/admin/mcp-secrets" && request.method === "GET") {
+    return handleGetAdminMcpSecrets(env);
+  }
+
+  const mcpSecretRef = secretRefFromAdminPath(url.pathname, "/api/admin/mcp-secrets/");
+  if (mcpSecretRef && request.method === "PUT") {
+    return handlePutAdminMcpSecret(request, env, mcpSecretRef);
+  }
+  if (mcpSecretRef && request.method === "DELETE") {
+    return handleDeleteAdminMcpSecret(request, env, mcpSecretRef);
+  }
+
   if (url.pathname === "/api/admin/users" && request.method === "POST") {
     return handleCreateAdminUser(request, env);
   }
@@ -899,6 +1182,10 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleAdminRouteModels(request, env);
   }
 
+  if (url.pathname === "/api/admin/mcp-discovery" && request.method === "POST") {
+    return handleAdminMcpDiscovery(request, env);
+  }
+
   return jsonResponse({ error: "not_found" }, 404);
 }
 
@@ -940,7 +1227,10 @@ async function configRevisionConflict(env: Env, expectedValue: unknown): Promise
 }
 
 function routeSecretRefFromAdminPath(pathname: string): string | null {
-  const prefix = "/api/admin/route-secrets/";
+  return secretRefFromAdminPath(pathname, "/api/admin/route-secrets/");
+}
+
+function secretRefFromAdminPath(pathname: string, prefix: string): string | null {
   if (!pathname.startsWith(prefix)) return null;
   try {
     return decodeURIComponent(pathname.slice(prefix.length));
@@ -1027,21 +1317,143 @@ async function handleDeleteAdminRouteSecret(request: Request, env: Env, apiKeyRe
   return jsonResponse({ ok: true, item: await inspectRouteSecret(env, apiKeyRef) });
 }
 
+async function handleGetAdminMcpSecrets(env: Env): Promise<Response> {
+  const config = await loadAppConfig(env);
+  const refs = new Set(
+    Object.values(config.mcpServers || {})
+      .map((server) => server.secretRef?.trim() || "")
+      .filter((ref) => ROUTE_SECRET_REF_PATTERN.test(ref)),
+  );
+  let cursor: string | undefined;
+  do {
+    const page = await env.CHAT_STORE.list({ prefix: MCP_SECRET_PREFIX, cursor, limit: 100 });
+    for (const key of page.keys) {
+      const encodedRef = key.name.slice(MCP_SECRET_PREFIX.length);
+      try {
+        const ref = decodeURIComponent(encodedRef);
+        if (ROUTE_SECRET_REF_PATTERN.test(ref)) refs.add(ref);
+      } catch {
+        // Invalid historical keys remain inaccessible and are not exposed by the admin API.
+      }
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+
+  const [masterKey, items] = await Promise.all([
+    inspectRouteMasterKey(env),
+    Promise.all([...refs].sort().map((ref) => inspectMcpSecret(env, ref))),
+  ]);
+  return jsonResponse({
+    masterKeyReady: masterKey.ready,
+    ...(masterKey.message ? { masterKeyMessage: masterKey.message } : {}),
+    items,
+  });
+}
+
+async function handlePutAdminMcpSecret(request: Request, env: Env, secretRef: string): Promise<Response> {
+  if (!ROUTE_SECRET_REF_PATTERN.test(secretRef)) {
+    return jsonResponse({
+      error: "invalid_secret_ref",
+      message: "Secret Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
+    }, 400);
+  }
+  const body = await readJson<{ secret?: unknown; expectedRevision?: unknown }>(request);
+  const secret = typeof body.secret === "string" ? body.secret.trim() : "";
+  if (!secret) return jsonResponse({ error: "secret_required", message: "请输入要保存的 MCP 密钥" }, 400);
+  if (secret.length > MAX_ROUTE_SECRET_CHARS) {
+    return jsonResponse({ error: "secret_too_long", message: "MCP 密钥长度超出限制" }, 400);
+  }
+  const conflict = await managedSecretRevisionConflict(env, "mcp", secretRef, body.expectedRevision);
+  if (conflict) return conflict;
+  try {
+    const record = await encryptManagedSecret(env, "mcp", secretRef, secret);
+    await env.CHAT_STORE.put(managedSecretKey("mcp", secretRef), JSON.stringify(record));
+    await appendAdminAudit(env, "mcp-secret.update", secretRef);
+    return jsonResponse({ ok: true, item: await inspectMcpSecret(env, secretRef) });
+  } catch (error) {
+    return routeSecretAdminErrorResponse(error);
+  }
+}
+
+async function handleDeleteAdminMcpSecret(request: Request, env: Env, secretRef: string): Promise<Response> {
+  if (!ROUTE_SECRET_REF_PATTERN.test(secretRef)) {
+    return jsonResponse({
+      error: "invalid_secret_ref",
+      message: "Secret Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
+    }, 400);
+  }
+  const body = await readJson<{ expectedRevision?: unknown }>(request);
+  const conflict = await managedSecretRevisionConflict(env, "mcp", secretRef, body.expectedRevision);
+  if (conflict) return conflict;
+  await env.CHAT_STORE.delete(managedSecretKey("mcp", secretRef));
+  await appendAdminAudit(env, "mcp-secret.delete", secretRef);
+  return jsonResponse({ ok: true, item: await inspectMcpSecret(env, secretRef) });
+}
+
+async function inspectMcpSecret(env: Env, secretRef: string): Promise<McpSecretMetadata> {
+  const raw = await env.CHAT_STORE.get(managedSecretKey("mcp", secretRef));
+  const environmentFallback = typeof env[secretRef] === "string" && Boolean(String(env[secretRef]).trim());
+  if (!raw) {
+    return {
+      secretRef,
+      source: environmentFallback ? "worker" : "missing",
+      status: environmentFallback ? "configured" : "missing",
+      managed: false,
+      environmentFallback,
+    };
+  }
+  const revision = await secretFingerprint(raw);
+  try {
+    const record = parseEncryptedSecret(raw, "mcp");
+    await decryptManagedSecretRecord(env, "mcp", secretRef, record);
+    return {
+      secretRef,
+      source: "managed",
+      status: "configured",
+      managed: true,
+      environmentFallback,
+      updatedAt: record.updatedAt,
+      revision,
+    };
+  } catch (error) {
+    return {
+      secretRef,
+      source: "managed",
+      status: "unavailable",
+      managed: true,
+      environmentFallback,
+      revision,
+      message: error instanceof RouteSecretError ? error.message : "后台 MCP 密钥不可用",
+    };
+  }
+}
+
+async function managedSecretRevisionConflict(
+  env: Env,
+  namespace: "route" | "mcp",
+  secretRef: string,
+  expectedValue: unknown,
+): Promise<Response | null> {
+  const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
+  if (!expectedRevision) return null;
+  const raw = await env.CHAT_STORE.get(managedSecretKey(namespace, secretRef));
+  const currentRevision = raw ? await secretFingerprint(raw) : "";
+  if (currentRevision === expectedRevision) return null;
+  return jsonResponse({
+    error: namespace === "route" ? "route_secret_conflict" : "mcp_secret_conflict",
+    message: namespace === "route"
+      ? "线路密钥已在其他标签页或设备更新，请刷新后重试"
+      : "MCP 密钥已在其他标签页或设备更新，请刷新后重试",
+    currentRevision,
+  }, 409);
+}
+
 async function routeSecretRevisionConflict(
   env: Env,
   apiKeyRef: string,
   expectedValue: unknown,
 ): Promise<Response | null> {
-  const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
-  if (!expectedRevision) return null;
-  const raw = await env.CHAT_STORE.get(routeSecretKey(apiKeyRef));
-  const currentRevision = raw ? await secretFingerprint(raw) : "";
-  if (currentRevision === expectedRevision) return null;
-  return jsonResponse({
-    error: "route_secret_conflict",
-    message: "线路密钥已在其他标签页或设备更新，请刷新后重试",
-    currentRevision,
-  }, 409);
+  return managedSecretRevisionConflict(env, "route", apiKeyRef, expectedValue);
 }
 
 async function inspectRouteMasterKey(env: Env): Promise<{ ready: boolean; message?: string }> {
@@ -1796,6 +2208,7 @@ type CloudChat = {
   pinned: boolean;
   routeId?: string;
   parentChatId?: string;
+  skillIds: string[];
   messages: ChatMessage[];
 };
 
@@ -1919,6 +2332,113 @@ function extractModelList(payload: unknown): string[] {
   return [...new Set(models)].sort((a, b) => a.localeCompare(b)).slice(0, 500);
 }
 
+async function handleAdminMcpDiscovery(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{
+    serverId?: unknown;
+    label?: unknown;
+    endpoint?: unknown;
+    authType?: unknown;
+    secretRef?: unknown;
+  }>(request);
+  const serverId = normalizeCapabilityId(body.serverId, 80);
+  if (!serverId) return jsonResponse({ error: "invalid_mcp_server_id", message: "MCP Server ID 格式无效" }, 400);
+  const authType = body.authType;
+  if (authType !== "none" && authType !== "bearer" && authType !== "x-api-key") {
+    return jsonResponse({ error: "invalid_mcp_auth_type", message: "MCP 认证类型无效" }, 400);
+  }
+  const endpoint = normalizeBoundedText(body.endpoint, 2_048);
+  const secretRef = normalizeBoundedText(body.secretRef, 64);
+  const server: McpServerConfig = {
+    enabled: true,
+    label: normalizeBoundedText(body.label, 80) || serverId,
+    endpoint,
+    authType,
+    secretRef: secretRef && ROUTE_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
+  };
+  if (!isValidMcpEndpoint(server.endpoint) || isForbiddenMcpUrl(new URL(server.endpoint))) {
+    return jsonResponse({ error: "mcp_endpoint_invalid", message: "MCP 地址必须是可公开访问的 HTTPS 地址" }, 400);
+  }
+  if (server.authType !== "none" && !server.secretRef) {
+    return jsonResponse({ error: "mcp_auth_unavailable", message: "该认证类型需要有效的 Secret Ref" }, 400);
+  }
+  try {
+    const discovery = await discoverMcpTools(serverId, server, env, request.signal);
+    await appendAdminAudit(env, "mcp.discovery", `${serverId}:${discovery.tools.length}/${discovery.rejected}`);
+    return jsonResponse(discovery);
+  } catch (error) {
+    const capabilityError = toCapabilityError(error);
+    return jsonResponse({ error: capabilityError.code, message: capabilityError.message }, 502);
+  }
+}
+
+async function discoverMcpTools(
+  serverId: string,
+  server: McpServerConfig,
+  env: Env,
+  signal: AbortSignal,
+): Promise<{
+  serverId: string;
+  tools: Array<{
+    id: string;
+    label: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+    confirmation: "first-per-conversation";
+    executor: { type: "mcp"; serverId: string; remoteName: string };
+    schemaFingerprint: string;
+  }>;
+  rejected: number;
+}> {
+  const session = await openMcpSession(serverId, server, env, signal);
+  try {
+    const tools: Array<{
+      id: string;
+      label: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+      confirmation: "first-per-conversation";
+      executor: { type: "mcp"; serverId: string; remoteName: string };
+      schemaFingerprint: string;
+    }> = [];
+    let cursor: string | undefined;
+    let rejected = 0;
+    for (let page = 0; page < 10 && tools.length < MAX_TOOLS; page += 1) {
+      const result = await session.client.listTools(cursor ? { cursor } : undefined, {
+        signal,
+        timeout: TOOL_CALL_TIMEOUT_MS,
+        maxTotalTimeout: TOOL_CALL_TIMEOUT_MS,
+      });
+      for (const remoteTool of result.tools) {
+        const remoteName = normalizeBoundedText(remoteTool.name, 128);
+        const inputSchema = normalizeJsonRecord(remoteTool.inputSchema, MAX_TOOL_SCHEMA_CHARS);
+        const readOnly = remoteTool.annotations?.readOnlyHint === true && remoteTool.annotations?.destructiveHint !== true;
+        const taskSupport = remoteTool.execution?.taskSupport || "forbidden";
+        if (!remoteName || !MCP_REMOTE_NAME_PATTERN.test(remoteName) || !inputSchema || !readOnly || taskSupport === "required") {
+          rejected += 1;
+          continue;
+        }
+        const id = `mcp:${serverId}:${remoteName}`;
+        tools.push({
+          id,
+          label: normalizeBoundedText(remoteTool.title, 80) || remoteName,
+          description: normalizeBoundedText(remoteTool.description, 1_000),
+          inputSchema,
+          confirmation: "first-per-conversation",
+          executor: { type: "mcp", serverId, remoteName },
+          schemaFingerprint: await jsonFingerprint(inputSchema),
+        });
+        if (tools.length >= MAX_TOOLS) break;
+      }
+      cursor = result.nextCursor;
+      if (!cursor) return { serverId, tools, rejected };
+    }
+    if (cursor) throw new CapabilityError("mcp_protocol_error", "MCP 工具列表分页超过限制");
+    return { serverId, tools, rejected };
+  } finally {
+    await closeMcpSession(session);
+  }
+}
+
 async function loadChatSessions(env: Env, label: string): Promise<CloudChat[]> {
   await migrateLegacyChatIndex(env, label);
   return getUserState(env, label).listChats();
@@ -1960,6 +2480,7 @@ function summarizeChat(chat: CloudChat) {
     pinned: chat.pinned,
     routeId: chat.routeId,
     parentChatId: chat.parentChatId,
+    skillIds: chat.skillIds,
     messageCount: chat.messages.length,
   };
 }
@@ -1981,6 +2502,7 @@ function normalizeCloudChat(value: unknown): CloudChat | null {
   const pinned = value.pinned === true;
   const routeId = typeof value.routeId === "string" ? value.routeId.trim().slice(0, 80) : undefined;
   const parentChatId = typeof value.parentChatId === "string" ? value.parentChatId.trim().slice(0, 80) : undefined;
+  const skillIds = normalizeSelectedSkillIds(value.skillIds);
 
   return {
     id,
@@ -1992,6 +2514,7 @@ function normalizeCloudChat(value: unknown): CloudChat | null {
     pinned,
     routeId,
     parentChatId,
+    skillIds,
     messages,
   };
 }
@@ -2014,6 +2537,7 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
         fallback: role === "assistant" && item.fallback === true,
         finishReason:
           role === "assistant" && typeof item.finishReason === "string" ? item.finishReason.slice(0, 40) : undefined,
+        toolEvents: role === "assistant" ? normalizeToolEvents(item.toolEvents) : undefined,
         createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
       });
       continue;
@@ -2043,6 +2567,7 @@ function normalizeCloudMessages(input: unknown): ChatMessage[] {
       fallback: role === "assistant" && item.fallback === true,
       finishReason:
         role === "assistant" && typeof item.finishReason === "string" ? item.finishReason.slice(0, 40) : undefined,
+      toolEvents: role === "assistant" ? normalizeToolEvents(item.toolEvents) : undefined,
       createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : undefined,
       rating: item.rating === "up" || item.rating === "down" ? item.rating : undefined,
       ratingReason: typeof item.ratingReason === "string" ? item.ratingReason : undefined,
@@ -2057,6 +2582,20 @@ function deriveTitleFromMessages(messages: ChatMessage[]): string {
   const text = extractText(firstUser.content).replace(/\s+/g, " ").trim();
   if (!text) return "新会话";
   return text.length > 18 ? `${text.slice(0, 18)}…` : text;
+}
+
+async function handleToolApproval(request: Request, env: Env, session: Session): Promise<Response> {
+  if (request.headers.get("x-chatus-client") !== "web") return jsonResponse({ error: "forbidden" }, 403);
+  const body = await readJson<{ runId?: unknown; callId?: unknown; decision?: unknown }>(request);
+  const runId = normalizeCapabilityId(body.runId, 100);
+  const callId = normalizeCapabilityId(body.callId, 100);
+  const decision = body.decision;
+  if (!runId || !callId || (decision !== "once" && decision !== "conversation" && decision !== "deny")) {
+    return jsonResponse({ error: "invalid_tool_approval" }, 400);
+  }
+  const result = await getUserState(env, session.label).resolveToolApproval(runId, callId, decision);
+  if (!result.resolved) return jsonResponse({ error: "tool_approval_not_pending" }, 409);
+  return jsonResponse({ ok: true });
 }
 
 async function handleChat(request: Request, env: Env, session: Session): Promise<Response> {
@@ -2078,6 +2617,8 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
   const body = await readJson<{
     messages?: unknown;
     routeId?: unknown;
+    chatId?: unknown;
+    skillIds?: unknown;
     userApiKey?: unknown;
     temperature?: unknown;
     sessionSummary?: unknown;
@@ -2133,9 +2674,34 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     );
   }
 
-  const messages = await buildMessagesWithSystem(env, session, normalized, sessionSummary, access.user);
+  const selectedSkills = getSelectedSkills(config, body.skillIds);
+  const messages = await buildMessagesWithSystem(env, session, normalized, sessionSummary, access.user, selectedSkills);
 
   const userApiKey = typeof body.userApiKey === "string" ? body.userApiKey.trim() : "";
+  const toolDefinitions = selectedPublicRoute?.supportsTools
+    ? await buildToolDefinitions(config, access.user, selectedSkills)
+    : [];
+  if (toolDefinitions.length) {
+    const capabilityRouteIds = routeIds.filter((routeId) => config.routes[routeId]?.supportsTools === true);
+    if (!capabilityRouteIds.length) {
+      return jsonResponse({ error: "route_does_not_support_tools", routeId: selectedPublicRoute?.id }, 400);
+    }
+    const chatId = normalizeCapabilityId(body.chatId, 80);
+    if (!chatId) return jsonResponse({ error: "invalid_chat_id" }, 400);
+    return getUserState(env, session.label).runCapabilityChat({
+      session,
+      access,
+      config,
+      selectedRoute: selectedPublicRoute?.id || selectedRoute,
+      routeIds: capabilityRouteIds,
+      messages,
+      tools: toolDefinitions,
+      userApiKey,
+      temperature: body.temperature,
+      remaining: limitResult.remaining,
+      chatId,
+    });
+  }
   let lastError: { routeId: string; status: number; message: string } | null = null;
   let attemptedRoutes = 0;
 
@@ -2277,6 +2843,7 @@ function getDefaultAppConfig(env: Env): AppConfig {
       dailyMessageLimit: numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT),
       blockedPrompts: parsePromptList(env.BLOCKED_PROMPTS),
     },
+    tools: { "builtin:text_stats": defaultTextStatsTool() },
   });
 }
 
@@ -2305,6 +2872,8 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     if (missingRoute) {
       return { ok: false, message: `用户 ${label} 允许了不存在的线路 ${missingRoute}` };
     }
+    const missingTool = user.allowedTools?.find((toolId) => !config.tools?.[toolId]);
+    if (missingTool) return { ok: false, message: `用户 ${label} 允许了不存在的工具 ${missingTool}` };
     const effective = { ...(config.defaults || {}), ...user };
     const allowed = effective.allowedRoutes?.length ? effective.allowedRoutes : routeIds;
     if (!allowed.some((routeId) => config.routes[routeId]?.enabled !== false)) {
@@ -2318,6 +2887,28 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   const defaultAllowed = config.defaults?.allowedRoutes?.length ? config.defaults.allowedRoutes : routeIds;
   if (!defaultAllowed.some((routeId) => config.routes[routeId]?.enabled !== false)) {
     return { ok: false, message: "默认用户配置至少需要一条已启用的允许线路" };
+  }
+  const missingDefaultTool = config.defaults?.allowedTools?.find((toolId) => !config.tools?.[toolId]);
+  if (missingDefaultTool) return { ok: false, message: `默认用户配置允许了不存在的工具 ${missingDefaultTool}` };
+
+  for (const [skillId, skill] of Object.entries(config.skills || {})) {
+    const missingTool = skill.toolIds?.find((toolId) => !config.tools?.[toolId]);
+    if (missingTool) return { ok: false, message: `Skill ${skillId} 引用了不存在的工具 ${missingTool}` };
+  }
+
+  for (const [serverId, server] of Object.entries(config.mcpServers || {})) {
+    if (!isValidMcpEndpoint(server.endpoint)) {
+      return { ok: false, message: `MCP 服务 ${serverId} 必须使用有效的 HTTPS 地址` };
+    }
+    if (server.authType !== "none" && !server.secretRef) {
+      return { ok: false, message: `MCP 服务 ${serverId} 使用认证时必须配置 Secret Ref` };
+    }
+  }
+
+  for (const [toolId, tool] of Object.entries(config.tools || {})) {
+    if (tool.executor.type === "mcp" && !config.mcpServers?.[tool.executor.serverId]) {
+      return { ok: false, message: `工具 ${toolId} 引用了不存在的 MCP 服务 ${tool.executor.serverId}` };
+    }
   }
 
   return { ok: true };
@@ -2354,6 +2945,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
       allowUserKey: rawRoute.allowUserKey !== false,
       requiresUserKey: rawRoute.requiresUserKey === true,
       supportsImages: rawRoute.supportsImages !== false,
+      supportsTools: rawRoute.supportsTools === true,
     };
   }
 
@@ -2366,10 +2958,36 @@ function normalizeAppConfig(value: unknown): AppConfig {
     }
   }
 
+  const skills = normalizeSkillRegistry(input.skills);
+  const mcpServers = normalizeMcpServerRegistry(input.mcpServers);
+  const tools = normalizeToolRegistry(input.tools, mcpServers);
+  if (!tools["builtin:text_stats"]) {
+    tools["builtin:text_stats"] = defaultTextStatsTool();
+  }
+
   return {
     routes,
     users,
     defaults,
+    skills,
+    tools,
+    mcpServers,
+  };
+}
+
+function defaultTextStatsTool(): ToolConfig {
+  return {
+    enabled: false,
+    label: "文本统计",
+    description: "统计文本的字符、码点、单词和行数",
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string", maxLength: 12_000 } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    confirmation: "auto",
+    executor: { type: "builtin", name: "text_stats" },
   };
 }
 
@@ -2383,7 +3001,10 @@ function normalizeUserConfig(value: unknown): UserConfig {
   }
   if (typeof value.defaultRoute === "string") output.defaultRoute = value.defaultRoute;
   if (Array.isArray(value.allowedRoutes)) {
-    output.allowedRoutes = value.allowedRoutes.filter((item): item is string => typeof item === "string");
+    output.allowedRoutes = normalizeStringIdList(value.allowedRoutes, 200, 160);
+  }
+  if (Array.isArray(value.allowedTools)) {
+    output.allowedTools = normalizeStringIdList(value.allowedTools, MAX_TOOLS, 160);
   }
   if (typeof value.allowBringYourOwnKey === "boolean") {
     output.allowBringYourOwnKey = value.allowBringYourOwnKey;
@@ -2426,6 +3047,7 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
         allowUserKey,
         requiresUserKey: Boolean(route.requiresUserKey || !hasServerKey),
         supportsImages: route.supportsImages !== false,
+        supportsTools: route.supportsTools === true,
       };
     }),
   )).filter((route): route is PublicRoute => Boolean(route));
@@ -2436,6 +3058,59 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
       : routes[0]?.id || "";
 
   return { routes, defaultRoute, user };
+}
+
+function getPublicCapabilities(config: AppConfig, user: UserConfig): { skills: PublicSkill[]; tools: PublicTool[] } {
+  const allowedToolIds = new Set(user.allowedTools || []);
+  const tools = Object.entries(config.tools || {})
+    .filter(([id, tool]) => tool.enabled === true && allowedToolIds.has(id) && isToolExecutorAvailable(tool, config))
+    .map(([id, tool]): PublicTool => ({
+      id,
+      label: tool.label,
+      description: tool.description || "",
+      source: tool.executor.type,
+      confirmation: normalizedToolConfirmation(tool),
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+  const publicToolIds = new Set(tools.map((tool) => tool.id));
+  const skills = Object.entries(config.skills || {})
+    .filter(([, skill]) => skill.enabled === true)
+    .sort(([leftId, left], [rightId, right]) => (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId))
+    .map(([id, skill]): PublicSkill => ({
+      id,
+      label: skill.label,
+      description: skill.description || "",
+      toolIds: (skill.toolIds || []).filter((toolId) => publicToolIds.has(toolId)),
+    }));
+  return { skills, tools };
+}
+
+function isToolExecutorAvailable(tool: ToolConfig, config: AppConfig): boolean {
+  if (tool.executor.type === "builtin") return tool.executor.name === "text_stats";
+  return config.mcpServers?.[tool.executor.serverId]?.enabled === true;
+}
+
+function normalizedToolConfirmation(tool: ToolConfig): ToolConfirmation {
+  if (tool.executor.type === "builtin") return tool.confirmation === "always" ? "always" : "auto";
+  return tool.confirmation === "always" ? "always" : "first-per-conversation";
+}
+
+function getSelectedSkills(config: AppConfig, value: unknown): Array<{ id: string; skill: SkillConfig }> {
+  const requested = new Set(normalizeSelectedSkillIds(value));
+  return Object.entries(config.skills || {})
+    .filter(([id, skill]) => requested.has(id) && skill.enabled === true)
+    .sort(([leftId, left], [rightId, right]) => (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId))
+    .slice(0, MAX_SELECTED_SKILLS)
+    .map(([id, skill]) => ({ id, skill }));
+}
+
+function isValidMcpEndpoint(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.hash;
+  } catch {
+    return false;
+  }
 }
 
 function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
@@ -2471,16 +3146,31 @@ async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<stri
   return decryptRouteSecretRecord(env, apiKeyRef, parseEncryptedRouteSecret(raw));
 }
 
+async function resolveMcpSecret(env: Env, secretRef: string): Promise<string> {
+  const raw = await env.CHAT_STORE.get(managedSecretKey("mcp", secretRef));
+  if (raw) return decryptManagedSecretRecord(env, "mcp", secretRef, parseEncryptedSecret(raw, "mcp"));
+  return typeof env[secretRef] === "string" ? String(env[secretRef]).trim() : "";
+}
+
 async function encryptRouteSecret(env: Env, apiKeyRef: string, apiKey: string): Promise<EncryptedRouteSecret> {
+  return encryptManagedSecret(env, "route", apiKeyRef, apiKey);
+}
+
+async function encryptManagedSecret(
+  env: Env,
+  namespace: "route" | "mcp",
+  secretRef: string,
+  secret: string,
+): Promise<EncryptedSecret> {
   const key = await importRouteMasterKey(env);
   const iv = new Uint8Array(12);
   crypto.getRandomValues(iv);
-  const plaintext = new TextEncoder().encode(apiKey);
+  const plaintext = new TextEncoder().encode(secret);
   const ciphertext = await crypto.subtle.encrypt(
     {
       name: "AES-GCM",
       iv,
-      additionalData: routeSecretAdditionalData(apiKeyRef),
+      additionalData: managedSecretAdditionalData(namespace, secretRef),
     },
     key,
     plaintext,
@@ -2499,25 +3189,36 @@ async function decryptRouteSecretRecord(
   apiKeyRef: string,
   record: EncryptedRouteSecret,
 ): Promise<string> {
+  return decryptManagedSecretRecord(env, "route", apiKeyRef, record);
+}
+
+async function decryptManagedSecretRecord(
+  env: Env,
+  namespace: "route" | "mcp",
+  secretRef: string,
+  record: EncryptedSecret,
+): Promise<string> {
   const key = await importRouteMasterKey(env);
   try {
     const plaintext = await crypto.subtle.decrypt(
       {
         name: "AES-GCM",
         iv: base64ToBytes(record.iv),
-        additionalData: routeSecretAdditionalData(apiKeyRef),
+        additionalData: managedSecretAdditionalData(namespace, secretRef),
       },
       key,
       base64ToBytes(record.ciphertext),
     );
-    const apiKey = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(plaintext);
-    if (!apiKey) throw new Error("empty route secret");
-    return apiKey;
+    const secret = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(plaintext);
+    if (!secret) throw new Error("empty managed secret");
+    return secret;
   } catch (error) {
     if (error instanceof RouteSecretError) throw error;
     throw new RouteSecretError(
       "decrypt_failed",
-      "后台线路密钥无法解密；如主密钥已轮换，请重新录入该密钥",
+      namespace === "route"
+        ? "后台线路密钥无法解密；如主密钥已轮换，请重新录入该密钥"
+        : "后台 MCP 密钥无法解密；如主密钥已轮换，请重新录入该密钥",
     );
   }
 }
@@ -2555,6 +3256,10 @@ async function importRouteMasterKey(env: Env): Promise<CryptoKey> {
 }
 
 function parseEncryptedRouteSecret(raw: string): EncryptedRouteSecret {
+  return parseEncryptedSecret(raw, "route");
+}
+
+function parseEncryptedSecret(raw: string, namespace: "route" | "mcp"): EncryptedSecret {
   try {
     const parsed = JSON.parse(raw);
     if (
@@ -2568,20 +3273,33 @@ function parseEncryptedRouteSecret(raw: string): EncryptedRouteSecret {
       base64ToBytes(parsed.iv).byteLength !== 12 ||
       base64ToBytes(parsed.ciphertext).byteLength < 16
     ) {
-      throw new Error("invalid encrypted route secret");
+      throw new Error("invalid encrypted secret");
     }
     return parsed as EncryptedRouteSecret;
   } catch {
-    throw new RouteSecretError("invalid_record", "后台线路密钥记录损坏，请删除后重新录入");
+    throw new RouteSecretError(
+      "invalid_record",
+      namespace === "route" ? "后台线路密钥记录损坏，请删除后重新录入" : "后台 MCP 密钥记录损坏，请删除后重新录入",
+    );
   }
 }
 
 function routeSecretAdditionalData(apiKeyRef: string): Uint8Array {
-  return new TextEncoder().encode(`${ROUTE_SECRET_AAD_PREFIX}${apiKeyRef}`);
+  return managedSecretAdditionalData("route", apiKeyRef);
 }
 
 function routeSecretKey(apiKeyRef: string): string {
-  return `${ROUTE_SECRET_PREFIX}${encodeURIComponent(apiKeyRef)}`;
+  return managedSecretKey("route", apiKeyRef);
+}
+
+function managedSecretAdditionalData(namespace: "route" | "mcp", secretRef: string): Uint8Array {
+  const prefix = namespace === "route" ? ROUTE_SECRET_AAD_PREFIX : MCP_SECRET_AAD_PREFIX;
+  return new TextEncoder().encode(`${prefix}${secretRef}`);
+}
+
+function managedSecretKey(namespace: "route" | "mcp", secretRef: string): string {
+  const prefix = namespace === "route" ? ROUTE_SECRET_PREFIX : MCP_SECRET_PREFIX;
+  return `${prefix}${encodeURIComponent(secretRef)}`;
 }
 
 function base64ToBytes(value: string): Uint8Array {
@@ -2606,6 +3324,7 @@ async function buildMessagesWithSystem(
   normalized: ChatMessage[],
   sessionSummary = "",
   userConfig?: UserConfig,
+  selectedSkills: Array<{ id: string; skill: SkillConfig }> = [],
 ): Promise<ChatMessage[]> {
   const systemMessages: ChatMessage[] = [];
   const globalPrompt = env.SYSTEM_PROMPT?.trim();
@@ -2618,6 +3337,13 @@ async function buildMessagesWithSystem(
     systemMessages.push({
       role: "system",
       content: `以下是当前用户专属系统提示词，请优先遵循其中的风格、角色与约束：\n${userPrompt}`,
+    });
+  }
+
+  for (const { id, skill } of selectedSkills) {
+    systemMessages.push({
+      role: "system",
+      content: `--- Skill: ${skill.label} (${id}) ---\n${skill.instructions}\n--- End Skill: ${id} ---`,
     });
   }
 
@@ -2920,6 +3646,934 @@ async function callRoute(args: {
     },
     terminal,
   };
+}
+
+type CapabilityChatArgs = {
+  env: Env;
+  session: Session;
+  access: RouteAccess;
+  config: AppConfig;
+  selectedRoute: string;
+  routeIds: string[];
+  messages: ChatMessage[];
+  tools: NormalizedToolDefinition[];
+  userApiKey: string;
+  temperature: unknown;
+  remaining: number;
+  requestSignal?: AbortSignal;
+};
+
+type CapabilityCoordination = {
+  runId: string;
+  controller: AbortController;
+  requestApproval: (
+    definition: NormalizedToolDefinition,
+    event: ToolEventSummary,
+  ) => ToolApprovalDecision | Promise<ToolApprovalDecision>;
+  cleanup: () => void;
+};
+
+type ToolProviderHistory =
+  | { type: "openai-chat"; messages: unknown[] }
+  | { type: "anthropic-messages"; system: string; messages: unknown[] };
+
+type ToolExecutionResult = {
+  providerCallId: string;
+  text: string;
+  isError: boolean;
+};
+
+type ActiveMcpSession = {
+  client: Client;
+  transport: StreamableHTTPClientTransport;
+  tools: Map<string, { schemaFingerprint: string; taskSupport: string }>;
+};
+
+class ProviderToolError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly terminal: boolean,
+  ) {
+    super(message);
+    this.name = "ProviderToolError";
+  }
+}
+
+async function buildToolDefinitions(
+  config: AppConfig,
+  user: UserConfig,
+  selectedSkills: Array<{ id: string; skill: SkillConfig }>,
+): Promise<NormalizedToolDefinition[]> {
+  const allowed = new Set(user.allowedTools || []);
+  const referenced = new Set(selectedSkills.flatMap(({ skill }) => skill.toolIds || []));
+  const definitions: NormalizedToolDefinition[] = [];
+  for (const toolId of referenced) {
+    const tool = config.tools?.[toolId];
+    if (!tool || tool.enabled !== true || !allowed.has(toolId) || !isToolExecutorAvailable(tool, config)) continue;
+    definitions.push({
+      id: toolId,
+      providerName: await providerToolName(toolId, tool),
+      label: tool.label,
+      description: tool.description || tool.label,
+      inputSchema: tool.inputSchema,
+      config: tool,
+    });
+  }
+  return definitions.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+async function providerToolName(toolId: string, tool: ToolConfig): Promise<string> {
+  const sourceName = tool.executor.type === "builtin" ? tool.executor.name : tool.executor.remoteName;
+  const normalized = sourceName.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) || "tool";
+  const digest = (await secretFingerprint(toolId)).slice(0, 10);
+  return `${normalized}_${digest}`.slice(0, 64);
+}
+
+function capabilityErrorResponse(code: string, message: string): Response {
+  return jsonResponse({ error: code, message }, code === "invalid_chat_id" ? 400 : 429);
+}
+
+function createCapabilityChatResponse(args: CapabilityChatArgs, coordination?: CapabilityCoordination): Response {
+  const runId = coordination?.runId || crypto.randomUUID();
+  const encoder = new TextEncoder();
+  const controller = coordination?.controller || new AbortController();
+  const abort = () => controller.abort(args.requestSignal?.reason);
+  if (args.requestSignal?.aborted) abort();
+  else args.requestSignal?.addEventListener("abort", abort, { once: true });
+  let cancelled = false;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    coordination?.cleanup();
+    args.requestSignal?.removeEventListener("abort", abort);
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      let closed = false;
+      const emit = (event: CapabilityStreamEvent) => {
+        if (closed || controller.signal.aborted) return;
+        streamController.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      };
+      void runCapabilityLoop(args, runId, emit, controller.signal, coordination?.requestApproval)
+        .catch((error) => {
+          const capabilityError = toCapabilityError(error);
+          emit({
+            type: "error",
+            code: capabilityError.code,
+            message: capabilityError.message,
+            retryable: capabilityError.retryable,
+          });
+        })
+        .finally(() => {
+          if (!closed && !controller.signal.aborted) emit({ type: "done" });
+          closed = true;
+          if (!cancelled) streamController.close();
+          cleanup();
+        });
+    },
+    cancel() {
+      cancelled = true;
+      controller.abort("response_cancelled");
+      cleanup();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: securityHeaders({
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "X-Chatus-Stream": "capability-v1",
+      "X-Chatus-Route": args.selectedRoute,
+      "X-RateLimit-Remaining": String(args.remaining),
+    }),
+  });
+}
+
+async function runCapabilityLoop(
+  args: CapabilityChatArgs,
+  runId: string,
+  emit: (event: CapabilityStreamEvent) => void,
+  signal: AbortSignal,
+  requestApproval?: (
+    definition: NormalizedToolDefinition,
+    event: ToolEventSummary,
+  ) => ToolApprovalDecision | Promise<ToolApprovalDecision>,
+): Promise<void> {
+  const mcpSessions = new Map<string, ActiveMcpSession>();
+  try {
+    await runCapabilityLoopInner(args, runId, emit, signal, mcpSessions, requestApproval);
+  } finally {
+    await Promise.all([...mcpSessions.values()].map((session) => closeMcpSession(session)));
+  }
+}
+
+async function runCapabilityLoopInner(
+  args: CapabilityChatArgs,
+  runId: string,
+  emit: (event: CapabilityStreamEvent) => void,
+  signal: AbortSignal,
+  mcpSessions: Map<string, ActiveMcpSession>,
+  requestApproval?: (
+    definition: NormalizedToolDefinition,
+    event: ToolEventSummary,
+  ) => ToolApprovalDecision | Promise<ToolApprovalDecision>,
+): Promise<void> {
+  const aliasMap = new Map(args.tools.map((tool) => [tool.providerName, tool]));
+  let selected:
+    | { routeId: string; route: RouteConfig; history: ToolProviderHistory; turn: ModelTurn; fallback: boolean }
+    | null = null;
+  let attemptedRoutes = 0;
+  let lastError: ProviderToolError | null = null;
+
+  for (const routeId of args.routeIds) {
+    assertNotAborted(signal);
+    const route = args.config.routes[routeId];
+    const publicRoute = args.access.routes.find((item) => item.id === routeId);
+    if (!route || !publicRoute) continue;
+    let apiKey = "";
+    try {
+      apiKey = await resolveRouteKey(route, args.env, publicRoute.allowUserKey ? args.userApiKey : "");
+    } catch (error) {
+      lastError = new ProviderToolError(500, error instanceof Error ? error.message : "route key is unavailable", false);
+      continue;
+    }
+    if (!apiKey) {
+      if (publicRoute.requiresUserKey) throw new CapabilityError("user_api_key_required", "当前线路需要用户 API Key");
+      lastError = new ProviderToolError(500, "route key is not configured", false);
+      continue;
+    }
+    attemptedRoutes += 1;
+    const history = createToolProviderHistory(route, args.messages);
+    try {
+      const turn = await callProviderToolTurn({
+        route,
+        apiKey,
+        history,
+        tools: args.tools,
+        temperature: args.temperature,
+        env: args.env,
+        signal,
+        usedUserKey: Boolean(args.userApiKey && publicRoute.allowUserKey),
+      });
+      selected = { routeId, route, history, turn, fallback: routeId !== args.selectedRoute && attemptedRoutes > 1 };
+      break;
+    } catch (error) {
+      lastError = error instanceof ProviderToolError
+        ? error
+        : new ProviderToolError(502, error instanceof Error ? error.message : "provider response is invalid", false);
+      await recordChatMetric(args.env, { kind: "route_error", label: args.session.label, routeId });
+      if (lastError.terminal) break;
+    }
+  }
+
+  if (!selected) {
+    await recordChatMetric(args.env, { kind: "failure", label: args.session.label });
+    throw new CapabilityError("upstream_error", lastError?.message || "no route succeeded", true);
+  }
+
+  emit({ type: "run", runId, routeId: selected.routeId, fallback: selected.fallback });
+  let turn = selected.turn;
+  let totalCalls = 0;
+  let toolBudgetMs = 0;
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    assertNotAborted(signal);
+    appendProviderTurn(selected.history, turn.providerTurn);
+    if (!turn.toolCalls.length) {
+      if (turn.text) emit({ type: "assistant_delta", text: turn.text });
+      emit({ type: "finish", finishReason: turn.finishReason || "stop" });
+      await recordChatMetric(args.env, {
+        kind: "success",
+        label: args.session.label,
+        routeId: selected.routeId,
+        fallback: selected.fallback,
+      });
+      return;
+    }
+
+    if (totalCalls + turn.toolCalls.length > MAX_TOOL_CALLS) {
+      throw new CapabilityError("tool_call_limit", `单次对话最多执行 ${MAX_TOOL_CALLS} 次工具调用`);
+    }
+    const results: ToolExecutionResult[] = [];
+    for (const call of turn.toolCalls) {
+      const definition = aliasMap.get(call.providerName);
+      if (!definition || definition.id !== call.toolId) {
+        throw new CapabilityError("tool_not_allowed", "模型请求了未授权的工具");
+      }
+      if (!call.argumentsValid) {
+        throw new CapabilityError("tool_arguments_invalid", `工具 ${definition.label} 的参数不是有效 JSON`);
+      }
+      validateToolArguments(definition, call.arguments);
+      totalCalls += 1;
+      const startedAt = Date.now();
+      const eventId = crypto.randomUUID();
+      const baseEvent: ToolEventSummary = {
+        id: eventId,
+        toolId: definition.id,
+        label: definition.label,
+        source: definition.config.executor.type,
+        status: "pending",
+        argumentSummary: summarizeToolArguments(call.arguments),
+        createdAt: startedAt,
+        updatedAt: startedAt,
+      };
+      const policy = normalizedToolConfirmation(definition.config);
+      let confirmation: "once" | "conversation" | undefined;
+      if (policy !== "auto") {
+        if (!requestApproval) throw new CapabilityError("tool_confirmation_required", "工具调用需要用户确认");
+        const approvalResult = requestApproval(definition, baseEvent);
+        let decision: ToolApprovalDecision;
+        if (typeof approvalResult === "string") {
+          decision = approvalResult;
+        } else {
+          emit({ type: "confirmation_required", runId, callId: eventId, event: baseEvent });
+          decision = await approvalResult;
+        }
+        if (decision === "deny") {
+          emit({ type: "tool", event: { ...baseEvent, status: "denied", updatedAt: Date.now() } });
+          results.push({
+            providerCallId: call.providerCallId,
+            text: JSON.stringify({ error: "tool_denied", message: "The user denied this tool call." }),
+            isError: true,
+          });
+          continue;
+        }
+        confirmation = decision;
+        emit({
+          type: "tool",
+          event: { ...baseEvent, status: "approved", confirmation, updatedAt: Date.now() },
+        });
+      }
+      const runningEvent: ToolEventSummary = {
+        ...baseEvent,
+        status: "running",
+        confirmation,
+        updatedAt: Date.now(),
+      };
+      emit({ type: "tool", event: runningEvent });
+      const result = await executeCapabilityTool(definition, call.arguments, args.env, signal, mcpSessions);
+      const duration = Date.now() - startedAt;
+      toolBudgetMs += duration;
+      if (toolBudgetMs > TOOL_TOTAL_BUDGET_MS) {
+        throw new CapabilityError("tool_time_budget_exceeded", "工具累计执行时间超过限制", true);
+      }
+      emit({
+        type: "tool",
+        event: {
+          ...runningEvent,
+          status: "completed",
+          resultPreview: result.preview,
+          truncated: result.truncated || undefined,
+          updatedAt: Date.now(),
+        },
+      });
+      results.push({ providerCallId: call.providerCallId, text: result.text, isError: false });
+    }
+    appendProviderToolResults(selected.history, results);
+    if (round + 1 >= MAX_TOOL_ROUNDS) {
+      throw new CapabilityError("tool_round_limit", `单次对话最多执行 ${MAX_TOOL_ROUNDS} 轮工具交互`);
+    }
+    const publicRoute = args.access.routes.find((item) => item.id === selected.routeId);
+    const apiKey = await resolveRouteKey(
+      selected.route,
+      args.env,
+      publicRoute?.allowUserKey ? args.userApiKey : "",
+    );
+    try {
+      turn = await callProviderToolTurn({
+        route: selected.route,
+        apiKey,
+        history: selected.history,
+        tools: args.tools,
+        temperature: args.temperature,
+        env: args.env,
+        signal,
+        usedUserKey: Boolean(args.userApiKey && publicRoute?.allowUserKey),
+      });
+    } catch (error) {
+      await recordChatMetric(args.env, { kind: "route_error", label: args.session.label, routeId: selected.routeId });
+      throw new CapabilityError(
+        "upstream_error",
+        error instanceof Error ? error.message : "模型在工具调用后返回错误",
+        true,
+      );
+    }
+  }
+}
+
+function createToolProviderHistory(route: RouteConfig, messages: ChatMessage[]): ToolProviderHistory {
+  if (route.type === "anthropic-messages") {
+    const anthropic = toAnthropicMessages(messages);
+    return { type: route.type, system: anthropic.system, messages: anthropic.messages };
+  }
+  return { type: route.type, messages: messages.map((message) => ({ role: message.role, content: message.content })) };
+}
+
+async function callProviderToolTurn(args: {
+  route: RouteConfig;
+  apiKey: string;
+  history: ToolProviderHistory;
+  tools: NormalizedToolDefinition[];
+  temperature: unknown;
+  env: Env;
+  signal: AbortSignal;
+  usedUserKey: boolean;
+}): Promise<ModelTurn> {
+  const response = args.route.type === "anthropic-messages"
+    ? await callAnthropicToolTurn(args)
+    : await callOpenAiToolTurn(args);
+  const text = await response.text();
+  if (!response.ok) {
+    const terminal = response.status === 400 || response.status === 422 ||
+      (args.usedUserKey && (response.status === 401 || response.status === 403));
+    throw new ProviderToolError(response.status, formatUpstreamErrorMessage(text), terminal);
+  }
+  try {
+    const payload = JSON.parse(text) as unknown;
+    return args.route.type === "anthropic-messages"
+      ? parseAnthropicToolTurn(payload, args.tools)
+      : parseOpenAiToolTurn(payload, args.tools);
+  } catch (error) {
+    if (error instanceof CapabilityError) throw error;
+    throw new ProviderToolError(502, "上游返回了无法识别的工具响应", false);
+  }
+}
+
+async function callOpenAiToolTurn(args: {
+  route: RouteConfig;
+  apiKey: string;
+  history: ToolProviderHistory;
+  tools: NormalizedToolDefinition[];
+  temperature: unknown;
+  signal: AbortSignal;
+}): Promise<Response> {
+  if (args.history.type !== "openai-chat") throw new CapabilityError("provider_protocol_error", "Provider history mismatch");
+  const headers = buildHeaders(args.route.headers);
+  setAuthHeader(headers, args.route, args.apiKey, "Authorization");
+  headers.set("Content-Type", "application/json");
+  headers.set("Accept", "application/json");
+  return fetch(args.route.directEndpoint ? args.route.baseUrl : routeUrl(args.route, "/chat/completions"), {
+    method: "POST",
+    headers,
+    signal: args.signal,
+    body: JSON.stringify({
+      model: args.route.model,
+      messages: args.history.messages,
+      tools: args.tools.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.providerName,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      })),
+      tool_choice: "auto",
+      stream: false,
+      temperature: clampNumber(args.temperature, 0, 2, args.route.temperature ?? 0.7),
+      ...(args.route.maxTokens ? { max_tokens: args.route.maxTokens } : {}),
+    }),
+  });
+}
+
+async function callAnthropicToolTurn(args: {
+  route: RouteConfig;
+  apiKey: string;
+  history: ToolProviderHistory;
+  tools: NormalizedToolDefinition[];
+  temperature: unknown;
+  env: Env;
+  signal: AbortSignal;
+}): Promise<Response> {
+  if (args.history.type !== "anthropic-messages") throw new CapabilityError("provider_protocol_error", "Provider history mismatch");
+  const headers = buildHeaders(args.route.headers);
+  setAuthHeader(headers, args.route, args.apiKey, "x-api-key");
+  headers.set("Content-Type", "application/json");
+  headers.set("Accept", "application/json");
+  if (!headers.has("anthropic-version")) headers.set("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
+  return fetch(args.route.directEndpoint ? args.route.baseUrl : routeUrl(args.route, "/v1/messages"), {
+    method: "POST",
+    headers,
+    signal: args.signal,
+    body: JSON.stringify({
+      model: args.route.model,
+      messages: args.history.messages,
+      tools: args.tools.map((tool) => ({
+        name: tool.providerName,
+        description: tool.description,
+        input_schema: tool.inputSchema,
+      })),
+      stream: false,
+      max_tokens: args.route.maxTokens || numberEnv(args.env.DEFAULT_MAX_TOKENS, 4096),
+      temperature: clampNumber(args.temperature, 0, 1, args.route.temperature ?? 0.7),
+      ...(args.history.system ? { system: args.history.system } : {}),
+    }),
+  });
+}
+
+function parseOpenAiToolTurn(value: unknown, tools: NormalizedToolDefinition[]): ModelTurn {
+  if (!isRecord(value) || !Array.isArray(value.choices) || !isRecord(value.choices[0])) {
+    throw new CapabilityError("provider_protocol_error", "OpenAI-compatible 响应缺少 choices");
+  }
+  const choice = value.choices[0];
+  if (!isRecord(choice.message)) throw new CapabilityError("provider_protocol_error", "OpenAI-compatible 响应缺少 message");
+  const message = choice.message;
+  const text = typeof message.content === "string" ? message.content : "";
+  const aliasMap = new Map(tools.map((tool) => [tool.providerName, tool.id]));
+  const toolCalls: NormalizedToolCall[] = [];
+  if (Array.isArray(message.tool_calls)) {
+    for (const rawCall of message.tool_calls) {
+      if (!isRecord(rawCall) || !isRecord(rawCall.function)) {
+        throw new CapabilityError("provider_protocol_error", "OpenAI-compatible tool_call 格式无效");
+      }
+      const providerCallId = typeof rawCall.id === "string" ? rawCall.id : "";
+      const providerName = typeof rawCall.function.name === "string" ? rawCall.function.name : "";
+      const rawArguments = typeof rawCall.function.arguments === "string" ? rawCall.function.arguments : "";
+      if (!providerCallId || !providerName || !aliasMap.has(providerName)) {
+        throw new CapabilityError("tool_not_allowed", "模型请求了未授权的工具");
+      }
+      let parsedArguments: unknown;
+      let argumentsValid = true;
+      try {
+        parsedArguments = JSON.parse(rawArguments);
+      } catch {
+        parsedArguments = null;
+        argumentsValid = false;
+      }
+      toolCalls.push({
+        providerCallId,
+        providerName,
+        toolId: aliasMap.get(providerName) || "",
+        arguments: parsedArguments,
+        argumentsValid,
+      });
+    }
+  }
+  return {
+    text,
+    toolCalls,
+    finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : "",
+    providerTurn: {
+      role: "assistant",
+      content: text || null,
+      ...(Array.isArray(message.tool_calls) ? { tool_calls: message.tool_calls } : {}),
+    },
+  };
+}
+
+function parseAnthropicToolTurn(value: unknown, tools: NormalizedToolDefinition[]): ModelTurn {
+  if (!isRecord(value) || !Array.isArray(value.content)) {
+    throw new CapabilityError("provider_protocol_error", "Anthropic 响应缺少 content");
+  }
+  const aliasMap = new Map(tools.map((tool) => [tool.providerName, tool.id]));
+  const textParts: string[] = [];
+  const toolCalls: NormalizedToolCall[] = [];
+  const providerContent: unknown[] = [];
+  for (const block of value.content) {
+    if (!isRecord(block) || typeof block.type !== "string") {
+      throw new CapabilityError("provider_protocol_error", "Anthropic content block 格式无效");
+    }
+    if (block.type === "text" && typeof block.text === "string") {
+      textParts.push(block.text);
+      providerContent.push({ type: "text", text: block.text });
+      continue;
+    }
+    if (block.type === "tool_use") {
+      const providerCallId = typeof block.id === "string" ? block.id : "";
+      const providerName = typeof block.name === "string" ? block.name : "";
+      if (!providerCallId || !providerName || !aliasMap.has(providerName)) {
+        throw new CapabilityError("tool_not_allowed", "模型请求了未授权的工具");
+      }
+      toolCalls.push({
+        providerCallId,
+        providerName,
+        toolId: aliasMap.get(providerName) || "",
+        arguments: block.input,
+        argumentsValid: true,
+      });
+      providerContent.push({ type: "tool_use", id: providerCallId, name: providerName, input: block.input });
+      continue;
+    }
+    throw new CapabilityError("provider_protocol_error", `Anthropic 返回了不支持的 ${block.type} 内容块`);
+  }
+  return {
+    text: textParts.join(""),
+    toolCalls,
+    finishReason: typeof value.stop_reason === "string" ? value.stop_reason : "",
+    providerTurn: { role: "assistant", content: providerContent },
+  };
+}
+
+function appendProviderTurn(history: ToolProviderHistory, providerTurn: unknown): void {
+  history.messages.push(providerTurn);
+}
+
+function appendProviderToolResults(history: ToolProviderHistory, results: ToolExecutionResult[]): void {
+  if (history.type === "openai-chat") {
+    for (const result of results) {
+      history.messages.push({ role: "tool", tool_call_id: result.providerCallId, content: result.text });
+    }
+    return;
+  }
+  history.messages.push({
+    role: "user",
+    content: results.map((result) => ({
+      type: "tool_result",
+      tool_use_id: result.providerCallId,
+      content: result.text,
+      ...(result.isError ? { is_error: true } : {}),
+    })),
+  });
+}
+
+function validateToolArguments(definition: NormalizedToolDefinition, value: unknown): void {
+  try {
+    const validate = TOOL_SCHEMA_VALIDATOR.getValidator(definition.inputSchema as JsonSchemaType);
+    const result = validate(value);
+    if (!result.valid) {
+      throw new CapabilityError("tool_arguments_invalid", `工具 ${definition.label} 的参数不符合 Schema`);
+    }
+  } catch (error) {
+    if (error instanceof CapabilityError) throw error;
+    throw new CapabilityError("tool_arguments_invalid", `工具 ${definition.label} 的参数 Schema 无法验证`);
+  }
+}
+
+async function openMcpSession(
+  serverId: string,
+  server: McpServerConfig,
+  env: Env,
+  signal: AbortSignal,
+): Promise<ActiveMcpSession> {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(server.endpoint);
+  } catch {
+    throw new CapabilityError("mcp_endpoint_invalid", `MCP 服务 ${serverId} 的地址无效`);
+  }
+  if (!isValidMcpEndpoint(server.endpoint) || isForbiddenMcpUrl(endpoint)) {
+    throw new CapabilityError("mcp_endpoint_invalid", `MCP 服务 ${serverId} 的地址不允许访问`);
+  }
+  const headers = new Headers();
+  if (server.authType !== "none") {
+    const secretRef = server.secretRef || "";
+    if (!secretRef) throw new CapabilityError("mcp_auth_unavailable", `MCP 服务 ${serverId} 缺少 Secret Ref`);
+    const secret = await resolveMcpSecret(env, secretRef);
+    if (!secret) throw new CapabilityError("mcp_auth_unavailable", `MCP 服务 ${serverId} 的认证密钥不可用`);
+    if (server.authType === "bearer") headers.set("Authorization", `Bearer ${secret}`);
+    else headers.set("X-API-Key", secret);
+  }
+  const transport = new StreamableHTTPClientTransport(endpoint, {
+    requestInit: { headers },
+    fetch: createMcpFetch(endpoint),
+    reconnectionOptions: {
+      maxReconnectionDelay: 1_000,
+      initialReconnectionDelay: 250,
+      reconnectionDelayGrowFactor: 1,
+      maxRetries: 0,
+    },
+  });
+  const client = new Client(
+    { name: "chatus", version: "0.1.0" },
+    { jsonSchemaValidator: TOOL_SCHEMA_VALIDATOR },
+  );
+  try {
+    await client.connect(transport, {
+      signal,
+      timeout: TOOL_CALL_TIMEOUT_MS,
+      maxTotalTimeout: TOOL_CALL_TIMEOUT_MS,
+    });
+    return { client, transport, tools: new Map() };
+  } catch (error) {
+    await transport.close().catch(() => undefined);
+    if (error instanceof CapabilityError) throw error;
+    throw new CapabilityError("mcp_protocol_error", `无法连接 MCP 服务 ${serverId}`, true);
+  }
+}
+
+function createMcpFetch(endpoint: URL): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  const endpointOrigin = endpoint.origin;
+  return async (input, init = {}) => {
+    const requestUrl = input instanceof URL
+      ? input
+      : typeof input === "string"
+        ? new URL(input)
+        : new URL(input.url);
+    if (requestUrl.origin !== endpointOrigin || !isValidMcpEndpoint(requestUrl.toString()) || isForbiddenMcpUrl(requestUrl)) {
+      throw new CapabilityError("mcp_endpoint_invalid", "MCP 请求试图访问未授权的地址");
+    }
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    const response = await fetch(requestUrl, { ...init, headers, redirect: "manual" });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new CapabilityError("mcp_redirect_rejected", "MCP 服务返回了不允许的重定向");
+    }
+    const length = Number(response.headers.get("Content-Length") || "0");
+    if (length > 256 * 1024) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new CapabilityError("mcp_protocol_error", "MCP 响应超过协议大小限制");
+    }
+    if (!response.body) return response;
+    const boundedBody = createBoundedReadableStream(response.body, 256 * 1024);
+    return new Response(boundedBody, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  };
+}
+
+function createBoundedReadableStream(
+  body: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let total = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      const { value, done } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        controller.error(new CapabilityError("mcp_protocol_error", "MCP 响应超过协议大小限制"));
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+}
+
+function isForbiddenMcpUrl(url: URL): boolean {
+  if (url.protocol !== "https:" || url.username || url.password || url.hash) return true;
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return isForbiddenIpv4(hostname);
+  if (hostname.includes(":")) return isForbiddenIpv6(hostname);
+  return false;
+}
+
+function isForbiddenIpv4(hostname: string): boolean {
+  const parts = hostname.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b] = parts;
+  return a === 0 || a === 10 || a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && (b === 0 || b === 168)) ||
+    (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+    (a === 203 && b === 0) || a >= 224;
+}
+
+function isForbiddenIpv6(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  if (normalized === "::" || normalized === "::1") return true;
+  if (normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") ||
+    normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") ||
+    normalized.startsWith("ff") || normalized.startsWith("2001:db8:")) return true;
+  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  return mapped ? isForbiddenIpv4(mapped[1]) : false;
+}
+
+async function executeMcpTool(
+  definition: NormalizedToolDefinition,
+  value: unknown,
+  env: Env,
+  signal: AbortSignal,
+  sessions: Map<string, ActiveMcpSession>,
+): Promise<unknown> {
+  const executor = definition.config.executor;
+  if (executor.type !== "mcp") throw new CapabilityError("tool_execution_failed", "工具执行器类型无效");
+  if (!isRecord(value)) throw new CapabilityError("tool_arguments_invalid", "MCP 工具参数必须是对象");
+  const config = await loadAppConfig(env);
+  const server = config.mcpServers?.[executor.serverId];
+  if (!server || server.enabled !== true) throw new CapabilityError("tool_not_found", "MCP 服务未启用");
+  let session = sessions.get(executor.serverId);
+  if (!session) {
+    session = await openMcpSession(executor.serverId, server, env, signal);
+    try {
+      await loadRuntimeMcpTools(session, signal);
+    } catch (error) {
+      await closeMcpSession(session);
+      throw error;
+    }
+    sessions.set(executor.serverId, session);
+  }
+  const remote = session.tools.get(executor.remoteName);
+  if (!remote) throw new CapabilityError("mcp_tool_changed", "MCP 工具已不存在，请管理员重新发现");
+  if (!definition.config.schemaFingerprint || remote.schemaFingerprint !== definition.config.schemaFingerprint) {
+    throw new CapabilityError("mcp_tool_changed", "MCP 工具 Schema 已变化，请管理员重新发现并启用");
+  }
+  if (remote.taskSupport === "required") {
+    throw new CapabilityError("mcp_tool_unsupported", "首版不支持必须使用 Task 的 MCP 工具");
+  }
+  let result: unknown;
+  try {
+    result = await session.client.callTool(
+      { name: executor.remoteName, arguments: value },
+      undefined,
+      { signal, timeout: TOOL_CALL_TIMEOUT_MS, maxTotalTimeout: TOOL_CALL_TIMEOUT_MS },
+    );
+  } catch {
+    throw new CapabilityError("tool_execution_failed", `MCP 工具 ${definition.label} 执行失败`, true);
+  }
+  return normalizeMcpToolResult(result);
+}
+
+async function loadRuntimeMcpTools(session: ActiveMcpSession, signal: AbortSignal): Promise<void> {
+  let cursor: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const result = await session.client.listTools(cursor ? { cursor } : undefined, {
+      signal,
+      timeout: TOOL_CALL_TIMEOUT_MS,
+      maxTotalTimeout: TOOL_CALL_TIMEOUT_MS,
+    });
+    for (const tool of result.tools) {
+      const inputSchema = normalizeJsonRecord(tool.inputSchema, MAX_TOOL_SCHEMA_CHARS);
+      if (!inputSchema || !MCP_REMOTE_NAME_PATTERN.test(tool.name)) continue;
+      session.tools.set(tool.name, {
+        schemaFingerprint: await jsonFingerprint(inputSchema),
+        taskSupport: tool.execution?.taskSupport || "forbidden",
+      });
+      if (session.tools.size > MAX_TOOLS) throw new CapabilityError("mcp_protocol_error", "MCP 工具数量超过限制");
+    }
+    cursor = result.nextCursor;
+    if (!cursor) return;
+  }
+  throw new CapabilityError("mcp_protocol_error", "MCP 工具列表分页超过限制");
+}
+
+function normalizeMcpToolResult(value: unknown): unknown {
+  if (!isRecord(value) || "toolResult" in value || !Array.isArray(value.content)) {
+    throw new CapabilityError("mcp_protocol_error", "MCP 工具返回了不支持的结果格式");
+  }
+  if (value.isError === true) throw new CapabilityError("tool_execution_failed", "MCP 工具报告执行失败");
+  const text: string[] = [];
+  for (const block of value.content) {
+    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") {
+      throw new CapabilityError("mcp_tool_unsupported", "MCP 工具返回了首版不支持的非文本内容");
+    }
+    text.push(block.text);
+  }
+  const structuredContent = isRecord(value.structuredContent) ? value.structuredContent : undefined;
+  if (structuredContent && text.length) return { structuredContent, content: text.join("\n") };
+  if (structuredContent) return structuredContent;
+  return { content: text.join("\n") };
+}
+
+async function closeMcpSession(session: ActiveMcpSession): Promise<void> {
+  await session.transport.terminateSession().catch(() => undefined);
+  await session.client.close().catch(() => undefined);
+}
+
+async function jsonFingerprint(value: unknown): Promise<string> {
+  return secretFingerprint(stableJsonStringify(value));
+}
+
+function stableJsonStringify(value: unknown): string {
+  const normalize = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(normalize);
+    if (isRecord(item)) {
+      return Object.fromEntries(Object.keys(item).sort().map((key) => [key, normalize(item[key])]));
+    }
+    return item;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+async function executeCapabilityTool(
+  definition: NormalizedToolDefinition,
+  value: unknown,
+  env: Env,
+  signal: AbortSignal,
+  mcpSessions: Map<string, ActiveMcpSession>,
+): Promise<{ text: string; preview: string; truncated: boolean }> {
+  const callController = new AbortController();
+  const abort = () => callController.abort(signal.reason);
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => callController.abort("tool_timeout"), TOOL_CALL_TIMEOUT_MS);
+  try {
+    let result: unknown;
+    if (definition.config.executor.type === "builtin") {
+      result = executeTextStats(value);
+    } else {
+      result = await executeMcpTool(definition, value, env, callController.signal, mcpSessions);
+    }
+    assertNotAborted(callController.signal);
+    const text = JSON.stringify(result);
+    if (new TextEncoder().encode(text).byteLength > MAX_TOOL_RESULT_BYTES) {
+      throw new CapabilityError("tool_result_too_large", "工具结果超过大小限制");
+    }
+    const preview = redactSensitiveText(text).slice(0, MAX_TOOL_RESULT_PREVIEW_CHARS);
+    return { text, preview, truncated: preview.length < text.length };
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+function executeTextStats(value: unknown): Record<string, number> {
+  if (!isRecord(value) || typeof value.text !== "string") {
+    throw new CapabilityError("tool_arguments_invalid", "文本统计工具需要 text 字符串");
+  }
+  const text = value.text;
+  const words = text.match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu) || [];
+  return {
+    characters: text.length,
+    codePoints: Array.from(text).length,
+    words: words.length,
+    lines: text ? text.split(/\r\n|\r|\n/).length : 0,
+  };
+}
+
+function summarizeToolArguments(value: unknown): string {
+  const summarize = (item: unknown, depth: number): unknown => {
+    if (depth > 2) return "[nested]";
+    if (typeof item === "string") return `[string ${Array.from(item).length} chars]`;
+    if (typeof item === "number") return "[number]";
+    if (typeof item === "boolean") return "[boolean]";
+    if (item === null) return "[null]";
+    if (Array.isArray(item)) return item.slice(0, 8).map((entry) => summarize(entry, depth + 1));
+    if (isRecord(item)) {
+      return Object.fromEntries(Object.entries(item).slice(0, 16).map(([key, entry]) => [key, summarize(entry, depth + 1)]));
+    }
+    return `[${typeof item}]`;
+  };
+  return JSON.stringify(summarize(value, 0)).slice(0, MAX_TOOL_ARGUMENT_SUMMARY_CHARS);
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, "Bearer [redacted]")
+    .replace(/(["']?(?:api[_-]?key|token|secret|authorization)["']?\s*[:=]\s*["']?)[^"'\s,}]+/gi, "$1[redacted]");
+}
+
+function assertNotAborted(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  if (signal.reason === "tool_timeout") throw new CapabilityError("tool_execution_failed", "工具执行超时", true);
+  throw new CapabilityError("request_cancelled", "请求已取消", true);
+}
+
+function toCapabilityError(error: unknown): CapabilityError {
+  if (error instanceof CapabilityError) return error;
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return new CapabilityError("request_cancelled", "请求已取消", true);
+  }
+  return new CapabilityError("tool_execution_failed", error instanceof Error ? error.message : "工具执行失败", true);
 }
 
 function formatUpstreamErrorMessage(body: string): string {
@@ -3503,6 +5157,188 @@ async function recordChatMetric(
   },
 ): Promise<void> {
   await getUserState(env, args.label).recordMetric(args);
+}
+
+function normalizeSkillRegistry(value: unknown): Record<string, SkillConfig> {
+  if (!isRecord(value)) return {};
+  const output: Record<string, SkillConfig> = {};
+  for (const [rawId, rawSkill] of Object.entries(value).slice(0, MAX_SKILLS)) {
+    const id = normalizeCapabilityId(rawId, 80);
+    if (!id || output[id] || !isRecord(rawSkill)) continue;
+    const label = normalizeBoundedText(rawSkill.label, 80) || id;
+    const instructions = normalizeBoundedText(rawSkill.instructions, MAX_SKILL_INSTRUCTIONS_CHARS);
+    if (!instructions) continue;
+    const order = normalizeNumber(rawSkill.order);
+    output[id] = {
+      enabled: rawSkill.enabled === true,
+      label,
+      description: normalizeBoundedText(rawSkill.description, 500) || undefined,
+      instructions,
+      toolIds: normalizeStringIdList(rawSkill.toolIds, MAX_TOOLS, 160),
+      order: order === undefined ? undefined : Math.max(-10_000, Math.min(10_000, Math.trunc(order))),
+    };
+  }
+  return output;
+}
+
+function normalizeMcpServerRegistry(value: unknown): Record<string, McpServerConfig> {
+  if (!isRecord(value)) return {};
+  const output: Record<string, McpServerConfig> = {};
+  for (const [rawId, rawServer] of Object.entries(value).slice(0, MAX_MCP_SERVERS)) {
+    const id = normalizeCapabilityId(rawId, 80);
+    if (!id || output[id] || !isRecord(rawServer)) continue;
+    const authType = rawServer.authType;
+    if (authType !== "none" && authType !== "bearer" && authType !== "x-api-key") continue;
+    const endpoint = normalizeBoundedText(rawServer.endpoint, 2_048);
+    if (!endpoint) continue;
+    const secretRef = normalizeBoundedText(rawServer.secretRef, 64);
+    output[id] = {
+      enabled: rawServer.enabled === true,
+      label: normalizeBoundedText(rawServer.label, 80) || id,
+      endpoint,
+      authType,
+      secretRef: secretRef && ROUTE_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
+    };
+  }
+  return output;
+}
+
+function normalizeToolRegistry(
+  value: unknown,
+  mcpServers: Record<string, McpServerConfig>,
+): Record<string, ToolConfig> {
+  if (!isRecord(value)) return {};
+  const output: Record<string, ToolConfig> = {};
+  for (const [rawId, rawTool] of Object.entries(value).slice(0, MAX_TOOLS)) {
+    const id = normalizeCapabilityId(rawId, 160);
+    if (!id || output[id] || !isRecord(rawTool) || !isRecord(rawTool.executor)) continue;
+    const schema = normalizeJsonRecord(rawTool.inputSchema, MAX_TOOL_SCHEMA_CHARS);
+    if (!schema) continue;
+    let executor: ToolExecutor | null = null;
+    if (rawTool.executor.type === "builtin" && rawTool.executor.name === "text_stats" && id === "builtin:text_stats") {
+      executor = { type: "builtin", name: "text_stats" };
+    }
+    if (rawTool.executor.type === "mcp") {
+      const serverId = normalizeCapabilityId(rawTool.executor.serverId, 80);
+      const remoteName = normalizeBoundedText(rawTool.executor.remoteName, 128);
+      if (
+        serverId &&
+        mcpServers[serverId] &&
+        remoteName &&
+        MCP_REMOTE_NAME_PATTERN.test(remoteName) &&
+        id === `mcp:${serverId}:${remoteName}`
+      ) {
+        executor = { type: "mcp", serverId, remoteName };
+      }
+    }
+    if (!executor) continue;
+    const confirmation = rawTool.confirmation;
+    output[id] = {
+      enabled: rawTool.enabled === true,
+      label: normalizeBoundedText(rawTool.label, 80) || remoteToolLabel(executor),
+      description: normalizeBoundedText(rawTool.description, 1_000) || undefined,
+      inputSchema: schema,
+      confirmation: executor.type === "builtin"
+        ? confirmation === "always" ? "always" : "auto"
+        : confirmation === "always" ? "always" : "first-per-conversation",
+      executor,
+      schemaFingerprint:
+        typeof rawTool.schemaFingerprint === "string" && /^[a-f0-9]{64}$/i.test(rawTool.schemaFingerprint)
+          ? rawTool.schemaFingerprint.toLowerCase()
+          : undefined,
+    };
+  }
+  return output;
+}
+
+function normalizeToolEvents(value: unknown): ToolEventSummary[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const output: ToolEventSummary[] = [];
+  for (const rawEvent of value.slice(-MAX_TOOL_EVENTS)) {
+    if (!isRecord(rawEvent)) continue;
+    const id = normalizeCapabilityId(rawEvent.id, 100);
+    const toolId = normalizeCapabilityId(rawEvent.toolId, 160);
+    const label = normalizeBoundedText(rawEvent.label, 80);
+    if (!id || !toolId || !label) continue;
+    const source = rawEvent.source === "mcp" ? "mcp" : rawEvent.source === "builtin" ? "builtin" : null;
+    const status = normalizeToolEventStatus(rawEvent.status);
+    if (!source || !status) continue;
+    const createdAt = Number.isFinite(rawEvent.createdAt) ? Number(rawEvent.createdAt) : Date.now();
+    const updatedAt = Number.isFinite(rawEvent.updatedAt) ? Number(rawEvent.updatedAt) : createdAt;
+    const interrupted = status === "pending" || status === "running" || status === "approved";
+    const argumentSummary = normalizeBoundedText(rawEvent.argumentSummary, MAX_TOOL_ARGUMENT_SUMMARY_CHARS);
+    const resultPreview = normalizeBoundedText(rawEvent.resultPreview, MAX_TOOL_RESULT_PREVIEW_CHARS);
+    const contentTruncated =
+      (typeof rawEvent.argumentSummary === "string" && rawEvent.argumentSummary.trim().length > argumentSummary.length) ||
+      (typeof rawEvent.resultPreview === "string" && rawEvent.resultPreview.trim().length > resultPreview.length);
+    output.push({
+      id,
+      toolId,
+      label,
+      source,
+      status: interrupted ? "failed" : status,
+      argumentSummary: argumentSummary || undefined,
+      resultPreview: resultPreview || undefined,
+      confirmation: rawEvent.confirmation === "once" || rawEvent.confirmation === "conversation"
+        ? rawEvent.confirmation
+        : undefined,
+      errorCode: interrupted
+        ? "interrupted"
+        : normalizeBoundedText(rawEvent.errorCode, 80) || undefined,
+      createdAt,
+      updatedAt,
+      truncated: rawEvent.truncated === true || contentTruncated || undefined,
+    });
+  }
+  return output.length ? output : undefined;
+}
+
+function normalizeToolEventStatus(value: unknown): ToolEventSummary["status"] | null {
+  return value === "pending" || value === "approved" || value === "running" || value === "completed" ||
+    value === "failed" || value === "denied" ? value : null;
+}
+
+function normalizeSelectedSkillIds(value: unknown): string[] {
+  return normalizeStringIdList(value, MAX_SELECTED_SKILLS, 80);
+}
+
+function normalizeStringIdList(value: unknown, limit: number, maxChars: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const output: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = normalizeCapabilityId(item, maxChars);
+    if (!id || output.includes(id)) continue;
+    output.push(id);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+function normalizeCapabilityId(value: unknown, maxChars: number): string {
+  if (typeof value !== "string") return "";
+  const id = value.trim();
+  return id.length > 0 && id.length <= maxChars && CAPABILITY_ID_PATTERN.test(id) ? id : "";
+}
+
+function normalizeBoundedText(value: unknown, maxChars: number): string {
+  return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
+}
+
+function normalizeJsonRecord(value: unknown, maxChars: number): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized.length > maxChars) return null;
+    const parsed = JSON.parse(serialized);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function remoteToolLabel(executor: ToolExecutor): string {
+  return executor.type === "builtin" ? "文本统计" : executor.remoteName;
 }
 
 type AdminAuditEntry = {

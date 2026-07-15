@@ -36,6 +36,7 @@
             <button class="admin-nav-item active" type="button" data-admin-target="overview"><span>概览</span><small>用量与记忆</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="users"><span>用户</span><small>权限与额度</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="routes"><span>模型线路</span><small>接口与健康</small></button>
+            <button class="admin-nav-item" type="button" data-admin-target="capabilities"><span>AI 能力</span><small>Skills、工具与 MCP</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="access"><span>访问控制</span><small>访问码管理</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="advanced"><span>高级配置</span><small>完整 JSON</small></button>
           </nav>
@@ -172,7 +173,14 @@
                 <textarea id="userSystemPrompt" rows="4" maxlength="2000" spellcheck="false" placeholder="仅对该用户生效，叠加在全局 SYSTEM_PROMPT 之后"></textarea>
               </label>
             </div>
-            <div class="checkbox-grid" id="allowedRoutesBox"></div>
+            <fieldset class="admin-choice-group">
+              <legend>允许线路</legend>
+              <div class="checkbox-grid" id="allowedRoutesBox"></div>
+            </fieldset>
+            <fieldset class="admin-choice-group">
+              <legend>允许工具</legend>
+              <div class="checkbox-grid" id="allowedToolsBox"></div>
+            </fieldset>
             <div class="form-actions">
               <button class="ghost-button compact" type="submit">保存用户</button>
               <button class="plain-button compact" id="revokeUserSessionsButton" type="button">注销会话</button>
@@ -249,6 +257,10 @@
                 支持图片
               </label>
               <label class="check-line">
+                <input id="routeToolsInput" type="checkbox" />
+                支持工具调用
+              </label>
+              <label class="check-line">
                 <input id="routeEnabledInput" type="checkbox" checked />
                 启用该线路
               </label>
@@ -266,6 +278,159 @@
             <p class="admin-status" id="routeHealthStatus" role="status"></p>
             <div class="route-health-list" id="routeHealthList" aria-label="线路健康状态"></div>
           </form>
+        </section>
+
+        <section class="admin-panel capability-panel" data-admin-section="capabilities" hidden>
+          <div class="panel-title">
+            <h2>AI 能力</h2>
+            <span>配置可复用 Skill、工具和远程 MCP 服务</span>
+          </div>
+          <div class="capability-tabs" role="tablist" aria-label="AI 能力类型">
+            <button class="capability-tab active" id="capabilitySkillsTab" type="button" role="tab" aria-selected="true" aria-controls="capabilitySkillsPanel" data-capability-tab="skills">Skills</button>
+            <button class="capability-tab" id="capabilityToolsTab" type="button" role="tab" aria-selected="false" aria-controls="capabilityToolsPanel" data-capability-tab="tools">工具</button>
+            <button class="capability-tab" id="capabilityMcpTab" type="button" role="tab" aria-selected="false" aria-controls="capabilityMcpPanel" data-capability-tab="mcp">MCP 服务</button>
+          </div>
+
+          <section class="capability-editor" id="capabilitySkillsPanel" role="tabpanel" aria-labelledby="capabilitySkillsTab">
+            <form class="admin-form capability-form" id="skillForm">
+              <div class="form-grid">
+                <label>
+                  选择 Skill
+                  <select id="skillSelect"></select>
+                </label>
+                <label>
+                  Skill ID
+                  <input id="skillIdInput" autocomplete="off" placeholder="writing-helper" required />
+                </label>
+                <label>
+                  显示名称
+                  <input id="skillLabelInput" maxlength="80" autocomplete="off" placeholder="写作助手" required />
+                </label>
+                <label>
+                  排序
+                  <input id="skillOrderInput" type="number" min="-10000" max="10000" step="1" value="0" />
+                </label>
+                <label class="wide-field">
+                  描述
+                  <input id="skillDescriptionInput" maxlength="500" autocomplete="off" placeholder="在选择器中向用户说明此 Skill" />
+                </label>
+                <label class="wide-field">
+                  Instructions
+                  <textarea id="skillInstructionsInput" rows="9" maxlength="8000" spellcheck="false" placeholder="写入该 Skill 的行为约束和工作方式" required></textarea>
+                </label>
+                <label class="check-line">
+                  <input id="skillEnabledInput" type="checkbox" />
+                  启用该 Skill
+                </label>
+              </div>
+              <fieldset class="admin-choice-group">
+                <legend>可使用工具</legend>
+                <div class="checkbox-grid" id="skillToolsBox"></div>
+              </fieldset>
+              <div class="form-actions">
+                <button class="ghost-button compact" type="submit">保存 Skill</button>
+                <button class="plain-button compact" id="deleteSkillButton" type="button">删除 Skill</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="capability-editor" id="capabilityToolsPanel" role="tabpanel" aria-labelledby="capabilityToolsTab" hidden>
+            <form class="admin-form capability-form" id="toolForm">
+              <div class="form-grid">
+                <label>
+                  选择工具
+                  <select id="toolSelect"></select>
+                </label>
+                <label>
+                  工具 ID
+                  <input id="toolIdInput" readonly />
+                </label>
+                <label>
+                  显示名称
+                  <input id="toolLabelInput" maxlength="80" autocomplete="off" required />
+                </label>
+                <label>
+                  来源
+                  <input id="toolSourceInput" readonly />
+                </label>
+                <label>
+                  确认策略
+                  <select id="toolConfirmationInput">
+                    <option value="auto">自动执行</option>
+                    <option value="first-per-conversation">每个会话首次确认</option>
+                    <option value="always">每次确认</option>
+                  </select>
+                </label>
+                <label class="check-line">
+                  <input id="toolEnabledInput" type="checkbox" />
+                  启用该工具
+                </label>
+                <label class="wide-field">
+                  描述
+                  <textarea id="toolDescriptionInput" rows="4" maxlength="1000" spellcheck="false"></textarea>
+                </label>
+              </div>
+              <div class="tool-schema-summary" id="toolSchemaSummary" role="status"></div>
+              <div class="form-actions">
+                <button class="ghost-button compact" type="submit">保存工具</button>
+                <button class="plain-button compact" id="deleteToolButton" type="button">删除工具</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="capability-editor" id="capabilityMcpPanel" role="tabpanel" aria-labelledby="capabilityMcpTab" hidden>
+            <form class="admin-form capability-form" id="mcpForm">
+              <div class="form-grid">
+                <label>
+                  选择服务
+                  <select id="mcpSelect"></select>
+                </label>
+                <label>
+                  Server ID
+                  <input id="mcpIdInput" autocomplete="off" placeholder="knowledge-base" required />
+                </label>
+                <label>
+                  显示名称
+                  <input id="mcpLabelInput" maxlength="80" autocomplete="off" placeholder="知识库" required />
+                </label>
+                <label>
+                  认证方式
+                  <select id="mcpAuthTypeInput">
+                    <option value="none">无认证</option>
+                    <option value="bearer">Bearer Token</option>
+                    <option value="x-api-key">X-API-Key</option>
+                  </select>
+                </label>
+                <label class="wide-field">
+                  Streamable HTTP 地址
+                  <input id="mcpEndpointInput" type="url" autocomplete="off" placeholder="https://mcp.example.com/rpc" required />
+                </label>
+                <label>
+                  Secret Ref
+                  <input id="mcpSecretRefInput" autocomplete="off" placeholder="MCP_KNOWLEDGE_KEY" />
+                </label>
+                <label class="check-line">
+                  <input id="mcpEnabledInput" type="checkbox" />
+                  启用该 MCP 服务
+                </label>
+                <label class="wide-field">
+                  MCP 密钥
+                  <span class="inline-field-action mcp-secret-action">
+                    <input id="mcpSecretInput" type="password" autocomplete="new-password" placeholder="输入新密钥或替换现有密钥" />
+                    <button class="ghost-button compact" id="saveMcpSecretButton" type="button" disabled>保存密钥</button>
+                    <button class="plain-button compact" id="deleteMcpSecretButton" type="button" disabled>删除</button>
+                  </span>
+                  <small class="route-secret-status" id="mcpSecretStatus" role="status"></small>
+                </label>
+              </div>
+              <div class="mcp-discovery-summary" id="mcpDiscoverySummary" role="status"></div>
+              <div class="form-actions">
+                <button class="ghost-button compact" type="submit">保存 MCP 服务</button>
+                <button class="ghost-button compact" id="discoverMcpToolsButton" type="button">发现工具</button>
+                <button class="plain-button compact" id="deleteMcpButton" type="button">删除 MCP 服务</button>
+              </div>
+            </form>
+          </section>
         </section>
 
         <section class="admin-panel admin-access-panel" data-admin-section="access" hidden>

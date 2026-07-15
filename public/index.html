@@ -131,9 +131,11 @@
             <div class="composer-inner">
               <div class="drop-hint" id="dropHint" hidden>放开以添加图片</div>
               <div class="attachment-row" id="attachmentRow"></div>
+              <div class="selected-skills" id="selectedSkills" aria-label="当前 Skills"></div>
               <div class="composer-bar">
                 <label class="icon-button" for="imageInput" title="添加图片" aria-label="添加图片"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#image-plus"></use></svg></label>
                 <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+                <button class="icon-button capability-button" id="capabilityButton" type="button" title="选择 Skills" aria-label="选择 Skills" aria-haspopup="dialog" aria-controls="capabilityPopover" aria-expanded="false"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#wand-sparkles"></use></svg></button>
                 <textarea id="promptInput" rows="1" placeholder="给 Chatus 发送消息" required></textarea>
                 <button class="send-button" id="sendButton" type="submit" title="发送" aria-label="发送"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#arrow-up"></use></svg></button>
                 <button class="stop-button" id="stopButton" type="button" title="停止生成" aria-label="停止生成" hidden><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/icons.svg?v=development#square"></use></svg></button>
@@ -142,6 +144,14 @@
                 <span id="composerHint">支持粘贴或拖拽图片</span>
                 <span id="composerCount"></span>
               </div>
+              <section class="capability-popover" id="capabilityPopover" role="dialog" aria-label="选择会话 Skills" hidden>
+                <div class="capability-popover-heading">
+                  <strong>Skills</strong>
+                  <span id="capabilitySelectionCount">最多选择 3 个</span>
+                </div>
+                <div class="skill-selector-list" id="skillSelectorList"></div>
+                <div class="capability-tool-context" id="capabilityToolContext"></div>
+              </section>
             </div>
           </form>
         </section>

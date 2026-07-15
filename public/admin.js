@@ -40,6 +40,7 @@ const userMinuteLimit = document.querySelector("#userMinuteLimit");
 const userByok = document.querySelector("#userByok");
 const userEnabled = document.querySelector("#userEnabled");
 const allowedRoutesBox = document.querySelector("#allowedRoutesBox");
+const allowedToolsBox = document.querySelector("#allowedToolsBox");
 const deleteUserButton = document.querySelector("#deleteUserButton");
 const revokeUserSessionsButton = document.querySelector("#revokeUserSessionsButton");
 const createdAccessCode = document.querySelector("#createdAccessCode");
@@ -68,6 +69,7 @@ const deleteRouteSecretButton = document.querySelector("#deleteRouteSecretButton
 const routeSecretStatus = document.querySelector("#routeSecretStatus");
 const routeFallbacksInput = document.querySelector("#routeFallbacksInput");
 const routeImagesInput = document.querySelector("#routeImagesInput");
+const routeToolsInput = document.querySelector("#routeToolsInput");
 const routeEnabledInput = document.querySelector("#routeEnabledInput");
 const routeRequiresKeyInput = document.querySelector("#routeRequiresKeyInput");
 const deleteRouteButton = document.querySelector("#deleteRouteButton");
@@ -96,6 +98,45 @@ const adminDialog = document.querySelector("#adminDialog");
 const adminDialogTitle = document.querySelector("#adminDialogTitle");
 const adminDialogDescription = document.querySelector("#adminDialogDescription");
 const adminDialogConfirm = document.querySelector("#adminDialogConfirm");
+const capabilityTabs = [...document.querySelectorAll("[data-capability-tab]")];
+const capabilitySkillsPanel = document.querySelector("#capabilitySkillsPanel");
+const capabilityToolsPanel = document.querySelector("#capabilityToolsPanel");
+const capabilityMcpPanel = document.querySelector("#capabilityMcpPanel");
+const skillForm = document.querySelector("#skillForm");
+const skillSelect = document.querySelector("#skillSelect");
+const skillIdInput = document.querySelector("#skillIdInput");
+const skillLabelInput = document.querySelector("#skillLabelInput");
+const skillDescriptionInput = document.querySelector("#skillDescriptionInput");
+const skillInstructionsInput = document.querySelector("#skillInstructionsInput");
+const skillOrderInput = document.querySelector("#skillOrderInput");
+const skillEnabledInput = document.querySelector("#skillEnabledInput");
+const skillToolsBox = document.querySelector("#skillToolsBox");
+const deleteSkillButton = document.querySelector("#deleteSkillButton");
+const toolForm = document.querySelector("#toolForm");
+const toolSelect = document.querySelector("#toolSelect");
+const toolIdInput = document.querySelector("#toolIdInput");
+const toolLabelInput = document.querySelector("#toolLabelInput");
+const toolSourceInput = document.querySelector("#toolSourceInput");
+const toolConfirmationInput = document.querySelector("#toolConfirmationInput");
+const toolEnabledInput = document.querySelector("#toolEnabledInput");
+const toolDescriptionInput = document.querySelector("#toolDescriptionInput");
+const toolSchemaSummary = document.querySelector("#toolSchemaSummary");
+const deleteToolButton = document.querySelector("#deleteToolButton");
+const mcpForm = document.querySelector("#mcpForm");
+const mcpSelect = document.querySelector("#mcpSelect");
+const mcpIdInput = document.querySelector("#mcpIdInput");
+const mcpLabelInput = document.querySelector("#mcpLabelInput");
+const mcpEndpointInput = document.querySelector("#mcpEndpointInput");
+const mcpAuthTypeInput = document.querySelector("#mcpAuthTypeInput");
+const mcpSecretRefInput = document.querySelector("#mcpSecretRefInput");
+const mcpEnabledInput = document.querySelector("#mcpEnabledInput");
+const mcpSecretInput = document.querySelector("#mcpSecretInput");
+const saveMcpSecretButton = document.querySelector("#saveMcpSecretButton");
+const deleteMcpSecretButton = document.querySelector("#deleteMcpSecretButton");
+const mcpSecretStatus = document.querySelector("#mcpSecretStatus");
+const mcpDiscoverySummary = document.querySelector("#mcpDiscoverySummary");
+const discoverMcpToolsButton = document.querySelector("#discoverMcpToolsButton");
+const deleteMcpButton = document.querySelector("#deleteMcpButton");
 
 const DEFAULT_USER = "__defaults";
 const ADMIN_SECTION_KEY = "chatus.admin.section.v1";
@@ -103,6 +144,7 @@ const ADMIN_SECTION_TITLES = {
   overview: "概览",
   users: "用户管理",
   routes: "模型线路",
+  capabilities: "AI 能力",
   access: "访问控制",
   advanced: "高级配置",
 };
@@ -115,6 +157,10 @@ let feedbackEntries = [];
 let coreHealth = null;
 let selectedUser = DEFAULT_USER;
 let selectedRoute = "";
+let selectedSkill = "__new";
+let selectedTool = "";
+let selectedMcp = "__new";
+let currentCapabilityTab = "skills";
 let selectedMemoryUser = "";
 let currentAdminSection = "overview";
 let savedAccessCodes = "";
@@ -125,6 +171,9 @@ let accessRevision = "";
 let routeSecrets = {};
 let routeSecretMasterReady = false;
 let routeSecretMasterMessage = "";
+let mcpSecrets = {};
+let mcpSecretMasterReady = false;
+let mcpSecretMasterMessage = "";
 let routeModelSuggestions = [];
 let selectedRouteModels = new Set();
 const dirtyScopes = new Set();
@@ -141,15 +190,18 @@ for (const item of adminNavItems) {
 for (const [element, scope] of [
   [userForm, "user"],
   [routeForm, "route"],
+  [skillForm, "capability"],
+  [toolForm, "capability"],
+  [mcpForm, "capability"],
   [accessCodesInput, "access"],
   [configJsonInput, "config"],
   [adminMemoryInput, "memory"],
 ]) {
   element?.addEventListener("input", (event) => {
-    if (event.target !== routeSecretInput) markDirty(scope);
+    if (event.target !== routeSecretInput && event.target !== mcpSecretInput) markDirty(scope);
   });
   element?.addEventListener("change", (event) => {
-    if (event.target !== routeSecretInput) markDirty(scope);
+    if (event.target !== routeSecretInput && event.target !== mcpSecretInput) markDirty(scope);
   });
 }
 
@@ -209,7 +261,42 @@ routeSecretInput?.addEventListener("keydown", (event) => {
   event.preventDefault();
   saveRouteSecret();
 });
+mcpSecretRefInput?.addEventListener("input", () => renderMcpSecretStatus());
+mcpAuthTypeInput?.addEventListener("change", () => {
+  if (mcpAuthTypeInput.value === "none") clearMcpSecretInput();
+  renderMcpSecretStatus();
+});
+mcpSecretInput?.addEventListener("input", () => renderMcpSecretStatus());
+mcpSecretInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveMcpSecret();
+});
+saveMcpSecretButton?.addEventListener("click", () => saveMcpSecret());
+deleteMcpSecretButton?.addEventListener("click", () => deleteMcpSecret());
+discoverMcpToolsButton?.addEventListener("click", () => discoverMcpTools());
 accessCodesInput?.addEventListener("input", () => renderAccessEntries());
+
+for (const tab of capabilityTabs) {
+  tab.addEventListener("click", async () => {
+    const next = tab.dataset.capabilityTab;
+    if (next === currentCapabilityTab) return;
+    if (!(await confirmDiscardChanges("切换能力类型"))) return;
+    showCapabilityTab(next);
+  });
+  tab.addEventListener("keydown", (event) => {
+    const current = capabilityTabs.indexOf(tab);
+    let next = -1;
+    if (event.key === "ArrowRight") next = (current + 1) % capabilityTabs.length;
+    if (event.key === "ArrowLeft") next = (current - 1 + capabilityTabs.length) % capabilityTabs.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = capabilityTabs.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    capabilityTabs[next].click();
+    capabilityTabs[next].focus();
+  });
+}
 
 bootAdmin();
 
@@ -370,6 +457,131 @@ routeForm.addEventListener("submit", async (event) => {
   await attemptSaveConfig("线路配置已保存");
 });
 
+skillSelect?.addEventListener("change", async () => {
+  const next = skillSelect.value;
+  skillSelect.value = selectedSkill;
+  if (!(await confirmDiscardChanges("切换 Skill"))) return;
+  selectedSkill = next;
+  skillSelect.value = next;
+  populateSkillForm();
+});
+
+skillForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  syncConfigFromEditor();
+  const skillId = skillIdInput.value.trim();
+  const instructions = skillInstructionsInput.value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(skillId) || skillId.length > 80) {
+    return setStatus("Skill ID 格式无效", true);
+  }
+  if (!instructions) return setStatus("Skill Instructions 必填", true);
+  const previous = selectedSkill !== "__new" ? selectedSkill : "";
+  if (previous && previous !== skillId) delete config.skills?.[previous];
+  config.skills = config.skills || {};
+  config.skills[skillId] = compactObject({
+    enabled: skillEnabledInput.checked,
+    label: skillLabelInput.value.trim() || skillId,
+    description: skillDescriptionInput.value.trim().slice(0, 500),
+    instructions: instructions.slice(0, 8_000),
+    order: Math.max(-10_000, Math.min(10_000, Math.trunc(Number(skillOrderInput.value) || 0))),
+    toolIds: checkedValues(skillToolsBox),
+  });
+  selectedSkill = skillId;
+  await attemptSaveConfig("Skill 已保存");
+});
+
+deleteSkillButton?.addEventListener("click", async () => {
+  if (!selectedSkill || selectedSkill === "__new") return;
+  if (!(await confirmAdminAction("删除 Skill？", `${config.skills?.[selectedSkill]?.label || selectedSkill} 将不再出现在会话选择器中。`, "删除 Skill"))) return;
+  syncConfigFromEditor();
+  delete config.skills?.[selectedSkill];
+  selectedSkill = "__new";
+  await attemptSaveConfig("Skill 已删除");
+});
+
+toolSelect?.addEventListener("change", async () => {
+  const next = toolSelect.value;
+  toolSelect.value = selectedTool;
+  if (!(await confirmDiscardChanges("切换工具"))) return;
+  selectedTool = next;
+  toolSelect.value = next;
+  populateToolForm();
+});
+
+toolForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  syncConfigFromEditor();
+  const tool = config.tools?.[selectedTool];
+  if (!tool) return setStatus("请先选择工具", true);
+  tool.label = toolLabelInput.value.trim().slice(0, 80) || selectedTool;
+  tool.description = toolDescriptionInput.value.trim().slice(0, 1_000) || undefined;
+  tool.enabled = toolEnabledInput.checked;
+  tool.confirmation = tool.executor?.type === "builtin"
+    ? toolConfirmationInput.value === "always" ? "always" : "auto"
+    : toolConfirmationInput.value === "always" ? "always" : "first-per-conversation";
+  await attemptSaveConfig("工具配置已保存");
+});
+
+deleteToolButton?.addEventListener("click", async () => {
+  const tool = config.tools?.[selectedTool];
+  if (!tool || tool.executor?.type === "builtin") return;
+  if (!(await confirmAdminAction("删除远程工具？", `${tool.label || selectedTool} 将从所有 Skill 和用户权限中移除。`, "删除工具"))) return;
+  syncConfigFromEditor();
+  delete config.tools[selectedTool];
+  pruneToolAssignments(selectedTool);
+  selectedTool = "";
+  await attemptSaveConfig("远程工具已删除");
+});
+
+mcpSelect?.addEventListener("change", async () => {
+  const next = mcpSelect.value;
+  mcpSelect.value = selectedMcp;
+  if (!(await confirmDiscardChanges("切换 MCP 服务"))) return;
+  selectedMcp = next;
+  mcpSelect.value = next;
+  populateMcpForm();
+});
+
+mcpForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  syncConfigFromEditor();
+  const draft = readMcpEditor();
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(draft.serverId) || draft.serverId.length > 80) {
+    return setStatus("MCP Server ID 格式无效", true);
+  }
+  if (!isPublicHttpsEndpoint(draft.endpoint)) return setStatus("MCP 地址必须是公开 HTTPS 地址", true);
+  if (draft.authType !== "none" && !/^[A-Z][A-Z0-9_]{1,63}$/.test(draft.secretRef)) {
+    return setStatus("该认证方式需要有效的 Secret Ref", true);
+  }
+  const previous = selectedMcp !== "__new" ? selectedMcp : "";
+  if (previous && previous !== draft.serverId) {
+    delete config.mcpServers?.[previous];
+    removeMcpServerTools(previous);
+  }
+  config.mcpServers = config.mcpServers || {};
+  config.mcpServers[draft.serverId] = compactObject({
+    enabled: draft.enabled,
+    label: draft.label || draft.serverId,
+    endpoint: draft.endpoint,
+    authType: draft.authType,
+    secretRef: draft.authType === "none" ? "" : draft.secretRef,
+  });
+  selectedMcp = draft.serverId;
+  await attemptSaveConfig("MCP 服务已保存");
+  clearMcpSecretInput();
+  renderMcpSecretStatus();
+});
+
+deleteMcpButton?.addEventListener("click", async () => {
+  if (!selectedMcp || selectedMcp === "__new") return;
+  if (!(await confirmAdminAction("删除 MCP 服务？", `${config.mcpServers?.[selectedMcp]?.label || selectedMcp} 及其发现的工具将被移除。`, "删除 MCP"))) return;
+  syncConfigFromEditor();
+  delete config.mcpServers?.[selectedMcp];
+  removeMcpServerTools(selectedMcp);
+  selectedMcp = "__new";
+  await attemptSaveConfig("MCP 服务已删除");
+});
+
 deleteRouteButton.addEventListener("click", async () => {
   if (!selectedRoute || selectedRoute === "__new") return;
   syncConfigFromEditor();
@@ -439,6 +651,7 @@ async function bootAdmin() {
 
 function showLogin() {
   clearRouteSecretInput();
+  clearMcpSecretInput();
   clearDirty();
   adminView.hidden = true;
   adminLoginView.hidden = false;
@@ -462,14 +675,32 @@ function showAdminSection(section) {
     item.setAttribute("aria-current", active ? "page" : "false");
   }
   if (adminPageTitle) adminPageTitle.textContent = ADMIN_SECTION_TITLES[target];
+  clearMcpSecretInput();
   localStorage.setItem(ADMIN_SECTION_KEY, target);
   document.querySelector(".admin-content")?.scrollTo({ top: 0, behavior: "instant" });
 }
 
+function showCapabilityTab(tab) {
+  const target = ["skills", "tools", "mcp"].includes(tab) ? tab : "skills";
+  currentCapabilityTab = target;
+  const panels = { skills: capabilitySkillsPanel, tools: capabilityToolsPanel, mcp: capabilityMcpPanel };
+  for (const [key, panel] of Object.entries(panels)) {
+    if (panel) panel.hidden = key !== target;
+  }
+  for (const control of capabilityTabs) {
+    const active = control.dataset.capabilityTab === target;
+    control.classList.toggle("active", active);
+    control.setAttribute("aria-selected", String(active));
+    control.tabIndex = active ? 0 : -1;
+  }
+  clearMcpSecretInput();
+}
+
 async function loadDashboard(message = "") {
   clearRouteSecretInput();
+  clearMcpSecretInput();
   setStatus("读取中");
-  const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData, coreHealthData, routeSecretsData] = await Promise.all([
+  const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData, coreHealthData, routeSecretsData, mcpSecretsData] = await Promise.all([
     api("/api/admin/config"),
     api("/api/admin/access-codes"),
     api("/api/admin/stats"),
@@ -479,6 +710,7 @@ async function loadDashboard(message = "") {
     api("/api/admin/feedback"),
     fetchCoreHealth(),
     api("/api/admin/route-secrets"),
+    api("/api/admin/mcp-secrets"),
   ]);
 
   config = normalizeClientConfig(configData.config);
@@ -492,6 +724,13 @@ async function loadDashboard(message = "") {
     (Array.isArray(routeSecretsData?.items) ? routeSecretsData.items : [])
       .filter((item) => item?.apiKeyRef)
       .map((item) => [item.apiKeyRef, item]),
+  );
+  mcpSecretMasterReady = mcpSecretsData?.masterKeyReady === true;
+  mcpSecretMasterMessage = mcpSecretsData?.masterKeyMessage || "";
+  mcpSecrets = Object.fromEntries(
+    (Array.isArray(mcpSecretsData?.items) ? mcpSecretsData.items : [])
+      .filter((item) => item?.secretRef)
+      .map((item) => [item.secretRef, item]),
   );
   renderAuditLog(auditData?.entries || []);
   renderFeedback(feedbackData?.entries || []);
@@ -516,6 +755,7 @@ async function loadDashboard(message = "") {
   renderAttentionCenter();
   renderUserPicker();
   renderRoutePicker();
+  renderCapabilityEditors();
   clearDirty();
   setStatus(message || "已同步");
 }
@@ -677,7 +917,7 @@ function renderAttentionCenter() {
 
   alerts.sort((a, b) => (a.severity === "critical" ? 0 : 1) - (b.severity === "critical" ? 0 : 1));
   attentionList.textContent = "";
-  attentionPanel.hidden = alerts.length === 0;
+  attentionPanel.hidden = currentAdminSection !== "overview" || alerts.length === 0;
   attentionSummary.textContent = alerts.length ? `${alerts.length} 项待处理` : "运行正常";
 
   for (const alert of alerts) {
@@ -1141,6 +1381,7 @@ function renderUserPicker() {
   }
 
   renderAllowedRouteChecks();
+  renderAllowedToolChecks();
   populateUserForm();
 }
 
@@ -1156,6 +1397,10 @@ function renderAllowedRouteChecks() {
     label.append(input, document.createTextNode(`${routeLabel(routeId)}${disabled ? "（已停用）" : ""}`));
     allowedRoutesBox.append(label);
   }
+}
+
+function renderAllowedToolChecks() {
+  renderToolCheckboxes(allowedToolsBox, []);
 }
 
 function populateUserForm() {
@@ -1182,6 +1427,10 @@ function populateUserForm() {
   const allowed = new Set(user.allowedRoutes?.length ? user.allowedRoutes : routeIds);
   for (const input of allowedRoutesBox.querySelectorAll("input[type='checkbox']")) {
     input.checked = allowed.has(input.value);
+  }
+  const allowedTools = new Set(Array.isArray(user.allowedTools) ? user.allowedTools : []);
+  for (const input of allowedToolsBox.querySelectorAll("input[type='checkbox']")) {
+    input.checked = allowedTools.has(input.value);
   }
 }
 
@@ -1216,6 +1465,7 @@ function readUserForm() {
     ...(displayName ? { displayName: displayName.slice(0, 40) } : {}),
     defaultRoute: userDefaultRoute.value,
     allowedRoutes,
+    allowedTools: checkedValues(allowedToolsBox),
     allowBringYourOwnKey: userByok.checked,
     dailyMessageLimit: positiveNumber(userDailyLimit.value),
     minuteMessageLimit: positiveNumber(userMinuteLimit.value),
@@ -1328,6 +1578,7 @@ function populateRouteForm() {
   routeKeyRefInput.value = route.apiKeyRef || "";
   routeFallbacksInput.value = Array.isArray(route.fallbacks) ? route.fallbacks.join(",") : "";
   routeImagesInput.checked = route.supportsImages !== false;
+  routeToolsInput.checked = route.supportsTools === true;
   routeEnabledInput.checked = route.enabled !== false;
   routeRequiresKeyInput.checked = Boolean(route.requiresUserKey);
   deleteRouteButton.disabled = selectedRoute === "__new";
@@ -1384,6 +1635,179 @@ function clearRouteSecretInput() {
   if (routeSecretInput) routeSecretInput.value = "";
 }
 
+function renderMcpSecretStatus(message = "", isError = false) {
+  if (!mcpSecretStatus) return;
+  const authType = mcpAuthTypeInput.value;
+  const secretRef = mcpSecretRefInput.value.trim();
+  const validRef = /^[A-Z][A-Z0-9_]{1,63}$/.test(secretRef);
+  const item = validRef ? mcpSecrets[secretRef] : null;
+  const needsSecret = authType !== "none";
+  mcpSecretRefInput.disabled = !needsSecret;
+  mcpSecretInput.disabled = !needsSecret;
+  saveMcpSecretButton.disabled = !needsSecret || !mcpSecretMasterReady || !validRef || !mcpSecretInput.value.trim();
+  deleteMcpSecretButton.disabled = !needsSecret || !item?.managed;
+
+  let statusMessage = message;
+  let statusError = isError;
+  if (!statusMessage) {
+    if (!needsSecret) {
+      statusMessage = "该服务不发送认证密钥";
+    } else if (!secretRef) {
+      statusMessage = "先填写 Secret Ref";
+    } else if (!validRef) {
+      statusMessage = "仅支持大写字母、数字和下划线，且必须以字母开头";
+      statusError = true;
+    } else if (item?.source === "managed" && item.status === "configured") {
+      statusMessage = `后台密钥已配置${item.updatedAt ? ` · ${formatRouteSecretTime(item.updatedAt)}` : ""}`;
+    } else if (item?.source === "managed" && item.status === "unavailable") {
+      statusMessage = item.message || "后台密钥不可用，请重新录入";
+      statusError = true;
+    } else if (item?.source === "worker") {
+      statusMessage = "使用 Worker Secret；保存后将改用后台加密密钥";
+    } else if (!mcpSecretMasterReady) {
+      statusMessage = mcpSecretMasterMessage || "尚未配置密钥主密钥";
+      statusError = true;
+    } else {
+      statusMessage = "尚未配置后台密钥";
+    }
+  }
+  mcpSecretStatus.textContent = statusMessage;
+  mcpSecretStatus.classList.toggle("is-error", statusError);
+}
+
+function clearMcpSecretInput() {
+  if (mcpSecretInput) mcpSecretInput.value = "";
+}
+
+async function saveMcpSecret() {
+  const secretRef = mcpSecretRefInput.value.trim();
+  const secret = mcpSecretInput.value.trim();
+  if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(secretRef)) {
+    renderMcpSecretStatus("请先填写有效的 Secret Ref", true);
+    mcpSecretRefInput.focus();
+    return;
+  }
+  if (!secret) {
+    renderMcpSecretStatus("请输入要保存的 MCP 密钥", true);
+    mcpSecretInput.focus();
+    return;
+  }
+  let resultMessage = "";
+  let resultError = false;
+  saveMcpSecretButton.disabled = true;
+  renderMcpSecretStatus("正在加密保存…");
+  try {
+    const data = await api(`/api/admin/mcp-secrets/${encodeURIComponent(secretRef)}`, {
+      method: "PUT",
+      body: JSON.stringify({ secret, expectedRevision: mcpSecrets[secretRef]?.revision || undefined }),
+    });
+    if (data.item) mcpSecrets[secretRef] = data.item;
+    resultMessage = "MCP 密钥已保存";
+    setStatus(resultMessage);
+  } catch (error) {
+    resultMessage = error.message || "MCP 密钥保存失败";
+    resultError = true;
+    setStatus(resultMessage, true);
+  } finally {
+    clearMcpSecretInput();
+    renderMcpSecretStatus(resultMessage, resultError);
+  }
+}
+
+async function deleteMcpSecret() {
+  clearMcpSecretInput();
+  const secretRef = mcpSecretRefInput.value.trim();
+  const item = mcpSecrets[secretRef];
+  if (!item?.managed) return renderMcpSecretStatus("当前没有可删除的后台密钥", true);
+  if (!(await confirmAdminAction(
+    "删除 MCP 密钥？",
+    item.environmentFallback ? `${secretRef} 将恢复使用同名 Worker Secret。` : `${secretRef} 删除后远程服务认证将不可用。`,
+    "删除密钥",
+  ))) return;
+  deleteMcpSecretButton.disabled = true;
+  renderMcpSecretStatus("正在删除…");
+  try {
+    const data = await api(`/api/admin/mcp-secrets/${encodeURIComponent(secretRef)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ expectedRevision: item.revision || undefined }),
+    });
+    if (data.item) mcpSecrets[secretRef] = data.item;
+    renderMcpSecretStatus(data.item?.source === "worker" ? "后台密钥已删除，已恢复 Worker Secret" : "后台密钥已删除");
+    setStatus("MCP 密钥已删除");
+  } catch (error) {
+    renderMcpSecretStatus(error.message || "MCP 密钥删除失败", true);
+    setStatus(error.message || "MCP 密钥删除失败", true);
+  }
+}
+
+async function discoverMcpTools() {
+  const draft = readMcpEditor();
+  if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(draft.serverId) || draft.serverId.length > 80) {
+    return setStatus("请先填写有效的 MCP Server ID", true);
+  }
+  if (!isPublicHttpsEndpoint(draft.endpoint)) return setStatus("MCP 地址必须是公开 HTTPS 地址", true);
+  if (draft.authType !== "none" && !/^[A-Z][A-Z0-9_]{1,63}$/.test(draft.secretRef)) {
+    return setStatus("发现工具前需要有效的 Secret Ref", true);
+  }
+  discoverMcpToolsButton.disabled = true;
+  mcpDiscoverySummary.textContent = "正在连接服务并读取工具…";
+  clearMcpSecretInput();
+  try {
+    const data = await api("/api/admin/mcp-discovery", {
+      method: "POST",
+      body: JSON.stringify({
+        serverId: draft.serverId,
+        label: draft.label || draft.serverId,
+        endpoint: draft.endpoint,
+        authType: draft.authType,
+        ...(draft.authType === "none" ? {} : { secretRef: draft.secretRef }),
+      }),
+    });
+    syncConfigFromEditor();
+    const previous = selectedMcp !== "__new" ? selectedMcp : "";
+    if (previous && previous !== draft.serverId) {
+      delete config.mcpServers?.[previous];
+      removeMcpServerTools(previous);
+    }
+    config.mcpServers = config.mcpServers || {};
+    config.mcpServers[draft.serverId] = compactObject({
+      enabled: draft.enabled,
+      label: draft.label || draft.serverId,
+      endpoint: draft.endpoint,
+      authType: draft.authType,
+      secretRef: draft.authType === "none" ? "" : draft.secretRef,
+    });
+    config.tools = config.tools || {};
+    let added = 0;
+    let changed = 0;
+    let refreshed = 0;
+    for (const candidate of Array.isArray(data.tools) ? data.tools : []) {
+      if (!candidate?.id || candidate.executor?.type !== "mcp" || candidate.executor.serverId !== draft.serverId) continue;
+      const existing = config.tools[candidate.id];
+      const schemaChanged = Boolean(existing && existing.schemaFingerprint !== candidate.schemaFingerprint);
+      config.tools[candidate.id] = {
+        ...candidate,
+        enabled: existing && !schemaChanged ? existing.enabled === true : false,
+        confirmation: existing && !schemaChanged && existing.confirmation === "always" ? "always" : "first-per-conversation",
+      };
+      if (!existing) added += 1;
+      else if (schemaChanged) changed += 1;
+      else refreshed += 1;
+    }
+    selectedMcp = draft.serverId;
+    const saved = await attemptSaveConfig(`MCP 发现完成：新增 ${added}，更新 ${refreshed}，待复核 ${changed}`);
+    if (!saved) return;
+    mcpDiscoverySummary.textContent = `${Array.isArray(data.tools) ? data.tools.length : 0} 个可用工具 · ${Number(data.rejected) || 0} 个已跳过`;
+  } catch (error) {
+    mcpDiscoverySummary.textContent = error.message || "MCP 工具发现失败";
+    setStatus(error.message || "MCP 工具发现失败", true);
+  } finally {
+    clearMcpSecretInput();
+    discoverMcpToolsButton.disabled = false;
+    renderMcpSecretStatus();
+  }
+}
+
 function renderStoredRouteHealth(routeId) {
   if (!routeId || routeId === "__new") return setRouteHealth("");
   const health = routeHealth[routeId];
@@ -1410,7 +1834,7 @@ async function saveConfigObject(message) {
   config = normalizeClientConfig(data.config);
   configRevision = data.revision || configRevision;
   configJsonInput.value = JSON.stringify(config, null, 2);
-  clearDirty("user", "route", "config");
+  clearDirty("user", "route", "capability", "config");
   await loadDashboard(message);
 }
 
@@ -1430,7 +1854,212 @@ function normalizeClientConfig(value) {
     defaults: input.defaults && typeof input.defaults === "object" ? input.defaults : {},
     users: input.users && typeof input.users === "object" ? input.users : {},
     routes: input.routes && typeof input.routes === "object" ? input.routes : {},
+    skills: input.skills && typeof input.skills === "object" ? input.skills : {},
+    tools: input.tools && typeof input.tools === "object" ? input.tools : {},
+    mcpServers: input.mcpServers && typeof input.mcpServers === "object" ? input.mcpServers : {},
   };
+}
+
+function renderCapabilityEditors() {
+  renderSkillPicker();
+  renderToolPicker();
+  renderMcpPicker();
+  showCapabilityTab(currentCapabilityTab);
+}
+
+function renderSkillPicker() {
+  if (!skillSelect) return;
+  const entries = Object.entries(config.skills || {}).sort((left, right) => {
+    const order = (Number(left[1]?.order) || 0) - (Number(right[1]?.order) || 0);
+    return order || left[0].localeCompare(right[0]);
+  });
+  skillSelect.textContent = "";
+  for (const [skillId, skill] of entries) {
+    const option = document.createElement("option");
+    option.value = skillId;
+    option.textContent = `${skill.label || skillId}${skill.enabled === true ? "" : "（已停用）"}`;
+    skillSelect.append(option);
+  }
+  const newOption = document.createElement("option");
+  newOption.value = "__new";
+  newOption.textContent = "新增 Skill";
+  skillSelect.append(newOption);
+  if (selectedSkill !== "__new" && !config.skills?.[selectedSkill]) selectedSkill = entries[0]?.[0] || "__new";
+  skillSelect.value = selectedSkill;
+  populateSkillForm();
+}
+
+function populateSkillForm() {
+  if (!skillForm) return;
+  const skill = selectedSkill === "__new" ? {} : config.skills?.[selectedSkill] || {};
+  skillIdInput.value = selectedSkill === "__new" ? "" : selectedSkill;
+  skillLabelInput.value = skill.label || "";
+  skillDescriptionInput.value = skill.description || "";
+  skillInstructionsInput.value = skill.instructions || "";
+  skillOrderInput.value = Number.isFinite(Number(skill.order)) ? String(Math.trunc(Number(skill.order))) : "0";
+  skillEnabledInput.checked = skill.enabled === true;
+  renderToolCheckboxes(skillToolsBox, Array.isArray(skill.toolIds) ? skill.toolIds : []);
+  deleteSkillButton.disabled = selectedSkill === "__new";
+}
+
+function renderToolPicker() {
+  if (!toolSelect) return;
+  const entries = Object.entries(config.tools || {}).sort((left, right) => toolSortLabel(left).localeCompare(toolSortLabel(right), "zh-CN"));
+  toolSelect.textContent = "";
+  for (const [toolId, tool] of entries) {
+    const option = document.createElement("option");
+    option.value = toolId;
+    option.textContent = `${tool.label || toolId}${tool.enabled === true ? "" : "（已停用）"}`;
+    toolSelect.append(option);
+  }
+  if (!entries.some(([toolId]) => toolId === selectedTool)) selectedTool = entries[0]?.[0] || "";
+  toolSelect.value = selectedTool;
+  populateToolForm();
+}
+
+function toolSortLabel([toolId, tool]) {
+  const source = tool?.executor?.type === "builtin" ? "0" : "1";
+  return `${source}:${tool?.label || toolId}:${toolId}`;
+}
+
+function populateToolForm() {
+  if (!toolForm) return;
+  const tool = config.tools?.[selectedTool] || null;
+  const builtin = tool?.executor?.type === "builtin";
+  toolIdInput.value = selectedTool || "";
+  toolLabelInput.value = tool?.label || "";
+  toolDescriptionInput.value = tool?.description || "";
+  toolSourceInput.value = builtin
+    ? "内置 · text_stats"
+    : tool?.executor?.type === "mcp"
+      ? `MCP · ${config.mcpServers?.[tool.executor.serverId]?.label || tool.executor.serverId}`
+      : "";
+  toolEnabledInput.checked = tool?.enabled === true;
+  toolConfirmationInput.value = builtin
+    ? tool?.confirmation === "always" ? "always" : "auto"
+    : tool?.confirmation === "always" ? "always" : "first-per-conversation";
+  toolConfirmationInput.querySelector('option[value="auto"]').disabled = !builtin;
+  toolConfirmationInput.querySelector('option[value="first-per-conversation"]').disabled = builtin;
+  toolLabelInput.disabled = !tool;
+  toolDescriptionInput.disabled = !tool;
+  toolConfirmationInput.disabled = !tool;
+  toolEnabledInput.disabled = !tool;
+  deleteToolButton.disabled = !tool || builtin;
+  if (!tool) {
+    toolSchemaSummary.textContent = "尚未配置工具";
+    return;
+  }
+  const properties = tool.inputSchema?.properties && typeof tool.inputSchema.properties === "object"
+    ? Object.keys(tool.inputSchema.properties).length
+    : 0;
+  const fingerprint = typeof tool.schemaFingerprint === "string" ? ` · schema ${tool.schemaFingerprint.slice(0, 12)}` : "";
+  toolSchemaSummary.textContent = `${builtin ? "本地只读工具" : "远程只读工具"} · ${properties} 个输入字段${fingerprint}`;
+}
+
+function renderMcpPicker() {
+  if (!mcpSelect) return;
+  const entries = Object.entries(config.mcpServers || {}).sort((left, right) => (left[1]?.label || left[0]).localeCompare(right[1]?.label || right[0], "zh-CN"));
+  mcpSelect.textContent = "";
+  for (const [serverId, server] of entries) {
+    const option = document.createElement("option");
+    option.value = serverId;
+    option.textContent = `${server.label || serverId}${server.enabled === true ? "" : "（已停用）"}`;
+    mcpSelect.append(option);
+  }
+  const newOption = document.createElement("option");
+  newOption.value = "__new";
+  newOption.textContent = "新增 MCP 服务";
+  mcpSelect.append(newOption);
+  if (selectedMcp !== "__new" && !config.mcpServers?.[selectedMcp]) selectedMcp = entries[0]?.[0] || "__new";
+  mcpSelect.value = selectedMcp;
+  populateMcpForm();
+}
+
+function populateMcpForm() {
+  if (!mcpForm) return;
+  clearMcpSecretInput();
+  const server = selectedMcp === "__new" ? {} : config.mcpServers?.[selectedMcp] || {};
+  mcpIdInput.value = selectedMcp === "__new" ? "" : selectedMcp;
+  mcpLabelInput.value = server.label || "";
+  mcpEndpointInput.value = server.endpoint || "";
+  mcpAuthTypeInput.value = ["bearer", "x-api-key"].includes(server.authType) ? server.authType : "none";
+  mcpSecretRefInput.value = server.secretRef || "";
+  mcpEnabledInput.checked = server.enabled === true;
+  deleteMcpButton.disabled = selectedMcp === "__new";
+  mcpDiscoverySummary.textContent = selectedMcp === "__new"
+    ? "保存或直接填写服务信息后发现只读工具"
+    : `${mcpToolIds(selectedMcp).length} 个已登记工具`;
+  renderMcpSecretStatus();
+}
+
+function renderToolCheckboxes(container, checkedIds) {
+  if (!container) return;
+  const selected = new Set(checkedIds);
+  container.textContent = "";
+  const entries = Object.entries(config.tools || {}).sort((left, right) => toolSortLabel(left).localeCompare(toolSortLabel(right), "zh-CN"));
+  if (!entries.length) {
+    container.append(textNode("尚未配置工具"));
+    return;
+  }
+  for (const [toolId, tool] of entries) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = toolId;
+    input.checked = selected.has(toolId);
+    const disabled = tool.enabled !== true;
+    label.classList.toggle("disabled-route-option", disabled);
+    const source = tool.executor?.type === "builtin" ? "内置" : "MCP";
+    label.append(input, document.createTextNode(`${tool.label || toolId} · ${source}${disabled ? "（已停用）" : ""}`));
+    container.append(label);
+  }
+}
+
+function readMcpEditor() {
+  return {
+    serverId: mcpIdInput.value.trim(),
+    label: mcpLabelInput.value.trim().slice(0, 80),
+    endpoint: mcpEndpointInput.value.trim(),
+    authType: mcpAuthTypeInput.value,
+    secretRef: mcpSecretRefInput.value.trim(),
+    enabled: mcpEnabledInput.checked,
+  };
+}
+
+function checkedValues(container) {
+  return [...(container?.querySelectorAll("input[type='checkbox']:checked") || [])].map((input) => input.value);
+}
+
+function isPublicHttpsEndpoint(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.hash && !["localhost", "127.0.0.1", "::1"].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function pruneToolAssignments(toolId) {
+  for (const skill of Object.values(config.skills || {})) {
+    if (Array.isArray(skill.toolIds)) skill.toolIds = skill.toolIds.filter((id) => id !== toolId);
+  }
+  for (const user of [config.defaults, ...Object.values(config.users || {})]) {
+    if (Array.isArray(user?.allowedTools)) user.allowedTools = user.allowedTools.filter((id) => id !== toolId);
+  }
+}
+
+function removeMcpServerTools(serverId) {
+  for (const [toolId, tool] of Object.entries(config.tools || {})) {
+    if (tool.executor?.type !== "mcp" || tool.executor.serverId !== serverId) continue;
+    delete config.tools[toolId];
+    pruneToolAssignments(toolId);
+  }
+}
+
+function mcpToolIds(serverId) {
+  return Object.entries(config.tools || {})
+    .filter(([, tool]) => tool.executor?.type === "mcp" && tool.executor.serverId === serverId)
+    .map(([toolId]) => toolId);
 }
 
 function pruneRouteFromUsers(routeId, fallbackRoute) {
@@ -1461,6 +2090,7 @@ function readRouteEditor() {
     enabled: routeEnabledInput.checked,
     requiresUserKey: routeRequiresKeyInput.checked,
     supportsImages: routeImagesInput.checked,
+    supportsTools: routeToolsInput.checked,
   };
 }
 
@@ -1479,6 +2109,7 @@ function buildRouteFromEditor(model, existing = {}, preserveLegacyKey = false) {
     enabled: editor.enabled,
     requiresUserKey: editor.requiresUserKey,
     supportsImages: editor.supportsImages,
+    supportsTools: editor.supportsTools,
   });
 }
 
@@ -1562,6 +2193,8 @@ function resetUnsavedEditors() {
   renderAccessEntries();
   populateUserForm();
   populateRouteForm();
+  renderCapabilityEditors();
+  clearMcpSecretInput();
   clearDirty();
 }
 

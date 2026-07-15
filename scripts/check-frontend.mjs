@@ -66,7 +66,8 @@ const spriteIconIds = new Set([...icons.matchAll(/<symbol id="([a-z0-9-]+)"/g)].
 const staticIconNames = [...chatHtml.matchAll(/icons\.svg\?v=development#([a-z0-9-]+)/g)].map((match) => match[1]);
 const actionIconNames = [...chatScript.matchAll(/actionButton\("([a-z0-9-]+)"/g)].map((match) => match[1]);
 const promptIconNames = [...chatScript.matchAll(/icon: "([a-z0-9-]+)"/g)].map((match) => match[1]);
-const referencedIconNames = [...new Set([...staticIconNames, ...actionIconNames, ...promptIconNames, "eye", "eye-off"])];
+const dynamicIconNames = [...chatScript.matchAll(/return "([a-z0-9-]+)";/g)].map((match) => match[1]);
+const referencedIconNames = [...new Set([...staticIconNames, ...actionIconNames, ...promptIconNames, ...dynamicIconNames, "eye", "eye-off"])];
 const missingIcons = referencedIconNames.filter((name) => !spriteIconIds.has(name));
 assert(!missingIcons.length, `icons.svg: missing referenced symbols: ${missingIcons.join(", ")}`);
 assert(chatScript.includes('button.setAttribute("aria-label", label)'), "app.js: icon-only message actions need accessible names");
@@ -120,10 +121,25 @@ assert(chatScript.includes("deletedSessionIds.has(chat.id)"), "app.js: deleted c
 assert(chatScript.includes("cancelQueuedCloudSave(id)"), "app.js: deleting a chat must cancel its queued saves");
 assert(chatScript.includes("所有设备均已退出"), "app.js: deleting all data must disclose account-wide session revocation");
 assert(chatScript.includes("已恢复未保存修改"), "app.js: restored memory drafts need visible status");
-assert(chatScript.includes("formatVersion: 3"), "app.js: full backups need the current schema version");
+assert(chatScript.includes("formatVersion: 4"), "app.js: full backups need the current schema version");
 assert(chatScript.includes("unsupported_backup_version"), "app.js: newer backup formats must be rejected safely");
 assert(chatScript.includes('mode: "restore"'), "app.js: explicit backup imports must use restore semantics");
 assert(chatScript.includes("routeId: session.routeId"), "app.js: backups must preserve each chat model");
+assert(chatScript.includes("skillIds: normalizeSelectedSkillIds(session.skillIds)"), "app.js: backups must preserve selected Skills");
+assert(chatScript.includes("toolEvents: item.role === \"assistant\" ? normalizeToolEvents"), "app.js: stored tool events must be normalized");
+assert(chatScript.includes("formatVersion > 4"), "app.js: backup imports must reject future schemas after v4");
+for (const id of ["capabilityButton", "capabilityPopover", "skillSelectorList", "selectedSkills", "capabilityToolContext"]) {
+  assert(chatHtml.includes(`id="${id}"`), `index.html: missing capability control #${id}`);
+}
+assert(chatScript.includes('response.headers.get("X-Chatus-Stream") === "capability-v1"'), "app.js: capability responses need a dedicated stream parser");
+assert(chatScript.includes('fetchWithTimeout("/api/tool-approvals"'), "app.js: tool confirmations need the authenticated approval endpoint");
+assert(chatScript.includes('"X-Chatus-Client": "web"'), "app.js: tool confirmations must satisfy the Worker web-client boundary");
+assert(chatScript.includes('if (isBusy && id !== activeSessionId)'), "app.js: active capability streams must remain attached to their source chat");
+assert(chatScript.includes("MAX_SELECTED_SKILLS"), "app.js: Skill selection needs a fixed upper bound");
+assert(chatScript.indexOf("await loadUserSessions") < chatScript.indexOf("renderCapabilitySelector();", chatScript.indexOf("await loadUserSessions")), "app.js: capability rendering must wait until conversations are loaded");
+assert(chatScript.includes("renderToolTimeline(message)"), "app.js: assistant messages need a visible tool timeline");
+assert(chatScript.includes("pendingToolApprovals.delete(eventId)"), "app.js: confirmation controls must become stale after one decision");
+assert(styles.includes(".tool-approval-actions"), "styles.css: tool confirmations need stable touch-visible layout");
 assert(chatScript.includes("跨用户导入"), "app.js: backup imports must disclose a different source user");
 assert(chatScript.includes("（此设备副本）"), "app.js: local conflict copy must be identifiable");
 assert(chatScript.includes("startLoginRetryCountdown(retryAfter)"), "app.js: login throttling needs a retry countdown");
@@ -145,6 +161,7 @@ for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
 assert(adminScript.includes('window.addEventListener("beforeunload"'), "admin.js: unsaved configuration needs a page-leave warning");
 assert(adminScript.includes("confirmDiscardChanges"), "admin.js: internal navigation must protect unsaved configuration");
 assert(adminScript.includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
+assert(adminScript.includes('attentionPanel.hidden = currentAdminSection !== "overview" || alerts.length === 0'), "admin.js: overview alerts must not leak into other admin sections after refresh");
 assert(adminScript.includes('markDirty("access")'), "admin.js: generated access codes must be marked unsaved");
 assert(adminScript.includes("expectedRevision: configRevision"), "admin.js: config saves must reject stale editors");
 assert(adminScript.includes('method: "DELETE",\n    body: JSON.stringify({ expectedRevision: configRevision })'), "admin.js: config resets must reject stale editors");
@@ -180,6 +197,24 @@ const batchCreateSource = adminScript.slice(batchCreateStart, batchCreateEnd);
 assert(batchCreateSource.includes("uniqueRouteId"), "admin.js: batch-created routes need collision-safe IDs");
 assert(!batchCreateSource.includes("routeSecretInput"), "admin.js: batch route creation must never read plaintext route secrets");
 assert(!batchCreateSource.includes("allowedRoutes"), "admin.js: batch route creation must preserve explicit user route permissions");
+for (const id of [
+  "allowedToolsBox", "routeToolsInput", "capabilitySkillsPanel", "capabilityToolsPanel", "capabilityMcpPanel",
+  "skillForm", "skillToolsBox", "toolForm", "mcpForm", "mcpSecretInput", "discoverMcpToolsButton",
+]) {
+  assert(adminHtml.includes(`id="${id}"`), `admin.html: missing AI capability control #${id}`);
+}
+assert(adminHtml.includes('id="mcpSecretInput" type="password" autocomplete="new-password"'), "admin.html: MCP secret must use a write-only password input");
+assert(adminScript.includes("/api/admin/mcp-secrets/"), "admin.js: MCP credentials need the authenticated write-only vault API");
+assert((adminScript.match(/clearMcpSecretInput\(\)/g) || []).length >= 5, "admin.js: MCP plaintext must clear across save and navigation transitions");
+const mcpSaveStart = adminScript.indexOf('mcpForm?.addEventListener("submit"');
+const mcpSaveEnd = adminScript.indexOf('deleteMcpButton?.addEventListener', mcpSaveStart);
+const mcpSaveSource = adminScript.slice(mcpSaveStart, mcpSaveEnd);
+assert(mcpSaveSource && !mcpSaveSource.includes("mcpSecretInput"), "admin.js: raw MCP credentials must never enter config saves");
+const discoveryStart = adminScript.indexOf("async function discoverMcpTools()");
+const discoveryEnd = adminScript.indexOf("async function checkRouteHealth", discoveryStart);
+const discoverySource = adminScript.slice(discoveryStart, discoveryEnd);
+assert(discoverySource.includes("schemaChanged") && discoverySource.includes("enabled: existing && !schemaChanged"), "admin.js: new or schema-changed MCP tools must remain disabled");
+assert(discoverySource && !discoverySource.includes("mcpSecretInput.value"), "admin.js: MCP discovery must use only saved secret references");
 
 console.log("Frontend structure checks passed");
 

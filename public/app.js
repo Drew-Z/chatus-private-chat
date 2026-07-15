@@ -65,6 +65,12 @@ const mobileTitle = document.querySelector("#mobileTitle");
 const dropHint = document.querySelector("#dropHint");
 const composerCount = document.querySelector("#composerCount");
 const composerHint = document.querySelector("#composerHint");
+const capabilityButton = document.querySelector("#capabilityButton");
+const capabilityPopover = document.querySelector("#capabilityPopover");
+const skillSelectorList = document.querySelector("#skillSelectorList");
+const selectedSkills = document.querySelector("#selectedSkills");
+const capabilitySelectionCount = document.querySelector("#capabilitySelectionCount");
+const capabilityToolContext = document.querySelector("#capabilityToolContext");
 const newChatButton = document.querySelector("#newChatButton");
 const mobileNewChatButton = document.querySelector("#mobileNewChatButton");
 const clearButton = document.querySelector("#clearButton");
@@ -103,6 +109,10 @@ const MAX_SESSIONS = 30;
 const MAX_STORED_MESSAGES = 120;
 const MAX_CONTEXT_MESSAGES = 40;
 const CONTEXT_CHAR_BUDGET = 14000;
+const MAX_SELECTED_SKILLS = 3;
+const MAX_TOOL_EVENTS = 16;
+const MAX_TOOL_ARGUMENT_SUMMARY_CHARS = 500;
+const MAX_TOOL_RESULT_PREVIEW_CHARS = 2000;
 const MAX_IMAGE_SOURCE_BYTES = 20_000_000;
 const MAX_IMAGE_OUTPUT_BYTES = 320_000;
 const MAX_IMAGE_DIMENSION = 1600;
@@ -118,6 +128,8 @@ let messages = [];
 let attachments = [];
 let abortController = null;
 let routes = [];
+let skills = [];
+let tools = [];
 let selectedRouteId = "";
 let sessionFilter = "";
 let isBusy = false;
@@ -142,6 +154,7 @@ let lastRouteRefreshAt = 0;
 let routeRefreshPromise = null;
 let loginRetryTimer = null;
 let clientRelease = null;
+const pendingToolApprovals = new Map();
 
 boot();
 loginForm.addEventListener("submit", async (event) => {
@@ -204,6 +217,7 @@ promptInput.addEventListener("input", () => saveActiveDraft());
 memoryInput.addEventListener("input", () => saveMemoryDraft());
 
 document.querySelector("#logoutButton").addEventListener("click", async () => {
+  if (isBusy) return showStatusToast("请先停止当前生成");
   const previousUser = currentUser;
   clearUserDrafts(previousUser);
   localStorage.removeItem(memoryStorageKey(previousUser));
@@ -240,6 +254,7 @@ mobileNewChatButton?.addEventListener("click", () => {
 
 clearButton.addEventListener("click", async () => {
   if (offlineMode) return showStatusToast("离线只读模式下不能开始空白会话");
+  if (isBusy) return showStatusToast("请先停止当前生成");
   if (!messages.length) return;
   if (!(await confirmAction({
     title: "开始空白会话？",
@@ -328,8 +343,8 @@ toggleUserApiKey?.addEventListener("click", () => {
   setControlIcon(toggleUserApiKey, showing ? "eye" : "eye-off");
 });
 document.addEventListener("click", (event) => {
-  if (!modelPickerMenu || modelPickerMenu.hidden) return;
-  if (!event.target.closest(".model-picker")) closeModelPicker();
+  if (modelPickerMenu && !modelPickerMenu.hidden && !event.target.closest(".model-picker")) closeModelPicker();
+  if (capabilityPopover && !capabilityPopover.hidden && !event.target.closest(".composer-inner")) closeCapabilityPopover();
 });
 document.addEventListener("keydown", (event) => {
   if (chatView.hidden) return;
@@ -355,6 +370,11 @@ document.addEventListener("keydown", (event) => {
       modelPickerTrigger?.focus();
       return;
     }
+    if (capabilityPopover && !capabilityPopover.hidden) {
+      closeCapabilityPopover();
+      capabilityButton?.focus();
+      return;
+    }
     if (document.activeElement === sessionSearch && sessionSearch.value) {
       sessionSearch.value = "";
       sessionFilter = "";
@@ -364,6 +384,20 @@ document.addEventListener("keydown", (event) => {
     }
     closeSidebar();
   }
+});
+capabilityButton?.addEventListener("click", () => {
+  if (capabilityPopover.hidden) openCapabilityPopover();
+  else closeCapabilityPopover();
+});
+skillSelectorList?.addEventListener("change", (event) => {
+  const input = event.target.closest("input[type='checkbox'][data-skill-id]");
+  if (!input) return;
+  updateSelectedSkills(input.dataset.skillId, input.checked);
+});
+selectedSkills?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-remove-skill]");
+  if (!button) return;
+  updateSelectedSkills(button.dataset.removeSkill, false);
 });
 imageInput.addEventListener("change", async () => {
   await addImageFiles(imageInput.files);
@@ -499,6 +533,8 @@ async function showChat(existingSession, readOnlyOffline = false) {
   currentUser = session.user || "friend";
   currentDisplayName = session.displayName || currentUser;
   routes = Array.isArray(session.routes) ? session.routes : [];
+  skills = normalizePublicSkills(session.skills);
+  tools = normalizePublicTools(session.tools);
   selectedRouteId = chooseRoute(session.defaultRoute);
   hasUserSystemPrompt = Boolean(session.hasUserSystemPrompt);
   if (!readOnlyOffline) lastRouteRefreshAt = Date.now();
@@ -512,6 +548,7 @@ async function showChat(existingSession, readOnlyOffline = false) {
   await loadUserSessions({ offline: offlineMode });
   if (sessionExpired) return;
   restoreSessionRoute(getActiveSession());
+  renderCapabilitySelector();
   renderChatList();
   renderMessages(true);
   updateChatTitle();
@@ -533,6 +570,8 @@ function cacheSessionSnapshot(session) {
         user: session.user || currentUser,
         displayName: session.displayName || currentDisplayName,
         routes: Array.isArray(session.routes) ? session.routes : routes,
+        skills: normalizePublicSkills(session.skills ?? skills),
+        tools: normalizePublicTools(session.tools ?? tools),
         defaultRoute: session.defaultRoute || selectedRouteId,
         usage: session.usage || null,
         hasUserSystemPrompt: Boolean(session.hasUserSystemPrompt),
@@ -576,6 +615,7 @@ function setOfflineMode(nextOffline) {
   promptInput.disabled = offlineMode || isBusy;
   sendButton.disabled = offlineMode || isBusy || currentUsage?.remaining === 0;
   imageInput.disabled = offlineMode || isBusy || getSelectedRoute()?.supportsImages === false;
+  if (capabilityButton) capabilityButton.disabled = offlineMode || isBusy || !skills.length;
   memoryInput.readOnly = offlineMode;
   saveMemoryButton.disabled = offlineMode;
   newChatButton.disabled = offlineMode;
@@ -717,6 +757,8 @@ async function streamChat(assistantMessage) {
     const payload = {
       messages: buildRequestMessages(assistantMessage),
       routeId: selectedRouteId,
+      chatId: getActiveSession().id,
+      skillIds: getActiveSession().skillIds,
     };
     const summary = getActiveSession().summary || "";
     if (summary) payload.sessionSummary = summary;
@@ -760,9 +802,11 @@ async function streamChat(assistantMessage) {
       throw new Error(`${message}${requestReference(response)}`);
     }
     if (remaining !== null) updateUsage({ remaining: Number(remaining), limit: currentUsage?.limit });
+    const capabilityStream = response.headers.get("X-Chatus-Stream") === "capability-v1";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let capabilityError = null;
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -770,6 +814,14 @@ async function streamChat(assistantMessage) {
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
       for (const line of lines) {
+        if (capabilityStream) {
+          const event = parseCapabilityStreamLine(line);
+          if (!event) continue;
+          const result = applyCapabilityStreamEvent(event, assistantMessage);
+          received = received || result.received;
+          capabilityError = result.error || capabilityError;
+          continue;
+        }
         const chunk = parseStreamLine(line);
         if (chunk.finishReason) assistantMessage.finishReason = chunk.finishReason;
         if (!chunk.text) continue;
@@ -778,13 +830,22 @@ async function streamChat(assistantMessage) {
         scheduleRender();
       }
     }
+    if (capabilityStream && buffer.trim()) {
+      const event = parseCapabilityStreamLine(buffer);
+      if (event) {
+        const result = applyCapabilityStreamEvent(event, assistantMessage);
+        received = received || result.received;
+        capabilityError = result.error || capabilityError;
+      }
+    }
     flushRender(true);
     saveMessages();
     saveSessions({ immediate: true });
+    if (capabilityError) throw capabilityError;
   } catch (error) {
     flushRender(true);
     if (error.name === "AbortError") {
-      if (!String(assistantMessage.content || "").trim()) {
+      if (!String(assistantMessage.content || "").trim() && !assistantMessage.toolEvents?.length) {
         messages = messages.filter((message) => message !== assistantMessage);
         saveMessages();
         renderMessages(true);
@@ -802,6 +863,8 @@ async function streamChat(assistantMessage) {
       renderMessages(true);
     }
   } finally {
+    finalizePendingToolEvents(assistantMessage);
+    saveMessages();
     abortController = null;
     setBusy(false);
     updateConnectionState();
@@ -1011,6 +1074,7 @@ function normalizeSessions(input) {
       pinned: item.pinned === true,
       routeId: typeof item.routeId === "string" ? item.routeId : "",
       parentChatId: typeof item.parentChatId === "string" ? item.parentChatId : "",
+      skillIds: normalizeSelectedSkillIds(item.skillIds),
       messages: Array.isArray(item.messages) ? item.messages.slice(-MAX_STORED_MESSAGES).map(normalizeMessage) : [],
     }))
     .sort(compareSessions)
@@ -1028,8 +1092,208 @@ function normalizeMessage(item) {
     rating: item.rating === "up" || item.rating === "down" ? item.rating : "",
     ratingReason: typeof item.ratingReason === "string" ? item.ratingReason : "",
     finishReason: typeof item.finishReason === "string" ? item.finishReason : "",
+    toolEvents: item.role === "assistant" ? normalizeToolEvents(item.toolEvents) : [],
     createdAt: Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now(),
   };
+}
+
+function normalizeSelectedSkillIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((item) => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item && item.length <= 80))]
+    .slice(0, MAX_SELECTED_SKILLS);
+}
+
+function normalizeToolEvents(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-MAX_TOOL_EVENTS).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const source = item.source === "builtin" || item.source === "mcp" ? item.source : "";
+    const status = ["pending", "approved", "running", "completed", "failed", "denied"].includes(item.status)
+      ? item.status
+      : "";
+    const id = boundedIdentifier(item.id, 100);
+    const toolId = boundedIdentifier(item.toolId, 160);
+    const label = boundedText(item.label, 80);
+    if (!id || !toolId || !label || !source || !status) return [];
+    const interrupted = status === "pending" || status === "approved" || status === "running";
+    const createdAt = Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now();
+    const argumentSummary = boundedText(item.argumentSummary, MAX_TOOL_ARGUMENT_SUMMARY_CHARS);
+    const resultPreview = boundedText(item.resultPreview, MAX_TOOL_RESULT_PREVIEW_CHARS);
+    const contentTruncated =
+      (typeof item.argumentSummary === "string" && item.argumentSummary.trim().length > argumentSummary.length) ||
+      (typeof item.resultPreview === "string" && item.resultPreview.trim().length > resultPreview.length);
+    return [{
+      id,
+      toolId,
+      label,
+      source,
+      status: interrupted ? "failed" : status,
+      argumentSummary,
+      resultPreview,
+      confirmation: item.confirmation === "once" || item.confirmation === "conversation" ? item.confirmation : "",
+      errorCode: interrupted ? "interrupted" : boundedIdentifier(item.errorCode, 80),
+      createdAt,
+      updatedAt: Number.isFinite(item.updatedAt) ? Number(item.updatedAt) : createdAt,
+      truncated: item.truncated === true || contentTruncated,
+    }];
+  });
+}
+
+function normalizePublicSkills(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 50).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const id = boundedIdentifier(item.id, 80);
+    const label = boundedText(item.label, 80);
+    if (!id || !label) return [];
+    return [{
+      id,
+      label,
+      description: boundedText(item.description, 500),
+      toolIds: Array.isArray(item.toolIds)
+        ? [...new Set(item.toolIds.map((toolId) => boundedIdentifier(toolId, 160)).filter(Boolean))].slice(0, 200)
+        : [],
+    }];
+  });
+}
+
+function normalizePublicTools(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 200).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const id = boundedIdentifier(item.id, 160);
+    const label = boundedText(item.label, 80);
+    const source = item.source === "builtin" || item.source === "mcp" ? item.source : "";
+    const confirmation = ["auto", "first-per-conversation", "always"].includes(item.confirmation)
+      ? item.confirmation
+      : "first-per-conversation";
+    if (!id || !label || !source) return [];
+    return [{ id, label, description: boundedText(item.description, 1000), source, confirmation }];
+  });
+}
+
+function renderCapabilitySelector() {
+  const active = getActiveSession();
+  const requestedIds = new Set(normalizeSelectedSkillIds(active.skillIds));
+  const normalized = skills.map((skill) => skill.id).filter((skillId) => requestedIds.has(skillId)).slice(0, MAX_SELECTED_SKILLS);
+  if (normalized.length !== active.skillIds.length || normalized.some((skillId, index) => active.skillIds[index] !== skillId)) {
+    active.skillIds = normalized;
+    active.updatedAt = Date.now();
+    saveSessions({ skipCloud: offlineMode });
+  }
+  renderSelectedSkillLabels();
+  renderSkillSelectorList();
+  if (capabilityButton) {
+    capabilityButton.disabled = offlineMode || isBusy || !skills.length;
+    capabilityButton.classList.toggle("active", normalized.length > 0);
+    capabilityButton.title = skills.length ? "选择 Skills" : "当前没有可用 Skills";
+    capabilityButton.setAttribute("aria-label", capabilityButton.title);
+  }
+}
+
+function renderSelectedSkillLabels() {
+  if (!selectedSkills) return;
+  selectedSkills.textContent = "";
+  const activeIds = getActiveSession().skillIds || [];
+  selectedSkills.hidden = !activeIds.length;
+  for (const skillId of activeIds) {
+    const skill = skills.find((item) => item.id === skillId);
+    if (!skill) continue;
+    const label = document.createElement("span");
+    label.className = "selected-skill-label";
+    label.append(document.createTextNode(skill.label));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.dataset.removeSkill = skillId;
+    remove.title = `移除 ${skill.label}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.append(createIcon("x"));
+    label.append(remove);
+    selectedSkills.append(label);
+  }
+}
+
+function renderSkillSelectorList() {
+  if (!skillSelectorList) return;
+  const activeIds = new Set(getActiveSession().skillIds || []);
+  skillSelectorList.textContent = "";
+  if (!skills.length) {
+    const empty = document.createElement("p");
+    empty.className = "skill-selector-empty";
+    empty.textContent = "当前没有管理员启用的 Skill";
+    skillSelectorList.append(empty);
+  }
+  for (const skill of skills) {
+    const label = document.createElement("label");
+    label.className = "skill-selector-row";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.skillId = skill.id;
+    input.checked = activeIds.has(skill.id);
+    input.disabled = !input.checked && activeIds.size >= MAX_SELECTED_SKILLS;
+    const copy = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = skill.label;
+    const description = document.createElement("small");
+    description.textContent = skill.description || "会将该 Skill 的工作方式加入本会话";
+    copy.append(title, description);
+    label.append(input, copy);
+    skillSelectorList.append(label);
+  }
+  if (capabilitySelectionCount) capabilitySelectionCount.textContent = `${activeIds.size}/${MAX_SELECTED_SKILLS}`;
+  renderCapabilityToolContext();
+}
+
+function renderCapabilityToolContext() {
+  if (!capabilityToolContext) return;
+  const selected = new Set(getActiveSession().skillIds || []);
+  const toolIds = new Set(skills.filter((skill) => selected.has(skill.id)).flatMap((skill) => skill.toolIds));
+  const activeTools = tools.filter((tool) => toolIds.has(tool.id));
+  capabilityToolContext.textContent = activeTools.length
+    ? `可用工具：${activeTools.map((tool) => tool.label).join("、")}`
+    : selected.size ? "所选 Skill 不会启用额外工具" : "选择 Skill 后可查看它会使用的工具";
+}
+
+function updateSelectedSkills(skillId, checked) {
+  const active = getActiveSession();
+  const current = new Set(active.skillIds || []);
+  if (checked && current.size >= MAX_SELECTED_SKILLS && !current.has(skillId)) {
+    showStatusToast(`每个会话最多选择 ${MAX_SELECTED_SKILLS} 个 Skill`);
+    return renderCapabilitySelector();
+  }
+  if (checked) current.add(skillId);
+  else current.delete(skillId);
+  active.skillIds = skills.map((skill) => skill.id).filter((id) => current.has(id)).slice(0, MAX_SELECTED_SKILLS);
+  active.updatedAt = Date.now();
+  saveSessions();
+  renderCapabilitySelector();
+}
+
+function openCapabilityPopover() {
+  if (!capabilityPopover || capabilityButton?.disabled) return;
+  renderCapabilitySelector();
+  capabilityPopover.hidden = false;
+  capabilityButton.setAttribute("aria-expanded", "true");
+  skillSelectorList.querySelector("input:not(:disabled)")?.focus();
+}
+
+function closeCapabilityPopover() {
+  if (!capabilityPopover) return;
+  capabilityPopover.hidden = true;
+  capabilityButton?.setAttribute("aria-expanded", "false");
+}
+
+function boundedIdentifier(value, maxChars) {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  return normalized.length <= maxChars && /^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(normalized) ? normalized : "";
+}
+
+function boundedText(value, maxChars) {
+  return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
 }
 
 function loadLegacyMessages() {
@@ -1054,11 +1318,13 @@ function createSession(initialMessages = []) {
     pinned: false,
     routeId: selectedRouteId,
     parentChatId: "",
+    skillIds: [],
     messages: trimmedMessages,
   };
 }
 
 function createNewSession() {
+  if (isBusy) return showStatusToast("请先停止当前生成");
   const reusable = sessions.find((session) => session.messages.length === 0 && !session.pinned);
   if (reusable) {
     activateSession(reusable.id);
@@ -1081,6 +1347,7 @@ function createNewSession() {
   renderChatList();
   renderMessages(true);
   renderAttachments();
+  renderCapabilitySelector();
   updateChatTitle();
 }
 
@@ -1105,6 +1372,7 @@ function getActiveSession() {
 function activateSession(id, searchQuery = "") {
   const session = sessions.find((item) => item.id === id);
   if (!session) return;
+  if (isBusy && id !== activeSessionId) return showStatusToast("请先停止当前生成");
   const targetMessageId = searchQuery ? findSearchMessageId(session, searchQuery) : "";
   activeSessionId = id;
   messages = session.messages;
@@ -1114,6 +1382,7 @@ function activateSession(id, searchQuery = "") {
   hideMemorySuggest();
   localStorage.setItem(activeSessionStorageKey(), id);
   renderAttachments();
+  renderCapabilitySelector();
   renderChatList();
   renderMessages(true);
   updateChatTitle();
@@ -1141,6 +1410,7 @@ function focusSearchMessage(messageId) {
 
 async function deleteSession(id) {
   if (offlineMode) return showStatusToast("离线只读模式下不能删除会话");
+  if (isBusy && id === activeSessionId) return showStatusToast("请先停止当前生成");
   const session = sessions.find((item) => item.id === id);
   if (!session) return;
   if (!(await confirmAction({ title: "删除这个会话？", description: `“${session.title || "新会话"}”将从本地和云端移除。`, confirmLabel: "删除", destructive: true }))) return;
@@ -1210,6 +1480,7 @@ function undoPendingSessionDeletion() {
     activeSessionId = pending.session.id;
     messages = pending.session.messages;
     restoreSessionRoute(pending.session);
+    renderCapabilitySelector();
     restoreActiveDraft();
   }
   saveSessionsLocalOnly();
@@ -1701,6 +1972,7 @@ function renderRoutes() {
       const badges = document.createElement("span");
       badges.className = "model-option-badges";
       if (route.supportsImages !== false) badges.append(modelBadge("图片"));
+      if (route.supportsTools === true) badges.append(modelBadge("工具"));
       if (route.allowUserKey || route.requiresUserKey) badges.append(modelBadge(route.requiresUserKey ? "需 Key" : "可用 Key"));
       const healthLabel = route.healthStatus === "healthy" ? "近期正常" : route.healthStatus === "unhealthy" ? "近期异常" : "未检查";
       button.setAttribute("aria-label", `${route.model || label}，${label}，${healthLabel}`);
@@ -1793,10 +2065,13 @@ function refreshRouteState() {
       const session = await response.json();
       const nextRoutes = Array.isArray(session.routes) ? session.routes : [];
       routes = nextRoutes;
+      skills = normalizePublicSkills(session.skills);
+      tools = normalizePublicTools(session.tools);
       if (!routes.some((route) => route.id === selectedRouteId)) selectedRouteId = chooseRoute(session.defaultRoute);
       hasUserSystemPrompt = Boolean(session.hasUserSystemPrompt);
       updateUsage(session.usage);
       renderRoutes();
+      renderCapabilitySelector();
       if (routes.length <= 1) closeModelPicker();
       updateConnectionState();
       cacheSessionSnapshot(session);
@@ -1841,6 +2116,16 @@ function updateRouteControls() {
   if (!supportsImages && attachments.length) {
     attachments = [];
     renderAttachments();
+  }
+  if (capabilityButton) {
+    capabilityButton.disabled = offlineMode || isBusy || !skills.length;
+    capabilityButton.classList.toggle("route-unsupported", route?.supportsTools !== true);
+    capabilityButton.title = !skills.length
+      ? "当前没有可用 Skills"
+      : route?.supportsTools === true
+        ? "选择 Skills"
+        : "选择 Skills；当前模型不会执行工具";
+    capabilityButton.setAttribute("aria-label", capabilityButton.title);
   }
 }
 
@@ -1888,6 +2173,114 @@ function parseStreamLine(line) {
     };
   } catch {
     return { text: "", finishReason: "" };
+  }
+}
+function parseCapabilityStreamLine(line) {
+  if (!line.startsWith("data:")) return null;
+  const data = line.slice(5).trim();
+  if (!data) return null;
+  try {
+    const event = JSON.parse(data);
+    return event && typeof event === "object" && typeof event.type === "string" ? event : null;
+  } catch {
+    return null;
+  }
+}
+function applyCapabilityStreamEvent(event, assistantMessage) {
+  if (event.type === "run") {
+    if (typeof event.routeId === "string" && event.routeId) {
+      assistantMessage.routeId = event.routeId;
+      assistantMessage.fallback = event.fallback === true;
+    }
+    return { received: false, error: null };
+  }
+  if (event.type === "assistant_delta") {
+    const text = typeof event.text === "string" ? event.text : "";
+    if (text) {
+      assistantMessage.content += text;
+      scheduleRender();
+    }
+    return { received: Boolean(text), error: null };
+  }
+  if (event.type === "finish") {
+    assistantMessage.finishReason = typeof event.finishReason === "string" ? event.finishReason : "";
+    return { received: false, error: null };
+  }
+  if (event.type === "tool" || event.type === "confirmation_required") {
+    const normalized = normalizeActiveToolEvent(event.event);
+    if (!normalized) return { received: false, error: null };
+    upsertAssistantToolEvent(assistantMessage, normalized);
+    if (event.type === "confirmation_required" && typeof event.runId === "string" && typeof event.callId === "string") {
+      pendingToolApprovals.set(normalized.id, {
+        runId: event.runId,
+        callId: event.callId,
+        messageId: assistantMessage.id,
+        inFlight: false,
+      });
+    } else if (normalized.status !== "pending") {
+      pendingToolApprovals.delete(normalized.id);
+    }
+    scheduleRender();
+    return { received: true, error: null };
+  }
+  if (event.type === "error") {
+    const activeEvent = [...(assistantMessage.toolEvents || [])].reverse().find((item) => ["pending", "approved", "running"].includes(item.status));
+    if (activeEvent) {
+      activeEvent.status = "failed";
+      activeEvent.errorCode = boundedIdentifier(event.code, 80) || "tool_execution_failed";
+      activeEvent.updatedAt = Date.now();
+      pendingToolApprovals.delete(activeEvent.id);
+      scheduleRender();
+    }
+    const error = new Error(typeof event.message === "string" ? event.message : "工具调用失败");
+    error.code = typeof event.code === "string" ? event.code : "capability_failed";
+    return { received: false, error };
+  }
+  return { received: false, error: null };
+}
+function normalizeActiveToolEvent(item) {
+  if (!item || typeof item !== "object") return null;
+  const source = item.source === "builtin" || item.source === "mcp" ? item.source : "";
+  const status = ["pending", "approved", "running", "completed", "failed", "denied"].includes(item.status) ? item.status : "";
+  const id = boundedIdentifier(item.id, 100);
+  const toolId = boundedIdentifier(item.toolId, 160);
+  const label = boundedText(item.label, 80);
+  if (!id || !toolId || !label || !source || !status) return null;
+  const createdAt = Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now();
+  return {
+    id,
+    toolId,
+    label,
+    source,
+    status,
+    argumentSummary: boundedText(item.argumentSummary, MAX_TOOL_ARGUMENT_SUMMARY_CHARS),
+    resultPreview: boundedText(item.resultPreview, MAX_TOOL_RESULT_PREVIEW_CHARS),
+    confirmation: item.confirmation === "once" || item.confirmation === "conversation" ? item.confirmation : "",
+    errorCode: boundedIdentifier(item.errorCode, 80),
+    createdAt,
+    updatedAt: Number.isFinite(item.updatedAt) ? Number(item.updatedAt) : createdAt,
+    truncated: item.truncated === true,
+  };
+}
+function upsertAssistantToolEvent(message, event) {
+  const current = Array.isArray(message.toolEvents) ? message.toolEvents : [];
+  const index = current.findIndex((item) => item.id === event.id);
+  if (index >= 0) current[index] = event;
+  else current.push(event);
+  message.toolEvents = current.slice(-MAX_TOOL_EVENTS);
+}
+function finalizePendingToolEvents(message) {
+  if (!Array.isArray(message?.toolEvents)) return;
+  let changed = false;
+  message.toolEvents = message.toolEvents.map((event) => {
+    pendingToolApprovals.delete(event.id);
+    if (!["pending", "approved", "running"].includes(event.status)) return event;
+    changed = true;
+    return { ...event, status: "failed", errorCode: "interrupted", updatedAt: Date.now() };
+  });
+  if (changed) {
+    saveMessages();
+    renderMessages(true);
   }
 }
 function buildUserContent(text, files) {
@@ -1982,7 +2375,9 @@ function renderMessages(forceScroll = true) {
       const text = extractText(message.content);
       if (!text.trim()) body.append(document.createTextNode(isBusy && index === messages.length - 1 ? "…" : ""));
       else body.append(renderMarkdown(text));
-      node.append(avatar, header, body);
+      node.append(avatar, header);
+      if (message.toolEvents?.length) node.append(renderToolTimeline(message));
+      node.append(body);
     } else if (message.role === "error") {
       node.append(document.createTextNode(extractText(message.content) || "错误"));
     } else {
@@ -2025,6 +2420,114 @@ function renderMessages(forceScroll = true) {
   });
   if (forceScroll || nearBottom) messageList.scrollTop = messageList.scrollHeight;
   updateScrollButton(!nearBottom && isBusy);
+}
+
+function renderToolTimeline(message) {
+  const timeline = document.createElement("div");
+  timeline.className = "tool-timeline";
+  timeline.setAttribute("aria-label", "工具调用记录");
+  for (const event of message.toolEvents || []) {
+    const row = document.createElement("section");
+    row.className = `tool-event tool-${event.status}`;
+    const icon = document.createElement("span");
+    icon.className = "tool-event-icon";
+    icon.append(createIcon(toolEventIcon(event.status)));
+    const copy = document.createElement("div");
+    copy.className = "tool-event-copy";
+    const heading = document.createElement("div");
+    const label = document.createElement("strong");
+    label.textContent = event.label;
+    const status = document.createElement("span");
+    status.textContent = toolEventStatusLabel(event);
+    heading.append(label, status);
+    copy.append(heading);
+    if (event.argumentSummary) {
+      const args = document.createElement("p");
+      args.textContent = event.argumentSummary;
+      copy.append(args);
+    }
+    if (event.resultPreview) {
+      const result = document.createElement("pre");
+      result.textContent = event.resultPreview;
+      copy.append(result);
+    }
+    const approval = pendingToolApprovals.get(event.id);
+    if (event.status === "pending" && approval) copy.append(renderToolApprovalActions(event.id, approval));
+    row.append(icon, copy);
+    timeline.append(row);
+  }
+  return timeline;
+}
+
+function toolEventIcon(status) {
+  if (status === "completed") return "circle-check";
+  if (status === "failed" || status === "denied") return "circle-x";
+  if (status === "running" || status === "approved") return "loader-circle";
+  return "clock-3";
+}
+
+function toolEventStatusLabel(event) {
+  const labels = {
+    pending: "等待确认",
+    approved: event.confirmation === "conversation" ? "本会话已允许" : "已允许",
+    running: "运行中",
+    completed: event.truncated ? "已完成 · 预览已截断" : "已完成",
+    denied: "已拒绝",
+    failed: event.errorCode === "interrupted" ? "已中断" : "失败",
+  };
+  return labels[event.status] || event.status;
+}
+
+function renderToolApprovalActions(eventId, approval) {
+  const actions = document.createElement("div");
+  actions.className = "tool-approval-actions";
+  const choices = [
+    ["once", "仅本次", false],
+    ["conversation", "本会话允许", false],
+    ["deny", "拒绝", true],
+  ];
+  for (const [decision, label, destructive] of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `tool-approval-button${destructive ? " deny" : ""}`;
+    button.textContent = label;
+    button.disabled = approval.inFlight;
+    button.addEventListener("click", () => resolveToolApproval(eventId, decision));
+    actions.append(button);
+  }
+  return actions;
+}
+
+async function resolveToolApproval(eventId, decision) {
+  const approval = pendingToolApprovals.get(eventId);
+  if (!approval || approval.inFlight) return;
+  approval.inFlight = true;
+  renderMessages(false);
+  try {
+    const response = await fetchWithTimeout("/api/tool-approvals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ runId: approval.runId, callId: approval.callId, decision }),
+    });
+    if (handleUnauthorizedResponse(response)) return;
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.message || "确认已失效，请重新发送消息");
+    }
+    pendingToolApprovals.delete(eventId);
+    const message = messages.find((item) => item.id === approval.messageId);
+    const event = message?.toolEvents?.find((item) => item.id === eventId);
+    if (event) {
+      event.status = decision === "deny" ? "denied" : "approved";
+      event.confirmation = decision === "conversation" ? "conversation" : decision === "once" ? "once" : "";
+      event.updatedAt = Date.now();
+    }
+    renderMessages(false);
+  } catch (error) {
+    approval.inFlight = false;
+    showStatusToast(error.message || "工具确认失败");
+    renderMessages(false);
+  }
 }
 
 function createMessageMeta(message) {
@@ -2138,6 +2641,7 @@ function branchConversationAt(index) {
     pinned: false,
     routeId: source.routeId || selectedRouteId,
     parentChatId: source.id,
+    skillIds: normalizeSelectedSkillIds(source.skillIds),
     messages: branchMessages,
   };
   sessions = [branch, ...sessions].sort(compareSessions);
@@ -2240,6 +2744,7 @@ async function editUserMessage(index) {
     pinned: false,
     routeId: source.routeId || selectedRouteId,
     parentChatId: source.id,
+    skillIds: normalizeSelectedSkillIds(source.skillIds),
     messages: editedMessages,
   };
   sessions = [branch, ...sessions].sort(compareSessions);
@@ -2365,6 +2870,7 @@ function createResponseBranch(endIndex, suffix) {
     pinned: false,
     routeId: source.routeId || selectedRouteId,
     parentChatId: source.id,
+    skillIds: normalizeSelectedSkillIds(source.skillIds),
     messages: branchMessages,
   };
   sessions = [branch, ...sessions].sort(compareSessions);
@@ -2452,6 +2958,8 @@ function setBusy(nextBusy) {
   routeSelect.disabled = nextBusy || routes.length <= 1;
   modelPickerTrigger.disabled = nextBusy || routes.length <= 1;
   if (nextBusy) closeModelPicker();
+  if (capabilityButton) capabilityButton.disabled = offlineMode || nextBusy || !skills.length;
+  if (nextBusy) closeCapabilityPopover();
   userApiKeyInput.disabled = offlineMode || nextBusy;
   imageInput.disabled = offlineMode || nextBusy || getSelectedRoute()?.supportsImages === false;
   if (suggestMemoryButton) suggestMemoryButton.disabled = offlineMode || nextBusy;
@@ -2487,11 +2995,20 @@ function formatError(code) {
     no_routes_available: "没有可用线路",
     rate_limited: "今天或当前分钟额度已用完",
     route_does_not_support_images: "当前线路不支持图片",
+    route_does_not_support_tools: "当前线路不支持工具调用",
     route_not_allowed: "这条线路不可用",
     request_failed: "请求失败",
     request_too_large: "请求内容太大",
     upstream_error: "上游线路暂时不可用",
     user_api_key_required: "需要填写 API Key",
+    tool_arguments_invalid: "工具参数无效",
+    tool_confirmation_timeout: "工具确认已超时，请重新发送",
+    tool_denied: "工具调用已拒绝",
+    tool_call_limit: "工具调用次数达到上限",
+    tool_round_limit: "工具交互轮次达到上限",
+    tool_time_budget_exceeded: "工具运行时间达到上限",
+    tool_execution_failed: "工具执行失败",
+    mcp_tool_changed: "远程工具定义已变化，需要管理员重新审核",
   };
   return map[code] || code || "请求失败";
 }
@@ -2582,7 +3099,17 @@ function exportActiveSession() {
   if (active.summary) lines.push(`> 摘要：${active.summary}`, "");
   for (const message of active.messages) {
     if (message.role === "error") continue;
-    lines.push(`## ${message.role === "user" ? "用户" : "助手"}`, "", extractText(message.content) || "(空)", "");
+    lines.push(`## ${message.role === "user" ? "用户" : "助手"}`, "");
+    if (message.role === "assistant" && message.toolEvents?.length) {
+      lines.push("### 工具调用", "");
+      for (const event of message.toolEvents) {
+        lines.push(`- ${event.label}：${toolEventStatusLabel(event)}`);
+        if (event.argumentSummary) lines.push(`  - 参数摘要：${event.argumentSummary.replace(/\s+/g, " ")}`);
+        if (event.resultPreview) lines.push(`  - 结果预览：${event.resultPreview.replace(/\s+/g, " ")}`);
+      }
+      lines.push("");
+    }
+    lines.push(extractText(message.content) || "(空)", "");
   }
   const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -2595,7 +3122,7 @@ function exportActiveSession() {
 function exportAllSessions() {
   const payload = {
     product: "Chatus",
-    formatVersion: 3,
+    formatVersion: 4,
     exportedAt: new Date().toISOString(),
     release: clientRelease?.commit || "",
     user: currentUser,
@@ -2610,6 +3137,7 @@ function exportAllSessions() {
       pinned: Boolean(session.pinned),
       routeId: session.routeId || "",
       parentChatId: session.parentChatId || "",
+      skillIds: normalizeSelectedSkillIds(session.skillIds),
       messages: session.messages.filter((message) => message.role !== "error"),
     })),
   };
@@ -2628,7 +3156,7 @@ async function importSessionBackup() {
     if (payload?.product !== "Chatus" || !Array.isArray(payload.conversations)) throw new Error("invalid_backup");
     const formatVersion = Number(payload.formatVersion || 1);
     if (!Number.isInteger(formatVersion) || formatVersion < 1) throw new Error("invalid_backup");
-    if (formatVersion > 3) throw new Error("unsupported_backup_version");
+    if (formatVersion > 4) throw new Error("unsupported_backup_version");
     if (payload.conversations.length > MAX_SESSIONS) throw new Error("backup_session_limit");
     const imported = normalizeImportedSessions(payload.conversations);
     if (!imported.length) throw new Error("empty_backup");
@@ -2699,6 +3227,7 @@ function normalizeImportedSessions(input) {
       summaryUntil: Number.isFinite(item.summaryUntil) ? Number(item.summaryUntil) : 0,
       routeId: typeof item.routeId === "string" ? item.routeId : "",
       parentChatId: typeof item.parentChatId === "string" ? item.parentChatId : "",
+      skillIds: normalizeSelectedSkillIds(item.skillIds),
     };
   }).filter(Boolean);
   return normalizeSessions(prepared);
@@ -2709,6 +3238,7 @@ function parseBackupTime(value) {
   return Number.isFinite(parsed) ? parsed : NaN;
 }
 async function clearOfflineData() {
+  if (isBusy) return showStatusToast("请先停止当前生成");
   if (!(await confirmAction({ title: "清除本机缓存？", description: "将移除当前设备保存的会话副本和离线页面缓存。重新联网后仍可从云端同步。", confirmLabel: "清除" }))) return;
   localStorage.removeItem(sessionsStorageKey());
   localStorage.removeItem(activeSessionStorageKey());
@@ -2721,6 +3251,7 @@ async function clearOfflineData() {
 }
 async function logoutAllDevices() {
   if (offlineMode) return showStatusToast("需要联网才能退出所有设备");
+  if (isBusy) return showStatusToast("请先停止当前生成");
   if (!(await confirmAction({ title: "退出所有设备？", description: "当前用户在所有浏览器和设备上的登录都会失效，对话和记忆不会被删除。", confirmLabel: "全部退出", destructive: true }))) return;
   logoutAllDevicesButton.disabled = true;
   try {
@@ -2742,6 +3273,7 @@ async function logoutAllDevices() {
 }
 async function deleteAllUserData() {
   if (offlineMode) return showStatusToast("需要联网才能删除云端数据");
+  if (isBusy) return showStatusToast("请先停止当前生成");
   if (!(await confirmAction({ title: "永久删除全部数据？", description: "所有云端与本地对话、会话摘要和长期记忆都将被删除。此操作无法撤销。", confirmLabel: "永久删除", destructive: true }))) return;
   deleteUserDataButton.disabled = true;
   try {
