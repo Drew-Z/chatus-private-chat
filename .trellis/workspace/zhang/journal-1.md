@@ -302,3 +302,35 @@ Moved shared chat, session, and provider contracts out of the Worker monolith an
 
 - Extract OpenAI-compatible and Anthropic-compatible protocol construction/parsing.
 - Make the Agent invoke the provider router directly through AI SDK streaming.
+
+
+## Session 10: AI SDK provider adapters
+
+**Date**: 2026-07-17
+**Task**: `07-16-team-agent-productization`
+**Branch**: `main`
+
+### Summary
+
+Added tested AI SDK 6 provider adapters for OpenAI-compatible and Anthropic-compatible routes. The adapter preserves custom base URLs, exact direct endpoints, route headers, and custom auth header/prefix behavior. Non-streaming Agent/support completions now use `generateText` with provider retries disabled so Chatus remains the owner of route fallback.
+
+### Main Changes
+
+- Added `src/services/provider-model.ts` for provider construction and legacy-to-AI-SDK message conversion.
+- Migrated `completeOnce` from handwritten provider JSON parsing to `generateText`.
+- Upgraded the summary response fixture to the standard OpenAI-compatible contract enforced by AI SDK.
+
+### Testing
+
+- [OK] Provider-model tests use local fake responses only; no model channel was contacted.
+- [OK] Focused Worker and provider tests (48 tests)
+- [OK] `npm.cmd run typecheck`
+
+### Status
+
+[IN PROGRESS] TeamAgent still returns a transitional plain-text response; resumable `streamText().toUIMessageStreamResponse()` is next.
+
+### Next Steps
+
+- Introduce an Agent-turn preparation contract that returns validated messages, route candidates, credentials, quota, and telemetry callbacks.
+- Stream the selected AI SDK model through `AIChatAgent` while allowing fallback only before user-visible output begins.

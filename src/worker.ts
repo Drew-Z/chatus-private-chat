@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
+import { generateText } from "ai";
 import type { TeamAgent } from "./agent/team-agent";
 import type { TeamAgentProps } from "./contracts/agent";
 import type { ChatMessage, ChatPart, ToolEventSummary } from "./contracts/chat";
@@ -14,6 +15,7 @@ import {
   isTerminalProviderFailure,
   resolveProviderCredential,
 } from "./services/provider-router";
+import { createProviderLanguageModel, toProviderModelMessages } from "./services/provider-model";
 import {
   isRecentRouteReliability,
   loadRouteReliability,
@@ -3540,75 +3542,23 @@ async function completeOnce(args: {
   env: Env;
 }): Promise<string> {
   const { route, apiKey, messages, temperature, maxTokens, env } = args;
-  if (route.type === "anthropic-messages") {
-    const headers = buildHeaders(route.headers);
-    setAuthHeader(headers, route, apiKey, "x-api-key");
-    headers.set("Content-Type", "application/json");
-    if (!headers.has("anthropic-version")) {
-      headers.set("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
-    }
-    const anthropic = toAnthropicMessages(messages);
-    const response = await fetch(routeUrl(route, "/v1/messages"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: route.model,
-        messages: anthropic.messages,
-        stream: false,
-        max_tokens: maxTokens || route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
-        temperature: clampNumber(temperature, 0, 1, 0.2),
-        ...(anthropic.system ? { system: anthropic.system } : {}),
-      }),
+  try {
+    const result = await generateText({
+      model: createProviderLanguageModel(route, apiKey),
+      messages: toProviderModelMessages(messages),
+      temperature: clampNumber(temperature, 0, route.type === "anthropic-messages" ? 1 : 2, 0.2),
+      maxOutputTokens: maxTokens || route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
+      maxRetries: 0,
+      allowSystemInMessages: true,
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new UpstreamRequestError(response.status, formatUpstreamErrorMessage(JSON.stringify(payload)));
+    return result.text;
+  } catch (error) {
+    const status = providerErrorStatus(error);
+    if (status !== undefined) {
+      throw new UpstreamRequestError(status, error instanceof Error ? error.message : "upstream request failed");
     }
-    return extractAnthropicText(payload);
+    throw error;
   }
-
-  const headers = buildHeaders(route.headers);
-  setAuthHeader(headers, route, apiKey, "Authorization");
-  headers.set("Content-Type", "application/json");
-  const response = await fetch(routeUrl(route, "/chat/completions"), {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: route.model,
-      messages,
-      stream: false,
-      temperature: clampNumber(temperature, 0, 2, 0.2),
-      max_tokens: maxTokens || route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new UpstreamRequestError(response.status, formatUpstreamErrorMessage(JSON.stringify(payload)));
-  }
-  return extractOpenAiText(payload);
-}
-
-function extractOpenAiText(payload: unknown): string {
-  if (!isRecord(payload) || !Array.isArray(payload.choices) || !payload.choices[0]) return "";
-  const choice = payload.choices[0];
-  if (!isRecord(choice)) return "";
-  if (isRecord(choice.message) && typeof choice.message.content === "string") {
-    return choice.message.content;
-  }
-  if (typeof choice.text === "string") return choice.text;
-  return "";
-}
-
-function extractAnthropicText(payload: unknown): string {
-  if (!isRecord(payload) || !Array.isArray(payload.content)) return "";
-  return payload.content
-    .map((block) => {
-      if (!isRecord(block)) return "";
-      if (block.type === "text" && typeof block.text === "string") return block.text;
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
 }
 
 function formatTranscript(messages: ChatMessage[]): string {
@@ -4693,6 +4643,15 @@ function formatUpstreamErrorMessage(body: string): string {
   } catch {
     return trimmed.slice(0, 500);
   }
+}
+
+function providerErrorStatus(error: unknown): number | undefined {
+  if (!isRecord(error)) return undefined;
+  return typeof error.statusCode === "number"
+    ? error.statusCode
+    : typeof error.status === "number"
+      ? error.status
+      : undefined;
 }
 
 function findErrorMessage(value: unknown): string {

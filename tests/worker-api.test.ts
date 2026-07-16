@@ -1035,7 +1035,12 @@ describe("Worker API", () => {
     const { cookie } = await login();
     const before = await apiRequest("/api/session", cookie).then((response) => response.json());
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
-      choices: [{ message: { content: "用户正在测试长期会话摘要。" } }],
+      id: "chatcmpl-summary-test",
+      object: "chat.completion",
+      created: 1,
+      model: "summary-model",
+      choices: [{ index: 0, message: { role: "assistant", content: "用户正在测试长期会话摘要。" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
 
     const response = await apiRequest("/api/session-summary", cookie, {

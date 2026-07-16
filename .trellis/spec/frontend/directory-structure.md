@@ -25,11 +25,13 @@ src/
 │   ├── provider.ts             # provider route and credential contracts
 │   └── session.ts              # authenticated member session contract
 └── services/
+    ├── provider-model.ts       # AI SDK provider instances and message conversion
     ├── provider-router.ts      # route plans, credential precedence, fallback decisions
     └── route-reliability.ts    # passive real-task reliability storage and classification
 tests/
 ├── worker-api.test.ts
 ├── user-state.test.ts
+├── provider-model.test.ts
 ├── provider-router.test.ts
 ├── route-reliability.test.ts
 ├── markdown.test.ts
@@ -61,7 +63,7 @@ scripts/
 
 - Pure browser helper: `public/markdown.js`, tested by `tests/markdown.test.ts`.
 - Page controller: `public/app.js`, paired with `public/index.html`.
-- Backend gateway: `src/worker.ts`; composition/export boundary: `src/index.ts`; durable member runtime: `src/agent/team-agent.ts`; provider routing: `src/services/provider-router.ts`; passive reliability: `src/services/route-reliability.ts`.
+- Backend gateway: `src/worker.ts`; composition/export boundary: `src/index.ts`; durable member runtime: `src/agent/team-agent.ts`; provider adapters: `src/services/provider-model.ts`; provider routing: `src/services/provider-router.ts`; passive reliability: `src/services/route-reliability.ts`.
 
 ## Avoid
 
