@@ -6,6 +6,14 @@ import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validatio
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
 import type { TeamAgent } from "./agent/team-agent";
 import type { TeamAgentProps } from "./contracts/agent";
+import type { ChatMessage, ChatPart, ToolEventSummary } from "./contracts/chat";
+import type { ProviderType, RouteConfig } from "./contracts/provider";
+import type { Session } from "./contracts/session";
+import {
+  buildProviderRoutePlan,
+  isTerminalProviderFailure,
+  resolveProviderCredential,
+} from "./services/provider-router";
 import {
   isRecentRouteReliability,
   loadRouteReliability,
@@ -15,30 +23,8 @@ import {
   type RouteReliabilityRecord,
 } from "./services/route-reliability";
 
-type ChatRole = "system" | "user" | "assistant";
-
-type ChatPart =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
-
-export type ChatMessage = {
-  role: ChatRole;
-  content: string | ChatPart[];
-  routeId?: string;
-  fallback?: boolean;
-  createdAt?: number;
-  rating?: "up" | "down";
-  ratingReason?: string;
-  finishReason?: string;
-  toolEvents?: ToolEventSummary[];
-};
-
-export type Session = {
-  id: string;
-  label: string;
-  createdAt: number;
-  lastSeen: number;
-};
+export type { ChatMessage } from "./contracts/chat";
+export type { Session } from "./contracts/session";
 
 type AdminSession = {
   createdAt: number;
@@ -50,8 +36,6 @@ type AccessEntry = {
   label: string;
   code: string;
 };
-
-type ProviderType = "openai-chat" | "anthropic-messages";
 
 type ToolConfirmation = "auto" | "first-per-conversation" | "always";
 
@@ -86,21 +70,6 @@ type McpServerConfig = {
   endpoint: string;
   authType: McpAuthType;
   secretRef?: string;
-};
-
-type ToolEventSummary = {
-  id: string;
-  toolId: string;
-  label: string;
-  source: "builtin" | "mcp";
-  status: "pending" | "approved" | "running" | "completed" | "failed" | "denied";
-  argumentSummary?: string;
-  resultPreview?: string;
-  confirmation?: "once" | "conversation";
-  errorCode?: string;
-  createdAt: number;
-  updatedAt: number;
-  truncated?: boolean;
 };
 
 type NormalizedToolDefinition = {
@@ -152,27 +121,6 @@ type ActiveCapabilityRun = {
   chatId: string;
   controller: AbortController;
   pendingApproval?: PendingToolApproval;
-};
-
-type RouteConfig = {
-  enabled?: boolean;
-  label: string;
-  type: ProviderType;
-  baseUrl: string;
-  model: string;
-  apiKey?: string;
-  apiKeyRef?: string;
-  authHeader?: string;
-  authPrefix?: string;
-  directEndpoint?: boolean;
-  headers?: Record<string, string>;
-  maxTokens?: number;
-  temperature?: number;
-  fallbacks?: string[];
-  allowUserKey?: boolean;
-  requiresUserKey?: boolean;
-  supportsImages?: boolean;
-  supportsTools?: boolean;
 };
 
 type UserConfig = {
@@ -2652,7 +2600,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     return jsonResponse({ error: "route_does_not_support_images", routeId: selectedPublicRoute.id }, 400);
   }
 
-  const routeIds = buildRoutePlan(selectedRoute, config, access).filter((routeId) => {
+  const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access).filter((routeId) => {
     if (!hasImages) return true;
     return config.routes[routeId]?.supportsImages !== false;
   });
@@ -3227,27 +3175,15 @@ function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
   return { ...(config.defaults || {}), ...(config.users?.[label] || {}) };
 }
 
-function buildRoutePlan(selectedRoute: string, config: AppConfig, access: RouteAccess): string[] {
-  const allowed = new Set(access.routes.map((route) => route.id));
-  const selected = allowed.has(selectedRoute) ? selectedRoute : access.defaultRoute;
-  const route = config.routes[selected];
-  const plan = [selected, ...(route?.fallbacks || [])].filter((id) => allowed.has(id));
-  return [...new Set(plan)];
-}
-
 async function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): Promise<string> {
-  if (userApiKey && route.allowUserKey !== false) return userApiKey;
-  if (route.requiresUserKey) return "";
-  if (route.apiKey) return route.apiKey;
-  const apiKeyRef = route.apiKeyRef?.trim() || "";
-  if (apiKeyRef && ROUTE_SECRET_REF_PATTERN.test(apiKeyRef)) {
-    const managed = await loadManagedRouteSecret(env, apiKeyRef);
-    if (managed !== null) return managed;
-  }
-  if (apiKeyRef && typeof env[apiKeyRef] === "string") {
-    return String(env[apiKeyRef]);
-  }
-  return "";
+  const credential = await resolveProviderCredential({
+    route,
+    userApiKey,
+    bindings: env,
+    isManagedReference: (apiKeyRef) => ROUTE_SECRET_REF_PATTERN.test(apiKeyRef),
+    loadManagedSecret: (apiKeyRef) => loadManagedRouteSecret(env, apiKeyRef),
+  });
+  return credential.apiKey;
 }
 
 async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<string | null> {
@@ -3509,7 +3445,7 @@ async function completeWithUserRoute(
   }
 
   const selectedRoute = args.routeId || access.defaultRoute;
-  const routeIds = buildRoutePlan(selectedRoute, config, access);
+  const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
   const userApiKey = args.userApiKey?.trim() || "";
   let lastError = "no route succeeded";
   let lastRouteId = "";
@@ -3768,10 +3704,7 @@ async function callRoute(args: {
   }
 
   const message = await response.text().catch(() => "");
-  const terminal =
-    response.status === 400 ||
-    response.status === 422 ||
-    (usedUserKey && (response.status === 401 || response.status === 403));
+  const terminal = isTerminalProviderFailure(response.status, usedUserKey);
   return {
     error: {
       routeId,
@@ -4204,8 +4137,7 @@ async function callProviderToolTurn(args: {
     : await callOpenAiToolTurn(args);
   const text = await response.text();
   if (!response.ok) {
-    const terminal = response.status === 400 || response.status === 422 ||
-      (args.usedUserKey && (response.status === 401 || response.status === 403));
+    const terminal = isTerminalProviderFailure(response.status, args.usedUserKey);
     throw new ProviderToolError(response.status, formatUpstreamErrorMessage(text), terminal);
   }
   try {

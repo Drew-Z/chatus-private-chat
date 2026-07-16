@@ -1,11 +1,11 @@
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import type { StreamTextOnFinishCallback, ToolSet, UIMessage } from "ai";
 import type { TeamAgentProps, TeamAgentState } from "../contracts/agent";
+import type { ChatMessage } from "../contracts/chat";
+import type { Session } from "../contracts/session";
 import {
   runTeamAgentTextTurn,
-  type ChatMessage,
   type Env,
-  type Session,
 } from "../worker";
 
 const MAX_PERSISTED_TOOL_TEXT_CHARS = 4_000;

@@ -30,6 +30,7 @@
 ### Slice 2: Provider And Capability Services
 
 - [x] Extract Agent contracts and passive route reliability into focused modules with storage validation and classification tests.
+- [x] Extract chat/session/provider contracts plus route planning, credential precedence, and fallback eligibility into a provider-router boundary.
 - [ ] Extract shared contracts, provider routing, secret resolution, fallback classification, telemetry, Skills, tools, and MCP into explicit modules.
 - [ ] Execute normal Agent turns through AI SDK providers while preserving route assignment, BYOK, quota, bounded tool loops, and approval policy.
 - [ ] Add idempotent legacy conversation and memory import fixtures without deleting legacy storage.

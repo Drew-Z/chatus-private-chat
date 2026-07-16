@@ -6,9 +6,10 @@ The Worker and tests use strict TypeScript. Browser modules are plain ES modules
 
 ## Type Organization
 
-- Define Worker domain interfaces and unions close to their use in `src/worker.ts` while the backend remains a single module.
+- Define cross-runtime contracts under `src/contracts/` once more than one runtime or service consumes them. Keep handler-local request shapes near the owning endpoint.
 - Use literal unions for closed domains such as message roles, route types, and reset reasons.
 - Reuse shared shapes across Worker handlers and Durable Object methods instead of recreating incompatible variants.
+- Keep provider credential values inside server-side services. Contracts may expose credential source metadata, but browser and Agent state must never receive the secret value.
 - Tests may use `as const` to preserve literal values, as in `tests/user-state.test.ts`.
 
 ## Validation

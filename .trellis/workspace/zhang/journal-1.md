@@ -271,3 +271,34 @@ Continued Slice 2 by moving shared Team Agent contracts and passive route reliab
 
 - Extract provider protocol adapters and route/credential selection behind a typed provider router.
 - Move normal Agent turns to AI SDK streaming without allowing fallback after visible output begins.
+
+
+## Session 9: Provider router foundation
+
+**Date**: 2026-07-17
+**Task**: `07-16-team-agent-productization`
+**Branch**: `main`
+
+### Summary
+
+Moved shared chat, session, and provider contracts out of the Worker monolith and added a provider-router foundation. Route-plan allow-list filtering, credential precedence, managed-secret failure behavior, and terminal fallback classification now have one typed owner and focused tests.
+
+### Main Changes
+
+- Added `src/contracts/chat.ts`, `provider.ts`, and `session.ts`.
+- Added `src/services/provider-router.ts` for route plans, credential resolution, and fallback eligibility.
+- Reused the router decisions from ordinary chat and capability/tool paths without changing provider request behavior.
+
+### Testing
+
+- [OK] Focused provider-router and route-reliability tests (18 tests)
+- [OK] `npm.cmd run typecheck`
+
+### Status
+
+[IN PROGRESS] Protocol adapters, quota/telemetry services, and AI SDK Agent streaming remain in Slice 2.
+
+### Next Steps
+
+- Extract OpenAI-compatible and Anthropic-compatible protocol construction/parsing.
+- Make the Agent invoke the provider router directly through AI SDK streaming.
