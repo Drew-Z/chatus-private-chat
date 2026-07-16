@@ -402,3 +402,37 @@ Extracted the capability contract and registry policy from `src/worker.ts`. The 
 
 - Refactor Agent turn preparation so AI SDK model messages preserve tool-call and approval parts across continuation requests.
 - Build bounded AI SDK tools from the shared registry and migrate built-in/MCP execution plus approval state onto the per-member Agent.
+
+
+## Session 13: Agent tool execution and approval continuation
+
+**Date**: 2026-07-17
+**Task**: `07-16-team-agent-productization`
+**Branch**: `main`
+
+### Summary
+
+Moved assigned tool execution onto the formal AI SDK `streamText` path. The Agent now builds server-side tools from the shared capability registry, preserves tool approval messages across AIChat continuation turns, stores first-per-conversation trust in the member Agent SQLite database, and avoids charging quota twice for one approved continuation.
+
+### Main Changes
+
+- Added `src/services/agent-tools.ts` for AI SDK tool construction, approval policy, and trust callbacks.
+- Added bounded Agent tool runtime handling for definition authorization, schema validation, call count, execution time, result size, MCP session cleanup, and cancellation.
+- Added `capability_tool_trust` to each TeamAgent's SQLite state.
+- Passed `tools`, `stopWhen`, and cleanup callbacks into `streamText`.
+- Added deterministic provider-stream tests for builtin tool execution, approval message conversion, Agent runtime limits, and continuation quota behavior.
+
+### Testing
+
+- [OK] Focused Agent tool and turn tests (6 tests)
+- [OK] `npm.cmd run typecheck`
+- [OK] Fake provider only; no model or MCP channel contacted
+
+### Status
+
+[IN PROGRESS] The Agent runtime can execute assigned tools, but the typed React client, automatic Skill selection, full MCP capability extraction, and legacy protocol removal remain.
+
+### Next Steps
+
+- Add the typed Agent client and render approval/tool trace states over the AIChat transport.
+- Move MCP execution and provider preparation out of `src/worker.ts` after the client contract is stable.

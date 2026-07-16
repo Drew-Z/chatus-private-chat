@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
-import { streamText } from "ai";
+import { stepCountIs, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAgentToolSet } from "../src/services/agent-tools";
 import { prepareTeamAgentTurn, type Session } from "../src/worker";
 
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -83,6 +84,198 @@ describe("prepared TeamAgent turn", () => {
       outcome: "success",
       fallback: true,
     });
+    await prepared.closeTools();
+  });
+
+  it("prepares bounded assigned tools without contacting a model channel", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://primary.example/v1",
+          model: "primary-model",
+          apiKey: "primary-test-key",
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        allowedTools: ["builtin:text_stats"],
+      },
+      skills: {
+        writing: {
+          enabled: true,
+          label: "Writing",
+          instructions: "Use the assigned text utility when useful.",
+          toolIds: ["builtin:text_stats"],
+        },
+      },
+      tools: {
+        "builtin:text_stats": {
+          enabled: true,
+          label: "Text stats",
+          inputSchema: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+            additionalProperties: false,
+          },
+          executor: { type: "builtin", name: "text_stats" },
+        },
+      },
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label: `agent-tools-${crypto.randomUUID()}`,
+      createdAt: now,
+      lastSeen: now,
+    };
+
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "统计这段文字" }],
+      skillIds: ["writing"],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    expect(prepared.toolDefinitions).toHaveLength(1);
+    const result = await prepared.runTool(prepared.toolDefinitions[0], { text: "hello world\nagain" });
+    expect(JSON.parse(result.text)).toEqual({ characters: 17, codePoints: 17, words: 3, lines: 2 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await prepared.closeTools();
+    await expect(prepared.runTool(prepared.toolDefinitions[0], { text: "closed" }))
+      .rejects.toThrow("工具运行时已关闭");
+  });
+
+  it("does not consume message quota again for an Agent continuation", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://primary.example/v1",
+          model: "primary-model",
+          apiKey: "primary-test-key",
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+    }));
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label: `agent-continuation-${crypto.randomUUID()}`,
+      createdAt: now,
+      lastSeen: now,
+    };
+    const input = { messages: [{ role: "user" as const, content: "继续完成这个任务" }] };
+
+    const initial = await prepareTeamAgentTurn(env, session, input);
+    expect(initial.ok).toBe(true);
+    if (initial.ok) await initial.closeTools();
+
+    const continuation = await prepareTeamAgentTurn(env, session, { ...input, continuation: true });
+    expect(continuation.ok).toBe(true);
+    if (continuation.ok) await continuation.closeTools();
+
+    const nextTurn = await prepareTeamAgentTurn(env, session, input);
+    expect(nextTurn).toMatchObject({ ok: false, error: "rate_limited", status: 429 });
+  });
+
+  it("runs an assigned builtin tool inside the AI SDK stream without live model calls", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://primary.example/v1",
+          model: "primary-model",
+          apiKey: "primary-test-key",
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        allowedTools: ["builtin:text_stats"],
+      },
+      skills: {
+        writing: {
+          enabled: true,
+          label: "Writing",
+          instructions: "Use text statistics when the user asks for counts.",
+          toolIds: ["builtin:text_stats"],
+        },
+      },
+      tools: {
+        "builtin:text_stats": {
+          enabled: true,
+          label: "Text stats",
+          inputSchema: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+            additionalProperties: false,
+          },
+          executor: { type: "builtin", name: "text_stats" },
+        },
+      },
+    }));
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label: `agent-tool-stream-${crypto.randomUUID()}`,
+      createdAt: now,
+      lastSeen: now,
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const payload = JSON.parse(String(init?.body || "{}")) as { tools?: Array<{ function?: { name?: string } }> };
+      const name = payload.tools?.[0]?.function?.name || "tool";
+      return fetchSpy.mock.calls.length === 1
+        ? openAiToolCallStreamResponse(name, { text: "hello world" })
+        : openAiStreamResponse("统计完成，共 11 个字符、2 个单词。");
+    });
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "统计 hello world" }],
+      skillIds: ["writing"],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    const providerName = prepared.toolDefinitions[0].providerName;
+    const tools = createAgentToolSet({
+      definitions: prepared.toolDefinitions,
+      conversationId: "chat-tool-stream",
+      runTool: prepared.runTool,
+      approvals: { isTrusted: () => false, markTrusted: () => undefined },
+    });
+    const streamErrors: unknown[] = [];
+    const result = streamText({
+      model: prepared.model,
+      messages: prepared.messages,
+      tools,
+      stopWhen: stepCountIs(prepared.maxToolSteps),
+      maxRetries: 0,
+      allowSystemInMessages: true,
+      onError: (event) => streamErrors.push(event.error),
+    });
+    const response = result.toUIMessageStreamResponse();
+    const body = await response.text();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(streamErrors).toEqual([]);
+    expect(body).toContain(providerName);
+    expect(body).toContain("characters");
+    expect(body).toContain("统计完成");
+    await prepared.closeTools();
   });
 });
 
@@ -117,6 +310,49 @@ function openAiStreamResponse(text: string): Response {
       created: 1,
       model: "backup-model",
       choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+  ];
+  const body = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+function openAiToolCallStreamResponse(name: string, input: Record<string, unknown>): Response {
+  const chunks = [
+    {
+      id: "chatcmpl-tool-test",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "primary-model",
+      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+    },
+    {
+      id: "chatcmpl-tool-test",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "primary-model",
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: "call-text-stats",
+            type: "function",
+            function: { name, arguments: JSON.stringify(input) },
+          }],
+        },
+        finish_reason: null,
+      }],
+    },
+    {
+      id: "chatcmpl-tool-test",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "primary-model",
+      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     },
   ];

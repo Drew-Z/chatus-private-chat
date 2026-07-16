@@ -44,6 +44,18 @@ export type NormalizedToolDefinition = {
   config: ToolConfig;
 };
 
+export type CapabilityToolExecutionResult = {
+  text: string;
+  preview: string;
+  truncated: boolean;
+};
+
+export type CapabilityToolRunner = (
+  definition: NormalizedToolDefinition,
+  input: unknown,
+  signal?: AbortSignal,
+) => Promise<CapabilityToolExecutionResult>;
+
 export type NormalizedToolCall = {
   providerCallId: string;
   providerName: string;

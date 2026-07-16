@@ -1,8 +1,17 @@
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import { streamText, type StreamTextOnFinishCallback, type ToolSet, type UIMessage } from "ai";
+import {
+  convertToModelMessages,
+  stepCountIs,
+  streamText,
+  type ModelMessage,
+  type StreamTextOnFinishCallback,
+  type ToolSet,
+  type UIMessage,
+} from "ai";
 import type { TeamAgentProps, TeamAgentState } from "../contracts/agent";
 import type { ChatMessage } from "../contracts/chat";
 import type { Session } from "../contracts/session";
+import { createAgentToolSet } from "../services/agent-tools";
 import {
   prepareTeamAgentTurn,
   type Env,
@@ -24,6 +33,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   async onStart(props?: TeamAgentProps): Promise<void> {
     await super.onStart(props);
     this.userLabel = normalizeUserLabel(props?.userLabel);
+    this.sql`
+      CREATE TABLE IF NOT EXISTS capability_tool_trust (
+        conversation_id TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        approved_at INTEGER NOT NULL,
+        PRIMARY KEY (conversation_id, tool_id)
+      )
+    `;
   }
 
   async healthCheck(): Promise<{ ok: true; runtime: "cloudflare-ai-chat"; storage: true; version: 1 }> {
@@ -49,6 +66,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     };
     const prepared = await prepareTeamAgentTurn(this.env, session, {
       messages: toLegacyMessages(this.messages),
+      continuation: options?.continuation === true,
       routeId: boundedString(body.routeId, 80),
       skillIds: stringArray(body.skillIds, 3, 80),
       userApiKey: boundedString(body.userApiKey, 8_192),
@@ -60,14 +78,53 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       return jsonError(prepared.error, prepared.message, prepared.status, prepared.routeId);
     }
 
+    const conversationId = boundedString(body.chatId, 80) || "default";
+    const tools = createAgentToolSet({
+      definitions: prepared.toolDefinitions,
+      conversationId,
+      runTool: prepared.runTool,
+      approvals: {
+        isTrusted: (targetConversationId, toolId) => this.isToolTrusted(targetConversationId, toolId),
+        markTrusted: (targetConversationId, toolId) => this.markToolTrusted(targetConversationId, toolId),
+      },
+    });
+    let messages: ModelMessage[] = prepared.messages;
+    if (options?.continuation && prepared.toolDefinitions.length) {
+      try {
+        messages = [
+          ...prepared.systemMessages,
+          ...(await convertToModelMessages(this.messages, { tools })),
+        ];
+      } catch {
+        await prepared.closeTools();
+        return jsonError("agent_context_invalid", "工具续接上下文无法恢复。", 409);
+      }
+    }
+
+    let finalized = false;
+    const finalize = async () => {
+      if (finalized) return;
+      finalized = true;
+      await prepared.closeTools();
+    };
+
     const result = streamText({
       model: prepared.model,
-      messages: prepared.messages,
+      messages,
+      tools,
+      stopWhen: stepCountIs(prepared.maxToolSteps),
       maxRetries: 0,
       allowSystemInMessages: true,
       abortSignal: options?.abortSignal,
-      onFinish,
-      onError: async () => prepared.recordStreamFailure(),
+      onFinish: async (event) => {
+        await finalize();
+        await onFinish(event);
+      },
+      onAbort: finalize,
+      onError: async () => {
+        await finalize();
+        await prepared.recordStreamFailure();
+      },
     });
 
     return result.toUIMessageStreamResponse({
@@ -78,6 +135,25 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       },
       onError: () => "模型线路暂时不可用，请稍后重试。",
     });
+  }
+
+  private isToolTrusted(conversationId: string, toolId: string): boolean {
+    const rows = this.sql<{ trusted: number }>`
+      SELECT 1 AS trusted
+      FROM capability_tool_trust
+      WHERE conversation_id = ${conversationId} AND tool_id = ${toolId}
+      LIMIT 1
+    `;
+    return rows.length > 0;
+  }
+
+  private markToolTrusted(conversationId: string, toolId: string): void {
+    this.sql`
+      INSERT INTO capability_tool_trust (conversation_id, tool_id, approved_at)
+      VALUES (${conversationId}, ${toolId}, ${Date.now()})
+      ON CONFLICT(conversation_id, tool_id)
+      DO UPDATE SET approved_at = excluded.approved_at
+    `;
   }
 
   protected sanitizeMessageForPersistence(message: UIMessage): UIMessage {

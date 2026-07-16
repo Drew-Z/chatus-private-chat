@@ -9,6 +9,8 @@ import { generateText, type ModelMessage } from "ai";
 import type { TeamAgent } from "./agent/team-agent";
 import type { TeamAgentProps } from "./contracts/agent";
 import type {
+  CapabilityToolExecutionResult,
+  CapabilityToolRunner,
   CapabilityStreamEvent,
   McpServerConfig,
   ModelTurn,
@@ -2685,6 +2687,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
 
 export type TeamAgentTurnInput = {
   messages: ChatMessage[];
+  continuation?: boolean;
   routeId?: string;
   skillIds?: string[];
   userApiKey?: string;
@@ -2697,6 +2700,11 @@ export type PreparedTeamAgentTurn =
       ok: true;
       model: LanguageModelV3;
       messages: ModelMessage[];
+      systemMessages: ModelMessage[];
+      toolDefinitions: NormalizedToolDefinition[];
+      runTool: CapabilityToolRunner;
+      closeTools: () => Promise<void>;
+      maxToolSteps: number;
       remaining: number;
       recordStreamFailure: () => Promise<void>;
     }
@@ -2740,7 +2748,9 @@ export async function prepareTeamAgentTurn(
     };
   }
 
-  const limitResult = await consumeLimits(env, session, access.user);
+  const limitResult = input.continuation
+    ? { ok: true as const, remaining: (await getUsage(env, session, access.user)).remaining }
+    : await consumeLimits(env, session, access.user);
   if (!limitResult.ok) {
     await recordChatMetric(env, { kind: "rate_limited", label: session.label });
     return { ok: false, error: "rate_limited", message: "额度已用完", status: 429 };
@@ -2755,6 +2765,11 @@ export async function prepareTeamAgentTurn(
     access.user,
     selectedSkills,
   );
+  const systemMessageCount = Math.max(0, messages.length - normalized.length);
+  const systemMessages = toProviderModelMessages(messages.slice(0, systemMessageCount));
+  const toolDefinitions = selectedPublicRoute?.supportsTools
+    ? await buildCapabilityToolDefinitions(config, access.user, selectedSkills, secretFingerprint)
+    : [];
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
   const userApiKey = input.userApiKey?.trim() || "";
   const candidates: FallbackModelCandidate[] = [];
@@ -2766,6 +2781,7 @@ export async function prepareTeamAgentTurn(
     const publicRoute = access.routes.find((item) => item.id === routeId);
     if (!route || !publicRoute) continue;
     if (messagesContainImages(normalized) && !publicRoute.supportsImages) continue;
+    if (toolDefinitions.length && !publicRoute.supportsTools) continue;
 
     let credential: ProviderCredential;
     try {
@@ -2845,11 +2861,17 @@ export async function prepareTeamAgentTurn(
       await recordChatMetric(env, { kind: "route_error", label: session.label, routeId: event.routeId });
     },
   });
+  const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env);
 
   return {
     ok: true,
     model,
     messages: toProviderModelMessages(messages),
+    systemMessages,
+    toolDefinitions,
+    runTool: toolRuntime.runTool,
+    closeTools: toolRuntime.close,
+    maxToolSteps: MAX_TOOL_ROUNDS,
     remaining: limitResult.remaining,
     recordStreamFailure,
   };
@@ -4501,18 +4523,71 @@ function stableJsonStringify(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 
+function createAgentCapabilityRuntime(
+  definitions: NormalizedToolDefinition[],
+  env: Env,
+): { runTool: CapabilityToolRunner; close: () => Promise<void> } {
+  const allowed = new Map(definitions.map((definition) => [definition.id, definition]));
+  const mcpSessions = new Map<string, ActiveMcpSession>();
+  let callCount = 0;
+  let elapsedMs = 0;
+  let closed = false;
+
+  const runTool: CapabilityToolRunner = async (definition, input, signal) => {
+    if (closed) throw new CapabilityError("tool_runtime_closed", "工具运行时已关闭");
+    const allowedDefinition = allowed.get(definition.id);
+    if (!allowedDefinition || allowedDefinition.providerName !== definition.providerName) {
+      throw new CapabilityError("tool_not_found", "工具不在当前成员的允许列表中");
+    }
+    callCount += 1;
+    if (callCount > MAX_TOOL_CALLS) {
+      throw new CapabilityError("tool_call_limit_exceeded", "本轮工具调用次数超过限制");
+    }
+    const remainingBudgetMs = TOOL_TOTAL_BUDGET_MS - elapsedMs;
+    if (remainingBudgetMs <= 0) {
+      throw new CapabilityError("tool_budget_exceeded", "本轮工具执行时间超过限制");
+    }
+
+    validateToolArguments(allowedDefinition, input);
+    const startedAt = Date.now();
+    try {
+      return await executeCapabilityTool(
+        allowedDefinition,
+        input,
+        env,
+        signal || new AbortController().signal,
+        mcpSessions,
+        Math.min(TOOL_CALL_TIMEOUT_MS, remainingBudgetMs),
+      );
+    } finally {
+      elapsedMs += Date.now() - startedAt;
+    }
+  };
+
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    const sessions = [...mcpSessions.values()];
+    mcpSessions.clear();
+    await Promise.all(sessions.map((session) => closeMcpSession(session)));
+  };
+
+  return { runTool, close };
+}
+
 async function executeCapabilityTool(
   definition: NormalizedToolDefinition,
   value: unknown,
   env: Env,
   signal: AbortSignal,
   mcpSessions: Map<string, ActiveMcpSession>,
-): Promise<{ text: string; preview: string; truncated: boolean }> {
+  timeoutMs = TOOL_CALL_TIMEOUT_MS,
+): Promise<CapabilityToolExecutionResult> {
   const callController = new AbortController();
   const abort = () => callController.abort(signal.reason);
   if (signal.aborted) abort();
   else signal.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(() => callController.abort("tool_timeout"), TOOL_CALL_TIMEOUT_MS);
+  const timer = setTimeout(() => callController.abort("tool_timeout"), Math.max(1, timeoutMs));
   try {
     let result: unknown;
     if (definition.config.executor.type === "builtin") {

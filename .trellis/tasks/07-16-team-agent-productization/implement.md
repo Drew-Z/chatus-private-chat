@@ -34,8 +34,9 @@
 - [x] Add tested OpenAI-compatible and Anthropic-compatible AI SDK model adapters and migrate non-streaming completion calls onto them.
 - [x] Move normal TeamAgent text turns to `streamText().toUIMessageStreamResponse()` with resumable recovery and pre-output-only route fallback.
 - [x] Extract shared capability contracts and the assignment/Skill/tool registry so legacy and Agent paths consume one visibility and approval-policy boundary.
+- [x] Execute assigned built-in and reviewed MCP tools through AI SDK `streamText`, with bounded calls, continuation-safe approval messages, Agent-owned trust, and quota-once continuation handling.
 - [ ] Extract shared contracts, provider routing, secret resolution, fallback classification, telemetry, Skills, tools, and MCP into explicit modules.
-- [ ] Execute normal Agent turns through AI SDK providers while preserving route assignment, BYOK, quota, bounded tool loops, and approval policy.
+- [x] Execute normal Agent turns through AI SDK providers while preserving route assignment, BYOK, quota, bounded tool loops, and approval policy.
 - [ ] Add idempotent legacy conversation and memory import fixtures without deleting legacy storage.
 
 ### Slice 3: Typed Product Client
