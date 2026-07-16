@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:client": "vite --config client/vite.config.ts",
     "deploy": "wrangler deploy",
-    "check:frontend": "node scripts/check-frontend.mjs",
+    "build:client": "vite build --config client/vite.config.ts",
+    "check:frontend": "npm run build:client && node scripts/check-frontend.mjs",
     "smoke:production": "node scripts/smoke-production.mjs",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",

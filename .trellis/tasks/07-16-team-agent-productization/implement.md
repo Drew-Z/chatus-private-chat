@@ -41,7 +41,7 @@
 
 ### Slice 3: Typed Product Client
 
-- [ ] Add a Vite/React application using `useAgent` and `useAgentChat`.
+- [x] Add an isolated Vite/React application using authenticated `useAgent` and `useAgentChat`, with resumable text streaming, connection state, approvals, and explicit stop behavior at `/react-chat/`.
 - [ ] Implement chat, resumable streams, history, memory, approvals, traces, route state, offline/degraded states, and mobile/PWA behavior.
 - [ ] Rebuild administration as typed components over the existing revisioned HTTP administration boundary.
 - [ ] Update asset release fingerprinting and service-worker caching for Vite output.

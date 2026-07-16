@@ -2,11 +2,20 @@
 
 ## Overview
 
-Chatus uses a small, framework-free frontend served from `public/`, with a Cloudflare Worker backend in `src/`. Keep this layout flat unless a feature has a genuinely reusable boundary.
+Chatus is migrating from the framework-free frontend served from `public/` to a typed React/Vite client under `client/`, with a Cloudflare Worker backend in `src/`. The legacy pages stay deployable during acceptance, while new Agent transport work belongs in the typed client.
 
 ## Directory Layout
 
 ```text
+client/
+├── index.html                  # isolated React application entry
+├── vite.config.ts             # builds to public/react-chat
+├── tsconfig.json              # browser/React type boundary
+└── src/
+    ├── App.tsx, main.tsx      # session gate and composition root
+    ├── components/            # typed product views
+    ├── lib/                   # validated browser API boundaries
+    └── styles.css             # typed-client visual system
 public/
 ├── index.html, app.js          # user chat shell and behavior
 ├── admin.html, admin.js        # administration shell and behavior
@@ -45,6 +54,9 @@ scripts/
 
 ## Module Organization
 
+- Keep the typed Agent client under `client/`; use React components for product views and runtime-validated helpers for HTTP session projections.
+- Build the typed client to `public/react-chat/` with Vite. Treat that directory as generated output: ignore it in Git and regenerate it through `npm run build:client` or `npm run check:frontend` before deployment.
+- Keep the typed client on `/react-chat/` until migration acceptance. Do not replace `public/index.html`, `public/app.js`, or the existing service-worker contract in an incremental slice.
 - Keep page-specific DOM orchestration in `public/app.js` or `public/admin.js`.
 - Extract pure, testable behavior when it is reusable or security-sensitive. Examples: `public/markdown.js` and `public/admin-report.js`.
 - Keep browser assets at the `public/` root because HTML, service-worker caching, and release fingerprint checks use root-relative paths.
@@ -70,6 +82,6 @@ scripts/
 
 ## Avoid
 
-- Do not introduce a component framework or build step for an isolated change. A reviewed product migration may add one only when HTML, assets, service worker, release fingerprinting, and tests move together.
+- Do not add another component framework or a second browser build pipeline. New typed product work uses the reviewed React/Vite boundary under `client/`.
 - Do not create nested feature directories while HTML and service-worker asset lists still assume flat root paths.
 - Do not duplicate a pure helper inside both page scripts; extract and test a shared ES module.

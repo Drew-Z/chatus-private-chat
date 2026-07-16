@@ -6,7 +6,7 @@
 
 ## Overview
 
-These guidelines describe the current framework-free browser frontend and its Cloudflare Worker boundary. Read the relevant topic before editing `public/`, `src/worker.ts`, frontend tests, or browser build checks.
+These guidelines describe the transitional legacy browser frontend, the typed React/Vite client under `client/`, and their Cloudflare Worker boundary. Read the relevant topic before editing `client/`, `public/`, `src/worker.ts`, frontend tests, or browser build checks.
 
 ---
 

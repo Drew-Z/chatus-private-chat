@@ -2,6 +2,7 @@ node_modules/
 .dev.vars
 .prod.secrets.json
 public/release.json
+public/react-chat/
 .wrangler/
 dist/
 *.log
