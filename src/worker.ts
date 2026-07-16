@@ -4,11 +4,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
-import { generateText } from "ai";
+import type { LanguageModelV3 } from "@ai-sdk/provider";
+import { generateText, type ModelMessage } from "ai";
 import type { TeamAgent } from "./agent/team-agent";
 import type { TeamAgentProps } from "./contracts/agent";
 import type { ChatMessage, ChatPart, ToolEventSummary } from "./contracts/chat";
-import type { ProviderType, RouteConfig } from "./contracts/provider";
+import type { ProviderCredential, ProviderType, RouteConfig } from "./contracts/provider";
 import type { Session } from "./contracts/session";
 import {
   buildProviderRoutePlan,
@@ -16,6 +17,10 @@ import {
   resolveProviderCredential,
 } from "./services/provider-router";
 import { createProviderLanguageModel, toProviderModelMessages } from "./services/provider-model";
+import {
+  createFallbackLanguageModel,
+  type FallbackModelCandidate,
+} from "./services/fallback-language-model";
 import {
   isRecentRouteReliability,
   loadRouteReliability,
@@ -2746,7 +2751,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
   );
 }
 
-export type TeamAgentTextTurnInput = {
+export type TeamAgentTurnInput = {
   messages: ChatMessage[];
   routeId?: string;
   skillIds?: string[];
@@ -2755,15 +2760,21 @@ export type TeamAgentTextTurnInput = {
   temperature?: number;
 };
 
-export type TeamAgentTextTurnResult =
-  | { ok: true; text: string; routeId: string; remaining: number }
+export type PreparedTeamAgentTurn =
+  | {
+      ok: true;
+      model: LanguageModelV3;
+      messages: ModelMessage[];
+      remaining: number;
+      recordStreamFailure: () => Promise<void>;
+    }
   | { ok: false; error: string; message: string; status: number; routeId?: string };
 
-export async function runTeamAgentTextTurn(
+export async function prepareTeamAgentTurn(
   env: Env,
   session: Session,
-  input: TeamAgentTextTurnInput,
-): Promise<TeamAgentTextTurnResult> {
+  input: TeamAgentTurnInput,
+): Promise<PreparedTeamAgentTurn> {
   const config = await loadAppConfig(env);
   const access = await getRouteAccess(config, session.label, env);
   if (!access.routes.length) {
@@ -2812,29 +2823,104 @@ export async function runTeamAgentTextTurn(
     access.user,
     selectedSkills,
   );
-  const result = await completeWithUserRoute(env, session, {
-    routeId: selectedRoute,
-    userApiKey: input.userApiKey,
-    messages,
-    temperature: input.temperature,
-    consumeQuota: false,
-  });
+  const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
+  const userApiKey = input.userApiKey?.trim() || "";
+  const candidates: FallbackModelCandidate[] = [];
+  const credentials = new Map<string, ProviderCredential>();
+  let lastError: { routeId: string; message: string } | null = null;
 
-  if (!result.ok) {
-    if (result.routeId) {
-      await recordChatMetric(env, { kind: "route_error", label: session.label, routeId: result.routeId });
+  for (const routeId of routeIds) {
+    const route = config.routes[routeId];
+    const publicRoute = access.routes.find((item) => item.id === routeId);
+    if (!route || !publicRoute) continue;
+    if (messagesContainImages(normalized) && !publicRoute.supportsImages) continue;
+
+    let credential: ProviderCredential;
+    try {
+      credential = await resolveRouteCredential(route, env, publicRoute.allowUserKey ? userApiKey : "");
+    } catch (error) {
+      lastError = {
+        routeId,
+        message: error instanceof RouteSecretError ? error.message : "route key is unavailable",
+      };
+      continue;
     }
-    await recordChatMetric(env, { kind: "failure", label: session.label });
-    return result;
+    if (!credential.apiKey) {
+      if (publicRoute.requiresUserKey) {
+        return { ok: false, error: "user_api_key_required", message: "需要填写 API Key", status: 400, routeId };
+      }
+      lastError = { routeId, message: "route key is not configured" };
+      continue;
+    }
+
+    credentials.set(routeId, credential);
+    candidates.push({
+      routeId,
+      model: createProviderLanguageModel(route, credential.apiKey),
+      usedUserKey: credential.usedUserKey,
+      settings: {
+        temperature: clampNumber(input.temperature, 0, route.type === "anthropic-messages" ? 1 : 2, route.temperature ?? 0.7),
+        maxOutputTokens: route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
+      },
+    });
   }
 
-  await recordChatMetric(env, {
-    kind: "success",
-    label: session.label,
-    routeId: result.routeId,
-    fallback: result.routeId !== selectedRoute,
+  if (!candidates.length) {
+    await recordChatMetric(env, { kind: "failure", label: session.label });
+    return {
+      ok: false,
+      error: "upstream_error",
+      message: lastError?.message || "no route succeeded",
+      status: 502,
+      routeId: lastError?.routeId,
+    };
+  }
+
+  let streamFailureRecorded = false;
+  const recordStreamFailure = async () => {
+    if (streamFailureRecorded) return;
+    streamFailureRecorded = true;
+    await recordChatMetric(env, { kind: "failure", label: session.label });
+  };
+
+  const model = createFallbackLanguageModel(candidates, {
+    onSuccess: async (event) => {
+      await recordRouteReliability(env, {
+        routeId: event.routeId,
+        ok: true,
+        fallback: event.fallback,
+        startedAt: event.startedAt,
+      });
+      await recordChatMetric(env, {
+        kind: "success",
+        label: session.label,
+        routeId: event.routeId,
+        fallback: event.fallback,
+      });
+    },
+    onFailure: async (event) => {
+      const credential = credentials.get(event.routeId);
+      await recordRouteReliability(env, {
+        routeId: event.routeId,
+        ok: false,
+        fallback: event.fallback,
+        startedAt: event.startedAt,
+        status: event.status,
+        error: event.error,
+        outcome: event.protocolError ? "protocol_error" : undefined,
+        usedUserKey: credential?.usedUserKey,
+      });
+      await recordChatMetric(env, { kind: "route_error", label: session.label, routeId: event.routeId });
+    },
   });
-  return { ...result, remaining: limitResult.remaining };
+
+  return {
+    ok: true,
+    model,
+    messages: toProviderModelMessages(messages),
+    remaining: limitResult.remaining,
+    recordStreamFailure,
+  };
 }
 
 
@@ -3178,14 +3264,21 @@ function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
 }
 
 async function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): Promise<string> {
-  const credential = await resolveProviderCredential({
+  return (await resolveRouteCredential(route, env, userApiKey)).apiKey;
+}
+
+async function resolveRouteCredential(
+  route: RouteConfig,
+  env: Env,
+  userApiKey: string,
+): Promise<ProviderCredential> {
+  return resolveProviderCredential({
     route,
     userApiKey,
     bindings: env,
     isManagedReference: (apiKeyRef) => ROUTE_SECRET_REF_PATTERN.test(apiKeyRef),
     loadManagedSecret: (apiKeyRef) => loadManagedRouteSecret(env, apiKeyRef),
   });
-  return credential.apiKey;
 }
 
 async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<string | null> {

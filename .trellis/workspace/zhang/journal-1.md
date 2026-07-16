@@ -334,3 +334,36 @@ Added tested AI SDK 6 provider adapters for OpenAI-compatible and Anthropic-comp
 
 - Introduce an Agent-turn preparation contract that returns validated messages, route candidates, credentials, quota, and telemetry callbacks.
 - Stream the selected AI SDK model through `AIChatAgent` while allowing fallback only before user-visible output begins.
+
+
+## Session 11: Resumable TeamAgent streaming
+
+**Date**: 2026-07-17
+**Task**: `07-16-team-agent-productization`
+**Branch**: `main`
+
+### Summary
+
+Replaced the transitional plain-text TeamAgent response with Cloudflare AIChat plus AI SDK `streamText().toUIMessageStreamResponse()`. Added a Language Model V3 fallback wrapper that buffers only pre-visible provider metadata, commits the route at the first visible text/reasoning/tool event, and never switches providers after output begins.
+
+### Main Changes
+
+- Added `src/services/fallback-language-model.ts` with pre-output fallback, terminal HTTP/BYOK classification, cancellation behavior, and best-effort telemetry callbacks.
+- Added `prepareTeamAgentTurn` for validation, quota, Skill context, route/credential candidates, provider settings, and passive reliability callbacks.
+- Enabled `chatRecovery` and forwarded request cancellation into `streamText`.
+- Added focused fallback tests and an integration test covering primary `503` to backup UIMessage SSE success without live model calls.
+
+### Testing
+
+- [OK] Fallback unit tests cover pre-output retry, post-output route locking, and terminal failures.
+- [OK] TeamAgent turn integration test covers AI SDK UI streaming and passive reliability for both attempts.
+- [OK] `npm.cmd run typecheck`
+
+### Status
+
+[IN PROGRESS] Normal text turns now use the formal Agent stream. Skills/tools/MCP and approval execution still use the legacy capability path and must migrate next.
+
+### Next Steps
+
+- Convert administrator-assigned Skills and tools into the Agent capability allow-list and AI SDK tools.
+- Move quota/telemetry and remaining provider preparation out of `src/worker.ts` into focused services.

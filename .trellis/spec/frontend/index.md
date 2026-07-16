@@ -20,6 +20,7 @@ These guidelines describe the current framework-free browser frontend and its Cl
 | [State Management](./state-management.md) | Module, local-storage and server-state boundaries | Ready |
 | [Quality Guidelines](./quality-guidelines.md) | Checks, security, testing and review gates | Ready |
 | [Type Safety](./type-safety.md) | Strict Worker TypeScript and runtime validation | Ready |
+| [Agent Streaming And Fallback](./agent-streaming.md) | AIChat streaming, route commitment, fallback and telemetry | Ready |
 
 ---
 
@@ -28,6 +29,7 @@ These guidelines describe the current framework-free browser frontend and its Cl
 - Read `directory-structure.md` before creating or moving frontend files.
 - Read `component-guidelines.md`, `hook-guidelines.md`, and `state-management.md` for changes to page behavior.
 - Read `type-safety.md` for Worker/API/storage contract changes.
+- Read `agent-streaming.md` for AIChat, provider routing, fallback, cancellation, or stream telemetry changes.
 - Always read `quality-guidelines.md` before implementation and review.
 
 ## Quality Check

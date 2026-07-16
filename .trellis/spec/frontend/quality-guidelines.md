@@ -49,3 +49,4 @@ git diff --check
 - Are accessibility behavior and mobile/keyboard paths preserved?
 - For capability work, test the legacy provider stream and `capability-v1` stream separately; verify completed, failed, pending-confirmation, and stale-confirmation states on desktop and 390px touch layouts.
 - For Agent runtime work, prove the Wrangler binding/export package, per-member instance isolation, unauthenticated/cross-origin denial, and zero provider calls from infrastructure or route diagnostics.
+- For Agent streaming work, prove fallback happens only before visible output, cancellation is forwarded, AI SDK retries are disabled, and integration tests use local fake provider responses only.

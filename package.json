@@ -25,6 +25,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "3.0.97",
     "@ai-sdk/openai": "3.0.85",
+    "@ai-sdk/provider": "3.0.14",
     "@ai-sdk/react": "3.0.230",
     "@cfworker/json-schema": "^4.1.1",
     "@cloudflare/ai-chat": "0.9.3",

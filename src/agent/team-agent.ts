@@ -1,10 +1,10 @@
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import type { StreamTextOnFinishCallback, ToolSet, UIMessage } from "ai";
+import { streamText, type StreamTextOnFinishCallback, type ToolSet, type UIMessage } from "ai";
 import type { TeamAgentProps, TeamAgentState } from "../contracts/agent";
 import type { ChatMessage } from "../contracts/chat";
 import type { Session } from "../contracts/session";
 import {
-  runTeamAgentTextTurn,
+  prepareTeamAgentTurn,
   type Env,
 } from "../worker";
 
@@ -18,6 +18,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   maxPersistedMessages = 200;
   messageConcurrency = "queue" as const;
+  chatRecovery = true;
   private userLabel = "";
 
   async onStart(props?: TeamAgentProps): Promise<void> {
@@ -31,7 +32,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   }
 
   async onChatMessage(
-    _onFinish: StreamTextOnFinishCallback<ToolSet>,
+    onFinish: StreamTextOnFinishCallback<ToolSet>,
     options?: OnChatMessageOptions,
   ): Promise<Response> {
     if (!this.userLabel) {
@@ -46,7 +47,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       createdAt: now,
       lastSeen: now,
     };
-    const result = await runTeamAgentTextTurn(this.env, session, {
+    const prepared = await prepareTeamAgentTurn(this.env, session, {
       messages: toLegacyMessages(this.messages),
       routeId: boundedString(body.routeId, 80),
       skillIds: stringArray(body.skillIds, 3, 80),
@@ -55,17 +56,27 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       temperature: finiteNumber(body.temperature),
     });
 
-    if (!result.ok) {
-      return jsonError(result.error, result.message, result.status, result.routeId);
+    if (!prepared.ok) {
+      return jsonError(prepared.error, prepared.message, prepared.status, prepared.routeId);
     }
 
-    return new Response(result.text, {
-      status: 200,
+    const result = streamText({
+      model: prepared.model,
+      messages: prepared.messages,
+      maxRetries: 0,
+      allowSystemInMessages: true,
+      abortSignal: options?.abortSignal,
+      onFinish,
+      onError: async () => prepared.recordStreamFailure(),
+    });
+
+    return result.toUIMessageStreamResponse({
+      originalMessages: this.messages,
       headers: {
-        "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-store",
-        "X-Chatus-Route": result.routeId,
+        "X-RateLimit-Remaining": String(prepared.remaining),
       },
+      onError: () => "模型线路暂时不可用，请稍后重试。",
     });
   }
 
