@@ -836,25 +836,15 @@ function renderAuditLog(entries) {
 function renderAttentionCenter() {
   if (!attentionPanel || !attentionList || !attentionSummary) return;
   const alerts = [];
-  const now = Date.now();
 
   for (const [routeId, route] of Object.entries(config.routes || {})) {
     if (route.enabled === false) continue;
     const health = routeHealth[routeId];
-    const checkedAt = health?.checkedAt ? Date.parse(health.checkedAt) : NaN;
     if (health && !health.ok) {
       alerts.push({
         severity: "critical",
-        title: `${route.label || routeId} 健康检查失败`,
+        title: `${route.label || routeId} 最近一次手动检查失败`,
         detail: health.message || health.error || "上游线路不可用",
-        section: "routes",
-        routeId,
-      });
-    } else if (!health || !Number.isFinite(checkedAt) || now - checkedAt > 24 * 60 * 60 * 1000) {
-      alerts.push({
-        severity: "warning",
-        title: `${route.label || routeId} 缺少近期健康检查`,
-        detail: health ? `上次检查于 ${relativeTime(health.checkedAt)}` : "尚未完成过健康检查",
         section: "routes",
         routeId,
       });
@@ -1527,12 +1517,12 @@ function renderRouteHealthList() {
     title.textContent = routeLabel(routeId);
     const detail = document.createElement("small");
     detail.textContent = disabled
-      ? "已停用，不参与用户请求和自动巡检"
+      ? "已停用，不参与用户请求"
       : health
       ? health.ok
-        ? `正常${Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : ""} · ${relativeTime(health.checkedAt)}`
-        : `异常 · ${health.message || health.error || "检查失败"} · ${relativeTime(health.checkedAt)}`
-      : "尚未检查";
+        ? `手动检查正常${Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : ""} · ${relativeTime(health.checkedAt)}`
+        : `手动检查异常 · ${health.message || health.error || "检查失败"} · ${relativeTime(health.checkedAt)}`
+      : "未进行手动检查";
     copy.append(title, detail);
     const model = document.createElement("small");
     model.className = "route-health-model";

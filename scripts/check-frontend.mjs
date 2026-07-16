@@ -90,7 +90,10 @@ assert(chatScript.includes('promptInput.addEventListener("input", () => saveActi
 assert(chatScript.includes("restoreActiveDraft();"), "app.js: missing draft restoration");
 assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout must clear local drafts");
 assert(chatScript.includes('connectionState.classList.add("route-unhealthy")'), "app.js: selected unhealthy route must be visible");
-assert(chatScript.includes("近期巡检异常，失败时会尝试备用线路"), "app.js: unhealthy route selection must explain fallback");
+assert(chatScript.includes("最近一次手动检查异常，失败时会尝试备用线路"), "app.js: manual route check failures must explain fallback");
+assert(!chatScript.includes("巡检"), "app.js: chat UI must not imply automatic route probes");
+assert(!adminScript.includes("自动巡检"), "admin.js: admin UI must not imply automatic route probes");
+assert(!adminScript.includes("缺少近期健康检查"), "admin.js: admin UI must not require recurring manual probes");
 assert(chatScript.includes('openModelPicker(event.key === "ArrowUp" ? "last" : "selected")'), "app.js: model picker trigger needs arrow-key navigation");
 assert(chatScript.includes('event.key === "Tab"'), "app.js: model picker must close when keyboard focus leaves");
 assert(chatScript.includes("bootView.hidden = true;"), "app.js: startup state must resolve into an application view");

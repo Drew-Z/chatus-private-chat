@@ -1974,7 +1974,7 @@ function renderRoutes() {
       if (route.supportsImages !== false) badges.append(modelBadge("图片"));
       if (route.supportsTools === true) badges.append(modelBadge("工具"));
       if (route.allowUserKey || route.requiresUserKey) badges.append(modelBadge(route.requiresUserKey ? "需 Key" : "可用 Key"));
-      const healthLabel = route.healthStatus === "healthy" ? "近期正常" : route.healthStatus === "unhealthy" ? "近期异常" : "未检查";
+      const healthLabel = route.healthStatus === "healthy" ? "手动检查正常" : route.healthStatus === "unhealthy" ? "手动检查异常" : "未检查";
       button.setAttribute("aria-label", `${route.model || label}，${label}，${healthLabel}`);
       badges.append(modelBadge(healthLabel, `health-${route.healthStatus || "unknown"}`));
       button.append(icon, copy, badges);
@@ -2018,7 +2018,7 @@ function selectRoute(routeId) {
   updateConnectionState();
   if (!messages.length) renderMessages(false);
   showStatusToast(route.healthStatus === "unhealthy"
-    ? `已切换到 ${routeLabelById(routeId)} · 近期巡检异常，失败时会尝试备用线路`
+    ? `已切换到 ${routeLabelById(routeId)} · 最近一次手动检查异常，失败时会尝试备用线路`
     : `已切换到 ${routeLabelById(routeId)}`);
 }
 
@@ -2150,12 +2150,12 @@ function updateConnectionState(prefix) {
   const promptMark = hasUserSystemPrompt ? " · 专属提示词" : "";
   if (route?.healthStatus === "unhealthy" && !lastRouteUsed) {
     connectionState.classList.add("route-unhealthy");
-    connectionState.textContent = `近期异常 · ${label || route.id}${promptMark}`;
+    connectionState.textContent = `手动检查异常 · ${label || route.id}${promptMark}`;
     return;
   }
   if (route?.healthStatus === "unknown" && !lastRouteUsed) {
     connectionState.classList.add("route-unknown");
-    connectionState.textContent = label ? `未巡检 · ${label}${promptMark}` : `未巡检${promptMark}`;
+    connectionState.textContent = label ? `未检查 · ${label}${promptMark}` : `未检查${promptMark}`;
     return;
   }
   connectionState.textContent = label ? `已连接 · ${label}${promptMark}` : `已连接${promptMark}`;

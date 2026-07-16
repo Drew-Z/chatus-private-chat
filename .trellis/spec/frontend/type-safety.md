@@ -85,7 +85,7 @@ type EncryptedRouteSecret = {
 
 ### 5. Good/Base/Bad Cases
 
-- Good: an admin saves a key, receives metadata only, and model listing/chat/health checks resolve it without redeployment.
+- Good: an admin saves a key, receives metadata only, and model listing/chat/manual health checks resolve it without redeployment.
 - Base: no managed record exists, so an existing Worker Secret reference continues to work.
 - Bad: ciphertext is moved to another reference or the master key changes; decryption fails and no alternate server key is selected silently.
 
@@ -96,7 +96,8 @@ type EncryptedRouteSecret = {
 - Assert wrong master keys and wrong AAD fail authentication.
 - Assert authorization, revision conflicts, create/replace/delete, and invalid master-key errors.
 - Assert precedence for BYOK, `requiresUserKey`, legacy `apiKey`, managed storage, and Worker Secret fallback.
-- Assert managed keys are used by model listing, public route access, chat, manual health checks, and scheduled checks.
+- Assert managed keys are used by model listing, public route access, chat, and manual health checks.
+- Assert the Worker export and `wrangler.jsonc` do not register scheduled model-health checks.
 - Assert the password input clears on save, route changes, refresh/login transitions, and failure paths.
 
 ### 7. Wrong vs Correct

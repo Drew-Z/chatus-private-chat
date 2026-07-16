@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
-import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
+import wranglerConfig from "../wrangler.jsonc?raw";
 
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -638,37 +638,9 @@ describe("Worker API", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("active.example");
   });
 
-  it("runs scheduled route health checks and persists results", async () => {
-    const adminCookie = await adminLogin();
-    expect((await putRouteSecret(adminCookie, "SCHEDULED_TEST_KEY", "scheduled-managed-test-key")).status).toBe(200);
-    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
-      routes: {
-        scheduled: {
-          label: "Scheduled",
-          type: "openai-chat",
-          baseUrl: "https://scheduled.example/v1",
-          model: "scheduled-model",
-          apiKeyRef: "SCHEDULED_TEST_KEY",
-        },
-      },
-      defaults: { defaultRoute: "scheduled", allowedRoutes: ["scheduled"] },
-    }));
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
-      choices: [{ message: { content: "391" } }],
-    }), { headers: { "Content-Type": "application/json" } }));
-    const ctx = createExecutionContext();
-
-    await worker.scheduled(createScheduledController({ cron: "17 */6 * * *" }), env, ctx);
-    await waitOnExecutionContext(ctx);
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer scheduled-managed-test-key");
-    await expect(env.CHAT_STORE.get("route-health:scheduled", "json")).resolves.toMatchObject({
-      ok: true,
-      routeId: "scheduled",
-      model: "scheduled-model",
-    });
-    fetchMock.mockRestore();
+  it("does not register scheduled route health checks", () => {
+    expect(worker).not.toHaveProperty("scheduled");
+    expect(wranglerConfig).not.toMatch(/"crons"\s*:/);
   });
 
   it("stores privacy-safe answer feedback and updates duplicate ratings", async () => {

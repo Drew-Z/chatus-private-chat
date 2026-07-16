@@ -776,9 +776,6 @@ export default {
       return withRequestId(response, requestId);
     }
   },
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runScheduledRouteHealthChecks(env));
-  },
 };
 
 async function handleRequest(request: Request, env: Env, url: URL): Promise<Response> {
@@ -2140,20 +2137,6 @@ function healthCheckStatus(error: unknown): number {
   if (error === "missing_key") return 400;
   if (error === "master_key_unavailable" || error === "invalid_record" || error === "decrypt_failed") return 503;
   return 502;
-}
-
-async function runScheduledRouteHealthChecks(env: Env): Promise<void> {
-  const config = await loadAppConfig(env);
-  const entries = Object.entries(config.routes).filter(([, route]) => route.enabled !== false);
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < entries.length) {
-      const entry = entries[cursor++];
-      if (!entry) return;
-      await checkRouteHealth(env, entry[0], entry[1]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(2, entries.length) }, () => worker()));
 }
 
 async function handleGetAdminRouteHealth(env: Env): Promise<Response> {
