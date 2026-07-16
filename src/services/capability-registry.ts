@@ -1,0 +1,129 @@
+import type {
+  CapabilityAssignment,
+  CapabilityRegistryConfig,
+  NormalizedToolDefinition,
+  PublicSkill,
+  PublicTool,
+  SelectedSkill,
+  ToolConfig,
+  ToolConfirmation,
+} from "../contracts/capability";
+
+const MAX_SELECTED_SKILLS = 3;
+const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
+
+type CapabilityFingerprint = (value: string) => Promise<string>;
+
+export function getPublicCapabilities(
+  config: CapabilityRegistryConfig,
+  assignment: CapabilityAssignment,
+): { skills: PublicSkill[]; tools: PublicTool[] } {
+  const allowedToolIds = new Set(assignment.allowedTools || []);
+  const tools = Object.entries(config.tools || {})
+    .filter(([id, tool]) => (
+      tool.enabled === true
+      && allowedToolIds.has(id)
+      && isToolExecutorAvailable(tool, config)
+    ))
+    .map(([id, tool]): PublicTool => ({
+      id,
+      label: tool.label,
+      description: tool.description || "",
+      source: tool.executor.type,
+      confirmation: normalizeToolConfirmation(tool),
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
+
+  const publicToolIds = new Set(tools.map((tool) => tool.id));
+  const skills = Object.entries(config.skills || {})
+    .filter(([, skill]) => skill.enabled === true)
+    .sort(([leftId, left], [rightId, right]) => (
+      (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId)
+    ))
+    .map(([id, skill]): PublicSkill => ({
+      id,
+      label: skill.label,
+      description: skill.description || "",
+      toolIds: (skill.toolIds || []).filter((toolId) => publicToolIds.has(toolId)),
+    }));
+
+  return { skills, tools };
+}
+
+export function getSelectedSkills(config: CapabilityRegistryConfig, value: unknown): SelectedSkill[] {
+  const requested = new Set(normalizeSelectedSkillIds(value));
+  return Object.entries(config.skills || {})
+    .filter(([id, skill]) => requested.has(id) && skill.enabled === true)
+    .sort(([leftId, left], [rightId, right]) => (
+      (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId)
+    ))
+    .slice(0, MAX_SELECTED_SKILLS)
+    .map(([id, skill]) => ({ id, skill }));
+}
+
+export async function buildCapabilityToolDefinitions(
+  config: CapabilityRegistryConfig,
+  assignment: CapabilityAssignment,
+  selectedSkills: SelectedSkill[],
+  fingerprint: CapabilityFingerprint,
+): Promise<NormalizedToolDefinition[]> {
+  const allowed = new Set(assignment.allowedTools || []);
+  const referenced = new Set(selectedSkills.flatMap(({ skill }) => skill.toolIds || []));
+  const definitions: NormalizedToolDefinition[] = [];
+
+  for (const toolId of referenced) {
+    const tool = config.tools?.[toolId];
+    if (!tool || tool.enabled !== true || !allowed.has(toolId) || !isToolExecutorAvailable(tool, config)) {
+      continue;
+    }
+    definitions.push({
+      id: toolId,
+      providerName: await providerToolName(toolId, tool, fingerprint),
+      label: tool.label,
+      description: tool.description || tool.label,
+      inputSchema: tool.inputSchema,
+      config: tool,
+    });
+  }
+
+  return definitions.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function isToolExecutorAvailable(tool: ToolConfig, config: CapabilityRegistryConfig): boolean {
+  if (tool.executor.type === "builtin") return tool.executor.name === "text_stats";
+  return config.mcpServers?.[tool.executor.serverId]?.enabled === true;
+}
+
+export function normalizeToolConfirmation(tool: ToolConfig): ToolConfirmation {
+  if (tool.executor.type === "builtin") return tool.confirmation === "always" ? "always" : "auto";
+  return tool.confirmation === "always" ? "always" : "first-per-conversation";
+}
+
+async function providerToolName(
+  toolId: string,
+  tool: ToolConfig,
+  fingerprint: CapabilityFingerprint,
+): Promise<string> {
+  const sourceName = tool.executor.type === "builtin" ? tool.executor.name : tool.executor.remoteName;
+  const normalized = sourceName.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) || "tool";
+  const digest = (await fingerprint(toolId)).slice(0, 10);
+  return `${normalized}_${digest}`.slice(0, 64);
+}
+
+function normalizeSelectedSkillIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const output: string[] = [];
+  for (const item of value) {
+    const id = normalizeCapabilityId(item, 80);
+    if (!id || output.includes(id)) continue;
+    output.push(id);
+    if (output.length >= MAX_SELECTED_SKILLS) break;
+  }
+  return output;
+}
+
+function normalizeCapabilityId(value: unknown, maxChars: number): string {
+  if (typeof value !== "string") return "";
+  const id = value.trim();
+  return id.length > 0 && id.length <= maxChars && CAPABILITY_ID_PATTERN.test(id) ? id : "";
+}

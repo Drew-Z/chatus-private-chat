@@ -8,6 +8,17 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { generateText, type ModelMessage } from "ai";
 import type { TeamAgent } from "./agent/team-agent";
 import type { TeamAgentProps } from "./contracts/agent";
+import type {
+  CapabilityStreamEvent,
+  McpServerConfig,
+  ModelTurn,
+  NormalizedToolCall,
+  NormalizedToolDefinition,
+  SkillConfig,
+  ToolApprovalDecision,
+  ToolConfig,
+  ToolExecutor,
+} from "./contracts/capability";
 import type { ChatMessage, ChatPart, ToolEventSummary } from "./contracts/chat";
 import type { ProviderCredential, ProviderType, RouteConfig } from "./contracts/provider";
 import type { Session } from "./contracts/session";
@@ -16,6 +27,12 @@ import {
   isTerminalProviderFailure,
   resolveProviderCredential,
 } from "./services/provider-router";
+import {
+  buildCapabilityToolDefinitions,
+  getPublicCapabilities,
+  getSelectedSkills,
+  normalizeToolConfirmation,
+} from "./services/capability-registry";
 import { createProviderLanguageModel, toProviderModelMessages } from "./services/provider-model";
 import {
   createFallbackLanguageModel,
@@ -43,76 +60,6 @@ type AccessEntry = {
   label: string;
   code: string;
 };
-
-type ToolConfirmation = "auto" | "first-per-conversation" | "always";
-
-type ToolExecutor =
-  | { type: "builtin"; name: "text_stats" }
-  | { type: "mcp"; serverId: string; remoteName: string };
-
-type SkillConfig = {
-  enabled?: boolean;
-  label: string;
-  description?: string;
-  instructions: string;
-  toolIds?: string[];
-  order?: number;
-};
-
-type ToolConfig = {
-  enabled?: boolean;
-  label: string;
-  description?: string;
-  inputSchema: Record<string, unknown>;
-  confirmation?: ToolConfirmation;
-  executor: ToolExecutor;
-  schemaFingerprint?: string;
-};
-
-type McpAuthType = "none" | "bearer" | "x-api-key";
-
-type McpServerConfig = {
-  enabled?: boolean;
-  label: string;
-  endpoint: string;
-  authType: McpAuthType;
-  secretRef?: string;
-};
-
-type NormalizedToolDefinition = {
-  id: string;
-  providerName: string;
-  label: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  config: ToolConfig;
-};
-
-type NormalizedToolCall = {
-  providerCallId: string;
-  providerName: string;
-  toolId: string;
-  arguments: unknown;
-  argumentsValid: boolean;
-};
-
-type ModelTurn = {
-  text: string;
-  toolCalls: NormalizedToolCall[];
-  finishReason: string;
-  providerTurn: unknown;
-};
-
-type CapabilityStreamEvent =
-  | { type: "run"; runId: string; routeId: string; fallback: boolean }
-  | { type: "tool"; event: ToolEventSummary }
-  | { type: "confirmation_required"; runId: string; callId: string; event: ToolEventSummary }
-  | { type: "assistant_delta"; text: string }
-  | { type: "finish"; finishReason: string }
-  | { type: "error"; code: string; message: string; retryable: boolean }
-  | { type: "done" };
-
-type ToolApprovalDecision = "once" | "conversation" | "deny";
 
 type CapabilityChatRpcArgs = Omit<CapabilityChatArgs, "env" | "requestSignal"> & { chatId: string };
 
@@ -182,21 +129,6 @@ type RouteStatusProjection = {
   reliability: RouteReliabilityRecord | null;
   checkedAt?: string;
   latencyMs?: number;
-};
-
-type PublicSkill = {
-  id: string;
-  label: string;
-  description: string;
-  toolIds: string[];
-};
-
-type PublicTool = {
-  id: string;
-  label: string;
-  description: string;
-  source: "builtin" | "mcp";
-  confirmation: ToolConfirmation;
 };
 
 type RouteAccess = {
@@ -527,7 +459,7 @@ export class UserState extends DurableObject<Env> {
   ): ToolApprovalDecision | Promise<ToolApprovalDecision> {
     const active = this.activeCapabilityRuns.get(runId);
     if (!active) return Promise.reject(new CapabilityError("request_cancelled", "工具会话已结束", true));
-    const policy = normalizedToolConfirmation(definition.config);
+    const policy = normalizeToolConfirmation(definition.config);
     const trust = this.conversationTrust.get(active.chatId);
     if (policy === "first-per-conversation" && trust?.toolIds.has(definition.id)) {
       trust.lastSeenAt = Date.now();
@@ -2636,7 +2568,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
 
   const userApiKey = typeof body.userApiKey === "string" ? body.userApiKey.trim() : "";
   const toolDefinitions = selectedPublicRoute?.supportsTools
-    ? await buildToolDefinitions(config, access.user, selectedSkills)
+    ? await buildCapabilityToolDefinitions(config, access.user, selectedSkills, secretFingerprint)
     : [];
   if (toolDefinitions.length) {
     const capabilityRouteIds = routeIds.filter((routeId) => config.routes[routeId]?.supportsTools === true);
@@ -3206,50 +3138,6 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
   return { routes, defaultRoute, user };
 }
 
-function getPublicCapabilities(config: AppConfig, user: UserConfig): { skills: PublicSkill[]; tools: PublicTool[] } {
-  const allowedToolIds = new Set(user.allowedTools || []);
-  const tools = Object.entries(config.tools || {})
-    .filter(([id, tool]) => tool.enabled === true && allowedToolIds.has(id) && isToolExecutorAvailable(tool, config))
-    .map(([id, tool]): PublicTool => ({
-      id,
-      label: tool.label,
-      description: tool.description || "",
-      source: tool.executor.type,
-      confirmation: normalizedToolConfirmation(tool),
-    }))
-    .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));
-  const publicToolIds = new Set(tools.map((tool) => tool.id));
-  const skills = Object.entries(config.skills || {})
-    .filter(([, skill]) => skill.enabled === true)
-    .sort(([leftId, left], [rightId, right]) => (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId))
-    .map(([id, skill]): PublicSkill => ({
-      id,
-      label: skill.label,
-      description: skill.description || "",
-      toolIds: (skill.toolIds || []).filter((toolId) => publicToolIds.has(toolId)),
-    }));
-  return { skills, tools };
-}
-
-function isToolExecutorAvailable(tool: ToolConfig, config: AppConfig): boolean {
-  if (tool.executor.type === "builtin") return tool.executor.name === "text_stats";
-  return config.mcpServers?.[tool.executor.serverId]?.enabled === true;
-}
-
-function normalizedToolConfirmation(tool: ToolConfig): ToolConfirmation {
-  if (tool.executor.type === "builtin") return tool.confirmation === "always" ? "always" : "auto";
-  return tool.confirmation === "always" ? "always" : "first-per-conversation";
-}
-
-function getSelectedSkills(config: AppConfig, value: unknown): Array<{ id: string; skill: SkillConfig }> {
-  const requested = new Set(normalizeSelectedSkillIds(value));
-  return Object.entries(config.skills || {})
-    .filter(([id, skill]) => requested.has(id) && skill.enabled === true)
-    .sort(([leftId, left], [rightId, right]) => (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId))
-    .slice(0, MAX_SELECTED_SKILLS)
-    .map(([id, skill]) => ({ id, skill }));
-}
-
 function isValidMcpEndpoint(value: string): boolean {
   try {
     const url = new URL(value);
@@ -3810,36 +3698,6 @@ class ProviderToolError extends Error {
   }
 }
 
-async function buildToolDefinitions(
-  config: AppConfig,
-  user: UserConfig,
-  selectedSkills: Array<{ id: string; skill: SkillConfig }>,
-): Promise<NormalizedToolDefinition[]> {
-  const allowed = new Set(user.allowedTools || []);
-  const referenced = new Set(selectedSkills.flatMap(({ skill }) => skill.toolIds || []));
-  const definitions: NormalizedToolDefinition[] = [];
-  for (const toolId of referenced) {
-    const tool = config.tools?.[toolId];
-    if (!tool || tool.enabled !== true || !allowed.has(toolId) || !isToolExecutorAvailable(tool, config)) continue;
-    definitions.push({
-      id: toolId,
-      providerName: await providerToolName(toolId, tool),
-      label: tool.label,
-      description: tool.description || tool.label,
-      inputSchema: tool.inputSchema,
-      config: tool,
-    });
-  }
-  return definitions.sort((left, right) => left.id.localeCompare(right.id));
-}
-
-async function providerToolName(toolId: string, tool: ToolConfig): Promise<string> {
-  const sourceName = tool.executor.type === "builtin" ? tool.executor.name : tool.executor.remoteName;
-  const normalized = sourceName.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) || "tool";
-  const digest = (await secretFingerprint(toolId)).slice(0, 10);
-  return `${normalized}_${digest}`.slice(0, 64);
-}
-
 function capabilityErrorResponse(code: string, message: string): Response {
   return jsonResponse({ error: code, message }, code === "invalid_chat_id" ? 400 : 429);
 }
@@ -4064,7 +3922,7 @@ async function runCapabilityLoopInner(
         createdAt: startedAt,
         updatedAt: startedAt,
       };
-      const policy = normalizedToolConfirmation(definition.config);
+      const policy = normalizeToolConfirmation(definition.config);
       let confirmation: "once" | "conversation" | undefined;
       if (policy !== "auto") {
         if (!requestApproval) throw new CapabilityError("tool_confirmation_required", "工具调用需要用户确认");

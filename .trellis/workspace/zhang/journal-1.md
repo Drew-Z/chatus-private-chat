@@ -367,3 +367,38 @@ Replaced the transitional plain-text TeamAgent response with Cloudflare AIChat p
 
 - Convert administrator-assigned Skills and tools into the Agent capability allow-list and AI SDK tools.
 - Move quota/telemetry and remaining provider preparation out of `src/worker.ts` into focused services.
+
+
+## Session 12: Shared capability registry boundary
+
+**Date**: 2026-07-17
+**Task**: `07-16-team-agent-productization`
+**Branch**: `main`
+
+### Summary
+
+Extracted the capability contract and registry policy from `src/worker.ts`. The legacy capability path now imports the same member assignment, Skill selection, executor availability, approval-default, public projection, and provider tool-name logic that the formal TeamAgent path will use next.
+
+### Main Changes
+
+- Added `src/contracts/capability.ts` for Skill, tool, MCP, provider-call, approval, stream-event, and public projection contracts.
+- Added `src/services/capability-registry.ts` as the single owner of capability visibility and provider tool definition construction.
+- Removed duplicated local types and registry helpers from `src/worker.ts` while preserving the existing external protocol.
+- Added deterministic unit tests for assignment filtering, disabled MCP exclusion, Skill ordering, approval defaults, non-secret public projections, and provider-safe tool names.
+
+### Testing
+
+- [OK] `npm.cmd run check:frontend`
+- [OK] `npm.cmd test` (10 files, 83 tests)
+- [OK] `npm.cmd run typecheck`
+- [OK] `npx.cmd wrangler deploy --dry-run`
+- [OK] `git diff --check`
+
+### Status
+
+[IN PROGRESS] Capability policy is modular, but tool execution and AIChat approval messages still need to move onto `TeamAgent.streamText({ tools })`.
+
+### Next Steps
+
+- Refactor Agent turn preparation so AI SDK model messages preserve tool-call and approval parts across continuation requests.
+- Build bounded AI SDK tools from the shared registry and migrate built-in/MCP execution plus approval state onto the per-member Agent.
