@@ -17,11 +17,16 @@ public/
 src/
 ├── index.ts                    # Worker composition root and Durable Object exports
 ├── worker.ts                   # gateway, legacy APIs, provider/capability services during migration
-└── agent/
-    └── team-agent.ts           # per-member Cloudflare AIChatAgent runtime
+├── agent/
+│   └── team-agent.ts           # per-member Cloudflare AIChatAgent runtime
+├── contracts/
+│   └── agent.ts                # shared Agent state and props contracts
+└── services/
+    └── route-reliability.ts    # passive real-task reliability storage and classification
 tests/
 ├── worker-api.test.ts
 ├── user-state.test.ts
+├── route-reliability.test.ts
 ├── markdown.test.ts
 └── admin-report.test.ts
 scripts/
@@ -35,6 +40,8 @@ scripts/
 - Keep browser assets at the `public/` root because HTML, service-worker caching, and release fingerprint checks use root-relative paths.
 - Keep Worker composition in `src/index.ts`: it exports the default gateway plus every Wrangler Durable Object class.
 - Keep per-member Agent lifecycle and persistence behavior under `src/agent/`; gateway authentication and server-side instance selection stay in `src/worker.ts`.
+- Keep cross-runtime state and transport shapes under `src/contracts/`; validate untrusted request or storage data before it becomes one of these types.
+- Keep provider, reliability, capability, persistence, and telemetry behavior under focused `src/services/` modules as the monolithic Worker is decomposed. Services must not depend on browser modules or Agent instance state.
 - Avoid a runtime `worker.ts` -> Agent class import. Use type-only imports in the gateway and export both modules from `src/index.ts` so the Agent may reuse transitional services without a circular runtime dependency.
 - Do not import browser DOM modules into Worker or Agent modules.
 
@@ -49,7 +56,7 @@ scripts/
 
 - Pure browser helper: `public/markdown.js`, tested by `tests/markdown.test.ts`.
 - Page controller: `public/app.js`, paired with `public/index.html`.
-- Backend gateway: `src/worker.ts`; composition/export boundary: `src/index.ts`; durable member runtime: `src/agent/team-agent.ts`.
+- Backend gateway: `src/worker.ts`; composition/export boundary: `src/index.ts`; durable member runtime: `src/agent/team-agent.ts`; passive reliability service: `src/services/route-reliability.ts`.
 
 ## Avoid
 

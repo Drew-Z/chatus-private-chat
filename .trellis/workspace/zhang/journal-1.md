@@ -237,3 +237,37 @@ Added administrator-configured Skills, provider-neutral built-in and remote MCP 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Team Agent service boundaries
+
+**Date**: 2026-07-17
+**Task**: `07-16-team-agent-productization`
+**Branch**: `main`
+
+### Summary
+
+Continued Slice 2 by moving shared Team Agent contracts and passive route reliability out of the Worker monolith. Tightened stored reliability validation so malformed, expired, or future records cannot project a false route state, and added focused tests for HTTP failure classes, timeout/protocol/network outcomes, and BYOK authentication isolation.
+
+### Main Changes
+
+- Added `src/contracts/agent.ts` for Agent props/state shared across the gateway and Durable Object runtime.
+- Added `src/services/route-reliability.ts` as the single owner of real-task reliability storage, normalization, classification, and display messages.
+- Added `tests/route-reliability.test.ts` and updated the repository directory contract.
+
+### Testing
+
+- [OK] `npm.cmd run check:frontend`
+- [OK] `npm.cmd test` (61 tests)
+- [OK] `npm.cmd run typecheck`
+- [OK] `npx.cmd wrangler deploy --dry-run`
+- [OK] `git diff --check`
+
+### Status
+
+[IN PROGRESS] Slice 2 continues with provider routing, secret resolution, fallback, quota, telemetry, and capability service extraction.
+
+### Next Steps
+
+- Extract provider protocol adapters and route/credential selection behind a typed provider router.
+- Move normal Agent turns to AI SDK streaming without allowing fallback after visible output begins.

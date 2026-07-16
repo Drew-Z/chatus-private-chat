@@ -4,7 +4,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
-import type { TeamAgent, TeamAgentProps } from "./agent/team-agent";
+import type { TeamAgent } from "./agent/team-agent";
+import type { TeamAgentProps } from "./contracts/agent";
+import {
+  isRecentRouteReliability,
+  loadRouteReliability,
+  recordRouteReliability,
+  routeReliabilityMessage,
+  type RouteReliabilityOutcome,
+  type RouteReliabilityRecord,
+} from "./services/route-reliability";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -203,28 +212,6 @@ type PublicRoute = {
   healthOutcome?: RouteReliabilityOutcome;
 };
 
-type RouteReliabilityOutcome =
-  | "success"
-  | "timeout"
-  | "upstream_auth"
-  | "upstream_rate_limit"
-  | "upstream_client"
-  | "upstream_server"
-  | "protocol_error"
-  | "network_error";
-
-type RouteReliabilityRecord = {
-  version: 1;
-  source: "real_task";
-  routeId: string;
-  ok: boolean;
-  outcome: RouteReliabilityOutcome;
-  observedAt: string;
-  latencyMs: number;
-  fallback: boolean;
-  httpStatusClass?: "4xx" | "5xx";
-};
-
 type RouteReadinessStatus = "healthy" | "unhealthy" | "unknown" | "unavailable" | "disabled";
 
 type RouteStatusProjection = {
@@ -349,8 +336,6 @@ const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTE_SECRET_PREFIX = "route-secret:";
 const ROUTE_SECRET_AAD_PREFIX = "chatus:route-secret:v1:";
-const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
-const ROUTE_RELIABILITY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MCP_SECRET_PREFIX = "mcp-secret:";
 const MCP_SECRET_AAD_PREFIX = "chatus:mcp-secret:v1:";
 const ROUTE_SECRET_REF_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
@@ -2201,134 +2186,6 @@ async function inspectRouteStatus(env: Env, routeId: string, route: RouteConfig)
     checkedAt: reliability?.observedAt,
     latencyMs: reliability?.latencyMs,
   };
-}
-
-function routeReliabilityKey(routeId: string): string {
-  return `${ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}`;
-}
-
-async function loadRouteReliability(env: Env, routeId: string): Promise<RouteReliabilityRecord | null> {
-  const raw = await env.CHAT_STORE.get(routeReliabilityKey(routeId));
-  if (!raw) return null;
-  try {
-    return normalizeRouteReliability(JSON.parse(raw), routeId);
-  } catch {
-    return null;
-  }
-}
-
-function normalizeRouteReliability(value: unknown, routeId: string): RouteReliabilityRecord | null {
-  if (!isRecord(value) || value.version !== 1 || value.source !== "real_task" || value.routeId !== routeId) return null;
-  const outcome = value.outcome;
-  if (!isRouteReliabilityOutcome(outcome) || typeof value.observedAt !== "string") return null;
-  const latencyMs = Number(value.latencyMs);
-  if (!Number.isFinite(latencyMs) || latencyMs < 0) return null;
-  return {
-    version: 1,
-    source: "real_task",
-    routeId,
-    ok: value.ok === true,
-    outcome,
-    observedAt: value.observedAt,
-    latencyMs: Math.round(latencyMs),
-    fallback: value.fallback === true,
-    httpStatusClass: value.httpStatusClass === "4xx" || value.httpStatusClass === "5xx"
-      ? value.httpStatusClass
-      : undefined,
-  };
-}
-
-function isRouteReliabilityOutcome(value: unknown): value is RouteReliabilityOutcome {
-  return value === "success"
-    || value === "timeout"
-    || value === "upstream_auth"
-    || value === "upstream_rate_limit"
-    || value === "upstream_client"
-    || value === "upstream_server"
-    || value === "protocol_error"
-    || value === "network_error";
-}
-
-function isRecentRouteReliability(value: RouteReliabilityRecord | null): value is RouteReliabilityRecord {
-  if (!value) return false;
-  const observedAt = Date.parse(value.observedAt);
-  return Number.isFinite(observedAt) && Date.now() - observedAt <= ROUTE_RELIABILITY_MAX_AGE_MS;
-}
-
-function routeReliabilityMessage(outcome: RouteReliabilityOutcome): string {
-  if (outcome === "timeout") return "最近真实任务超时";
-  if (outcome === "upstream_auth") return "最近真实任务遇到上游认证错误";
-  if (outcome === "upstream_rate_limit") return "最近真实任务遇到上游限流";
-  if (outcome === "upstream_client") return "最近真实任务被上游拒绝";
-  if (outcome === "upstream_server") return "最近真实任务遇到上游服务错误";
-  if (outcome === "protocol_error") return "最近真实任务返回了无法识别的响应";
-  if (outcome === "network_error") return "最近真实任务无法连接上游";
-  return "最近真实任务成功";
-}
-
-async function recordRouteReliability(
-  env: Env,
-  args: {
-    routeId: string;
-    ok: boolean;
-    fallback: boolean;
-    startedAt: number;
-    status?: number;
-    error?: unknown;
-    outcome?: RouteReliabilityOutcome;
-    usedUserKey?: boolean;
-  },
-): Promise<void> {
-  if (args.usedUserKey && (args.status === 401 || args.status === 403)) return;
-  const outcome = args.outcome || classifyRouteReliability(args.ok, args.status, args.error);
-  const record: RouteReliabilityRecord = {
-    version: 1,
-    source: "real_task",
-    routeId: args.routeId,
-    ok: args.ok,
-    outcome,
-    observedAt: new Date().toISOString(),
-    latencyMs: Math.max(0, Math.min(600_000, Date.now() - args.startedAt)),
-    fallback: args.fallback,
-    httpStatusClass: typeof args.status === "number"
-      ? args.status >= 500
-        ? "5xx"
-        : args.status >= 400
-          ? "4xx"
-          : undefined
-      : undefined,
-  };
-  try {
-    await env.CHAT_STORE.put(routeReliabilityKey(args.routeId), JSON.stringify(record));
-  } catch {
-    console.warn(JSON.stringify({
-      level: "warn",
-      event: "route_reliability_write_failed",
-      routeId: args.routeId,
-    }));
-  }
-}
-
-function classifyRouteReliability(
-  ok: boolean,
-  status: number | undefined,
-  error: unknown,
-): RouteReliabilityOutcome {
-  if (ok) return "success";
-  if (isTimeoutError(error)) return "timeout";
-  if (status === 401 || status === 403) return "upstream_auth";
-  if (status === 429) return "upstream_rate_limit";
-  if (typeof status === "number" && status >= 500) {
-    const message = error instanceof Error ? error.message : "";
-    return /无法识别|invalid response|protocol/i.test(message) ? "protocol_error" : "upstream_server";
-  }
-  if (typeof status === "number" && status >= 400) return "upstream_client";
-  return "network_error";
-}
-
-function isTimeoutError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.name === "TimeoutError" || error.name === "AbortError" || /timed?\s*out|timeout|超时/i.test(error.message);
 }
 
 async function withPublicRouteHealth(env: Env, route: PublicRoute): Promise<PublicRoute> {
