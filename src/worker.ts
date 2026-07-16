@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
+import { getAgentByName } from "agents";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
+import type { TeamAgent, TeamAgentProps } from "./agent/team-agent";
 
 type ChatRole = "system" | "user" | "assistant";
 
@@ -10,7 +12,7 @@ type ChatPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
 
-type ChatMessage = {
+export type ChatMessage = {
   role: ChatRole;
   content: string | ChatPart[];
   routeId?: string;
@@ -22,7 +24,7 @@ type ChatMessage = {
   toolEvents?: ToolEventSummary[];
 };
 
-type Session = {
+export type Session = {
   id: string;
   label: string;
   createdAt: number;
@@ -197,6 +199,47 @@ type PublicRoute = {
   supportsTools: boolean;
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   healthCheckedAt?: string;
+  healthSource?: "real_task";
+  healthOutcome?: RouteReliabilityOutcome;
+};
+
+type RouteReliabilityOutcome =
+  | "success"
+  | "timeout"
+  | "upstream_auth"
+  | "upstream_rate_limit"
+  | "upstream_client"
+  | "upstream_server"
+  | "protocol_error"
+  | "network_error";
+
+type RouteReliabilityRecord = {
+  version: 1;
+  source: "real_task";
+  routeId: string;
+  ok: boolean;
+  outcome: RouteReliabilityOutcome;
+  observedAt: string;
+  latencyMs: number;
+  fallback: boolean;
+  httpStatusClass?: "4xx" | "5xx";
+};
+
+type RouteReadinessStatus = "healthy" | "unhealthy" | "unknown" | "unavailable" | "disabled";
+
+type RouteStatusProjection = {
+  routeId: string;
+  status: RouteReadinessStatus;
+  source: "passive";
+  enabled: boolean;
+  configured: boolean;
+  credentialStatus: "configured" | "user_key_required" | "missing" | "unavailable";
+  model: string;
+  type: ProviderType;
+  message: string;
+  reliability: RouteReliabilityRecord | null;
+  checkedAt?: string;
+  latencyMs?: number;
 };
 
 type PublicSkill = {
@@ -256,10 +299,11 @@ type AnthropicContentBlock =
       };
     };
 
-type Env = {
+export type Env = {
   ASSETS: Fetcher;
   CHAT_STORE: KVNamespace;
   USER_STATE: DurableObjectNamespace<UserState>;
+  TEAM_AGENT: DurableObjectNamespace<TeamAgent>;
   ACCESS_CODES: string;
   ROUTES_CONFIG?: string;
   SYSTEM_PROMPT?: string;
@@ -305,6 +349,8 @@ const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTE_SECRET_PREFIX = "route-secret:";
 const ROUTE_SECRET_AAD_PREFIX = "chatus:route-secret:v1:";
+const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
+const ROUTE_RELIABILITY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MCP_SECRET_PREFIX = "mcp-secret:";
 const MCP_SECRET_AAD_PREFIX = "chatus:mcp-secret:v1:";
 const ROUTE_SECRET_REF_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
@@ -345,6 +391,16 @@ class RouteSecretError extends Error {
   ) {
     super(message);
     this.name = "RouteSecretError";
+  }
+}
+
+class UpstreamRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "UpstreamRequestError";
   }
 }
 
@@ -760,7 +816,8 @@ export default {
     const url = new URL(request.url);
     const requestId = crypto.randomUUID();
     try {
-      return withRequestId(await handleRequest(request, env, url), requestId);
+      const response = await handleRequest(request, env, url);
+      return response.webSocket ? response : withRequestId(response, requestId);
     } catch (error) {
       console.error(JSON.stringify({
         level: "error",
@@ -770,7 +827,7 @@ export default {
         path: url.pathname,
         error: error instanceof Error ? error.name : "UnknownError",
       }));
-      const response = url.pathname.startsWith("/api/") || url.pathname === "/healthz"
+      const response = url.pathname.startsWith("/api/") || url.pathname === "/healthz" || url.pathname.startsWith("/agent")
         ? jsonResponse({ error: "internal_error", requestId }, 500)
         : textResponse("Internal server error", 500, "text/plain");
       return withRequestId(response, requestId);
@@ -784,6 +841,9 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
   }
   if (url.pathname === "/healthz" && request.method === "GET") {
     return handleHealthCheck(env);
+  }
+  if (url.pathname === "/agent" || url.pathname.startsWith("/agent/")) {
+    return handleTeamAgentRequest(request, env, url);
   }
   if (url.pathname.startsWith("/api/")) {
     return handleApi(request, env, url);
@@ -808,22 +868,53 @@ function withAssetCacheHeaders(response: Response, url: URL): Response {
 
 async function handleHealthCheck(env: Env): Promise<Response> {
   try {
-    const [config, accessCodes, kvProbe, durableObject] = await Promise.all([
+    const [config, accessCodes, kvProbe, legacyDurableObject, teamAgent] = await Promise.all([
       loadAppConfig(env),
       loadAccessCodes(env),
       env.CHAT_STORE.get("health:probe"),
       getUserState(env, "health:probe").healthCheck(),
+      getTeamAgent(env, "health:probe").then((agent) => agent.healthCheck()),
     ]);
     void kvProbe;
     const configured = Object.values(config.routes).some((route) => route.enabled !== false) && parseAccessCodes(accessCodes).length > 0;
+    const agentReady = teamAgent.ok === true && teamAgent.storage === true;
+    const durableObject = Boolean(legacyDurableObject && agentReady);
     const ok = Boolean(durableObject && configured);
     return jsonResponse({
       status: ok ? "ok" : "degraded",
-      checks: { kv: true, durableObject: Boolean(durableObject), configured },
+      checks: {
+        kv: true,
+        durableObject,
+        legacyDurableObject: Boolean(legacyDurableObject),
+        teamAgent: agentReady,
+        configured,
+      },
     }, ok ? 200 : 503);
   } catch {
-    return jsonResponse({ status: "degraded", checks: { kv: false, durableObject: false, configured: false } }, 503);
+    return jsonResponse({
+      status: "degraded",
+      checks: {
+        kv: false,
+        durableObject: false,
+        legacyDurableObject: false,
+        teamAgent: false,
+        configured: false,
+      },
+    }, 503);
   }
+}
+
+async function handleTeamAgentRequest(request: Request, env: Env, url: URL): Promise<Response> {
+  const session = await getSession(request, env);
+  if (!session) return jsonResponse({ error: "unauthorized" }, 401);
+
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== url.origin) {
+    return jsonResponse({ error: "invalid_origin" }, 403);
+  }
+
+  const agent = await getTeamAgent(env, session.label);
+  return agent.fetch(request);
 }
 
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
@@ -879,6 +970,12 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       hasUserSystemPrompt: Boolean(access.user.systemPrompt?.trim()),
       skills: capabilities.skills,
       tools: capabilities.tools,
+      agent: {
+        transport: "cloudflare-ai-chat",
+        className: "team-agent",
+        basePath: "/agent",
+        instance: await getTeamAgentInstanceName(session.label),
+      },
     });
   }
 
@@ -2048,137 +2145,202 @@ async function handleAdminRouteHealth(request: Request, env: Env): Promise<Respo
     return jsonResponse({ error: "route_not_found", message: "线路不存在" }, 404);
   }
 
-  const result = await checkRouteHealth(env, routeId, route);
-  return jsonResponse(result, result.ok ? 200 : healthCheckStatus("error" in result ? result.error : ""));
-}
-
-async function checkRouteHealth(env: Env, routeId: string, route: RouteConfig) {
-  let apiKey = "";
-  try {
-    apiKey = await resolveRouteKey(route, env, "");
-  } catch (error) {
-    const result = {
-      ok: false,
-      routeId,
-      error: error instanceof RouteSecretError ? error.code : "route_secret_unavailable",
-      message: error instanceof RouteSecretError ? error.message : "后台线路密钥不可用",
-      checkedAt: new Date().toISOString(),
-    };
-    await saveRouteHealth(env, routeId, result);
-    return result;
-  }
-  if (!apiKey) {
-    const result = {
-      ok: false,
-      routeId,
-      error: "missing_key",
-      message: "线路 key 未配置（检查 apiKeyRef / secret）",
-      checkedAt: new Date().toISOString(),
-    };
-    await saveRouteHealth(env, routeId, result);
-    return result;
-  }
-
-  const started = Date.now();
-  try {
-    const text = await completeOnce({
-      route,
-      apiKey,
-      messages: [
-        { role: "user", content: "请完成一个小任务：计算 17 × 23，并只返回最终数字。" },
-      ],
-      temperature: 0,
-      maxTokens: 32,
-      env,
-    });
-    if (!text.includes("391")) {
-      const result = {
-        ok: false,
-        routeId,
-        latencyMs: Date.now() - started,
-        error: "task_validation_failed",
-        message: "线路已响应，但小任务答案未通过校验",
-        sample: text.slice(0, 80),
-        model: route.model,
-        type: route.type,
-        checkedAt: new Date().toISOString(),
-      };
-      await saveRouteHealth(env, routeId, result);
-      return result;
-    }
-    const result = {
-      ok: true,
-      routeId,
-      latencyMs: Date.now() - started,
-      sample: text.slice(0, 80),
-      model: route.model,
-      type: route.type,
-      checkedAt: new Date().toISOString(),
-    };
-    await saveRouteHealth(env, routeId, result);
-    return result;
-  } catch (error) {
-    const result = {
-      ok: false,
-      routeId,
-      latencyMs: Date.now() - started,
-      error: "upstream_error",
-      message: error instanceof Error ? error.message : "health check failed",
-      model: route.model,
-      type: route.type,
-      checkedAt: new Date().toISOString(),
-    };
-    await saveRouteHealth(env, routeId, result);
-    return result;
-  }
-}
-
-function healthCheckStatus(error: unknown): number {
-  if (error === "missing_key") return 400;
-  if (error === "master_key_unavailable" || error === "invalid_record" || error === "decrypt_failed") return 503;
-  return 502;
+  return jsonResponse(await inspectRouteStatus(env, routeId, route));
 }
 
 async function handleGetAdminRouteHealth(env: Env): Promise<Response> {
   const config = await loadAppConfig(env);
-  const entries = await Promise.all(Object.keys(config.routes).map(async (routeId) => {
-    const raw = await env.CHAT_STORE.get(routeHealthKey(routeId));
-    if (!raw) return [routeId, null] as const;
-    try {
-      return [routeId, JSON.parse(raw)] as const;
-    } catch {
-      return [routeId, null] as const;
-    }
-  }));
+  const entries = await Promise.all(Object.entries(config.routes).map(async ([routeId, route]) => (
+    [routeId, await inspectRouteStatus(env, routeId, route)] as const
+  )));
   return jsonResponse({ routes: Object.fromEntries(entries) });
 }
 
-async function saveRouteHealth(env: Env, routeId: string, result: unknown): Promise<void> {
-  await env.CHAT_STORE.put(routeHealthKey(routeId), JSON.stringify(result));
+async function inspectRouteStatus(env: Env, routeId: string, route: RouteConfig): Promise<RouteStatusProjection> {
+  const enabled = route.enabled !== false;
+  let credentialStatus: RouteStatusProjection["credentialStatus"] = "missing";
+
+  if (route.requiresUserKey) {
+    credentialStatus = "user_key_required";
+  } else {
+    try {
+      credentialStatus = await resolveRouteKey(route, env, "") ? "configured" : "missing";
+    } catch {
+      credentialStatus = "unavailable";
+    }
+  }
+
+  const configured = credentialStatus === "configured" || credentialStatus === "user_key_required";
+  const storedReliability = await loadRouteReliability(env, routeId);
+  const reliability = isRecentRouteReliability(storedReliability) ? storedReliability : null;
+  let status: RouteReadinessStatus = "unknown";
+  let message = "配置已就绪，暂无近期真实任务记录";
+
+  if (!enabled) {
+    status = "disabled";
+    message = "线路已停用，不参与用户请求";
+  } else if (!configured) {
+    status = "unavailable";
+    message = credentialStatus === "unavailable" ? "线路密钥当前不可读取" : "未配置可用的线路密钥";
+  } else if (reliability) {
+    status = reliability.ok ? "healthy" : "unhealthy";
+    message = reliability.ok ? "最近真实任务成功" : routeReliabilityMessage(reliability.outcome);
+  }
+
+  return {
+    routeId,
+    status,
+    source: "passive",
+    enabled,
+    configured,
+    credentialStatus,
+    model: route.model,
+    type: route.type,
+    message,
+    reliability,
+    checkedAt: reliability?.observedAt,
+    latencyMs: reliability?.latencyMs,
+  };
 }
 
-function routeHealthKey(routeId: string): string {
-  return `route-health:${encodeURIComponent(routeId)}`;
+function routeReliabilityKey(routeId: string): string {
+  return `${ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}`;
+}
+
+async function loadRouteReliability(env: Env, routeId: string): Promise<RouteReliabilityRecord | null> {
+  const raw = await env.CHAT_STORE.get(routeReliabilityKey(routeId));
+  if (!raw) return null;
+  try {
+    return normalizeRouteReliability(JSON.parse(raw), routeId);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRouteReliability(value: unknown, routeId: string): RouteReliabilityRecord | null {
+  if (!isRecord(value) || value.version !== 1 || value.source !== "real_task" || value.routeId !== routeId) return null;
+  const outcome = value.outcome;
+  if (!isRouteReliabilityOutcome(outcome) || typeof value.observedAt !== "string") return null;
+  const latencyMs = Number(value.latencyMs);
+  if (!Number.isFinite(latencyMs) || latencyMs < 0) return null;
+  return {
+    version: 1,
+    source: "real_task",
+    routeId,
+    ok: value.ok === true,
+    outcome,
+    observedAt: value.observedAt,
+    latencyMs: Math.round(latencyMs),
+    fallback: value.fallback === true,
+    httpStatusClass: value.httpStatusClass === "4xx" || value.httpStatusClass === "5xx"
+      ? value.httpStatusClass
+      : undefined,
+  };
+}
+
+function isRouteReliabilityOutcome(value: unknown): value is RouteReliabilityOutcome {
+  return value === "success"
+    || value === "timeout"
+    || value === "upstream_auth"
+    || value === "upstream_rate_limit"
+    || value === "upstream_client"
+    || value === "upstream_server"
+    || value === "protocol_error"
+    || value === "network_error";
+}
+
+function isRecentRouteReliability(value: RouteReliabilityRecord | null): value is RouteReliabilityRecord {
+  if (!value) return false;
+  const observedAt = Date.parse(value.observedAt);
+  return Number.isFinite(observedAt) && Date.now() - observedAt <= ROUTE_RELIABILITY_MAX_AGE_MS;
+}
+
+function routeReliabilityMessage(outcome: RouteReliabilityOutcome): string {
+  if (outcome === "timeout") return "最近真实任务超时";
+  if (outcome === "upstream_auth") return "最近真实任务遇到上游认证错误";
+  if (outcome === "upstream_rate_limit") return "最近真实任务遇到上游限流";
+  if (outcome === "upstream_client") return "最近真实任务被上游拒绝";
+  if (outcome === "upstream_server") return "最近真实任务遇到上游服务错误";
+  if (outcome === "protocol_error") return "最近真实任务返回了无法识别的响应";
+  if (outcome === "network_error") return "最近真实任务无法连接上游";
+  return "最近真实任务成功";
+}
+
+async function recordRouteReliability(
+  env: Env,
+  args: {
+    routeId: string;
+    ok: boolean;
+    fallback: boolean;
+    startedAt: number;
+    status?: number;
+    error?: unknown;
+    outcome?: RouteReliabilityOutcome;
+    usedUserKey?: boolean;
+  },
+): Promise<void> {
+  if (args.usedUserKey && (args.status === 401 || args.status === 403)) return;
+  const outcome = args.outcome || classifyRouteReliability(args.ok, args.status, args.error);
+  const record: RouteReliabilityRecord = {
+    version: 1,
+    source: "real_task",
+    routeId: args.routeId,
+    ok: args.ok,
+    outcome,
+    observedAt: new Date().toISOString(),
+    latencyMs: Math.max(0, Math.min(600_000, Date.now() - args.startedAt)),
+    fallback: args.fallback,
+    httpStatusClass: typeof args.status === "number"
+      ? args.status >= 500
+        ? "5xx"
+        : args.status >= 400
+          ? "4xx"
+          : undefined
+      : undefined,
+  };
+  try {
+    await env.CHAT_STORE.put(routeReliabilityKey(args.routeId), JSON.stringify(record));
+  } catch {
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "route_reliability_write_failed",
+      routeId: args.routeId,
+    }));
+  }
+}
+
+function classifyRouteReliability(
+  ok: boolean,
+  status: number | undefined,
+  error: unknown,
+): RouteReliabilityOutcome {
+  if (ok) return "success";
+  if (isTimeoutError(error)) return "timeout";
+  if (status === 401 || status === 403) return "upstream_auth";
+  if (status === 429) return "upstream_rate_limit";
+  if (typeof status === "number" && status >= 500) {
+    const message = error instanceof Error ? error.message : "";
+    return /无法识别|invalid response|protocol/i.test(message) ? "protocol_error" : "upstream_server";
+  }
+  if (typeof status === "number" && status >= 400) return "upstream_client";
+  return "network_error";
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === "TimeoutError" || error.name === "AbortError" || /timed?\s*out|timeout|超时/i.test(error.message);
 }
 
 async function withPublicRouteHealth(env: Env, route: PublicRoute): Promise<PublicRoute> {
-  const raw = await env.CHAT_STORE.get(routeHealthKey(route.id));
-  if (!raw) return { ...route, healthStatus: "unknown" };
-  try {
-    const health = JSON.parse(raw) as { ok?: unknown; checkedAt?: unknown };
-    const checkedAt = typeof health.checkedAt === "string" ? health.checkedAt : "";
-    const checkedTime = Date.parse(checkedAt);
-    if (!Number.isFinite(checkedTime) || Date.now() - checkedTime > 86_400_000) {
-      return { ...route, healthStatus: "unknown" };
-    }
-    return {
-      ...route,
-      healthStatus: health.ok === true ? "healthy" : "unhealthy",
-      healthCheckedAt: checkedAt,
-    };
-  } catch {
-    return { ...route, healthStatus: "unknown" };
-  }
+  const reliability = await loadRouteReliability(env, route.id);
+  if (!isRecentRouteReliability(reliability)) return { ...route, healthStatus: "unknown" };
+  return {
+    ...route,
+    healthStatus: reliability.ok ? "healthy" : "unhealthy",
+    healthCheckedAt: reliability.observedAt,
+    healthSource: "real_task",
+    healthOutcome: reliability.outcome,
+  };
 }
 
 type CloudChat = {
@@ -2713,17 +2875,25 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     }
 
     attemptedRoutes += 1;
+    const usedUserKey = Boolean(userApiKey && publicRoute.allowUserKey);
+    const startedAt = Date.now();
     const result = await callRoute({
       route,
       routeId,
       apiKey: key,
-      usedUserKey: Boolean(userApiKey && publicRoute.allowUserKey),
+      usedUserKey,
       messages,
       temperature: body.temperature,
       env,
     });
 
     if (result.response) {
+      await recordRouteReliability(env, {
+        routeId,
+        ok: true,
+        fallback: routeId !== selectedRoute && attemptedRoutes > 1,
+        startedAt,
+      });
       await recordChatMetric(env, {
         kind: "success",
         label: session.label,
@@ -2736,6 +2906,14 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     }
 
     lastError = result.error;
+    await recordRouteReliability(env, {
+      routeId,
+      ok: false,
+      status: result.error.status,
+      fallback: routeId !== selectedRoute && attemptedRoutes > 1,
+      startedAt,
+      usedUserKey,
+    });
     await recordChatMetric(env, {
       kind: "route_error",
       label: session.label,
@@ -2760,6 +2938,98 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     502,
   );
 }
+
+export type TeamAgentTextTurnInput = {
+  messages: ChatMessage[];
+  routeId?: string;
+  skillIds?: string[];
+  userApiKey?: string;
+  sessionSummary?: string;
+  temperature?: number;
+};
+
+export type TeamAgentTextTurnResult =
+  | { ok: true; text: string; routeId: string; remaining: number }
+  | { ok: false; error: string; message: string; status: number; routeId?: string };
+
+export async function runTeamAgentTextTurn(
+  env: Env,
+  session: Session,
+  input: TeamAgentTextTurnInput,
+): Promise<TeamAgentTextTurnResult> {
+  const config = await loadAppConfig(env);
+  const access = await getRouteAccess(config, session.label, env);
+  if (!access.routes.length) {
+    return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
+  }
+
+  const normalized = trimMessagesForContext(normalizeMessages(input.messages, env), env);
+  if (!normalized.length) {
+    return { ok: false, error: "empty_messages", message: "消息不能为空", status: 400 };
+  }
+
+  const latestPrompt = getLatestUserPrompt(normalized);
+  if (
+    latestPrompt &&
+    !latestPrompt.hasImages &&
+    isBlockedPrompt(latestPrompt.text, getBlockedPrompts(env, access.user))
+  ) {
+    return { ok: false, error: "blocked_prompt", message: BLOCKED_PROMPT_MESSAGE, status: 400 };
+  }
+
+  const selectedRoute = input.routeId || access.defaultRoute;
+  const selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
+    || access.routes.find((route) => route.id === access.defaultRoute);
+  if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
+    return {
+      ok: false,
+      error: "route_does_not_support_images",
+      message: "当前线路不支持图片消息",
+      status: 400,
+      routeId: selectedPublicRoute.id,
+    };
+  }
+
+  const limitResult = await consumeLimits(env, session, access.user);
+  if (!limitResult.ok) {
+    await recordChatMetric(env, { kind: "rate_limited", label: session.label });
+    return { ok: false, error: "rate_limited", message: "额度已用完", status: 429 };
+  }
+
+  const selectedSkills = getSelectedSkills(config, input.skillIds);
+  const messages = await buildMessagesWithSystem(
+    env,
+    session,
+    normalized,
+    input.sessionSummary || "",
+    access.user,
+    selectedSkills,
+  );
+  const result = await completeWithUserRoute(env, session, {
+    routeId: selectedRoute,
+    userApiKey: input.userApiKey,
+    messages,
+    temperature: input.temperature,
+    consumeQuota: false,
+  });
+
+  if (!result.ok) {
+    if (result.routeId) {
+      await recordChatMetric(env, { kind: "route_error", label: session.label, routeId: result.routeId });
+    }
+    await recordChatMetric(env, { kind: "failure", label: session.label });
+    return result;
+  }
+
+  await recordChatMetric(env, {
+    kind: "success",
+    label: session.label,
+    routeId: result.routeId,
+    fallback: result.routeId !== selectedRoute,
+  });
+  return { ...result, remaining: limitResult.remaining };
+}
+
 
 async function loadAppConfig(env: Env): Promise<AppConfig> {
   const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY);
@@ -3415,6 +3685,8 @@ async function completeWithUserRoute(
       continue;
     }
 
+    const usedUserKey = Boolean(userApiKey && publicRoute.allowUserKey);
+    const startedAt = Date.now();
     try {
       const text = await completeOnce({
         route,
@@ -3425,11 +3697,33 @@ async function completeWithUserRoute(
         env,
       });
       if (text.trim()) {
+        await recordRouteReliability(env, {
+          routeId,
+          ok: true,
+          fallback: routeId !== selectedRoute,
+          startedAt,
+        });
         return { ok: true, text: text.trim(), routeId };
       }
+      await recordRouteReliability(env, {
+        routeId,
+        ok: false,
+        outcome: "protocol_error",
+        fallback: routeId !== selectedRoute,
+        startedAt,
+      });
       lastError = "empty completion";
       lastRouteId = routeId;
     } catch (error) {
+      await recordRouteReliability(env, {
+        routeId,
+        ok: false,
+        status: error instanceof UpstreamRequestError ? error.status : undefined,
+        error,
+        fallback: routeId !== selectedRoute,
+        startedAt,
+        usedUserKey,
+      });
       lastError = error instanceof Error ? error.message : "completion failed";
       lastRouteId = routeId;
     }
@@ -3475,7 +3769,7 @@ async function completeOnce(args: {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(formatUpstreamErrorMessage(JSON.stringify(payload)));
+      throw new UpstreamRequestError(response.status, formatUpstreamErrorMessage(JSON.stringify(payload)));
     }
     return extractAnthropicText(payload);
   }
@@ -3496,7 +3790,7 @@ async function completeOnce(args: {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(formatUpstreamErrorMessage(JSON.stringify(payload)));
+    throw new UpstreamRequestError(response.status, formatUpstreamErrorMessage(JSON.stringify(payload)));
   }
   return extractOpenAiText(payload);
 }
@@ -3809,7 +4103,14 @@ async function runCapabilityLoopInner(
 ): Promise<void> {
   const aliasMap = new Map(args.tools.map((tool) => [tool.providerName, tool]));
   let selected:
-    | { routeId: string; route: RouteConfig; history: ToolProviderHistory; turn: ModelTurn; fallback: boolean }
+    | {
+        routeId: string;
+        route: RouteConfig;
+        history: ToolProviderHistory;
+        turn: ModelTurn;
+        fallback: boolean;
+        startedAt: number;
+      }
     | null = null;
   let attemptedRoutes = 0;
   let lastError: ProviderToolError | null = null;
@@ -3833,6 +4134,8 @@ async function runCapabilityLoopInner(
     }
     attemptedRoutes += 1;
     const history = createToolProviderHistory(route, args.messages);
+    const usedUserKey = Boolean(args.userApiKey && publicRoute.allowUserKey);
+    const startedAt = Date.now();
     try {
       const turn = await callProviderToolTurn({
         route,
@@ -3842,14 +4145,30 @@ async function runCapabilityLoopInner(
         temperature: args.temperature,
         env: args.env,
         signal,
-        usedUserKey: Boolean(args.userApiKey && publicRoute.allowUserKey),
+        usedUserKey,
       });
-      selected = { routeId, route, history, turn, fallback: routeId !== args.selectedRoute && attemptedRoutes > 1 };
+      selected = {
+        routeId,
+        route,
+        history,
+        turn,
+        fallback: routeId !== args.selectedRoute && attemptedRoutes > 1,
+        startedAt,
+      };
       break;
     } catch (error) {
       lastError = error instanceof ProviderToolError
         ? error
         : new ProviderToolError(502, error instanceof Error ? error.message : "provider response is invalid", false);
+      await recordRouteReliability(args.env, {
+        routeId,
+        ok: false,
+        status: lastError.status,
+        error,
+        fallback: routeId !== args.selectedRoute && attemptedRoutes > 1,
+        startedAt,
+        usedUserKey,
+      });
       await recordChatMetric(args.env, { kind: "route_error", label: args.session.label, routeId });
       if (lastError.terminal) break;
     }
@@ -3871,6 +4190,12 @@ async function runCapabilityLoopInner(
     if (!turn.toolCalls.length) {
       if (turn.text) emit({ type: "assistant_delta", text: turn.text });
       emit({ type: "finish", finishReason: turn.finishReason || "stop" });
+      await recordRouteReliability(args.env, {
+        routeId: selected.routeId,
+        ok: true,
+        fallback: selected.fallback,
+        startedAt: selected.startedAt,
+      });
       await recordChatMetric(args.env, {
         kind: "success",
         label: args.session.label,
@@ -3980,6 +4305,15 @@ async function runCapabilityLoopInner(
         usedUserKey: Boolean(args.userApiKey && publicRoute?.allowUserKey),
       });
     } catch (error) {
+      await recordRouteReliability(args.env, {
+        routeId: selected.routeId,
+        ok: false,
+        status: error instanceof ProviderToolError ? error.status : undefined,
+        error,
+        fallback: selected.fallback,
+        startedAt: selected.startedAt,
+        usedUserKey: Boolean(args.userApiKey && publicRoute?.allowUserKey),
+      });
       await recordChatMetric(args.env, { kind: "route_error", label: args.session.label, routeId: selected.routeId });
       throw new CapabilityError(
         "upstream_error",
@@ -5431,6 +5765,18 @@ function positiveCount(value: string | null): number {
 function getUserState(env: Env, label: string): DurableObjectStub<UserState> {
   return env.USER_STATE.getByName(label);
 }
+
+export async function getTeamAgentInstanceName(label: string): Promise<string> {
+  const digest = await secretFingerprint(`team-agent:${label.trim()}`);
+  return `member-${digest.slice(0, 48)}`;
+}
+
+async function getTeamAgent(env: Env, label: string): Promise<DurableObjectStub<TeamAgent>> {
+  const instance = await getTeamAgentInstanceName(label);
+  const props: TeamAgentProps = { userLabel: label };
+  return getAgentByName(env.TEAM_AGENT, instance, { props });
+}
+
 
 async function getLoginState(env: Env, request: Request, scope: "user" | "admin"): Promise<DurableObjectStub<UserState>> {
   const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For")?.split(",", 1)[0]?.trim() || "unknown";

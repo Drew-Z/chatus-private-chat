@@ -8,7 +8,7 @@
 - [ ] Migrate conversations, structured long-term memory, quotas, feedback, and run metadata into the Agent-owned durable model without exposing secrets.
 - [ ] Extract OpenAI-compatible and Anthropic-compatible adapters, route selection, retry classification, fallback, BYOK, and redacted provider diagnostics behind the provider router.
 - [ ] Rebuild Skill selection, bounded tool loops, confirmations, built-in tools, and MCP execution around the Agent capability allow-list.
-- [ ] Remove scheduled/automatic completion probes, remove the production cron dependency, keep model-free `/healthz`, and add passive real-task reliability aggregation.
+- [x] Remove scheduled/automatic completion probes, remove the production cron dependency, keep model-free `/healthz`, and add passive real-task reliability aggregation.
 - [ ] Rebuild teammate administration for access, assignments, routes, secret references, quotas, Skills, tools, MCP, audit, sessions, data export, and user deletion.
 - [ ] Replace the handwritten static application/admin monolith with a typed Vite/React client using the supported Agents SDK client transport and resumable streaming pattern.
 - [ ] Implement focused desktop/mobile/PWA states for sign-in, chat, history, memory, capability inspection, tool approval, traces, degraded/offline behavior, and actionable provider errors.
@@ -21,11 +21,11 @@
 ### Slice 1: Runtime And Passive Reliability
 
 - [x] Install the pinned compatible Agents SDK, AI Chat, AI SDK 6, provider, React, and Vite runtime set.
-- [ ] Add `TEAM_AGENT`, its SQLite migration, authenticated routing, and an opaque per-user instance projection.
-- [ ] Add a minimal `TeamAgent` runtime with persistence sanitization and model-free readiness methods.
-- [ ] Remove the production cron and active route completion checks.
-- [ ] Replace route health records with configuration readiness and redacted real-task telemetry.
-- [ ] Add deterministic tests proving Agent isolation and zero model calls from health/diagnostic paths.
+- [x] Add `TEAM_AGENT`, its SQLite migration, authenticated routing, and an opaque per-user instance projection.
+- [x] Add a minimal `TeamAgent` runtime with persistence sanitization and model-free readiness methods.
+- [x] Remove the production cron and active route completion checks.
+- [x] Replace route health records with configuration readiness and redacted real-task telemetry.
+- [x] Add deterministic tests proving Agent isolation and zero model calls from health/diagnostic paths.
 
 ### Slice 2: Provider And Capability Services
 

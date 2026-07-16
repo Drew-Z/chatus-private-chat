@@ -9,6 +9,7 @@ const ADMIN_AUDIT_KEY = "config:admin_audit";
 const FEEDBACK_KEY = "feedback:recent";
 const ROUTE_SECRET_PREFIX = "route-secret:";
 const MCP_SECRET_PREFIX = "mcp-secret:";
+const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
 
 async function clearRouteSecrets() {
   let cursor: string | undefined;
@@ -23,6 +24,15 @@ async function clearMcpSecrets() {
   let cursor: string | undefined;
   do {
     const page = await env.CHAT_STORE.list({ prefix: MCP_SECRET_PREFIX, cursor, limit: 100 });
+    await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+}
+
+async function clearRouteReliability() {
+  let cursor: string | undefined;
+  do {
+    const page = await env.CHAT_STORE.list({ prefix: ROUTE_RELIABILITY_PREFIX, cursor, limit: 100 });
     await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
@@ -86,11 +96,11 @@ describe("Worker API", () => {
     await Promise.all([
       env.CHAT_STORE.delete(ACCESS_CODES_KEY),
       env.CHAT_STORE.delete(ROUTES_CONFIG_KEY),
-      env.CHAT_STORE.delete("route-health:default"),
       env.CHAT_STORE.delete(ADMIN_AUDIT_KEY),
       env.CHAT_STORE.delete(FEEDBACK_KEY),
       clearRouteSecrets(),
       clearMcpSecrets(),
+      clearRouteReliability(),
     ]);
   });
 
@@ -108,14 +118,62 @@ describe("Worker API", () => {
       defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
     }));
     const { cookie, label } = await login();
-    await env.CHAT_STORE.put("route-health:default", JSON.stringify({ ok: false, checkedAt: new Date().toISOString() }));
+    await env.CHAT_STORE.put("route-reliability:default", JSON.stringify({
+      version: 1,
+      source: "real_task",
+      routeId: "default",
+      ok: false,
+      outcome: "upstream_server",
+      observedAt: new Date().toISOString(),
+      latencyMs: 120,
+      fallback: false,
+      httpStatusClass: "5xx",
+    }));
     const response = await apiRequest("/api/session", cookie);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       authenticated: true,
       user: label,
-      routes: [{ id: "default", healthStatus: "unhealthy" }],
+      routes: [{ id: "default", healthStatus: "unhealthy", healthSource: "real_task" }],
+      agent: { transport: "cloudflare-ai-chat", className: "team-agent", basePath: "/agent" },
     });
+  });
+
+  it("isolates TeamAgent instances by authenticated member identity", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://agent-session.example/v1",
+          model: "agent-session-model",
+          apiKey: "agent-session-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+    }));
+    const first = await login(`member-a-${crypto.randomUUID()}`);
+    const second = await login(`member-b-${crypto.randomUUID()}`);
+    const firstSession = await (await apiRequest("/api/session", first.cookie)).json() as any;
+    const firstAgain = await (await apiRequest("/api/session", first.cookie)).json() as any;
+    const secondSession = await (await apiRequest("/api/session", second.cookie)).json() as any;
+
+    expect(firstSession.agent).toMatchObject({
+      transport: "cloudflare-ai-chat",
+      className: "team-agent",
+      basePath: "/agent",
+    });
+    expect(firstSession.agent.instance).toMatch(/^member-[0-9a-f]{48}$/);
+    expect(firstAgain.agent.instance).toBe(firstSession.agent.instance);
+    expect(secondSession.agent.instance).not.toBe(firstSession.agent.instance);
+    expect(firstSession.agent.instance).not.toContain(first.label);
+    expect(secondSession.agent.instance).not.toContain(second.label);
+
+    const unauthorized = await exports.default.fetch(new Request("https://example.test/agent"));
+    expect(unauthorized.status).toBe(401);
+    const crossOrigin = await apiRequest("/agent", first.cookie, { headers: { Origin: "https://evil.example" } });
+    expect(crossOrigin.status).toBe(403);
+    await expect(crossOrigin.json()).resolves.toMatchObject({ error: "invalid_origin" });
   });
 
   it("normalizes capability registries and projects only explicitly allowed tools", async () => {
@@ -442,14 +500,22 @@ describe("Worker API", () => {
 
   it("reports core binding health without exposing configuration details", async () => {
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "health-user:health-access-code");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await exports.default.fetch(new Request("https://example.test/healthz"));
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toContain("no-store");
     const payload = await response.json();
     expect(payload).toEqual({
       status: "ok",
-      checks: { kv: true, durableObject: true, configured: true },
+      checks: {
+        kv: true,
+        durableObject: true,
+        legacyDurableObject: true,
+        teamAgent: true,
+        configured: true,
+      },
     });
+    expect(fetchSpy).not.toHaveBeenCalled();
     const serialized = JSON.stringify(payload);
     expect(serialized).not.toContain("health-access-code");
     expect(serialized).not.toContain("baseUrl");
@@ -1632,7 +1698,7 @@ describe("Worker API", () => {
     }
   });
 
-  it("uses managed route keys for route access, manual health checks and chat requests", async () => {
+  it("uses managed route keys for passive readiness and real chat requests", async () => {
     const adminCookie = await adminLogin();
     const apiKeyRef = "END_TO_END_TEST_KEY";
     const managedKey = "managed-end-to-end-test-key";
@@ -1649,19 +1715,12 @@ describe("Worker API", () => {
       },
       defaults: { defaultRoute: "managed", allowedRoutes: ["managed"] },
     }));
-    let fetchCount = 0;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      fetchCount += 1;
-      return fetchCount === 1
-        ? new Response(JSON.stringify({ choices: [{ message: { content: "391" } }] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          })
-        : new Response('data: {"choices":[{"delta":{"content":"完成"}}]}\n\n', {
-            status: 200,
-            headers: { "Content-Type": "text/event-stream" },
-          });
-    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response('data: {"choices":[{"delta":{"content":"完成"}}]}\n\n', {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }),
+    );
 
     const health = await apiRequest("/api/admin/route-health", adminCookie, {
       method: "POST",
@@ -1669,6 +1728,15 @@ describe("Worker API", () => {
       body: JSON.stringify({ routeId: "managed" }),
     });
     expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({
+      routeId: "managed",
+      status: "unknown",
+      source: "passive",
+      configured: true,
+      credentialStatus: "configured",
+      reliability: null,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
 
     const { cookie } = await login();
     const session = await apiRequest("/api/session", cookie);
@@ -1681,10 +1749,17 @@ describe("Worker API", () => {
       body: JSON.stringify({ routeId: "managed", messages: [{ role: "user", content: "完成一个简短任务" }] }),
     });
     expect(chat.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledOnce();
     for (const [, init] of fetchSpy.mock.calls) {
       expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${managedKey}`);
     }
+    await expect(env.CHAT_STORE.get("route-reliability:managed", "json")).resolves.toMatchObject({
+      version: 1,
+      source: "real_task",
+      routeId: "managed",
+      ok: true,
+      outcome: "success",
+    });
   });
 
   it("keeps user BYOK precedence and requiresUserKey blocking with a managed key present", async () => {
@@ -1738,21 +1813,37 @@ describe("Worker API", () => {
     expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer user-supplied-test-key");
   });
 
-  it("persists the latest route health result", async () => {
+  it("reports route configuration readiness without calling the provider", async () => {
     const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     const check = await apiRequest("/api/admin/route-health", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ routeId: "default" }),
     });
-    expect(check.status).toBe(400);
-    await expect(check.json()).resolves.toMatchObject({ ok: false, routeId: "default", error: "missing_key" });
+    expect(check.status).toBe(200);
+    await expect(check.json()).resolves.toMatchObject({
+      routeId: "default",
+      status: "unavailable",
+      source: "passive",
+      configured: false,
+      credentialStatus: "missing",
+      reliability: null,
+    });
 
     const stored = await apiRequest("/api/admin/route-health", cookie);
     expect(stored.status).toBe(200);
     await expect(stored.json()).resolves.toMatchObject({
-      routes: { default: { ok: false, routeId: "default", error: "missing_key" } },
+      routes: {
+        default: {
+          routeId: "default",
+          status: "unavailable",
+          configured: false,
+          credentialStatus: "missing",
+        },
+      },
     });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("rejects configurations without an enabled route for every user", async () => {
@@ -1868,7 +1959,7 @@ describe("Worker API", () => {
     await expect(env.CHAT_STORE.get(key)).resolves.toBe("newer memory");
   });
 
-  it("requires the route health task to return the correct answer", async () => {
+  it("derives route status from real user tasks without diagnostic model probes", async () => {
     const cookie = await adminLogin();
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {
@@ -1882,34 +1973,45 @@ describe("Worker API", () => {
       },
       defaults: { defaultRoute: "health", allowedRoutes: ["health"] },
     }));
-    let answer = "391";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      new Response(JSON.stringify({ choices: [{ message: { content: answer } }] }), {
+      new Response('data: {"choices":[{"delta":{"content":"真实任务完成"}}]}\n\n', {
         status: 200,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "text/event-stream" },
       }),
     );
-    try {
-      const healthy = await apiRequest("/api/admin/route-health", cookie, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routeId: "health" }),
-      });
-      const healthyPayload = await healthy.json();
-      expect(healthy.status, JSON.stringify(healthyPayload)).toBe(200);
-      expect(healthyPayload).toMatchObject({ ok: true, sample: "391" });
+    const initial = await apiRequest("/api/admin/route-health", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeId: "health" }),
+    });
+    expect(initial.status).toBe(200);
+    await expect(initial.json()).resolves.toMatchObject({ status: "unknown", configured: true, reliability: null });
+    expect(fetchSpy).not.toHaveBeenCalled();
 
-      answer = "392";
-      const invalid = await apiRequest("/api/admin/route-health", cookie, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ routeId: "health" }),
-      });
-      expect(invalid.status).toBe(502);
-      await expect(invalid.json()).resolves.toMatchObject({ ok: false, error: "task_validation_failed", sample: "392" });
-    } finally {
-      fetchSpy.mockRestore();
-    }
+    const user = await login();
+    const chat = await apiRequest("/api/chat", user.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId: "health", messages: [{ role: "user", content: "整理三条发布检查事项" }] }),
+    });
+    expect(chat.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
+    const status = await apiRequest("/api/admin/route-health", cookie);
+    await expect(status.json()).resolves.toMatchObject({
+      routes: {
+        health: {
+          status: "healthy",
+          source: "passive",
+          configured: true,
+          reliability: { source: "real_task", ok: true, outcome: "success" },
+        },
+      },
+    });
+    const session = await apiRequest("/api/session", user.cookie);
+    await expect(session.json()).resolves.toMatchObject({
+      routes: [{ id: "health", healthStatus: "healthy", healthSource: "real_task", healthOutcome: "success" }],
+    });
   });
 
   it("revokes every active session for a user label", async () => {

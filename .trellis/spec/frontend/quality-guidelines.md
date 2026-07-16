@@ -19,6 +19,9 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - Protect destructive and concurrent operations with confirmation, undo where available, and revision/version preconditions.
 - Keep diagnostics operational and non-sensitive.
 - Preserve keyboard focus indicators and reduced-motion behavior.
+- Keep `nodejs_compat` enabled while the pinned Cloudflare Agents SDK dependency graph imports Node built-ins; `wrangler deploy --dry-run` is the executable guard for this contract.
+- Do not rebuild a WebSocket upgrade `Response` to add ordinary headers. Return Agent upgrade responses unchanged so the Cloudflare `webSocket` handle survives.
+- `/healthz` and route status endpoints may inspect bindings, SQLite, KV configuration, and passive real-task telemetry only. They must never send a completion prompt.
 
 ## Testing Requirements
 
@@ -45,3 +48,4 @@ git diff --check
 - Are writes protected against stale revisions?
 - Are accessibility behavior and mobile/keyboard paths preserved?
 - For capability work, test the legacy provider stream and `capability-v1` stream separately; verify completed, failed, pending-confirmation, and stale-confirmation states on desktop and 390px touch layouts.
+- For Agent runtime work, prove the Wrangler binding/export package, per-member instance isolation, unauthenticated/cross-origin denial, and zero provider calls from infrastructure or route diagnostics.

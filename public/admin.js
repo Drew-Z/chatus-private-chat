@@ -840,11 +840,11 @@ function renderAttentionCenter() {
   for (const [routeId, route] of Object.entries(config.routes || {})) {
     if (route.enabled === false) continue;
     const health = routeHealth[routeId];
-    if (health && !health.ok) {
+    if (health?.status === "unhealthy" || health?.status === "unavailable") {
       alerts.push({
         severity: "critical",
-        title: `${route.label || routeId} 最近一次手动检查失败`,
-        detail: health.message || health.error || "上游线路不可用",
+        title: `${route.label || routeId} ${health.status === "unavailable" ? "配置不可用" : "近期真实任务失败"}`,
+        detail: health.message || "上游线路不可用",
         section: "routes",
         routeId,
       });
@@ -1366,7 +1366,12 @@ function renderUserPicker() {
     const option = document.createElement("option");
     option.value = routeId;
     const health = routeHealth[routeId];
-    option.textContent = `${routeLabel(routeId)}${health ? health.ok ? " · 正常" : " · 异常" : ""}`;
+    const statusLabel = health?.status === "healthy"
+      ? " · 近期任务正常"
+      : health?.status === "unhealthy" || health?.status === "unavailable"
+        ? " · 需处理"
+        : "";
+    option.textContent = `${routeLabel(routeId)}${statusLabel}`;
     userDefaultRoute.append(option);
   }
 
@@ -1507,7 +1512,8 @@ function renderRouteHealthList() {
     const row = document.createElement("button");
     row.type = "button";
     const disabled = config.routes[routeId]?.enabled === false;
-    row.className = `route-health-row ${disabled ? "disabled" : health ? health.ok ? "healthy" : "unhealthy" : "unknown"}`;
+    const status = disabled ? "disabled" : health?.status || "unknown";
+    row.className = `route-health-row ${status === "unavailable" ? "unhealthy" : status}`;
     const indicator = document.createElement("span");
     indicator.className = "route-health-indicator";
     indicator.setAttribute("aria-hidden", "true");
@@ -1516,13 +1522,7 @@ function renderRouteHealthList() {
     const title = document.createElement("strong");
     title.textContent = routeLabel(routeId);
     const detail = document.createElement("small");
-    detail.textContent = disabled
-      ? "已停用，不参与用户请求"
-      : health
-      ? health.ok
-        ? `手动检查正常${Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : ""} · ${relativeTime(health.checkedAt)}`
-        : `手动检查异常 · ${health.message || health.error || "检查失败"} · ${relativeTime(health.checkedAt)}`
-      : "未进行手动检查";
+    detail.textContent = routeStatusDescription(health, disabled);
     copy.append(title, detail);
     const model = document.createElement("small");
     model.className = "route-health-model";
@@ -1540,9 +1540,21 @@ function renderRouteHealthList() {
 }
 
 function healthRank(health) {
-  if (health && !health.ok) return 0;
-  if (!health) return 1;
+  if (health?.status === "unavailable" || health?.status === "unhealthy") return 0;
+  if (!health || health.status === "unknown") return 1;
+  if (health.status === "healthy") return 3;
   return 2;
+}
+
+function routeStatusDescription(health, disabled = false) {
+  if (disabled || health?.status === "disabled") return "已停用，不参与用户请求";
+  if (!health) return "暂无状态记录";
+  const latency = Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : "";
+  const observed = health.checkedAt ? ` · ${relativeTime(health.checkedAt)}` : "";
+  if (health.status === "healthy") return `近期真实任务正常${latency}${observed}`;
+  if (health.status === "unhealthy") return `${health.message || "近期真实任务异常"}${latency}${observed}`;
+  if (health.status === "unavailable") return health.message || "线路配置不可用";
+  return health.message || "配置已就绪，暂无近期真实任务记录";
 }
 
 function relativeTime(value) {
@@ -1801,14 +1813,15 @@ async function discoverMcpTools() {
 function renderStoredRouteHealth(routeId) {
   if (!routeId || routeId === "__new") return setRouteHealth("");
   const health = routeHealth[routeId];
-  if (!health) return setRouteHealth("尚未进行健康检查");
+  if (!health) return setRouteHealth("暂无状态记录");
   const checkedAt = new Date(health.checkedAt);
   const time = Number.isNaN(checkedAt.valueOf()) ? "" : checkedAt.toLocaleString("zh-CN", { hour12: false });
   const latency = Number.isFinite(health.latencyMs) ? ` · ${health.latencyMs}ms` : "";
-  setRouteHealth(
-    health.ok ? `最近正常${latency}${time ? ` · ${time}` : ""}` : `最近异常 · ${health.message || health.error || "检查失败"}${time ? ` · ${time}` : ""}`,
-    !health.ok,
-  );
+  const suffix = `${latency}${time ? ` · ${time}` : ""}`;
+  if (health.status === "healthy") return setRouteHealth(`近期真实任务正常${suffix}`);
+  if (health.status === "unhealthy") return setRouteHealth(`${health.message || "近期真实任务异常"}${suffix}`, true);
+  if (health.status === "unavailable") return setRouteHealth(health.message || "线路配置不可用", true);
+  setRouteHealth(health.message || "配置已就绪，暂无近期真实任务记录");
 }
 
 function syncConfigFromEditor() {
@@ -2336,7 +2349,7 @@ async function checkRouteHealth() {
     setRouteHealth("请先选择或填写线路 ID", true);
     return;
   }
-  setRouteHealth("检查中…");
+  setRouteHealth("正在读取配置与真实任务状态…");
   healthRouteButton.disabled = true;
   try {
     const data = await api("/api/admin/route-health", {
@@ -2348,11 +2361,7 @@ async function checkRouteHealth() {
     selectedRoute = routeId;
     routeAdminSelect.value = routeId;
     populateRouteForm();
-    if (data.ok) {
-      setRouteHealth(`健康 · ${data.latencyMs}ms · ${data.model || routeId} · 任务结果: ${data.sample || "391"}`);
-    } else {
-      setRouteHealth(data.message || "检查失败", true);
-    }
+    renderStoredRouteHealth(routeId);
   } catch (error) {
     setRouteHealth(error.message || "检查失败", true);
     try {
@@ -2370,46 +2379,23 @@ async function checkRouteHealth() {
 
 async function checkAllRoutesHealth() {
   const routeIds = Object.keys(config.routes || {});
-  if (!routeIds.length) return setRouteHealth("没有可检查的线路", true);
+  if (!routeIds.length) return setRouteHealth("没有可读取的线路", true);
   const previousRoute = selectedRoute;
-  let completed = 0;
   healthRouteButton.disabled = true;
   healthAllRoutesButton.disabled = true;
-  setRouteHealth(`正在检查 0/${routeIds.length} 条线路…`);
-  const results = [];
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < routeIds.length) {
-      const routeId = routeIds[cursor++];
-      try {
-        const response = await fetchWithTimeout("/api/admin/route-health", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ routeId }),
-        });
-        const data = await response.json().catch(() => ({ ok: false, routeId, message: `HTTP ${response.status}` }));
-        results.push({ routeId, ...data, ok: response.ok && data.ok === true });
-      } catch {
-        results.push({ routeId, ok: false, message: "网络请求失败" });
-      }
-      completed += 1;
-      setRouteHealth(`正在检查 ${completed}/${routeIds.length} 条线路…`);
-    }
-  };
+  setRouteHealth(`正在读取 ${routeIds.length} 条线路状态…`);
   try {
-    await Promise.all(Array.from({ length: Math.min(3, routeIds.length) }, () => worker()));
     const healthData = await api("/api/admin/route-health");
     routeHealth = healthData?.routes || routeHealth;
     selectedRoute = config.routes?.[previousRoute] ? previousRoute : routeIds[0];
     renderRoutePicker();
-    const healthy = results.filter((item) => item.ok);
-    const failed = results.length - healthy.length;
-    const average = healthy.length
-      ? Math.round(healthy.reduce((sum, item) => sum + (Number(item.latencyMs) || 0), 0) / healthy.length)
-      : 0;
-    setRouteHealth(`检查完成 · 正常 ${healthy.length} · 异常 ${failed}${healthy.length ? ` · 平均 ${average}ms` : ""}`, failed > 0);
+    const results = Object.values(routeHealth);
+    const healthy = results.filter((item) => item?.status === "healthy").length;
+    const unhealthy = results.filter((item) => item?.status === "unhealthy" || item?.status === "unavailable").length;
+    const unknown = results.filter((item) => item?.status === "unknown").length;
+    setRouteHealth(`状态已刷新 · 正常 ${healthy} · 异常 ${unhealthy} · 暂无任务 ${unknown}`, unhealthy > 0);
   } catch (error) {
-    setRouteHealth(error.message || "批量检查失败", true);
+    setRouteHealth(error.message || "批量状态读取失败", true);
   } finally {
     healthRouteButton.disabled = false;
     healthAllRoutesButton.disabled = false;

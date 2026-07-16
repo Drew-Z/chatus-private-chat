@@ -27,7 +27,7 @@ https://chatus.ciallobill.qzz.io/release.json
 
 ## 故障判断
 
-1. 查看 `/healthz`。`kv`、`durableObject`、`configured` 应全部为 `true`。
+1. 查看 `/healthz`。`kv`、`legacyDurableObject`、`teamAgent`、`durableObject`、`configured` 应全部为 `true`。
 2. 查看 `/release.json`，确认 `commit` 是预期的完整 Git SHA。
 3. 查看 GitHub Actions 中失败的具体步骤。
 4. 用户错误中的 8 位“请求编号”对应响应头 `X-Request-ID` 的前 8 位；在 Cloudflare Observability 中按完整 ID 检索结构化日志。
@@ -35,7 +35,7 @@ https://chatus.ciallobill.qzz.io/release.json
 
 ## 常见恢复
 
-- 上游线路异常：在后台执行线路巡检，确认 Base URL、模型和 `apiKeyRef`。可先停用异常线路，fallback 会跳过已停用线路。
+- 上游线路异常：在后台刷新线路状态，先确认配置就绪信息，再查看最近真实用户任务的脱敏结果。可先停用异常线路，fallback 会跳过已停用线路。后台状态刷新不会向模型发送探测提示。
 - 用户无法登录：确认用户未暂停、访问码 label 与用户配置一致，并检查登录限流倒计时。
 - 页面仍是旧版本：等待 PWA 更新提示并点击“立即刷新”；用 `/release.json` 判断生产版本，不以浏览器缓存内容为准。
 - 云端同步冲突：系统会保留云端新版，并把当前设备内容创建为“此设备副本”，不要手工覆盖原会话。
@@ -56,17 +56,17 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 1. 在 `/admin.html` 打开“模型线路”，填写稳定的 `API Key Ref`。
 2. 在“后台线路密钥”中输入新 key 并保存。输入框会立即清空，后台只显示配置来源和更新时间。
-3. 保存后可直接拉取模型并执行健康检查。
+3. 保存后可直接拉取模型列表并刷新线路状态。若需要验证真实生成，只能由用户批准并执行一个有实际用途的任务。
 4. 删除托管密钥只会删除 KV 中的 AES-GCM 密文；若存在同名 Worker Secret，会自动恢复使用它。
 
 若状态显示“无法解密”或“记录损坏”，不要复制 KV 内容排查，也不要尝试记录密文。确认主密钥是否被更换，然后删除该托管项并重新录入。托管密钥的优先级高于同名 Worker Secret；损坏的托管项不会静默回退到另一个值。
 
 ## 密钥轮换
 
-1. 普通上游线路 key：直接在管理后台替换并立即运行模型拉取与线路巡检，不需要部署。
+1. 普通上游线路 key：直接在管理后台替换并立即运行模型拉取与状态刷新，不需要部署。
 2. `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、兼容用 `WORKER_SECRETS_JSON`：在 GitHub Secrets 更新后运行 `Deploy to Cloudflare`。
 3. `ROUTE_KEYS_MASTER_KEY`：更换后旧托管密钥无法解密。先记录需要重新录入的 `apiKeyRef` 名称，再更新 GitHub Secret、通过 Actions 发布，并在后台逐条重新录入线路 key。
-4. 验证工作流、生产 smoke、模型拉取和线路巡检成功。
+4. 验证工作流、生产 smoke、模型拉取和状态刷新成功；如需验证生成能力，使用用户批准的真实任务。
 5. 轮换访问码会使对应 label 的现有登录会话失效；轮换管理员 Token 会使全部旧后台会话在下一次请求时失效。
 6. 不把真实访问码、上游 Key、管理员 Token、主密钥或完整 Secret JSON 写入 issue、日志、截图和仓库文件。
 

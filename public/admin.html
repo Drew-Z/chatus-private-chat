@@ -35,7 +35,7 @@
           <nav class="admin-nav" aria-label="后台导航">
             <button class="admin-nav-item active" type="button" data-admin-target="overview"><span>概览</span><small>用量与记忆</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="users"><span>用户</span><small>权限与额度</small></button>
-            <button class="admin-nav-item" type="button" data-admin-target="routes"><span>模型线路</span><small>接口与健康</small></button>
+            <button class="admin-nav-item" type="button" data-admin-target="routes"><span>模型线路</span><small>接口与状态</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="capabilities"><span>AI 能力</span><small>Skills、工具与 MCP</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="access"><span>访问控制</span><small>访问码管理</small></button>
             <button class="admin-nav-item" type="button" data-admin-target="advanced"><span>高级配置</span><small>完整 JSON</small></button>
@@ -271,12 +271,12 @@
             </div>
             <div class="form-actions">
               <button class="ghost-button compact" type="submit">保存线路</button>
-              <button class="ghost-button compact" id="healthRouteButton" type="button">健康检查</button>
-              <button class="ghost-button compact" id="healthAllRoutesButton" type="button">检查全部</button>
+              <button class="ghost-button compact" id="healthRouteButton" type="button">刷新状态</button>
+              <button class="ghost-button compact" id="healthAllRoutesButton" type="button">刷新全部</button>
               <button class="plain-button compact" id="deleteRouteButton" type="button">删除线路</button>
             </div>
             <p class="admin-status" id="routeHealthStatus" role="status"></p>
-            <div class="route-health-list" id="routeHealthList" aria-label="线路健康状态"></div>
+            <div class="route-health-list" id="routeHealthList" aria-label="线路真实任务状态"></div>
           </form>
         </section>
 
