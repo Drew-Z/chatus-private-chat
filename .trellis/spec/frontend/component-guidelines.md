@@ -2,22 +2,21 @@
 
 ## Overview
 
-The frontend does not use React or another component runtime. A "component" is an HTML region identified by stable IDs/classes plus JavaScript functions that render or update it.
+The default teammate frontend uses typed React components under `client/`. The legacy chat and administration surfaces still use HTML regions plus page-controller functions under `public/`.
 
 ## Component Structure
 
-- Define stable markup in `public/index.html` or `public/admin.html`.
-- Resolve required DOM nodes near the top of the paired page script with `querySelector`.
-- Keep rendering in named functions that derive DOM output from application state.
-- Attach event listeners once during module initialization; update state and call the relevant render function.
-- Prefer native controls and `<dialog>` for modal interactions.
+- Keep the React composition root small: session gating belongs in `App.tsx`; daily workspace, conversation navigation, message rendering, and memory controls belong in focused components.
+- Pass stable owning IDs and server projections explicitly. Async results must update the conversation or editor that initiated them, not whichever view is active later.
+- Prefer native controls and semantic dialog roles. Modal drawers must receive initial focus, contain Tab navigation, support Escape, and restore focus to the opener.
+- In legacy pages, define stable markup in `public/index.html` or `public/admin.html`, resolve nodes near the top of the paired script, and attach listeners once.
 
 Examples in `public/app.js` include the session list, model picker, settings dialog, message list, and shared application dialog.
 
 ## Data and Parameter Conventions
 
-- Page modules use module-scoped state instead of prop objects.
-- Reusable helpers accept explicit values and return data or DOM-safe output. See `renderMarkdown` in `public/markdown.js` and `buildAdminReportCsv` in `public/admin-report.js`.
+- React components use typed props and local state; shared asynchronous/browser contracts stay in `client/src/lib/` rather than being redefined inside components.
+- Legacy page modules use module-scoped state. Reusable helpers accept explicit values and return data or DOM-safe output.
 - Pass the owning entity explicitly for asynchronous work. Cloud saves and summaries retain the chat/session ID so results do not update whichever chat happens to be active later.
 
 ## Admin Model Discovery And Batch Routes
@@ -40,7 +39,7 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 
 ## Styling Patterns
 
-- Put visual rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in `app.js`, `admin.js`, and `theme.js`.
+- Put React visual rules in `client/src/styles.css` and legacy/admin rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in legacy scripts.
 - Toggle semantic classes and attributes such as `hidden`, `aria-expanded`, and status classes.
 - Keep shared page styling in the single stylesheet instead of inline style attributes.
 

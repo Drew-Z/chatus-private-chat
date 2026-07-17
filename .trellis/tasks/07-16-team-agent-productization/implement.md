@@ -4,10 +4,10 @@
 - [x] Retrieve and pin current official Cloudflare Agents SDK, Durable Objects, Workers, MCP, and client guidance before implementation; record API/version decisions in `research/cloudflare-agents-sdk.md`.
 - [x] Audit `src/worker.ts`, `public/`, tests, KV keys, Durable Object schema, secrets, and CI; record the capability disposition and migration risks in `research/current-runtime-audit.md`.
 - [ ] Introduce module boundaries for gateway/auth, user Agent, provider routing, capability registry, tools/MCP, administration, persistence, telemetry, and shared contracts.
-- [ ] Add the Cloudflare Agents SDK binding and per-user Agent identity with deterministic state and migration fixtures.
+- [x] Add the Cloudflare Agents SDK binding and per-user Agent identity with deterministic state and migration fixtures.
 - [ ] Migrate conversations, structured long-term memory, quotas, feedback, and run metadata into the Agent-owned durable model without exposing secrets.
 - [ ] Extract OpenAI-compatible and Anthropic-compatible adapters, route selection, retry classification, fallback, BYOK, and redacted provider diagnostics behind the provider router.
-- [ ] Rebuild Skill selection, bounded tool loops, confirmations, built-in tools, and MCP execution around the Agent capability allow-list.
+- [x] Rebuild Skill selection, bounded tool loops, confirmations, built-in tools, and MCP execution around the Agent capability allow-list.
 - [x] Remove scheduled/automatic completion probes, remove the production cron dependency, keep model-free `/healthz`, and add passive real-task reliability aggregation.
 - [ ] Rebuild teammate administration for access, assignments, routes, secret references, quotas, Skills, tools, MCP, audit, sessions, data export, and user deletion.
 - [ ] Replace the handwritten static application/admin monolith with a typed Vite/React client using the supported Agents SDK client transport and resumable streaming pattern.
@@ -37,14 +37,25 @@
 - [x] Execute assigned built-in and reviewed MCP tools through AI SDK `streamText`, with bounded calls, continuation-safe approval messages, Agent-owned trust, and quota-once continuation handling.
 - [ ] Extract shared contracts, provider routing, secret resolution, fallback classification, telemetry, Skills, tools, and MCP into explicit modules.
 - [x] Execute normal Agent turns through AI SDK providers while preserving route assignment, BYOK, quota, bounded tool loops, and approval policy.
-- [ ] Add idempotent legacy conversation and memory import fixtures without deleting legacy storage.
+- [x] Add idempotent legacy conversation and memory import fixtures without deleting legacy storage.
+- [x] Add a per-member root Agent index plus server-derived per-`chatId` conversation Agents, with idempotent legacy transcript import and revision-safe Agent memory.
 
 ### Slice 3: Typed Product Client
 
 - [x] Add an isolated Vite/React application using authenticated `useAgent` and `useAgentChat`, with resumable text streaming, connection state, approvals, and explicit stop behavior at `/react-chat/`.
-- [ ] Implement chat, resumable streams, history, memory, approvals, traces, route state, offline/degraded states, and mobile/PWA behavior.
+- [x] Implement chat, resumable streams, history, memory, approvals, traces, route state, offline/degraded states, and mobile/PWA behavior.
 - [ ] Rebuild administration as typed components over the existing revisioned HTTP administration boundary.
-- [ ] Update asset release fingerprinting and service-worker caching for Vite output.
+- [x] Update asset release fingerprinting and service-worker caching for Vite output.
+
+### Final Product Hardening
+
+- [x] Make root Agent SQLite the authoritative memory source for Agent, legacy, and administrator APIs while retaining KV only as an import/rollback record.
+- [x] Synchronize post-migration legacy chat writes through prefix-safe Agent import without allowing divergent snapshots to overwrite Agent transcripts.
+- [x] Preserve deleted conversation tombstones, reject stale reconnect/recreate attempts, and persist bounded transcript-cleanup retries.
+- [x] Clear pinned AIChat transcript, stream, request, and tool persistence on deletion, and rotate failed cleanup retries so later records are not starved.
+- [x] Prevent logout during active resumable runs; preserve rejected send drafts and conflicted memory drafts.
+- [x] Sanitize source URLs and implement memory-drawer initial focus, Tab containment, Escape handling, and focus restoration.
+- [x] Fall back to isolated cached navigation shells on network failure and HTTP `404`/`5xx` without masking authentication or rate-limit responses.
 
 ### Slice 4: Removal And Product Closure
 
@@ -52,7 +63,14 @@
 - [ ] Remove legacy chat storage only after deterministic and production migration verification.
 - [ ] Add optional read-only BIAU MCP integration, disabled by default, after standalone acceptance.
 - [ ] Complete installation, operations, backup, migration, rollback, English README, and Chinese README documentation.
-- [ ] Run the full release gate and record remaining production-only manual actions.
+- [x] Run the full release gate and record remaining production-only manual actions.
+
+## Verification Record
+
+- 2026-07-17: `npm run check:frontend` passed; Vite reported only the known oversized-chunk warning.
+- 2026-07-17: `npm test` passed with 14 files and 127 tests.
+- 2026-07-17: `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` passed.
+- No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Worker and tests use strict TypeScript. Browser modules are plain ES modules and rely on careful runtime checks plus focused tests/static checks.
+The Worker, tests, and default React client use strict TypeScript. Legacy modules under `public/` remain plain ES modules and rely on focused tests plus structural checks.
 
 ## Type Organization
 
@@ -11,6 +11,8 @@ The Worker and tests use strict TypeScript. Browser modules are plain ES modules
 - Reuse shared shapes across Worker handlers and Durable Object methods instead of recreating incompatible variants.
 - Keep provider credential values inside server-side services. Contracts may expose credential source metadata, but browser and Agent state must never receive the secret value.
 - Tests may use `as const` to preserve literal values, as in `tests/user-state.test.ts`.
+- Keep browser HTTP response decoders and validators in `client/src/lib/api.ts`; components consume validated projections instead of casting raw JSON.
+- Keep pure draft/conflict recovery helpers in `client/src/lib/` so they can be tested without a DOM runtime.
 
 ## Validation
 

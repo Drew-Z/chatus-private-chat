@@ -2,7 +2,7 @@
 
 ## Overview
 
-Chatus is migrating from the framework-free frontend served from `public/` to a typed React/Vite client under `client/`, with a Cloudflare Worker backend in `src/`. The legacy pages stay deployable during acceptance, while new Agent transport work belongs in the typed client.
+Chatus serves the typed React/Vite client under `client/` as the default teammate experience. The framework-free client remains deployable at `/legacy/` as a rollback surface, while the legacy administration page remains under `public/` until its own typed migration.
 
 ## Directory Layout
 
@@ -17,7 +17,8 @@ client/
     ├── lib/                   # validated browser API boundaries
     └── styles.css             # typed-client visual system
 public/
-├── index.html, app.js          # user chat shell and behavior
+├── index.html, app.js          # legacy user chat source, served through /legacy/
+├── legacy/                     # generated independent legacy rollback shell
 ├── admin.html, admin.js        # administration shell and behavior
 ├── markdown.js                 # reusable markdown rendering helpers
 ├── admin-report.js             # reusable report/CSV helpers
@@ -46,6 +47,9 @@ tests/
 ├── provider-router.test.ts
 ├── route-reliability.test.ts
 ├── team-agent-turn.test.ts
+├── client-api.test.ts
+├── client-markdown.test.ts
+├── client-state.test.ts
 ├── markdown.test.ts
 └── admin-report.test.ts
 scripts/
@@ -54,12 +58,13 @@ scripts/
 
 ## Module Organization
 
-- Keep the typed Agent client under `client/`; use React components for product views and runtime-validated helpers for HTTP session projections.
+- Keep the typed Agent client under `client/`; use React components for product views and runtime-validated helpers for HTTP projections and pure state recovery.
 - Build the typed client to `public/react-chat/` with Vite. Treat that directory as generated output: ignore it in Git and regenerate it through `npm run build:client` or `npm run check:frontend` before deployment.
-- Keep the typed client on `/react-chat/` until migration acceptance. Do not replace `public/index.html`, `public/app.js`, or the existing service-worker contract in an incremental slice.
-- Keep page-specific DOM orchestration in `public/app.js` or `public/admin.js`.
-- Extract pure, testable behavior when it is reusable or security-sensitive. Examples: `public/markdown.js` and `public/admin-report.js`.
-- Keep browser assets at the `public/` root because HTML, service-worker caching, and release fingerprint checks use root-relative paths.
+- Serve the React shell at `/` and `/react-chat/`; serve an independent generated copy of the framework-free chat shell at `/legacy/`. `DEFAULT_CLIENT=legacy` is the emergency root rollback switch.
+- Keep legacy chat/admin DOM orchestration in `public/app.js` or `public/admin.js`; new teammate-facing product behavior belongs in React.
+- Extract pure, testable behavior when it is reusable or security-sensitive. Examples: `client/src/lib/api.ts`, `client/src/lib/markdown.ts`, `client/src/lib/state.ts`, `public/markdown.js`, and `public/admin-report.js`.
+- Keep shared and legacy browser assets at the `public/` root. Vite content-hashed assets live under `public/react-chat/assets/` and receive immutable caching.
+- Keep navigation cache keys isolated for `/`, `/react-chat/`, `/legacy/`, and `/admin`; one shell must never overwrite another shell's offline fallback.
 - Keep Worker composition in `src/index.ts`: it exports the default gateway plus every Wrangler Durable Object class.
 - Keep per-member Agent lifecycle and persistence behavior under `src/agent/`; gateway authentication and server-side instance selection stay in `src/worker.ts`.
 - Keep cross-runtime state and transport shapes under `src/contracts/`; validate untrusted request or storage data before it becomes one of these types.
@@ -76,12 +81,12 @@ scripts/
 
 ## Examples
 
-- Pure browser helper: `public/markdown.js`, tested by `tests/markdown.test.ts`.
-- Page controller: `public/app.js`, paired with `public/index.html`.
+- Typed browser helpers: `client/src/lib/api.ts`, `client/src/lib/markdown.ts`, and `client/src/lib/state.ts`, tested by focused `tests/client-*.test.ts` files.
+- Legacy page controller: `public/app.js`, paired with the `/legacy/` shell generated from `public/index.html`.
 - Backend gateway: `src/worker.ts`; composition/export boundary: `src/index.ts`; durable member runtime: `src/agent/team-agent.ts`; stream fallback: `src/services/fallback-language-model.ts`; provider adapters: `src/services/provider-model.ts`; provider routing: `src/services/provider-router.ts`; passive reliability: `src/services/route-reliability.ts`.
 
 ## Avoid
 
 - Do not add another component framework or a second browser build pipeline. New typed product work uses the reviewed React/Vite boundary under `client/`.
-- Do not create nested feature directories while HTML and service-worker asset lists still assume flat root paths.
+- Do not add nested paths to the legacy `public/` surface without updating HTML, release fingerprinting, and service-worker discovery. Vite-owned hashed asset directories are expected.
 - Do not duplicate a pure helper inside both page scripts; extract and test a shared ES module.

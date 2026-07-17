@@ -29,6 +29,33 @@ The product-level capability model is domain-neutral. The initial curated pack f
 
 Existing data should be imported through idempotent migration code. No destructive cleanup occurs until user identity, conversations, quotas, and memory have been verified in the new runtime.
 
+### Agent Instance Facets
+
+The per-user Agent identity has two server-derived facets so the runtime can use the
+Cloudflare AIChat persistence model without trusting browser-selected Durable Object
+names:
+
+- One opaque root `TeamAgent` instance per teammate owns the conversation index,
+  structured long-term memory, migration markers, and deletion bookkeeping.
+- One opaque conversation `TeamAgent` instance is derived from the authenticated
+  teammate plus `chatId`. It owns the native AIChat message transcript, resumable
+  stream, cancellation state, and tool approval continuation for that conversation.
+- The browser sends only a bounded `chatId`. The gateway authenticates the request and
+  derives both instance names; a client-supplied Agent instance name is never used as
+  an authorization decision.
+- Legacy `UserState` chats and KV memory remain import sources and rollback records.
+  Import is idempotent, creates new Agent transcripts, appends only when the existing
+  transcript is an exact prefix, and never deletes the source records during bootstrap.
+- Root Agent memory is authoritative for `/api/memory`, `/api/agent/memory`,
+  administrator memory controls, legacy prompt construction, and Agent turns. KV
+  memory is read only during idempotent bootstrap and retained as rollback evidence.
+- Writes from the rollback client synchronize new or prefix-compatible transcripts
+  into the Agent boundary. A divergent Agent transcript is never replaced by an old
+  snapshot, and a tombstoned conversation ID cannot be recreated by either client.
+- Conversation deletion writes the root tombstone and a persistent transcript-cleanup
+  record before cleanup is attempted. Later Agent entry/list requests retry bounded
+  pending cleanup work until the conversation Agent transcript and tool trust are clear.
+
 ## Agent Execution Flow
 
 1. The gateway authenticates the teammate and resolves a stable internal user ID.
@@ -45,6 +72,12 @@ The Agent is responsible for deciding whether retrieval, a Skill, a tool, or ord
 ## Frontend Direction
 
 Replace the large handwritten `public/app.js`, `public/admin.js`, and shared CSS surface with a typed Vite/React client that still builds into Worker assets. Use stable routes for sign-in, chats, memory, capabilities/settings, and administration. Reuse the current product's proven behavior rather than preserving its file layout.
+
+The React teammate client is the default root shell; `/legacy/` remains an independent
+rollback shell and `DEFAULT_CLIENT=legacy` remains the emergency root switch. Service
+worker navigation caches stay isolated for root, React, legacy, and admin shells. Network
+`404` and `5xx` navigation responses may use the matching cached shell, while authorization
+and rate-limit responses remain visible and an absent cache preserves the original error.
 
 The main workspace should prioritize the conversation and current task. Route, Skill, and tool details belong in compact inspectable controls and run traces, not permanent explanatory walls. Mobile behavior must preserve normal vertical scrolling, avoid overlapping navigation, and make tool approval usable without horizontal page scrolling.
 

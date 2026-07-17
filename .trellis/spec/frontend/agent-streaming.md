@@ -5,6 +5,77 @@
 - `TeamAgent.onChatMessage()` is the owner of `streamText()` and returns `toUIMessageStreamResponse()` so Cloudflare AIChat persistence, reconnect, cancellation, and recovery remain active.
 - The Worker preparation boundary validates the member, messages, blocked-prompt policy, route access, image support, quota, Skills, credentials, and route candidates before a model stream starts.
 - Provider keys exist only while constructing server-side AI SDK model instances. They must not enter Agent state, UI messages, response metadata, logs, or run traces.
+- The browser receives a server-derived root Agent instance and `basePath: "agent"`; it supplies only a bounded `chatId`, while the gateway derives the conversation Agent instance.
+- The root Agent owns the authoritative long-term memory, conversation tombstones, and persisted transcript-cleanup queue. Conversation Agents read root memory before turn preparation.
+- Legacy transcript import is idempotent and prefix-safe. A deleted ID or divergent Agent transcript is never overwritten by a rollback-client snapshot.
+
+## Scenario: Conversation Deletion Cleanup
+
+### 1. Scope / Trigger
+
+This contract applies whenever an Agent or legacy API deletes a conversation, or user deletion purges all Agent-owned data.
+
+### 2. Signatures
+
+```typescript
+deleteConversation(chatId: string, expectedUpdatedAt: number): Promise<AgentConversationMutationResult>
+listPendingConversationCleanups(limit?: number): Promise<AgentConversationCleanupRecord[]>
+clearConversation(): Promise<void>
+```
+
+```sql
+chatus_conversation_cleanup(
+  chat_id TEXT PRIMARY KEY,
+  requested_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL,
+  last_attempt_at INTEGER NOT NULL
+)
+```
+
+### 3. Contracts
+
+- The root tombstone and cleanup row are committed before the Worker calls the conversation Agent.
+- Pending work is ordered by `last_attempt_at ASC, requested_at ASC` so unattempted records run before failed retries and persistent failures cannot starve newer deletions.
+- A successful conversation cleanup deletes AIChat messages, resumable stream data, request context, tool-run persistence, and capability trust before the root cleanup row is removed.
+- The AIChat SDK version is pinned because cleanup currently names its persisted SQLite tables directly.
+
+### 4. Validation & Error Matrix
+
+- Missing or stale `expectedUpdatedAt` -> reject before deleting either legacy or Agent state.
+- Existing tombstone -> `conversation_deleted`; reconnect and explicit recreation return HTTP `410`.
+- Conversation Agent cleanup failure -> keep the cleanup row, increment `attempts`, update `last_attempt_at`, and retry from a later bounded drain.
+- Cleanup success -> remove the cleanup row; the tombstone remains authoritative.
+
+### 5. Good / Base / Bad Cases
+
+- Good: three old cleanup attempts fail, then an unattempted fourth record is selected on the next drain.
+- Base: deletion clears the transcript immediately and returns without a pending cleanup.
+- Bad: always selecting `ORDER BY requested_at` lets three permanently failing records block every later transcript deletion.
+
+### 6. Tests Required
+
+- Seed a non-empty conversation transcript, delete it, drain cleanup, and assert both zero messages and an empty cleanup queue.
+- Queue at least four deletions, mark the first batch failed, and assert the next batch begins with an unattempted record.
+- Assert stale reconnect, explicit recreation, and legacy PUT cannot revive a tombstoned ID.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await this.persistMessages([]);
+```
+
+`persistMessages` reconciles with the current transcript and does not express destructive deletion.
+
+#### Correct
+
+```typescript
+this.resetTurnState();
+this.sql`DELETE FROM cf_ai_chat_agent_messages`;
+this.sql`DELETE FROM cf_ai_chat_stream_chunks`;
+this.messages = [];
+```
 
 ## Capability Registry Boundary
 
