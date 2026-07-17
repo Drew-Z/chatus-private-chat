@@ -3,6 +3,7 @@ node_modules/
 .prod.secrets.json
 public/release.json
 public/react-chat/
+public/legacy/
 .wrangler/
 dist/
 *.log

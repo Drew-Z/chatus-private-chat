@@ -1,6 +1,7 @@
-const CACHE_NAME = "chatus-shell-v4";
+const CACHE_NAME = "chatus-shell-v6";
 const SHELL_ASSETS = [
   "/",
+  "/legacy/",
   "/admin",
   "/styles.css",
   "/app.js",
@@ -16,7 +17,7 @@ const SHELL_ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)));
+  event.waitUntil(cacheApplicationShell());
 });
 
 self.addEventListener("message", (event) => {
@@ -35,22 +36,22 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
+  if (
+    url.origin !== self.location.origin
+    || url.pathname.startsWith("/api/")
+    || url.pathname.startsWith("/agent")
+    || url.pathname === "/release.json"
+  ) return;
 
   if (request.mode === "navigate") {
-    const fallbackPath = url.pathname.startsWith("/admin") ? "/admin" : "/";
-    const network = fetch(request).then(async (response) => {
-      if (response.ok && response.type === "basic") {
-        const cache = await caches.open(CACHE_NAME);
-        await cache.put(fallbackPath, response.clone());
-      }
-      return response;
-    });
+    const fallbackPath = navigationCacheKey(url.pathname);
+    const network = fetchNavigation(request, fallbackPath);
     event.waitUntil(network.then(() => undefined).catch(() => undefined));
-    event.respondWith(network.catch(() => caches.match(fallbackPath)));
+    event.respondWith(network);
     return;
   }
 
+  const cached = caches.match(request, { ignoreSearch: false });
   const network = fetch(request).then(async (response) => {
     if (response.ok && response.type === "basic") {
       const cache = await caches.open(CACHE_NAME);
@@ -59,5 +60,46 @@ self.addEventListener("fetch", (event) => {
     return response;
   });
   event.waitUntil(network.then(() => undefined).catch(() => undefined));
-  event.respondWith(network.catch(() => caches.match(request, { ignoreSearch: true })));
+  event.respondWith(isFingerprintedAsset(url) ? cached.then((response) => response || network) : network.catch(() => cached));
 });
+
+async function fetchNavigation(request, fallbackPath) {
+  try {
+    const response = await fetch(request);
+    if (response.ok && response.type === "basic") {
+      const cache = await caches.open(CACHE_NAME);
+      await cache.put(fallbackPath, response.clone());
+      return response;
+    }
+    if (response.status === 404 || response.status >= 500) {
+      return (await caches.match(fallbackPath)) || response;
+    }
+    return response;
+  } catch {
+    return (await caches.match(fallbackPath)) || Response.error();
+  }
+}
+
+async function cacheApplicationShell() {
+  const cache = await caches.open(CACHE_NAME);
+  await cache.addAll(SHELL_ASSETS);
+  const response = await fetch("/react-chat/");
+  if (!response.ok) throw new Error("react_shell_unavailable");
+  await cache.put("/react-chat/", response.clone());
+  const html = await response.text();
+  const assets = [...html.matchAll(/(?:src|href)=["'](\/react-chat\/assets\/[^"']+)["']/g)]
+    .map((match) => match[1]);
+  if (assets.length) await cache.addAll([...new Set(assets)]);
+}
+
+function navigationCacheKey(pathname) {
+  if (pathname.startsWith("/admin")) return "/admin";
+  if (pathname.startsWith("/legacy")) return "/legacy/";
+  if (pathname.startsWith("/react-chat")) return "/react-chat/";
+  return "/";
+}
+
+function isFingerprintedAsset(url) {
+  return /^[0-9a-f]{40}$/i.test(url.searchParams.get("v") || "")
+    || /^\/react-chat\/assets\/.+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/i.test(url.pathname);
+}

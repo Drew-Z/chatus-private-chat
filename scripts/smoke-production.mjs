@@ -44,10 +44,30 @@ async function runChecks() {
   assert(home.status === 200, `home: expected 200, got ${home.status}`);
   assertSecurityHeaders(home, "home");
   const homeHtml = await home.text();
-  assert(homeHtml.includes('id="loginView"'), "home: login view missing");
-  assert(homeHtml.includes('src="/app.js?v='), "home: versioned app script missing");
+  assert(homeHtml.includes('id="root"'), "home: React root missing");
+  assert(homeHtml.includes('/react-chat/assets/'), "home: React assets missing");
+  assert(homeHtml.includes('/manifest.webmanifest'), "home: manifest link missing");
   if (expectedCommit) assert(homeHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "home: release meta does not match deployment");
-  if (expectedCommit) assert(homeHtml.includes(`/app.js?v=${expectedCommit}`), "home: asset version does not match deployment");
+  if (expectedCommit) assert(homeHtml.includes(`/pwa.js?v=${expectedCommit}`), "home: PWA asset version does not match deployment");
+
+  const reactAssets = [...homeHtml.matchAll(/(?:src|href)="(\/react-chat\/assets\/[^"]+\.(?:js|css))"/g)]
+    .map((match) => match[1]);
+  assert(reactAssets.some((asset) => asset.endsWith(".js")), "home: built React JavaScript is missing");
+  assert(reactAssets.some((asset) => asset.endsWith(".css")), "home: built React stylesheet is missing");
+  for (const asset of reactAssets) {
+    const response = await request(asset);
+    assert(response.status === 200, `${asset}: expected 200, got ${response.status}`);
+    assert(response.headers.get("cache-control")?.includes("immutable"), `${asset}: immutable cache missing`);
+  }
+
+  const legacy = await request(`/legacy/?smoke=${marker}`);
+  assert(legacy.status === 200, `legacy: expected 200, got ${legacy.status}`);
+  assertSecurityHeaders(legacy, "legacy");
+  const legacyHtml = await legacy.text();
+  assert(legacyHtml.includes('id="loginView"'), "legacy: login view missing");
+  assert(legacyHtml.includes('src="/app.js?v='), "legacy: versioned app script missing");
+  if (expectedCommit) assert(legacyHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "legacy: release meta does not match deployment");
+  if (expectedCommit) assert(legacyHtml.includes(`/app.js?v=${expectedCommit}`), "legacy: asset version does not match deployment");
 
   const admin = await request(`/admin?smoke=${marker}`);
   assert(admin.status === 200, `admin: expected 200, got ${admin.status}`);

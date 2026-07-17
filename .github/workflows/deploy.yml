@@ -34,6 +34,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Validate Worker bundle
+        run: npx wrangler deploy --dry-run
+
       - name: Prepare Worker secrets
         env:
           UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}
@@ -108,7 +111,7 @@ jobs:
             "public/release.json",
             JSON.stringify({ commit: process.env.GITHUB_SHA, deployedAt: new Date().toISOString() }),
           );
-          for (const file of ["public/index.html", "public/admin.html"]) {
+          for (const file of ["public/index.html", "public/admin.html", "public/react-chat/index.html", "public/legacy/index.html"]) {
             const source = fs.readFileSync(file, "utf8");
             if (!source.includes('meta name="chatus-release" content="development"')) {
               throw new Error(`${file} is missing the release meta placeholder`);
