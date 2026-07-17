@@ -5,9 +5,15 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
-import { generateText, type ModelMessage } from "ai";
+import { generateText, type ModelMessage, type UIMessage } from "ai";
 import type { TeamAgent } from "./agent/team-agent";
-import type { TeamAgentProps } from "./contracts/agent";
+import {
+  MAX_AGENT_CONVERSATIONS,
+  type AgentConversationInput,
+  type AgentConversationMutationResult,
+  type AgentConversationSummary,
+  type TeamAgentProps,
+} from "./contracts/agent";
 import type {
   CapabilityToolExecutionResult,
   CapabilityToolRunner,
@@ -196,6 +202,7 @@ export type Env = {
   MAX_CONTEXT_CHARS?: string;
   SESSION_TTL_SECONDS?: string;
   DEFAULT_MAX_TOKENS?: string;
+  DEFAULT_CLIENT?: string;
   BLOCKED_PROMPTS?: string;
   ADMIN_TOKEN?: string;
   ROUTE_KEYS_MASTER_KEY?: string;
@@ -215,6 +222,7 @@ const METRICS_DAYS = 7;
 const MAX_CLOUD_SESSIONS = 30;
 const MAX_CLOUD_MESSAGES = 120;
 const MAX_CLOUD_SESSION_BYTES = 1_800_000;
+const AGENT_LEGACY_MIGRATION_ID = "legacy-user-state-v1";
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const ADMIN_AUDIT_KEY = "config:admin_audit";
 const FEEDBACK_KEY = "feedback:recent";
@@ -722,14 +730,41 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
   if (url.pathname.startsWith("/api/")) {
     return handleApi(request, env, url);
   }
+  if (request.method === "GET" && url.pathname === "/react-chat") {
+    return Response.redirect(new URL("/react-chat/", url).toString(), 308);
+  }
+  if (request.method === "GET" && url.pathname === "/legacy") {
+    return Response.redirect(new URL("/legacy/", url).toString(), 308);
+  }
+  if (request.method === "GET" && url.pathname === "/legacy/") {
+    return fetchRewrittenAsset(request, env, url, "/legacy/");
+  }
+  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+    const shellPath = env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html";
+    return fetchRewrittenAsset(request, env, url, shellPath);
+  }
   const assetResponse = await env.ASSETS.fetch(request);
   return withAssetCacheHeaders(assetResponse, url);
+}
+
+async function fetchRewrittenAsset(
+  request: Request,
+  env: Env,
+  originalUrl: URL,
+  pathname: string,
+): Promise<Response> {
+  const assetUrl = new URL(originalUrl);
+  assetUrl.pathname = pathname;
+  const assetResponse = await env.ASSETS.fetch(new Request(assetUrl, request));
+  return withAssetCacheHeaders(assetResponse, originalUrl);
 }
 
 function withAssetCacheHeaders(response: Response, url: URL): Response {
   const secured = withSecurityHeaders(response);
   const fingerprint = url.searchParams.get("v") || "";
-  if (!/^[0-9a-f]{40}$/i.test(fingerprint) || !/\.(?:css|js)$/i.test(url.pathname)) return secured;
+  const releaseFingerprint = /^[0-9a-f]{40}$/i.test(fingerprint) && /\.(?:css|js)$/i.test(url.pathname);
+  const viteFingerprint = /^\/react-chat\/assets\/.+-[A-Za-z0-9_-]{8,}\.(?:css|js)$/i.test(url.pathname);
+  if (!releaseFingerprint && !viteFingerprint) return secured;
 
   const headers = new Headers(secured.headers);
   headers.set("Cache-Control", "public, max-age=31536000, immutable");
@@ -787,7 +822,25 @@ async function handleTeamAgentRequest(request: Request, env: Env, url: URL): Pro
     return jsonResponse({ error: "invalid_origin" }, 403);
   }
 
-  const agent = await getTeamAgent(env, session.label);
+  const chatId = normalizeAgentConversationId(url.searchParams.get("chatId"));
+  if (!chatId) {
+    return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  }
+  await ensureAgentLegacyImport(env, session.label);
+  await drainAgentConversationCleanup(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const now = Date.now();
+  const created = await root.createConversation({
+    id: chatId,
+    title: "新对话",
+    createdAt: now,
+    updatedAt: now,
+    summary: "",
+    pinned: false,
+    skillIds: [],
+  });
+  if (!created.ok) return agentConversationMutationError(created);
+  const agent = await getTeamAgentConversation(env, session.label, chatId);
   return agent.fetch(request);
 }
 
@@ -847,7 +900,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       agent: {
         transport: "cloudflare-ai-chat",
         className: "team-agent",
-        basePath: "/agent",
+        basePath: "agent",
         instance: await getTeamAgentInstanceName(session.label),
       },
     });
@@ -861,6 +914,25 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
   if (url.pathname === "/api/feedback" && request.method === "POST") {
     return handleFeedback(request, env, session);
+  }
+
+  if (url.pathname === "/api/agent/conversations" && request.method === "GET") {
+    return handleListAgentConversations(env, session);
+  }
+  if (url.pathname === "/api/agent/conversations" && request.method === "POST") {
+    return handleCreateAgentConversation(request, env, session);
+  }
+  if (url.pathname.startsWith("/api/agent/conversations/") && request.method === "PATCH") {
+    return handleUpdateAgentConversation(request, env, session, url);
+  }
+  if (url.pathname.startsWith("/api/agent/conversations/") && request.method === "DELETE") {
+    return handleDeleteAgentConversation(env, session, url);
+  }
+  if (url.pathname === "/api/agent/memory" && request.method === "GET") {
+    return handleGetAgentMemory(env, session);
+  }
+  if (url.pathname === "/api/agent/memory" && request.method === "PUT") {
+    return handlePutAgentMemory(request, env, session);
   }
 
   if (url.pathname === "/api/memory" && request.method === "GET") {
@@ -906,6 +978,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       revokeSessionsByLabel(env, session.label),
       loadFeedback(env),
       getUserState(env, session.label).purgeUserData(),
+      purgeAgentUserData(env, session.label),
     ]);
     await Promise.all([
       env.CHAT_STORE.delete(memoryKey(session.label)),
@@ -1542,17 +1615,18 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
   const memoryByLabel = new Map<string, string>();
   await Promise.all(
     labels.map(async (label) => {
+      await ensureAgentLegacyImport(env, label);
       const [state, legacyUsage, memory] = await Promise.all([
         getUserState(env, label).getStats(days),
         Promise.all(days.map((dayKey) => env.CHAT_STORE.get(usageKey(label, dayKey)))),
-        env.CHAT_STORE.get(memoryKey(label)),
+        getTeamAgent(env, label).then((root) => root.getMemory()),
       ]);
       stateByLabel.set(label, state);
       legacyUsageByLabel.set(
         label,
         Object.fromEntries(days.map((dayKey, index) => [dayKey, positiveCount(legacyUsage[index])])),
       );
-      memoryByLabel.set(label, memory || "");
+      memoryByLabel.set(label, memory.memory);
     }),
   );
 
@@ -1670,10 +1744,11 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
 }
 
 async function handleGetMemory(env: Env, session: Session): Promise<Response> {
-  const memory = (await env.CHAT_STORE.get(memoryKey(session.label))) || "";
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const record = await root.getMemory();
   return jsonResponse({
-    memory,
-    revision: await secretFingerprint(memory),
+    ...record,
     maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS),
   });
 }
@@ -1681,17 +1756,17 @@ async function handleGetMemory(env: Env, session: Session): Promise<Response> {
 async function handlePutMemory(request: Request, env: Env, session: Session): Promise<Response> {
   const maxChars = numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS);
   const body = await readJson<{ memory?: unknown; expectedRevision?: unknown }>(request);
-  const conflict = await memoryRevisionConflict(env, session.label, body.expectedRevision);
-  if (conflict) return conflict;
-  const memory = typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "";
-
-  if (memory) {
-    await env.CHAT_STORE.put(memoryKey(session.label), memory);
-  } else {
-    await env.CHAT_STORE.delete(memoryKey(session.label));
-  }
-
-  return jsonResponse({ ok: true, memory, revision: await secretFingerprint(memory), maxChars });
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const current = await root.getMemory();
+  const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision : current.revision;
+  const result = await root.putMemory(
+    typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "",
+    expectedRevision,
+  );
+  if (!result.ok) return agentMemoryConflictResponse(result.current);
+  if (!result.record) return jsonResponse({ error: "memory_update_failed" }, 500);
+  return jsonResponse({ ok: true, ...result.record, maxChars });
 }
 
 async function handleAdminGetMemory(request: Request, env: Env, url: URL): Promise<Response> {
@@ -1699,11 +1774,12 @@ async function handleAdminGetMemory(request: Request, env: Env, url: URL): Promi
   if (!label) {
     return jsonResponse({ error: "label_required" }, 400);
   }
-  const memory = (await env.CHAT_STORE.get(memoryKey(label))) || "";
+  await ensureAgentLegacyImport(env, label);
+  const root = await getTeamAgent(env, label);
+  const record = await root.getMemory();
   return jsonResponse({
     label,
-    memory,
-    revision: await secretFingerprint(memory),
+    ...record,
     maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS),
   });
 }
@@ -1715,28 +1791,30 @@ async function handleAdminPutMemory(request: Request, env: Env): Promise<Respons
   if (!label) {
     return jsonResponse({ error: "label_required" }, 400);
   }
-  const conflict = await memoryRevisionConflict(env, label, body.expectedRevision);
-  if (conflict) return conflict;
+  if (typeof body.expectedRevision !== "string") {
+    return jsonResponse({ error: "expected_revision_required", message: "缺少记忆版本，请刷新后重试" }, 400);
+  }
+  await ensureAgentLegacyImport(env, label);
   const memory = typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "";
-  if (memory) {
-    await env.CHAT_STORE.put(memoryKey(label), memory);
-  } else {
-    await env.CHAT_STORE.delete(memoryKey(label));
+  const root = await getTeamAgent(env, label);
+  const result = await root.putMemory(memory, body.expectedRevision);
+  if (!result.ok) {
+    return jsonResponse({
+      error: "memory_conflict",
+      message: "长期记忆已在其他设备更新，请重新读取后再编辑",
+      currentRevision: result.current?.revision || "",
+    }, 409);
   }
   await appendAdminAudit(env, memory ? "memory.update" : "memory.clear", label);
-  return jsonResponse({ ok: true, label, memory, revision: await secretFingerprint(memory), maxChars });
+  return jsonResponse({ ok: true, label, ...result.record, maxChars });
 }
 
-async function memoryRevisionConflict(env: Env, label: string, expectedValue: unknown): Promise<Response | null> {
-  const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
-  if (!expectedRevision) return null;
-  const memory = (await env.CHAT_STORE.get(memoryKey(label))) || "";
-  const currentRevision = await secretFingerprint(memory);
-  if (currentRevision === expectedRevision) return null;
+function agentMemoryConflictResponse(current?: { revision: string; updatedAt: number }): Response {
   return jsonResponse({
     error: "memory_conflict",
     message: "长期记忆已在其他设备更新，请重新读取后再编辑",
-    currentRevision,
+    currentRevision: current?.revision || "",
+    currentUpdatedAt: current?.updatedAt || 0,
   }, 409);
 }
 
@@ -1820,7 +1898,8 @@ async function handleMemorySuggest(request: Request, env: Env, session: Session)
     return jsonResponse({ error: "empty_messages" }, 400);
   }
 
-  const existing = ((await env.CHAT_STORE.get(memoryKey(session.label))) || "").trim();
+  await ensureAgentLegacyImport(env, session.label);
+  const existing = (await (await getTeamAgent(env, session.label)).getMemory()).memory.trim();
   const transcript = formatTranscript(normalized).slice(0, 8_000);
   const prompt: ChatMessage[] = [
     {
@@ -1903,6 +1982,169 @@ async function handleSessionSummary(request: Request, env: Env, session: Session
   return jsonResponse({ summary, routeId: result.routeId, maxChars: maxSummary });
 }
 
+async function handleListAgentConversations(env: Env, session: Session): Promise<Response> {
+  await ensureAgentLegacyImport(env, session.label);
+  await drainAgentConversationCleanup(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const conversations = await root.listConversations();
+  return jsonResponse({ conversations, maxConversations: MAX_AGENT_CONVERSATIONS });
+}
+
+async function handleCreateAgentConversation(request: Request, env: Env, session: Session): Promise<Response> {
+  const body = await readJson<{ id?: unknown; title?: unknown; routeId?: unknown; skillIds?: unknown }>(request);
+  const settings = await validateAgentConversationSettings(env, session.label, body.routeId, body.skillIds, true);
+  if (!settings.ok) return settings.response;
+  await ensureAgentLegacyImport(env, session.label);
+  const now = Date.now();
+  const id = normalizeAgentConversationId(body.id) || crypto.randomUUID();
+  const root = await getTeamAgent(env, session.label);
+  const result = await root.createConversation({
+    id,
+    title: typeof body.title === "string" ? body.title : "新对话",
+    createdAt: now,
+    updatedAt: now,
+    summary: "",
+    pinned: false,
+    routeId: settings.routeId,
+    skillIds: settings.skillIds || [],
+  });
+  if (!result.ok || !result.conversation) return agentConversationMutationError(result);
+  return jsonResponse({ ok: true, conversation: result.conversation }, result.created ? 201 : 200);
+}
+
+async function handleUpdateAgentConversation(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+): Promise<Response> {
+  const id = agentConversationIdFromPath(url);
+  if (!id) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  const body = await readJson<{
+    title?: unknown;
+    routeId?: unknown;
+    skillIds?: unknown;
+    expectedUpdatedAt?: unknown;
+  }>(request);
+  const expectedUpdatedAt = finitePositiveInteger(body.expectedUpdatedAt);
+  if (!expectedUpdatedAt) {
+    return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
+  }
+  const settings = await validateAgentConversationSettings(env, session.label, body.routeId, body.skillIds, false);
+  if (!settings.ok) return settings.response;
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const result = await root.updateConversation({
+    id,
+    expectedUpdatedAt,
+    title: typeof body.title === "string" ? body.title : undefined,
+    routeId: settings.routeId,
+    skillIds: settings.skillIds,
+  });
+  if (!result.ok || !result.conversation) return agentConversationMutationError(result);
+  return jsonResponse({ ok: true, conversation: result.conversation });
+}
+
+async function handleDeleteAgentConversation(env: Env, session: Session, url: URL): Promise<Response> {
+  const id = agentConversationIdFromPath(url);
+  if (!id) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  const expectedUpdatedAt = finitePositiveInteger(url.searchParams.get("expectedUpdatedAt"));
+  if (!expectedUpdatedAt) {
+    return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
+  }
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const result = await root.deleteConversation(id, expectedUpdatedAt);
+  if (!result.ok) return agentConversationMutationError(result);
+  const cleanupPending = !(await attemptAgentConversationCleanup(env, session.label, id, root));
+  await getUserState(env, session.label).deleteChat(id, 0).catch(() => undefined);
+  const conversations = await root.listConversations();
+  return jsonResponse({ ok: true, deleted: true, cleanupPending, conversations }, cleanupPending ? 202 : 200);
+}
+
+async function handleGetAgentMemory(env: Env, session: Session): Promise<Response> {
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const record = await root.getMemory();
+  return jsonResponse({ ...record, maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS) });
+}
+
+async function handlePutAgentMemory(request: Request, env: Env, session: Session): Promise<Response> {
+  const body = await readJson<{ memory?: unknown; expectedRevision?: unknown }>(request);
+  if (typeof body.expectedRevision !== "string") {
+    return jsonResponse({ error: "expected_revision_required", message: "缺少记忆版本，请刷新后重试" }, 400);
+  }
+  await ensureAgentLegacyImport(env, session.label);
+  const expectedRevision = body.expectedRevision;
+  const root = await getTeamAgent(env, session.label);
+  const result = await root.putMemory(
+    typeof body.memory === "string" ? body.memory : "",
+    expectedRevision,
+  );
+  if (!result.ok) {
+    const current = result.current;
+    return jsonResponse({
+      error: "memory_conflict",
+      message: "长期记忆已在其他设备更新，请重新读取后再编辑",
+      currentRevision: current?.revision || "",
+      currentUpdatedAt: current?.updatedAt || 0,
+    }, 409);
+  }
+  if (!result.record) return jsonResponse({ error: "memory_update_failed" }, 500);
+  return jsonResponse({ ok: true, ...result.record, maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS) });
+}
+
+async function validateAgentConversationSettings(
+  env: Env,
+  label: string,
+  routeValue: unknown,
+  skillValue: unknown,
+  useDefaults: boolean,
+): Promise<
+  | { ok: true; routeId?: string; skillIds?: string[] }
+  | { ok: false; response: Response }
+> {
+  const config = await loadAppConfig(env);
+  const access = await getRouteAccess(config, label, env);
+  const requestedRoute = typeof routeValue === "string" ? routeValue.trim() : "";
+  if (requestedRoute && !access.routes.some((route) => route.id === requestedRoute)) {
+    return { ok: false, response: jsonResponse({ error: "route_not_allowed", message: "该线路不可用" }, 403) };
+  }
+  let skillIds: string[] | undefined;
+  if (skillValue !== undefined) {
+    const requestedSkills = normalizeSelectedSkillIds(skillValue);
+    const allowedSkills = new Set(getPublicCapabilities(config, access.user).skills.map((skill) => skill.id));
+    if (requestedSkills.some((id) => !allowedSkills.has(id))) {
+      return { ok: false, response: jsonResponse({ error: "skill_not_allowed", message: "包含未分配的 Skill" }, 403) };
+    }
+    skillIds = requestedSkills;
+  } else if (useDefaults) {
+    skillIds = [];
+  }
+  return {
+    ok: true,
+    routeId: requestedRoute || (useDefaults ? access.defaultRoute : undefined),
+    skillIds,
+  };
+}
+
+function agentConversationMutationError(result: AgentConversationMutationResult): Response {
+  if (result.error === "conversation_conflict") {
+    return jsonResponse({
+      error: result.error,
+      message: "会话已在其他设备更新，请刷新后重试",
+      current: result.current || null,
+    }, 409);
+  }
+  if (result.error === "conversation_limit_reached") {
+    return jsonResponse({ error: result.error, message: `最多保留 ${MAX_AGENT_CONVERSATIONS} 个会话` }, 409);
+  }
+  if (result.error === "conversation_deleted") {
+    return jsonResponse({ error: result.error, message: "会话已删除，旧连接不能重新创建它" }, 410);
+  }
+  return jsonResponse({ error: result.error, message: "会话不存在" }, 404);
+}
+
 
 async function handleListChats(env: Env, session: Session): Promise<Response> {
   const chats = await loadChatSessions(env, session.label);
@@ -1926,8 +2168,9 @@ async function handlePutChat(request: Request, env: Env, session: Session): Prom
   }
 
   await migrateLegacyChatIndex(env, session.label);
-  const result = await getUserState(env, session.label).upsertChat(stored);
-  const chats = await getUserState(env, session.label).listChats();
+  const state = getUserState(env, session.label);
+  const result = await state.upsertChat(stored);
+  let chats = await state.listChats();
   if (!result.accepted) {
     return jsonResponse({
       ok: true,
@@ -1936,6 +2179,12 @@ async function handlePutChat(request: Request, env: Env, session: Session): Prom
       currentChat: chats.find((item) => item.id === chat.id) || null,
       chats: chats.map(summarizeChat),
     });
+  }
+  const syncState = await syncLegacyChatToAgent(env, session.label, chat);
+  if (syncState === "deleted") {
+    await state.deleteChat(chat.id, 0);
+    chats = await state.listChats();
+    return jsonResponse({ ok: true, accepted: false, chat: summarizeChat(chat), currentChat: null, chats: chats.map(summarizeChat) });
   }
   return jsonResponse({ ok: true, chat: summarizeChat(chat), chats: chats.map(summarizeChat) });
 }
@@ -1951,20 +2200,31 @@ async function handleDeleteChat(
     return jsonResponse({ error: "id_required" }, 400);
   }
   const expectedUpdatedAt = Number(url.searchParams.get("expectedUpdatedAt") || "0");
+  const normalizedExpectedUpdatedAt = Number.isFinite(expectedUpdatedAt) && expectedUpdatedAt > 0 ? expectedUpdatedAt : 0;
+  if (!normalizedExpectedUpdatedAt) {
+    return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
+  }
   await migrateLegacyChatIndex(env, session.label);
-  const result = await getUserState(env, session.label).deleteChat(
-    id,
-    Number.isFinite(expectedUpdatedAt) && expectedUpdatedAt > 0 ? expectedUpdatedAt : 0,
-  );
-  if (result.conflict) {
+  await ensureAgentLegacyImport(env, session.label);
+  const state = getUserState(env, session.label);
+  const legacyChat = (await state.listChats()).find((chat) => chat.id === id);
+  if (legacyChat) await syncLegacyChatToAgent(env, session.label, legacyChat);
+  const root = await getTeamAgent(env, session.label);
+  const agentResult = await root.deleteConversation(id, normalizedExpectedUpdatedAt);
+  if (!agentResult.ok && agentResult.error === "conversation_conflict") {
     return jsonResponse({
       error: "chat_delete_conflict",
       message: "该会话已在其他设备更新，已保留较新版本",
-      currentChat: result.currentChat || null,
+      currentChat: agentResult.current || null,
     }, 409);
   }
-  const chats = await getUserState(env, session.label).listChats();
-  return jsonResponse({ ok: true, deleted: result.deleted, chats: chats.map(summarizeChat) });
+  if (!agentResult.ok && agentResult.error !== "conversation_deleted") {
+    return agentConversationMutationError(agentResult);
+  }
+  if (agentResult.ok) await attemptAgentConversationCleanup(env, session.label, id, root);
+  const result = await state.deleteChat(id, 0);
+  const chats = await state.listChats();
+  return jsonResponse({ ok: true, deleted: result.deleted || agentResult.ok || agentResult.error === "conversation_deleted", chats: chats.map(summarizeChat) });
 }
 
 async function handleMigrateChats(request: Request, env: Env, session: Session): Promise<Response> {
@@ -1996,6 +2256,20 @@ async function handleMigrateChats(request: Request, env: Env, session: Session):
     await state.replaceChats(storedChats);
   } else {
     for (const chat of storedChats) await state.upsertChat(chat);
+  }
+  for (const chat of preparedIncoming) {
+    if (await syncLegacyChatToAgent(env, session.label, chat) === "deleted") {
+      await state.deleteChat(chat.id, 0);
+    }
+  }
+  if (mode === "replace") {
+    const incomingIds = new Set(preparedIncoming.map((chat) => chat.id));
+    const root = await getTeamAgent(env, session.label);
+    for (const conversation of await root.listConversations()) {
+      if (incomingIds.has(conversation.id)) continue;
+      const deleted = await root.deleteConversation(conversation.id, conversation.updatedAt);
+      if (deleted.ok) await attemptAgentConversationCleanup(env, session.label, conversation.id, root);
+    }
   }
   const chats = await state.listChats();
   return jsonResponse({
@@ -2355,6 +2629,164 @@ async function migrateLegacyChatIndex(env: Env, label: string): Promise<void> {
   }
 }
 
+async function ensureAgentLegacyImport(env: Env, label: string): Promise<void> {
+  const root = await getTeamAgent(env, label);
+  if (await root.hasMigration(AGENT_LEGACY_MIGRATION_ID)) return;
+  const [chats, memory] = await Promise.all([
+    loadLegacyChatSessionsForAgent(env, label),
+    env.CHAT_STORE.get(memoryKey(label)),
+  ]);
+  for (const chat of chats) {
+    await syncLegacyChatToAgent(env, label, chat, root);
+  }
+  await root.importLegacyMemory(memory || "");
+  await root.completeMigration(AGENT_LEGACY_MIGRATION_ID);
+}
+
+async function syncLegacyChatToAgent(
+  env: Env,
+  label: string,
+  chat: CloudChat,
+  root: DurableObjectStub<TeamAgent> | Promise<DurableObjectStub<TeamAgent>> = getTeamAgent(env, label),
+): Promise<"active" | "deleted" | "invalid"> {
+  const agentRoot = await root;
+  const messages = toAgentUiMessages(chat.messages);
+  const conversation: AgentConversationInput = {
+    id: chat.id,
+    title: chat.title,
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    summary: chat.summary,
+    pinned: chat.pinned,
+    routeId: chat.routeId,
+    parentChatId: chat.parentChatId,
+    skillIds: chat.skillIds,
+    messageCount: messages.length,
+  };
+  const imported = await agentRoot.importLegacyConversation(conversation);
+  if (imported.state !== "active") return imported.state;
+  const conversationAgent = await getTeamAgentConversation(env, label, chat.id);
+  const synced = await conversationAgent.syncLegacyMessages(messages);
+  if (synced.synced) await agentRoot.syncLegacyConversationMetadata(conversation, synced.messageCount);
+  return "active";
+}
+
+async function drainAgentConversationCleanup(env: Env, label: string): Promise<void> {
+  const root = await getTeamAgent(env, label);
+  const pending = await root.listPendingConversationCleanups(3).catch(() => []);
+  await Promise.all(pending.map((record) => attemptAgentConversationCleanup(env, label, record.chatId, root)));
+}
+
+async function attemptAgentConversationCleanup(
+  env: Env,
+  label: string,
+  chatId: string,
+  root: DurableObjectStub<TeamAgent> | Promise<DurableObjectStub<TeamAgent>> = getTeamAgent(env, label),
+): Promise<boolean> {
+  const agentRoot = await root;
+  try {
+    const conversation = await getTeamAgentConversation(env, label, chatId);
+    await conversation.clearConversation();
+    await agentRoot.completeConversationCleanup(chatId);
+    return true;
+  } catch {
+    await agentRoot.recordConversationCleanupFailure(chatId).catch(() => undefined);
+    return false;
+  }
+}
+
+async function loadLegacyChatSessionsForAgent(env: Env, label: string): Promise<CloudChat[]> {
+  const merged = new Map<string, CloudChat>();
+  const durableChats = await getUserState(env, label).listChats();
+  for (const chat of durableChats) merged.set(chat.id, chat);
+  const raw = await env.CHAT_STORE.get(chatIndexKey(label));
+  if (raw?.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const value of parsed) {
+          const chat = normalizeCloudChat(value);
+          const current = chat ? merged.get(chat.id) : undefined;
+          if (chat && (!current || chat.updatedAt > current.updatedAt)) merged.set(chat.id, chat);
+        }
+      }
+    } catch {
+      // Preserve malformed rollback data and continue with the durable source.
+    }
+  }
+  return [...merged.values()]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, Math.min(MAX_CLOUD_SESSIONS, MAX_AGENT_CONVERSATIONS));
+}
+
+function toAgentUiMessages(messages: ChatMessage[]): UIMessage[] {
+  const output: UIMessage[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message) continue;
+    const parts: UIMessage["parts"] = [];
+    if (typeof message.content === "string") {
+      if (message.content.trim()) parts.push({ type: "text", text: message.content });
+    } else {
+      for (const part of message.content) {
+        if (part.type === "text" && part.text.trim()) parts.push({ type: "text", text: part.text });
+        if (part.type === "image_url" && part.image_url.url.startsWith("data:image/")) {
+          parts.push({
+            type: "file",
+            mediaType: dataUrlMediaType(part.image_url.url) || "image/*",
+            url: part.image_url.url,
+          });
+        }
+      }
+    }
+    if (!parts.length) continue;
+    output.push({
+      id: `legacy-${index}-${Math.max(0, Math.floor(message.createdAt || 0))}`,
+      role: message.role,
+      parts,
+    });
+  }
+  return output;
+}
+
+function dataUrlMediaType(value: string): string {
+  const match = /^data:([^;,]+)[;,]/i.exec(value);
+  return match?.[1]?.slice(0, 120) || "";
+}
+
+async function purgeAgentUserData(env: Env, label: string): Promise<void> {
+  const root = await getTeamAgent(env, label);
+  const conversationIds = await root.getAllConversationIds();
+  await Promise.all(conversationIds.map(async (chatId) => {
+    const conversation = await getTeamAgentConversation(env, label, chatId);
+    await conversation.clearConversation();
+  }));
+  await root.purgeRootData();
+}
+
+function agentConversationIdFromPath(url: URL): string {
+  const prefix = "/api/agent/conversations/";
+  const encoded = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : "";
+  if (!encoded || encoded.includes("/")) return "";
+  try {
+    return normalizeAgentConversationId(decodeURIComponent(encoded));
+  } catch {
+    return "";
+  }
+}
+
+function normalizeAgentConversationId(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 80 || /[\u0000-\u001f\u007f]/.test(normalized)) return "";
+  return normalized;
+}
+
+function finitePositiveInteger(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
 function toStoredChat(chat: CloudChat): StoredChat | null {
   const serializedBytes = new TextEncoder().encode(JSON.stringify(chat)).byteLength;
   return serializedBytes <= MAX_CLOUD_SESSION_BYTES ? { ...chat, serializedBytes } : null;
@@ -2693,6 +3125,7 @@ export type TeamAgentTurnInput = {
   userApiKey?: string;
   sessionSummary?: string;
   temperature?: number;
+  longTermMemory?: string;
 };
 
 export type PreparedTeamAgentTurn =
@@ -2706,6 +3139,8 @@ export type PreparedTeamAgentTurn =
       closeTools: () => Promise<void>;
       maxToolSteps: number;
       remaining: number;
+      routeId: string;
+      skillIds: string[];
       recordStreamFailure: () => Promise<void>;
     }
   | { ok: false; error: string; message: string; status: number; routeId?: string };
@@ -2764,6 +3199,7 @@ export async function prepareTeamAgentTurn(
     input.sessionSummary || "",
     access.user,
     selectedSkills,
+    input.longTermMemory,
   );
   const systemMessageCount = Math.max(0, messages.length - normalized.length);
   const systemMessages = toProviderModelMessages(messages.slice(0, systemMessageCount));
@@ -2873,6 +3309,8 @@ export async function prepareTeamAgentTurn(
     closeTools: toolRuntime.close,
     maxToolSteps: MAX_TOOL_ROUNDS,
     remaining: limitResult.remaining,
+    routeId: selectedPublicRoute?.id || selectedRoute,
+    skillIds: selectedSkills.map(({ id }) => id),
     recordStreamFailure,
   };
 }
@@ -3376,6 +3814,7 @@ async function buildMessagesWithSystem(
   sessionSummary = "",
   userConfig?: UserConfig,
   selectedSkills: Array<{ id: string; skill: SkillConfig }> = [],
+  longTermMemory?: string,
 ): Promise<ChatMessage[]> {
   const systemMessages: ChatMessage[] = [];
   const globalPrompt = env.SYSTEM_PROMPT?.trim();
@@ -3398,7 +3837,11 @@ async function buildMessagesWithSystem(
     });
   }
 
-  const memory = (await env.CHAT_STORE.get(memoryKey(session.label)))?.trim();
+  let memory = longTermMemory?.trim() || "";
+  if (longTermMemory === undefined) {
+    await ensureAgentLegacyImport(env, session.label);
+    memory = (await (await getTeamAgent(env, session.label)).getMemory()).memory.trim();
+  }
   if (memory) {
     systemMessages.push({
       role: "system",
@@ -5545,9 +5988,32 @@ export async function getTeamAgentInstanceName(label: string): Promise<string> {
   return `member-${digest.slice(0, 48)}`;
 }
 
+export async function getTeamAgentConversationInstanceName(label: string, chatId: string): Promise<string> {
+  const digest = await secretFingerprint(`team-agent:${label.trim()}:conversation:${chatId}`);
+  return `chat-${digest.slice(0, 48)}`;
+}
+
 async function getTeamAgent(env: Env, label: string): Promise<DurableObjectStub<TeamAgent>> {
   const instance = await getTeamAgentInstanceName(label);
-  const props: TeamAgentProps = { userLabel: label };
+  const props: TeamAgentProps = { userLabel: label, scope: "root" };
+  return getAgentByName(env.TEAM_AGENT, instance, { props });
+}
+
+async function getTeamAgentConversation(
+  env: Env,
+  label: string,
+  chatId: string,
+): Promise<DurableObjectStub<TeamAgent>> {
+  const [instance, rootInstance] = await Promise.all([
+    getTeamAgentConversationInstanceName(label, chatId),
+    getTeamAgentInstanceName(label),
+  ]);
+  const props: TeamAgentProps = {
+    userLabel: label,
+    scope: "conversation",
+    chatId,
+    rootInstance,
+  };
   return getAgentByName(env.TEAM_AGENT, instance, { props });
 }
 

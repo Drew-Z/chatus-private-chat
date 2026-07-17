@@ -1,6 +1,9 @@
 import { env, exports } from "cloudflare:workers";
+import { getAgentByName } from "agents";
+import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import worker from "../src/worker";
+import type { TeamAgent } from "../src/agent/team-agent";
+import worker, { getTeamAgentConversationInstanceName, getTeamAgentInstanceName } from "../src/worker";
 import wranglerConfig from "../wrangler.jsonc?raw";
 
 const ACCESS_CODES_KEY = "config:access_codes";
@@ -89,6 +92,21 @@ async function putRouteSecret(cookie: string, apiKeyRef: string, apiKey: string,
   });
 }
 
+async function getRootAgent(label: string) {
+  const instance = await getTeamAgentInstanceName(label);
+  return getAgentByName(env.TEAM_AGENT, instance, { props: { userLabel: label, scope: "root" } }) as DurableObjectStub<TeamAgent>;
+}
+
+async function getConversationAgent(label: string, chatId: string) {
+  const [instance, rootInstance] = await Promise.all([
+    getTeamAgentConversationInstanceName(label, chatId),
+    getTeamAgentInstanceName(label),
+  ]);
+  return getAgentByName(env.TEAM_AGENT, instance, {
+    props: { userLabel: label, scope: "conversation", chatId, rootInstance },
+  }) as DurableObjectStub<TeamAgent>;
+}
+
 describe("Worker API", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -135,7 +153,7 @@ describe("Worker API", () => {
       authenticated: true,
       user: label,
       routes: [{ id: "default", healthStatus: "unhealthy", healthSource: "real_task" }],
-      agent: { transport: "cloudflare-ai-chat", className: "team-agent", basePath: "/agent" },
+      agent: { transport: "cloudflare-ai-chat", className: "team-agent", basePath: "agent" },
     });
   });
 
@@ -161,7 +179,7 @@ describe("Worker API", () => {
     expect(firstSession.agent).toMatchObject({
       transport: "cloudflare-ai-chat",
       className: "team-agent",
-      basePath: "/agent",
+      basePath: "agent",
     });
     expect(firstSession.agent.instance).toMatch(/^member-[0-9a-f]{48}$/);
     expect(firstAgain.agent.instance).toBe(firstSession.agent.instance);
@@ -169,11 +187,259 @@ describe("Worker API", () => {
     expect(firstSession.agent.instance).not.toContain(first.label);
     expect(secondSession.agent.instance).not.toContain(second.label);
 
+    const firstChat = await getTeamAgentConversationInstanceName(first.label, "chat-a");
+    const firstOtherChat = await getTeamAgentConversationInstanceName(first.label, "chat-b");
+    const secondChat = await getTeamAgentConversationInstanceName(second.label, "chat-a");
+    expect(firstChat).toMatch(/^chat-[0-9a-f]{48}$/);
+    expect(firstOtherChat).not.toBe(firstChat);
+    expect(secondChat).not.toBe(firstChat);
+    expect(firstChat).not.toContain(first.label);
+
     const unauthorized = await exports.default.fetch(new Request("https://example.test/agent"));
     expect(unauthorized.status).toBe(401);
     const crossOrigin = await apiRequest("/agent", first.cookie, { headers: { Origin: "https://evil.example" } });
     expect(crossOrigin.status).toBe(403);
     await expect(crossOrigin.json()).resolves.toMatchObject({ error: "invalid_origin" });
+    const missingChat = await apiRequest("/agent", first.cookie);
+    expect(missingChat.status).toBe(400);
+    await expect(missingChat.json()).resolves.toMatchObject({ error: "invalid_chat_id" });
+  });
+
+  it("imports legacy chats and memory into Agent storage exactly once", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://agent-import.example/v1",
+          model: "agent-import-model",
+          apiKey: "agent-import-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+    }));
+    const { cookie, label } = await login(`agent-import-${crypto.randomUUID()}`);
+    const legacyMemoryKey = `memory:${encodeURIComponent(label)}`;
+    await env.CHAT_STORE.put(legacyMemoryKey, "legacy preference");
+    const legacyChatId = `legacy-${crypto.randomUUID()}`;
+    const saved = await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat: {
+          id: legacyChatId,
+          title: "Imported work",
+          createdAt: 10,
+          updatedAt: 20,
+          routeId: "default",
+          skillIds: [],
+          messages: [
+            { role: "user", content: "Prepare release notes" },
+            { role: "assistant", content: "Draft ready" },
+          ],
+        },
+      }),
+    });
+    expect(saved.status).toBe(200);
+
+    const firstList = await apiRequest("/api/agent/conversations", cookie).then((response) => response.json()) as any;
+    expect(firstList.conversations).toEqual([
+      expect.objectContaining({ id: legacyChatId, title: "Imported work", messageCount: 2 }),
+    ]);
+    const secondList = await apiRequest("/api/agent/conversations", cookie).then((response) => response.json()) as any;
+    expect(secondList.conversations).toHaveLength(1);
+
+    const laterLegacyChatId = `legacy-later-${crypto.randomUUID()}`;
+    const laterSave = await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat: {
+          id: laterLegacyChatId,
+          title: "Later legacy work",
+          createdAt: 30,
+          updatedAt: 40,
+          routeId: "default",
+          skillIds: [],
+          messages: [{ role: "user", content: "Continue from legacy" }],
+        },
+      }),
+    });
+    expect(laterSave.status).toBe(200);
+    const afterLaterSave = await apiRequest("/api/agent/conversations", cookie).then((response) => response.json()) as any;
+    expect(afterLaterSave.conversations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: legacyChatId, messageCount: 2 }),
+      expect.objectContaining({ id: laterLegacyChatId, messageCount: 1 }),
+    ]));
+
+    const importedMemory = await apiRequest("/api/agent/memory", cookie).then((response) => response.json()) as any;
+    expect(importedMemory).toMatchObject({ memory: "legacy preference" });
+    expect(importedMemory.revision).toMatch(/^[0-9a-f]{64}$/);
+
+    const createdResponse = await apiRequest("/api/agent/conversations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ routeId: "default", skillIds: [] }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as any;
+    const renamedResponse = await apiRequest(`/api/agent/conversations/${encodeURIComponent(created.conversation.id)}`, cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Renamed work", expectedUpdatedAt: created.conversation.updatedAt }),
+    });
+    expect(renamedResponse.status).toBe(200);
+    const renamed = await renamedResponse.json() as any;
+    expect(renamed.conversation.title).toBe("Renamed work");
+    const staleRename = await apiRequest(`/api/agent/conversations/${encodeURIComponent(created.conversation.id)}`, cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Stale title", expectedUpdatedAt: created.conversation.updatedAt }),
+    });
+    expect(staleRename.status).toBe(409);
+
+    const memoryUpdate = await apiRequest("/api/agent/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: "agent preference", expectedRevision: importedMemory.revision }),
+    });
+    expect(memoryUpdate.status).toBe(200);
+    const updatedMemory = await memoryUpdate.json() as any;
+    await expect(apiRequest("/api/memory", cookie).then((response) => response.json())).resolves.toMatchObject({
+      memory: "agent preference",
+      revision: updatedMemory.revision,
+    });
+    const legacyMemoryUpdate = await apiRequest("/api/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: "legacy client preference", expectedRevision: updatedMemory.revision }),
+    });
+    expect(legacyMemoryUpdate.status).toBe(200);
+    const legacyUpdatedMemory = await legacyMemoryUpdate.json() as any;
+    await expect(apiRequest("/api/agent/memory", cookie).then((response) => response.json())).resolves.toMatchObject({
+      memory: "legacy client preference",
+      revision: legacyUpdatedMemory.revision,
+    });
+    const staleAgentMemoryUpdate = await apiRequest("/api/agent/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: "stale agent preference", expectedRevision: updatedMemory.revision }),
+    });
+    expect(staleAgentMemoryUpdate.status).toBe(409);
+    await expect(env.CHAT_STORE.get(legacyMemoryKey)).resolves.toBe("legacy preference");
+  });
+
+  it("preserves Agent conversation tombstones and retries persisted transcript cleanup", async () => {
+    const { cookie, label } = await login(`agent-delete-${crypto.randomUUID()}`);
+    const chatId = `agent-delete-${crypto.randomUUID()}`;
+    const createdResponse = await apiRequest("/api/agent/conversations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: chatId }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as any;
+    const unversionedLegacyDelete = await apiRequest(`/api/chats?id=${encodeURIComponent(chatId)}`, cookie, { method: "DELETE" });
+    expect(unversionedLegacyDelete.status).toBe(400);
+    const conversationAgent = await getConversationAgent(label, chatId);
+    const seededMessages: UIMessage[] = [{ id: "cleanup-user", role: "user", parts: [{ type: "text", text: "cleanup me" }] }];
+    await conversationAgent.importLegacyMessages(seededMessages);
+    await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(1);
+    const root = await getRootAgent(label);
+    const deleted = await root.deleteConversation(chatId, created.conversation.updatedAt);
+    expect(deleted.ok).toBe(true);
+    await root.recordConversationCleanupFailure(chatId);
+    await expect(root.listPendingConversationCleanups()).resolves.toEqual([
+      expect.objectContaining({ chatId, attempts: 1 }),
+    ]);
+
+    const listed = await apiRequest("/api/agent/conversations", cookie);
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({ conversations: [] });
+    await expect(root.listPendingConversationCleanups()).resolves.toEqual([]);
+    await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(0);
+
+    const staleReconnect = await apiRequest(`/agent?chatId=${encodeURIComponent(chatId)}`, cookie);
+    expect(staleReconnect.status).toBe(410);
+    await expect(staleReconnect.json()).resolves.toMatchObject({ error: "conversation_deleted" });
+    const explicitRecreate = await apiRequest("/api/agent/conversations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: chatId }),
+    });
+    expect(explicitRecreate.status).toBe(410);
+
+    const legacyResurrection = await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat: { id: chatId, title: "Stale legacy tab", createdAt: 10, updatedAt: Date.now(), messages: [] },
+      }),
+    });
+    await expect(legacyResurrection.json()).resolves.toMatchObject({ accepted: false, currentChat: null, chats: [] });
+  });
+
+  it("rotates failed cleanup retries behind unattempted conversations", async () => {
+    const { label } = await login(`agent-cleanup-order-${crypto.randomUUID()}`);
+    const root = await getRootAgent(label);
+    const chatIds = Array.from({ length: 4 }, (_, index) => `cleanup-order-${index}-${crypto.randomUUID()}`);
+    const baseTimestamp = Date.now() + 60_000;
+
+    for (const [index, chatId] of chatIds.entries()) {
+      const updatedAt = baseTimestamp + index;
+      const created = await root.createConversation({
+        id: chatId,
+        title: `Cleanup ${index}`,
+        createdAt: updatedAt,
+        updatedAt,
+        summary: "",
+        pinned: false,
+        skillIds: [],
+        messageCount: 0,
+      });
+      expect(created.ok).toBe(true);
+      await expect(root.deleteConversation(chatId, updatedAt)).resolves.toMatchObject({ ok: true });
+    }
+
+    const firstBatch = await root.listPendingConversationCleanups(3);
+    expect(firstBatch.map((record) => record.chatId)).toEqual(chatIds.slice(0, 3));
+    await Promise.all(firstBatch.map((record) => root.recordConversationCleanupFailure(record.chatId)));
+
+    const rotatedBatch = await root.listPendingConversationCleanups(3);
+    expect(rotatedBatch[0]?.chatId).toBe(chatIds[3]);
+  });
+
+  it("applies legacy replace semantics to the authoritative Agent conversation index", async () => {
+    const { cookie } = await login(`agent-replace-${crypto.randomUUID()}`);
+    const firstId = `replace-a-${crypto.randomUUID()}`;
+    const removedId = `replace-b-${crypto.randomUUID()}`;
+    for (const [id, updatedAt] of [[firstId, 20], [removedId, 30]] as const) {
+      const saved = await apiRequest("/api/chats", cookie, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat: { id, title: id, createdAt: 10, updatedAt, messages: [] } }),
+      });
+      expect(saved.status).toBe(200);
+    }
+    await expect(apiRequest("/api/agent/conversations", cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: expect.arrayContaining([
+        expect.objectContaining({ id: firstId }),
+        expect.objectContaining({ id: removedId }),
+      ]) });
+
+    const replaced = await apiRequest("/api/chats/migrate", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "replace",
+        chats: [{ id: firstId, title: "kept", createdAt: 10, updatedAt: 40, messages: [] }],
+      }),
+    });
+    expect(replaced.status).toBe(200);
+    await expect(apiRequest("/api/agent/conversations", cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: [expect.objectContaining({ id: firstId, title: "kept" })] });
+    const staleRemovedReconnect = await apiRequest(`/agent?chatId=${encodeURIComponent(removedId)}`, cookie);
+    expect(staleRemovedReconnect.status).toBe(410);
   });
 
   it("normalizes capability registries and projects only explicitly allowed tools", async () => {
@@ -793,6 +1059,32 @@ describe("Worker API", () => {
     expect(sessionResponse.headers.get("X-Request-ID")).not.toBe(loginResponse.headers.get("X-Request-ID"));
   });
 
+  it("serves the React client by default and preserves the legacy rollback shell", async () => {
+    const root = await exports.default.fetch(new Request("https://example.test/"));
+    expect(root.status).toBe(200);
+    const rootHtml = await root.text();
+    expect(rootHtml).toContain('id="root"');
+    expect(rootHtml).toContain("/react-chat/assets/");
+    expect(rootHtml).not.toContain('id="loginView"');
+
+    const index = await exports.default.fetch(new Request("https://example.test/index.html"));
+    expect(await index.text()).toContain('id="root"');
+
+    const reactRedirect = await exports.default.fetch(new Request("https://example.test/react-chat", { redirect: "manual" }));
+    expect(reactRedirect.status).toBe(308);
+    expect(reactRedirect.headers.get("Location")).toBe("https://example.test/react-chat/");
+
+    const legacyRedirect = await exports.default.fetch(new Request("https://example.test/legacy", { redirect: "manual" }));
+    expect(legacyRedirect.status).toBe(308);
+    expect(legacyRedirect.headers.get("Location")).toBe("https://example.test/legacy/");
+
+    const legacy = await exports.default.fetch(new Request("https://example.test/legacy/"));
+    expect(legacy.status).toBe(200);
+    const legacyHtml = await legacy.text();
+    expect(legacyHtml).toContain('id="loginView"');
+    expect(legacyHtml).toContain('/app.js?v=development');
+  });
+
   it("caches only fingerprinted JavaScript and CSS assets as immutable", async () => {
     const fingerprint = "a".repeat(40);
     const fingerprinted = await exports.default.fetch(new Request(`https://example.test/app.js?v=${fingerprint}`));
@@ -804,6 +1096,17 @@ describe("Worker API", () => {
 
     const release = await exports.default.fetch(new Request(`https://example.test/release.json?v=${fingerprint}`));
     expect(release.headers.get("Cache-Control") || "").not.toContain("immutable");
+
+    const root = await exports.default.fetch(new Request("https://example.test/"));
+    const rootHtml = await root.text();
+    const viteAsset = rootHtml.match(/(?:src|href)="(\/react-chat\/assets\/[^"]+\.(?:js|css))"/)?.[1];
+    expect(viteAsset).toBeTruthy();
+    const viteFingerprinted = await exports.default.fetch(new Request(`https://example.test${viteAsset}`));
+    expect(viteFingerprinted.status).toBe(200);
+    expect(viteFingerprinted.headers.get("Cache-Control")).toContain("immutable");
+
+    const reactHtml = await exports.default.fetch(new Request("https://example.test/react-chat/index.html"));
+    expect(reactHtml.headers.get("Cache-Control") || "").not.toContain("immutable");
   });
 
   it("invalidates an admin session when its token fingerprint no longer matches", async () => {
@@ -960,6 +1263,19 @@ describe("Worker API", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat: { id: "delete-me", title: "待删除", createdAt: 10, updatedAt: 20, messages: [] } }),
     });
+    await apiRequest("/api/agent/conversations", cookie);
+    const agentMemory = await apiRequest("/api/agent/memory", cookie).then((response) => response.json()) as any;
+    await apiRequest("/api/agent/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: "Agent memory", expectedRevision: agentMemory.revision }),
+    });
+    const agentChat = await apiRequest("/api/agent/conversations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(agentChat.status).toBe(201);
 
     const remove = await apiRequest("/api/user-data", cookie, { method: "DELETE" });
     expect(remove.status).toBe(200);
@@ -970,6 +1286,10 @@ describe("Worker API", () => {
     const next = await login(label);
     await expect(apiRequest("/api/chats", next.cookie).then((response) => response.json())).resolves.toMatchObject({ chats: [] });
     await expect(apiRequest("/api/memory", next.cookie).then((response) => response.json())).resolves.toMatchObject({ memory: "" });
+    await expect(apiRequest("/api/agent/conversations", next.cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: [] });
+    await expect(apiRequest("/api/agent/memory", next.cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ memory: "", revision: "" });
     const staleUpload = await apiRequest("/api/chats", next.cookie, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1953,7 +2273,12 @@ describe("Worker API", () => {
     const initial = await initialResponse.json() as any;
     expect(initial.revision).toMatch(/^[0-9a-f]{64}$/);
 
-    await env.CHAT_STORE.put(key, "newer memory");
+    const newer = await apiRequest("/api/admin/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, memory: "newer memory", expectedRevision: initial.revision }),
+    });
+    expect(newer.status).toBe(200);
     const stale = await apiRequest("/api/admin/memory", cookie, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1961,7 +2286,9 @@ describe("Worker API", () => {
     });
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({ error: "memory_conflict" });
-    await expect(env.CHAT_STORE.get(key)).resolves.toBe("newer memory");
+    await expect(env.CHAT_STORE.get(key)).resolves.toBe("original memory");
+    await expect(apiRequest(`/api/admin/memory?label=${encodeURIComponent(label)}`, cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ memory: "newer memory" });
   });
 
   it("derives route status from real user tasks without diagnostic model probes", async () => {
