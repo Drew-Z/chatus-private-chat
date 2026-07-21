@@ -72,6 +72,7 @@
 - 2026-07-17: `npm test` passed with 14 files and 127 tests.
 - 2026-07-17: `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` passed.
 - 2026-07-20: Local Wrangler acceptance passed with two generated members, per-member Agent/WebSocket isolation, conversation/memory conflicts, tombstones, user-data deletion, and exact access-code restoration. Production acceptance remains a manual post-deployment Actions step.
+- 2026-07-21: GitHub Actions run `29799778848` passed authenticated production acceptance for commit `b3ecfc5`, including temporary-member cleanup and access-code configuration restoration.
 - No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation
