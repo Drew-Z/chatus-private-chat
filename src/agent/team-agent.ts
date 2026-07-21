@@ -23,6 +23,8 @@ import {
   type AgentConversationSummary,
   type AgentMemoryMutationResult,
   type AgentMemoryRecord,
+  type TeamAgentIdentityError,
+  type TeamAgentIdentityResult,
   type TeamAgentProps,
   type TeamAgentScope,
   type TeamAgentState,
@@ -39,6 +41,15 @@ const MAX_PERSISTED_TOOL_TEXT_CHARS = 4_000;
 const MAX_CONVERSATION_TITLE_CHARS = 80;
 const MAX_SELECTED_SKILLS = 3;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
+const AGENT_IDENTITY_STORAGE_KEY = "chatus:agent-identity:v1";
+
+type TeamAgentIdentity = {
+  version: 1;
+  userLabel: string;
+  scope: TeamAgentScope;
+  chatId: string;
+  rootInstance: string;
+};
 
 type ConversationRow = {
   id: string;
@@ -83,10 +94,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   async onStart(props?: TeamAgentProps): Promise<void> {
     await super.onStart(props);
-    this.userLabel = normalizeUserLabel(props?.userLabel);
-    this.scope = props?.scope === "conversation" ? "conversation" : "root";
-    this.chatId = normalizeConversationId(props?.chatId);
-    this.rootInstance = boundedString(props?.rootInstance, 120) || "";
+    await this.initializeIdentity(props);
     this.sql`
       CREATE TABLE IF NOT EXISTS capability_tool_trust (
         conversation_id TEXT NOT NULL,
@@ -132,6 +140,26 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         last_attempt_at INTEGER NOT NULL DEFAULT 0
       )
     `;
+  }
+
+  async ensureIdentity(props: TeamAgentProps): Promise<TeamAgentIdentityResult> {
+    const provided = normalizeTeamAgentIdentity(props);
+    if (!provided) return { ok: false, error: "agent_identity_unavailable" };
+    const active = this.currentIdentity();
+    if (active) {
+      return sameTeamAgentIdentity(provided, active)
+        ? { ok: true }
+        : { ok: false, error: "agent_identity_conflict" };
+    }
+    try {
+      await this.initializeIdentity(props);
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof Error && isTeamAgentIdentityError(error.message)) {
+        return { ok: false, error: error.message };
+      }
+      throw error;
+    }
   }
 
   async healthCheck(): Promise<{ ok: true; runtime: "cloudflare-ai-chat"; storage: true; version: 1 }> {
@@ -433,7 +461,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     options?: OnChatMessageOptions,
   ): Promise<Response> {
     if (!this.userLabel || this.scope !== "conversation" || !this.chatId || !this.rootInstance) {
-      return jsonError("agent_identity_unavailable", "Agent identity is unavailable.", 401);
+      return chatErrorResponse("agent_identity_unavailable", "Agent identity is unavailable.", 401);
     }
 
     const body = isRecord(options?.body) ? options.body : {};
@@ -463,7 +491,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     });
 
     if (!prepared.ok) {
-      return jsonError(prepared.error, prepared.message, prepared.status, prepared.routeId);
+      return chatErrorResponse(prepared.error, prepared.message, prepared.status, prepared.routeId);
     }
     this.pendingActivity = { routeId: prepared.routeId, skillIds: prepared.skillIds };
 
@@ -485,7 +513,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         ];
       } catch {
         await prepared.closeTools();
-        return jsonError("agent_context_invalid", "工具续接上下文无法恢复。", 409);
+        return chatErrorResponse("agent_context_invalid", "工具续接上下文无法恢复。", 409);
       }
     }
 
@@ -545,7 +573,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   private async getRootAgent() {
     const props: TeamAgentProps = { userLabel: this.userLabel, scope: "root" };
-    return getAgentByName(this.env.TEAM_AGENT, this.rootInstance, { props });
+    const root = await getAgentByName(this.env.TEAM_AGENT, this.rootInstance, { props });
+    const identity = await root.ensureIdentity(props);
+    if (!identity.ok) throw new Error(identity.error);
+    return root;
   }
 
   private getConversationRow(id: string): ConversationRow | undefined {
@@ -610,6 +641,44 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (this.scope !== "conversation" || !this.userLabel || !this.chatId) {
       throw new Error("conversation_agent_scope_required");
     }
+  }
+
+  private async initializeIdentity(props?: TeamAgentProps): Promise<void> {
+    const storedValue = await this.ctx.storage.get<unknown>(AGENT_IDENTITY_STORAGE_KEY);
+    const stored = storedValue === undefined ? undefined : normalizeStoredTeamAgentIdentity(storedValue);
+    if (storedValue !== undefined && !stored) throw new Error("agent_identity_corrupt");
+
+    const provided = props === undefined ? undefined : normalizeTeamAgentIdentity(props);
+    if (props !== undefined && !provided) throw new Error("agent_identity_unavailable");
+
+    const active = this.currentIdentity();
+    const existing = stored || active;
+    if (provided && existing && !sameTeamAgentIdentity(provided, existing)) {
+      throw new Error("agent_identity_conflict");
+    }
+
+    const identity = existing || provided;
+    if (!identity) {
+      this.userLabel = "";
+      this.scope = "root";
+      this.chatId = "";
+      this.rootInstance = "";
+      return;
+    }
+    if (!stored) await this.ctx.storage.put(AGENT_IDENTITY_STORAGE_KEY, identity);
+    this.userLabel = identity.userLabel;
+    this.scope = identity.scope;
+    this.chatId = identity.chatId;
+    this.rootInstance = identity.rootInstance;
+  }
+
+  private currentIdentity(): TeamAgentIdentity | undefined {
+    return normalizeTeamAgentIdentity({
+      userLabel: this.userLabel,
+      scope: this.scope,
+      chatId: this.chatId,
+      rootInstance: this.rootInstance,
+    });
   }
 
   private isToolTrusted(conversationId: string, toolId: string): boolean {
@@ -735,6 +804,36 @@ function normalizeConversationId(value: unknown): string {
   return normalized;
 }
 
+function normalizeTeamAgentIdentity(value: unknown): TeamAgentIdentity | undefined {
+  if (!isRecord(value)) return undefined;
+  const userLabel = normalizeUserLabel(value.userLabel);
+  const scope = value.scope === "root" || value.scope === "conversation" ? value.scope : undefined;
+  if (!userLabel || !scope) return undefined;
+  const chatId = scope === "conversation" ? normalizeConversationId(value.chatId) : "";
+  const rootInstance = scope === "conversation" ? boundedString(value.rootInstance, 120) || "" : "";
+  if (scope === "conversation" && (!chatId || !rootInstance)) return undefined;
+  return { version: 1, userLabel, scope, chatId, rootInstance };
+}
+
+function normalizeStoredTeamAgentIdentity(value: unknown): TeamAgentIdentity | undefined {
+  return isRecord(value) && value.version === 1 ? normalizeTeamAgentIdentity(value) : undefined;
+}
+
+function sameTeamAgentIdentity(left: TeamAgentIdentity, right: TeamAgentIdentity): boolean {
+  return left.userLabel === right.userLabel
+    && left.scope === right.scope
+    && left.chatId === right.chatId
+    && left.rootInstance === right.rootInstance;
+}
+
+function isTeamAgentIdentityError(
+  value: string,
+): value is TeamAgentIdentityError {
+  return value === "agent_identity_unavailable"
+    || value === "agent_identity_conflict"
+    || value === "agent_identity_corrupt";
+}
+
 function normalizeTitle(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, MAX_CONVERSATION_TITLE_CHARS) : "";
 }
@@ -801,11 +900,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function jsonError(error: string, message: string, status: number, routeId?: string): Response {
-  return new Response(JSON.stringify({ error, message, ...(routeId ? { routeId } : {}) }), {
+function chatErrorResponse(error: string, message: string, status: number, routeId?: string): Response {
+  const errorText = JSON.stringify({ error, message, ...(routeId ? { routeId } : {}) });
+  const body = `data: ${JSON.stringify({ type: "error", errorText })}\n\ndata: [DONE]\n\n`;
+  return new Response(body, {
     status,
     headers: {
-      "Content-Type": "application/json; charset=utf-8",
+      "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store",
     },
   });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { friendlyAgentError } from "../client/src/lib/agent-errors";
 import {
   restoreRejectedDraft,
   resolveLoadedMemoryDraft,
@@ -21,5 +22,17 @@ describe("React client state recovery", () => {
     expect(resolvePendingDraftAction("submitted", false, false)).toBe("keep");
     expect(resolvePendingDraftAction("error", true, true)).toBe("restore");
     expect(resolvePendingDraftAction("ready", false, true)).toBe("clear");
+  });
+
+  it("turns structured Agent failures into actionable messages", () => {
+    expect(friendlyAgentError(JSON.stringify({
+      error: "agent_identity_unavailable",
+      message: "Agent identity is unavailable.",
+    }), true)).toBe("Agent 会话身份已失效，请刷新页面重新连接。");
+    expect(friendlyAgentError(JSON.stringify({
+      error: "agent_context_invalid",
+      message: "工具续接上下文无法恢复。",
+    }), true)).toBe("工具续接上下文无法恢复。");
+    expect(friendlyAgentError("timeout", false)).toBe("网络已断开，草稿仍保存在当前设备。");
   });
 });

@@ -6003,7 +6003,10 @@ export async function getTeamAgentConversationInstanceName(label: string, chatId
 async function getTeamAgent(env: Env, label: string): Promise<DurableObjectStub<TeamAgent>> {
   const instance = await getTeamAgentInstanceName(label);
   const props: TeamAgentProps = { userLabel: label, scope: "root" };
-  return getAgentByName(env.TEAM_AGENT, instance, { props });
+  const agent = await getAgentByName(env.TEAM_AGENT, instance, { props });
+  const identity = await agent.ensureIdentity(props);
+  if (!identity.ok) throw new Error(identity.error);
+  return agent;
 }
 
 async function getTeamAgentConversation(
@@ -6021,7 +6024,10 @@ async function getTeamAgentConversation(
     chatId,
     rootInstance,
   };
-  return getAgentByName(env.TEAM_AGENT, instance, { props });
+  const agent = await getAgentByName(env.TEAM_AGENT, instance, { props });
+  const identity = await agent.ensureIdentity(props);
+  if (!identity.ok) throw new Error(identity.error);
+  return agent;
 }
 
 

@@ -20,6 +20,7 @@ import {
   type AgentConversation,
   type SessionProjection,
 } from "../lib/api";
+import { friendlyAgentError } from "../lib/agent-errors";
 import { resolvePendingDraftAction, restoreRejectedDraft } from "../lib/state";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MemoryPanel } from "./MemoryPanel";
@@ -448,13 +449,4 @@ function clearUserDrafts(user: string): void {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback;
-}
-
-function friendlyAgentError(message: string, online: boolean): string {
-  if (!online) return "网络已断开，草稿仍保存在当前设备。";
-  const normalized = message.toLocaleLowerCase();
-  if (normalized.includes("rate") || normalized.includes("额度")) return "当前额度已用完，请稍后再试或联系管理员调整额度。";
-  if (normalized.includes("timeout") || normalized.includes("超时")) return "模型线路响应超时，可以稍后重试或切换线路。";
-  if (normalized.includes("key") || normalized.includes("认证")) return "当前线路凭据不可用，请切换线路或联系管理员。";
-  return message || "本轮任务暂时失败，可以重新连接后继续。";
 }

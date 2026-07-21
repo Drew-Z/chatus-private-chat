@@ -9,6 +9,85 @@
 - The root Agent owns the authoritative long-term memory, conversation tombstones, and persisted transcript-cleanup queue. Conversation Agents read root memory before turn preparation.
 - Legacy transcript import is idempotent and prefix-safe. A deleted ID or divergent Agent transcript is never overwritten by a rollback-client snapshot.
 
+## Scenario: Agent Identity Across Hibernation
+
+### 1. Scope / Trigger
+
+This contract applies whenever a root or conversation `TeamAgent` is created, reconnected, awakened from Durable Object hibernation, or upgraded from a version that did not persist its initialization props.
+
+### 2. Signatures
+
+```typescript
+onStart(props?: TeamAgentProps): Promise<void>
+ensureIdentity(props: TeamAgentProps): Promise<TeamAgentIdentityResult>
+```
+
+```text
+chatus:agent-identity:v1 -> {
+  version: 1,
+  userLabel: string,
+  scope: "root" | "conversation",
+  chatId: string,
+  rootInstance: string
+}
+```
+
+### 3. Contracts
+
+- Identity props are derived by the authenticated Worker gateway. The browser still supplies only a bounded `chatId` and cannot select a label, scope, or root instance.
+- Identity is stored under the private Durable Object storage key above, never in Agent public state, UI messages, diagnostics, or logs.
+- Complete first-start props are normalized and persisted. A hibernation wake with no props restores the stored record before scoped methods run.
+- Every server-side `getAgentByName()` helper awaits the returned stub and calls `ensureIdentity(props)` before use. This repairs an already-started upgrade instance whose original props were transient and never persisted.
+- A stored, active, or newly supplied identity must match exactly. Conflicting props return a stable error and never replace the original record.
+- Expected `onChatMessage()` failures use a UI Message SSE `error` chunk. Returning an `application/json` body is forbidden because AIChat treats non-SSE bodies as assistant plaintext and persists the JSON in the transcript.
+
+### 4. Validation & Error Matrix
+
+- Missing storage and missing startup props -> remain unavailable; a chat turn returns `agent_identity_unavailable`.
+- Incomplete root/conversation props -> `agent_identity_unavailable`; do not persist a partial record.
+- Stored or active identity differs from supplied props -> `agent_identity_conflict`; preserve the original identity.
+- Existing versioned storage is malformed -> `agent_identity_corrupt`; do not silently replace it.
+- Structured chat failure -> SSE `errorText` contains the machine-readable error envelope; the React client renders an actionable error banner and restores the rejected draft.
+
+### 5. Good / Base / Bad Cases
+
+- Good: a conversation Agent is evicted, wakes through WebSocket or RPC without props, restores its private identity, and accepts the next scoped operation.
+- Base: a normal gateway request initializes the Agent, then `ensureIdentity()` confirms the same identity without changing storage.
+- Bad: identity exists only in class fields set by `onStart(props)`; hibernation calls `onStart(undefined)`, the connection still looks healthy, and the first message fails with HTTP `401`.
+
+### 6. Tests Required
+
+- Initialize both root and conversation Agents, evict them with `evictDurableObject()`, reconnect without props, and assert scoped RPCs still succeed.
+- Start an Agent without props, call a scope-neutral method, then `ensureIdentity()`; evict and assert the persisted identity survives another no-props wake.
+- Supply conflicting scope/identity props and assert `agent_identity_conflict` while the original scoped method still succeeds.
+- Unit-test structured Agent error parsing so identity failures become a refresh action and raw JSON is never rendered as assistant text.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+async onStart(props?: TeamAgentProps) {
+  this.userLabel = props?.userLabel || "";
+}
+
+return new Response(JSON.stringify({ error, message }), {
+  headers: { "Content-Type": "application/json" },
+});
+```
+
+#### Correct
+
+```typescript
+async onStart(props?: TeamAgentProps) {
+  await this.initializeIdentity(props); // persist first start or restore wake
+}
+
+const agent = await getAgentByName(env.TEAM_AGENT, instance, { props });
+const identity = await agent.ensureIdentity(props);
+if (!identity.ok) throw new Error(identity.error);
+```
+
 ## Scenario: Conversation Deletion Cleanup
 
 ### 1. Scope / Trigger

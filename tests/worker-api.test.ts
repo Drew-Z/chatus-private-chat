@@ -1,4 +1,5 @@
 import { env, exports } from "cloudflare:workers";
+import { evictDurableObject } from "cloudflare:test";
 import { getAgentByName } from "agents";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -203,6 +204,58 @@ describe("Worker API", () => {
     const missingChat = await apiRequest("/agent", first.cookie);
     expect(missingChat.status).toBe(400);
     await expect(missingChat.json()).resolves.toMatchObject({ error: "invalid_chat_id" });
+  });
+
+  it("restores private TeamAgent identity after Durable Object eviction", async () => {
+    const label = `agent-wake-${crypto.randomUUID()}`;
+    const chatId = `chat-wake-${crypto.randomUUID()}`;
+    const root = await getRootAgent(label);
+    const conversation = await getConversationAgent(label, chatId);
+
+    await expect(root.getMemory()).resolves.toMatchObject({ memory: "" });
+    await expect(conversation.getConversationMessageCount()).resolves.toBe(0);
+    await evictDurableObject(root);
+    await evictDurableObject(conversation);
+
+    const [rootInstance, conversationInstance] = await Promise.all([
+      getTeamAgentInstanceName(label),
+      getTeamAgentConversationInstanceName(label, chatId),
+    ]);
+    const restoredRoot = await getAgentByName(env.TEAM_AGENT, rootInstance) as DurableObjectStub<TeamAgent>;
+    const restoredConversation = await getAgentByName(
+      env.TEAM_AGENT,
+      conversationInstance,
+    ) as DurableObjectStub<TeamAgent>;
+
+    await expect(restoredRoot.getMemory()).resolves.toMatchObject({ memory: "" });
+    await expect(restoredConversation.getConversationMessageCount()).resolves.toBe(0);
+  });
+
+  it("bootstraps identity for an already-started Agent without initialization props", async () => {
+    const label = `agent-bootstrap-${crypto.randomUUID()}`;
+    const instance = await getTeamAgentInstanceName(label);
+    const agent = await getAgentByName(env.TEAM_AGENT, instance) as DurableObjectStub<TeamAgent>;
+
+    await expect(agent.healthCheck()).resolves.toMatchObject({ ok: true });
+    await expect(agent.ensureIdentity({ userLabel: label, scope: "root" })).resolves.toEqual({ ok: true });
+    await expect(agent.getMemory()).resolves.toMatchObject({ memory: "" });
+    await evictDurableObject(agent);
+
+    const restored = await getAgentByName(env.TEAM_AGENT, instance) as DurableObjectStub<TeamAgent>;
+    await expect(restored.getMemory()).resolves.toMatchObject({ memory: "" });
+  });
+
+  it("rejects conflicting TeamAgent identity without replacing the original scope", async () => {
+    const label = `agent-identity-${crypto.randomUUID()}`;
+    const root = await getRootAgent(label);
+
+    await expect(root.ensureIdentity({
+      userLabel: label,
+      scope: "conversation",
+      chatId: `conflict-${crypto.randomUUID()}`,
+      rootInstance: await getTeamAgentInstanceName(label),
+    })).resolves.toEqual({ ok: false, error: "agent_identity_conflict" });
+    await expect(root.getMemory()).resolves.toMatchObject({ memory: "" });
   });
 
   it("imports legacy chats and memory into Agent storage exactly once", async () => {

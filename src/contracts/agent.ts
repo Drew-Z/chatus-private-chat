@@ -11,6 +11,15 @@ export type TeamAgentProps = {
   rootInstance?: string;
 };
 
+export type TeamAgentIdentityError =
+  | "agent_identity_unavailable"
+  | "agent_identity_conflict"
+  | "agent_identity_corrupt";
+
+export type TeamAgentIdentityResult =
+  | { ok: true }
+  | { ok: false; error: TeamAgentIdentityError };
+
 export type TeamAgentState = {
   version: 1;
   runtime: "cloudflare-ai-chat";
