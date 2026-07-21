@@ -151,6 +151,58 @@ describe("prepared TeamAgent turn", () => {
       .rejects.toThrow("工具运行时已关闭");
   });
 
+  it("revalidates persisted Skill selections against the current member assignment", async () => {
+    const label = `agent-revoked-skill-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://primary.example/v1",
+          model: "primary-model",
+          apiKey: "primary-test-key",
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        allowedTools: ["builtin:text_stats"],
+      },
+      users: { [label]: { allowedSkills: [] } },
+      skills: {
+        writing: {
+          enabled: true,
+          label: "Writing",
+          instructions: "Revoked instructions must not reach the model.",
+          toolIds: ["builtin:text_stats"],
+        },
+      },
+      tools: {
+        "builtin:text_stats": {
+          enabled: true,
+          label: "Text stats",
+          inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+          executor: { type: "builtin", name: "text_stats" },
+        },
+      },
+    }));
+    const now = Date.now();
+    const session: Session = { id: crypto.randomUUID(), label, createdAt: now, lastSeen: now };
+
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "继续旧会话" }],
+      skillIds: ["writing"],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    expect(prepared.skillIds).toEqual([]);
+    expect(prepared.toolDefinitions).toEqual([]);
+    expect(JSON.stringify(prepared.messages)).not.toContain("Revoked instructions");
+    await prepared.closeTools();
+  });
+
   it("does not consume message quota again for an Agent continuation", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {

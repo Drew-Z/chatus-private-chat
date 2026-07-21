@@ -442,7 +442,8 @@ describe("Worker API", () => {
     expect(staleRemovedReconnect.status).toBe(410);
   });
 
-  it("normalizes capability registries and projects only explicitly allowed tools", async () => {
+  it("normalizes capability registries and projects only assigned Skills and tools", async () => {
+    const memberLabel = `capability-member-${crypto.randomUUID()}`;
     const adminCookie = await adminLogin();
     const configResponse = await apiRequest("/api/admin/config", adminCookie, {
       method: "PUT",
@@ -463,6 +464,9 @@ describe("Worker API", () => {
             defaultRoute: "capable",
             allowedRoutes: ["capable"],
             allowedTools: ["builtin:text_stats"],
+          },
+          users: {
+            [memberLabel]: { allowedSkills: ["first"] },
           },
           mcpServers: {
             remote: {
@@ -516,19 +520,21 @@ describe("Worker API", () => {
     expect(saved.config.tools).not.toHaveProperty("malformed");
     expect(saved.config.skills).not.toHaveProperty("malformed");
     expect(saved.config.tools["mcp:remote:lookup"].confirmation).toBe("first-per-conversation");
+    expect(saved.config.users[memberLabel].allowedSkills).toEqual(["first"]);
 
-    const { cookie } = await login();
+    const { cookie } = await login(memberLabel);
     const session = await apiRequest("/api/session", cookie).then((response) => response.json()) as any;
     expect(session.routes).toMatchObject([{ id: "capable", supportsTools: true }]);
     expect(session.tools).toEqual([
       expect.objectContaining({ id: "builtin:text_stats", source: "builtin", confirmation: "auto" }),
     ]);
-    expect(session.skills).toMatchObject([
-      { id: "first", toolIds: ["builtin:text_stats"] },
-      { id: "later", toolIds: ["builtin:text_stats"] },
-    ]);
+    expect(session.skills).toMatchObject([{ id: "first", toolIds: ["builtin:text_stats"] }]);
     expect(JSON.stringify(session)).not.toContain("mcp.example");
     expect(JSON.stringify(session)).not.toContain("inputSchema");
+
+    const legacyMember = await login(`legacy-capability-member-${crypto.randomUUID()}`);
+    const legacySession = await apiRequest("/api/session", legacyMember.cookie).then((response) => response.json()) as any;
+    expect(legacySession.skills.map((skill: any) => skill.id)).toEqual(["first", "later"]);
   });
 
   it("adds the disabled built-in tool to legacy editable configs without granting it", async () => {
@@ -558,7 +564,7 @@ describe("Worker API", () => {
     expect(session.tools).toEqual([]);
   });
 
-  it("caps selected Skills and composes them in administrator order", async () => {
+  it("filters selected Skills by assignment, caps input, and composes them in administrator order", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {
         default: {
@@ -569,7 +575,11 @@ describe("Worker API", () => {
           apiKey: "skills-key",
         },
       },
-      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      defaults: {
+        defaultRoute: "default",
+        allowedRoutes: ["default"],
+        allowedSkills: ["skill-2", "skill-4"],
+      },
       skills: Object.fromEntries([1, 2, 3, 4].map((order) => [`skill-${order}`, {
         enabled: true,
         label: `Skill ${order}`,
@@ -592,9 +602,9 @@ describe("Worker API", () => {
     expect(response.status).toBe(200);
     const upstream = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as any;
     const system = upstream.messages.filter((message: any) => message.role === "system").map((message: any) => message.content).join("\n");
-    expect(system.indexOf("instruction-2")).toBeLessThan(system.indexOf("instruction-3"));
-    expect(system.indexOf("instruction-3")).toBeLessThan(system.indexOf("instruction-4"));
+    expect(system.indexOf("instruction-2")).toBeLessThan(system.indexOf("instruction-4"));
     expect(system).not.toContain("instruction-1");
+    expect(system).not.toContain("instruction-3");
   });
 
   it("completes an OpenAI-compatible built-in tool round trip", async () => {
@@ -2204,6 +2214,22 @@ describe("Worker API", () => {
     });
     expect(userWithoutRoute.status).toBe(400);
     await expect(userWithoutRoute.json()).resolves.toMatchObject({ message: "用户 friend 至少需要一条已启用的允许线路" });
+
+    const missingSkill = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          routes: { active: { ...route, label: "Active", enabled: true } },
+          defaults: { defaultRoute: "active", allowedRoutes: ["active"] },
+          users: { friend: { allowedSkills: ["missing"] } },
+        },
+      }),
+    });
+    expect(missingSkill.status).toBe(400);
+    await expect(missingSkill.json()).resolves.toMatchObject({
+      message: "用户 friend 允许了不存在的 Skill missing",
+    });
   });
 
   it("rejects stale admin configuration updates", async () => {

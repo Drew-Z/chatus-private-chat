@@ -106,5 +106,6 @@ export type CapabilityRegistryConfig = {
 };
 
 export type CapabilityAssignment = {
+  allowedSkills?: string[];
   allowedTools?: string[];
 };

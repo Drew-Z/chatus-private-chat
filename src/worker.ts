@@ -15,6 +15,7 @@ import {
   type TeamAgentProps,
 } from "./contracts/agent";
 import type {
+  CapabilityAssignment,
   CapabilityToolExecutionResult,
   CapabilityToolRunner,
   CapabilityStreamEvent,
@@ -85,7 +86,7 @@ type ActiveCapabilityRun = {
   pendingApproval?: PendingToolApproval;
 };
 
-type UserConfig = {
+type UserConfig = CapabilityAssignment & {
   enabled?: boolean;
   displayName?: string;
   defaultRoute?: string;
@@ -95,7 +96,6 @@ type UserConfig = {
   minuteMessageLimit?: number;
   blockedPrompts?: string[];
   systemPrompt?: string;
-  allowedTools?: string[];
 };
 
 type AppConfig = {
@@ -2997,7 +2997,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     );
   }
 
-  const selectedSkills = getSelectedSkills(config, body.skillIds);
+  const selectedSkills = getSelectedSkills(config, body.skillIds, access.user);
   const messages = await buildMessagesWithSystem(env, session, normalized, sessionSummary, access.user, selectedSkills);
 
   const userApiKey = typeof body.userApiKey === "string" ? body.userApiKey.trim() : "";
@@ -3191,7 +3191,7 @@ export async function prepareTeamAgentTurn(
     return { ok: false, error: "rate_limited", message: "额度已用完", status: 429 };
   }
 
-  const selectedSkills = getSelectedSkills(config, input.skillIds);
+  const selectedSkills = getSelectedSkills(config, input.skillIds, access.user);
   const messages = await buildMessagesWithSystem(
     env,
     session,
@@ -3410,6 +3410,8 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     if (missingRoute) {
       return { ok: false, message: `用户 ${label} 允许了不存在的线路 ${missingRoute}` };
     }
+    const missingSkill = user.allowedSkills?.find((skillId) => !config.skills?.[skillId]);
+    if (missingSkill) return { ok: false, message: `用户 ${label} 允许了不存在的 Skill ${missingSkill}` };
     const missingTool = user.allowedTools?.find((toolId) => !config.tools?.[toolId]);
     if (missingTool) return { ok: false, message: `用户 ${label} 允许了不存在的工具 ${missingTool}` };
     const effective = { ...(config.defaults || {}), ...user };
@@ -3428,6 +3430,8 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   }
   const missingDefaultTool = config.defaults?.allowedTools?.find((toolId) => !config.tools?.[toolId]);
   if (missingDefaultTool) return { ok: false, message: `默认用户配置允许了不存在的工具 ${missingDefaultTool}` };
+  const missingDefaultSkill = config.defaults?.allowedSkills?.find((skillId) => !config.skills?.[skillId]);
+  if (missingDefaultSkill) return { ok: false, message: `默认用户配置允许了不存在的 Skill ${missingDefaultSkill}` };
 
   for (const [skillId, skill] of Object.entries(config.skills || {})) {
     const missingTool = skill.toolIds?.find((toolId) => !config.tools?.[toolId]);
@@ -3540,6 +3544,9 @@ function normalizeUserConfig(value: unknown): UserConfig {
   if (typeof value.defaultRoute === "string") output.defaultRoute = value.defaultRoute;
   if (Array.isArray(value.allowedRoutes)) {
     output.allowedRoutes = normalizeStringIdList(value.allowedRoutes, 200, 160);
+  }
+  if (Array.isArray(value.allowedSkills)) {
+    output.allowedSkills = normalizeStringIdList(value.allowedSkills, MAX_SKILLS, 80);
   }
   if (Array.isArray(value.allowedTools)) {
     output.allowedTools = normalizeStringIdList(value.allowedTools, MAX_TOOLS, 160);

@@ -34,6 +34,7 @@
 - [x] Add tested OpenAI-compatible and Anthropic-compatible AI SDK model adapters and migrate non-streaming completion calls onto them.
 - [x] Move normal TeamAgent text turns to `streamText().toUIMessageStreamResponse()` with resumable recovery and pre-output-only route fallback.
 - [x] Extract shared capability contracts and the assignment/Skill/tool registry so legacy and Agent paths consume one visibility and approval-policy boundary.
+- [x] Add revisioned per-member Skill allow-lists across administration, session projection, legacy chat, and Team Agent execution with backward-compatible defaults.
 - [x] Execute assigned built-in and reviewed MCP tools through AI SDK `streamText`, with bounded calls, continuation-safe approval messages, Agent-owned trust, and quota-once continuation handling.
 - [ ] Extract shared contracts, provider routing, secret resolution, fallback classification, telemetry, Skills, tools, and MCP into explicit modules.
 - [x] Execute normal Agent turns through AI SDK providers while preserving route assignment, BYOK, quota, bounded tool loops, and approval policy.
@@ -73,6 +74,7 @@
 - 2026-07-17: `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` passed.
 - 2026-07-20: Local Wrangler acceptance passed with two generated members, per-member Agent/WebSocket isolation, conversation/memory conflicts, tombstones, user-data deletion, and exact access-code restoration. Production acceptance remains a manual post-deployment Actions step.
 - 2026-07-21: GitHub Actions run `29799778848` passed authenticated production acceptance for commit `b3ecfc5`, including temporary-member cleanup and access-code configuration restoration.
+- 2026-07-21: Per-member Skill assignment passed frontend checks, 14 test files / 129 tests, strict type-check, Wrangler deployment dry-run, and diff checks. Revoked persisted Skill selections are filtered again by both chat execution paths.
 - No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation

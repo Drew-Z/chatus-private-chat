@@ -260,11 +260,12 @@ assert(batchCreateSource.includes("uniqueRouteId"), "admin.js: batch-created rou
 assert(!batchCreateSource.includes("routeSecretInput"), "admin.js: batch route creation must never read plaintext route secrets");
 assert(!batchCreateSource.includes("allowedRoutes"), "admin.js: batch route creation must preserve explicit user route permissions");
 for (const id of [
-  "allowedToolsBox", "routeToolsInput", "capabilitySkillsPanel", "capabilityToolsPanel", "capabilityMcpPanel",
+  "allowedSkillsBox", "allowedToolsBox", "routeToolsInput", "capabilitySkillsPanel", "capabilityToolsPanel", "capabilityMcpPanel",
   "skillForm", "skillToolsBox", "toolForm", "mcpForm", "mcpSecretInput", "discoverMcpToolsButton",
 ]) {
   assert(adminHtml.includes(`id="${id}"`), `admin.html: missing AI capability control #${id}`);
 }
+assert(adminScript.includes("allowedSkills: checkedValues(allowedSkillsBox)"), "admin.js: user saves must persist Skill assignments");
 assert(adminHtml.includes('id="mcpSecretInput" type="password" autocomplete="new-password"'), "admin.html: MCP secret must use a write-only password input");
 assert(adminScript.includes("/api/admin/mcp-secrets/"), "admin.js: MCP credentials need the authenticated write-only vault API");
 assert((adminScript.match(/clearMcpSecretInput\(\)/g) || []).length >= 5, "admin.js: MCP plaintext must clear across save and navigation transitions");

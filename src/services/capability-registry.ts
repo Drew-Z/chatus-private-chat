@@ -18,6 +18,7 @@ export function getPublicCapabilities(
   config: CapabilityRegistryConfig,
   assignment: CapabilityAssignment,
 ): { skills: PublicSkill[]; tools: PublicTool[] } {
+  const allowedSkillIds = getAllowedSkillIds(assignment);
   const allowedToolIds = new Set(assignment.allowedTools || []);
   const tools = Object.entries(config.tools || {})
     .filter(([id, tool]) => (
@@ -36,7 +37,7 @@ export function getPublicCapabilities(
 
   const publicToolIds = new Set(tools.map((tool) => tool.id));
   const skills = Object.entries(config.skills || {})
-    .filter(([, skill]) => skill.enabled === true)
+    .filter(([id, skill]) => skill.enabled === true && (!allowedSkillIds || allowedSkillIds.has(id)))
     .sort(([leftId, left], [rightId, right]) => (
       (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId)
     ))
@@ -50,10 +51,19 @@ export function getPublicCapabilities(
   return { skills, tools };
 }
 
-export function getSelectedSkills(config: CapabilityRegistryConfig, value: unknown): SelectedSkill[] {
+export function getSelectedSkills(
+  config: CapabilityRegistryConfig,
+  value: unknown,
+  assignment?: CapabilityAssignment,
+): SelectedSkill[] {
+  const allowedSkillIds = getAllowedSkillIds(assignment);
   const requested = new Set(normalizeSelectedSkillIds(value));
   return Object.entries(config.skills || {})
-    .filter(([id, skill]) => requested.has(id) && skill.enabled === true)
+    .filter(([id, skill]) => (
+      requested.has(id)
+      && skill.enabled === true
+      && (!allowedSkillIds || allowedSkillIds.has(id))
+    ))
     .sort(([leftId, left], [rightId, right]) => (
       (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId)
     ))
@@ -120,6 +130,10 @@ function normalizeSelectedSkillIds(value: unknown): string[] {
     if (output.length >= MAX_SELECTED_SKILLS) break;
   }
   return output;
+}
+
+function getAllowedSkillIds(assignment?: CapabilityAssignment): Set<string> | null {
+  return assignment?.allowedSkills === undefined ? null : new Set(assignment.allowedSkills);
 }
 
 function normalizeCapabilityId(value: unknown, maxChars: number): string {

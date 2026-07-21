@@ -40,6 +40,7 @@ const userMinuteLimit = document.querySelector("#userMinuteLimit");
 const userByok = document.querySelector("#userByok");
 const userEnabled = document.querySelector("#userEnabled");
 const allowedRoutesBox = document.querySelector("#allowedRoutesBox");
+const allowedSkillsBox = document.querySelector("#allowedSkillsBox");
 const allowedToolsBox = document.querySelector("#allowedToolsBox");
 const deleteUserButton = document.querySelector("#deleteUserButton");
 const revokeUserSessionsButton = document.querySelector("#revokeUserSessionsButton");
@@ -476,7 +477,10 @@ skillForm?.addEventListener("submit", async (event) => {
   }
   if (!instructions) return setStatus("Skill Instructions 必填", true);
   const previous = selectedSkill !== "__new" ? selectedSkill : "";
-  if (previous && previous !== skillId) delete config.skills?.[previous];
+  if (previous && previous !== skillId) {
+    delete config.skills?.[previous];
+    replaceSkillAssignments(previous, skillId);
+  }
   config.skills = config.skills || {};
   config.skills[skillId] = compactObject({
     enabled: skillEnabledInput.checked,
@@ -494,6 +498,7 @@ deleteSkillButton?.addEventListener("click", async () => {
   if (!selectedSkill || selectedSkill === "__new") return;
   if (!(await confirmAdminAction("删除 Skill？", `${config.skills?.[selectedSkill]?.label || selectedSkill} 将不再出现在会话选择器中。`, "删除 Skill"))) return;
   syncConfigFromEditor();
+  pruneSkillAssignments(selectedSkill);
   delete config.skills?.[selectedSkill];
   selectedSkill = "__new";
   await attemptSaveConfig("Skill 已删除");
@@ -1376,6 +1381,7 @@ function renderUserPicker() {
   }
 
   renderAllowedRouteChecks();
+  renderAllowedSkillChecks();
   renderAllowedToolChecks();
   populateUserForm();
 }
@@ -1396,6 +1402,29 @@ function renderAllowedRouteChecks() {
 
 function renderAllowedToolChecks() {
   renderToolCheckboxes(allowedToolsBox, []);
+}
+
+function renderAllowedSkillChecks() {
+  if (!allowedSkillsBox) return;
+  allowedSkillsBox.textContent = "";
+  const entries = Object.entries(config.skills || {}).sort((left, right) => {
+    const order = (Number(left[1]?.order) || 0) - (Number(right[1]?.order) || 0);
+    return order || left[0].localeCompare(right[0]);
+  });
+  if (!entries.length) {
+    allowedSkillsBox.append(textNode("尚未配置 Skill"));
+    return;
+  }
+  for (const [skillId, skill] of entries) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = skillId;
+    const disabled = skill.enabled !== true;
+    label.classList.toggle("disabled-route-option", disabled);
+    label.append(input, document.createTextNode(`${skill.label || skillId}${disabled ? "（已停用）" : ""}`));
+    allowedSkillsBox.append(label);
+  }
 }
 
 function populateUserForm() {
@@ -1422,6 +1451,12 @@ function populateUserForm() {
   const allowed = new Set(user.allowedRoutes?.length ? user.allowedRoutes : routeIds);
   for (const input of allowedRoutesBox.querySelectorAll("input[type='checkbox']")) {
     input.checked = allowed.has(input.value);
+  }
+  const allowedSkills = new Set(
+    Array.isArray(user.allowedSkills) ? user.allowedSkills : Object.keys(config.skills || {}),
+  );
+  for (const input of allowedSkillsBox.querySelectorAll("input[type='checkbox']")) {
+    input.checked = allowedSkills.has(input.value);
   }
   const allowedTools = new Set(Array.isArray(user.allowedTools) ? user.allowedTools : []);
   for (const input of allowedToolsBox.querySelectorAll("input[type='checkbox']")) {
@@ -1460,6 +1495,7 @@ function readUserForm() {
     ...(displayName ? { displayName: displayName.slice(0, 40) } : {}),
     defaultRoute: userDefaultRoute.value,
     allowedRoutes,
+    allowedSkills: checkedValues(allowedSkillsBox),
     allowedTools: checkedValues(allowedToolsBox),
     allowBringYourOwnKey: userByok.checked,
     dailyMessageLimit: positiveNumber(userDailyLimit.value),
@@ -2048,6 +2084,19 @@ function pruneToolAssignments(toolId) {
   }
   for (const user of [config.defaults, ...Object.values(config.users || {})]) {
     if (Array.isArray(user?.allowedTools)) user.allowedTools = user.allowedTools.filter((id) => id !== toolId);
+  }
+}
+
+function replaceSkillAssignments(skillId, replacementId) {
+  for (const user of [config.defaults, ...Object.values(config.users || {})]) {
+    if (!Array.isArray(user?.allowedSkills)) continue;
+    user.allowedSkills = [...new Set(user.allowedSkills.map((id) => id === skillId ? replacementId : id))];
+  }
+}
+
+function pruneSkillAssignments(skillId) {
+  for (const user of [config.defaults, ...Object.values(config.users || {})]) {
+    if (Array.isArray(user?.allowedSkills)) user.allowedSkills = user.allowedSkills.filter((id) => id !== skillId);
   }
 }
 

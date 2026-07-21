@@ -21,6 +21,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 | [Quality Guidelines](./quality-guidelines.md) | Checks, security, testing and review gates | Ready |
 | [Type Safety](./type-safety.md) | Strict Worker TypeScript and runtime validation | Ready |
 | [Agent Streaming And Fallback](./agent-streaming.md) | AIChat streaming, route commitment, fallback and telemetry | Ready |
+| [User Skill Assignment](./capability-assignment.md) | Per-member Skill projection, validation, and execution enforcement | Ready |
 
 ---
 
@@ -29,6 +30,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 - Read `directory-structure.md` before creating or moving frontend files.
 - Read `component-guidelines.md`, `hook-guidelines.md`, and `state-management.md` for changes to page behavior.
 - Read `type-safety.md` for Worker/API/storage contract changes.
+- Read `capability-assignment.md` for user capability fields, Skill selection, or administration assignment changes.
 - Read `agent-streaming.md` for AIChat, provider routing, fallback, cancellation, or stream telemetry changes.
 - Always read `quality-guidelines.md` before implementation and review.
 

@@ -76,8 +76,9 @@ const config: CapabilityRegistryConfig = {
 };
 
 describe("capability registry", () => {
-  it("projects only assigned and executable tools without exposing schemas", () => {
+  it("projects only assigned Skills and executable tools without exposing schemas", () => {
     const capabilities = getPublicCapabilities(config, {
+      allowedSkills: ["writing"],
       allowedTools: ["builtin:text_stats", "mcp:docs:search", "mcp:disabled:search"],
     });
 
@@ -98,7 +99,6 @@ describe("capability registry", () => {
       },
     ]);
     expect(capabilities.skills).toEqual([
-      { id: "coding", label: "Coding", description: "", toolIds: ["mcp:docs:search"] },
       {
         id: "writing",
         label: "Writing",
@@ -113,6 +113,15 @@ describe("capability registry", () => {
   it("selects at most three valid enabled skills in configured order", () => {
     const selected = getSelectedSkills(config, ["writing", "coding", "writing", "bad id", "hidden"]);
     expect(selected.map(({ id }) => id)).toEqual(["coding", "writing"]);
+    expect(getSelectedSkills(config, ["writing", "coding"], { allowedSkills: ["writing"] }).map(({ id }) => id))
+      .toEqual(["writing"]);
+  });
+
+  it("keeps missing Skill assignments backward compatible while an empty list denies all", () => {
+    expect(getPublicCapabilities(config, { allowedTools: [] }).skills.map(({ id }) => id))
+      .toEqual(["coding", "writing"]);
+    expect(getPublicCapabilities(config, { allowedSkills: [], allowedTools: [] }).skills).toEqual([]);
+    expect(getSelectedSkills(config, ["coding", "writing"], { allowedSkills: [] })).toEqual([]);
   });
 
   it("builds provider-safe definitions from the intersection of skill references and assignment", async () => {
