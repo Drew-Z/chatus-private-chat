@@ -10,6 +10,7 @@
     "build:client": "vite build --config client/vite.config.ts",
     "check:frontend": "npm run build:client && node scripts/check-frontend.mjs",
     "smoke:production": "node scripts/smoke-production.mjs",
+    "acceptance:production": "node scripts/acceptance-production.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit"
   },
@@ -22,7 +23,8 @@
     "typescript": "^5.9.3",
     "vite": "8.1.4",
     "vitest": "^4.1.10",
-    "wrangler": "^4.54.0"
+    "wrangler": "^4.54.0",
+    "ws": "^8.21.0"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "3.0.97",

@@ -63,6 +63,7 @@
 - [ ] Remove legacy chat storage only after deterministic and production migration verification.
 - [ ] Add optional read-only BIAU MCP integration, disabled by default, after standalone acceptance.
 - [ ] Complete installation, operations, backup, migration, rollback, English README, and Chinese README documentation.
+- [x] Add a manual GitHub Actions production-member acceptance workflow with revision-safe temporary access-code cleanup and no model calls.
 - [x] Run the full release gate and record remaining production-only manual actions.
 
 ## Verification Record
@@ -70,6 +71,7 @@
 - 2026-07-17: `npm run check:frontend` passed; Vite reported only the known oversized-chunk warning.
 - 2026-07-17: `npm test` passed with 14 files and 127 tests.
 - 2026-07-17: `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` passed.
+- 2026-07-20: Local Wrangler acceptance passed with two generated members, per-member Agent/WebSocket isolation, conversation/memory conflicts, tombstones, user-data deletion, and exact access-code restoration. Production acceptance remains a manual post-deployment Actions step.
 - No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation

@@ -16,6 +16,20 @@ git diff --check
 
 推送后确认 `Deploy to Cloudflare` 工作流成功。工作流会检查精确提交 SHA、`/healthz`、登录页、管理后台、PWA、静态图标、安全响应头和未登录 API 行为。
 
+## 登录态生产验收
+
+需要验证成员隔离、Agent WebSocket、版本冲突或永久删除时，在 GitHub Actions 手动运行 `Production member acceptance`。该工作流会先确认生产版本与触发提交一致，再使用 `ADMIN_TOKEN` 在生产访问码覆盖中追加两名随机临时成员，验证登录、会话投影、对话/记忆隔离、乐观并发冲突、Agent WebSocket、会话墓碑和 `DELETE /api/user-data`。
+
+验收脚本不会调用模型、不会输出访问码或 Cookie，并在成功或失败时清理临时成员数据、恢复访问码配置。验收期间不要同时在后台编辑访问码；脚本使用 revision 检查，检测到并发修改会重试，无法安全恢复时会让工作流失败以便人工处理。
+
+命令行等价入口（需要在受信环境提供 `ADMIN_TOKEN`）：
+
+```bash
+PRODUCTION_URL=https://chatus.ciallobill.qzz.io ADMIN_TOKEN=<从环境变量读取> npm run acceptance:production
+```
+
+不要把 Token、临时访问码、Cookie、响应正文或生产记忆复制到日志、issue、截图或任务文件。
+
 生产地址：
 
 ```text

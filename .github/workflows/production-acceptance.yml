@@ -1,0 +1,40 @@
+name: Production member acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatus-production-member-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify deployed revision
+        env:
+          PRODUCTION_URL: https://chatus.ciallobill.qzz.io
+        run: npm run smoke:production -- "$PRODUCTION_URL" "$GITHUB_SHA"
+
+      - name: Run temporary-member acceptance
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          PRODUCTION_URL: https://chatus.ciallobill.qzz.io
+        run: npm run acceptance:production
