@@ -16,6 +16,10 @@ git diff --check
 
 推送后确认 `Deploy to Cloudflare` 工作流成功。工作流会检查精确提交 SHA、`/healthz`、登录页、管理后台、PWA、静态图标、安全响应头和未登录 API 行为。
 
+工作流只从 GitHub Repository Variables 读取实例定位信息：`CHATUS_WORKER_NAME`、`CHATUS_KV_NAMESPACE_ID`、`CHATUS_PRODUCTION_URL`。它会先运行 `scripts/prepare-deployment.mjs`，在上传前校验这些变量、Cloudflare 凭据、`ACCESS_CODES`、`ADMIN_TOKEN` 以及 `ROUTES_CONFIG` / `UPSTREAM_API_KEY`，再生成忽略提交的 Wrangler 配置与 Secret 文件。Preflight 失败时只记录变量名，不记录值。
+
+三项实例变量在首次部署后应视为持久化身份。修改 Worker 名、KV ID 或 Cloudflare Account 会切换到新的 Worker/数据边界，不是普通配置更新。第三方首次安装流程见 [`self-hosting.md`](self-hosting.md)。
+
 ## 登录态生产验收
 
 需要验证成员隔离、Agent WebSocket、版本冲突或永久删除时，在 GitHub Actions 手动运行 `Production member acceptance`。该工作流会先确认生产版本与触发提交一致，再使用 `ADMIN_TOKEN` 在生产访问码覆盖中追加两名随机临时成员，验证登录、会话投影、对话/记忆隔离、乐观并发冲突、Agent WebSocket、会话墓碑和 `DELETE /api/user-data`。
@@ -25,18 +29,18 @@ git diff --check
 命令行等价入口（需要在受信环境提供 `ADMIN_TOKEN`）：
 
 ```bash
-PRODUCTION_URL=https://chatus.ciallobill.qzz.io ADMIN_TOKEN=<从环境变量读取> npm run acceptance:production
+PRODUCTION_URL=https://你的生产域名 ADMIN_TOKEN=<从环境变量读取> npm run acceptance:production
 ```
 
 不要把 Token、临时访问码、Cookie、响应正文或生产记忆复制到日志、issue、截图或任务文件。
 
-生产地址：
+生产地址统一从 Repository Variable `CHATUS_PRODUCTION_URL` 派生：
 
 ```text
-https://chatus.ciallobill.qzz.io
-https://chatus.ciallobill.qzz.io/admin
-https://chatus.ciallobill.qzz.io/healthz
-https://chatus.ciallobill.qzz.io/release.json
+$CHATUS_PRODUCTION_URL
+$CHATUS_PRODUCTION_URL/admin.html
+$CHATUS_PRODUCTION_URL/healthz
+$CHATUS_PRODUCTION_URL/release.json
 ```
 
 ## 故障判断
@@ -78,11 +82,13 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ## 密钥轮换
 
 1. 普通上游线路 key：直接在管理后台替换并立即运行模型拉取与状态刷新，不需要部署。
-2. `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、兼容用 `WORKER_SECRETS_JSON`：在 GitHub Secrets 更新后运行 `Deploy to Cloudflare`。
+2. `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、兼容用 `WORKER_SECRETS_JSON`：在 GitHub Secrets 更新后运行 `Deploy to Cloudflare`；preflight 会在上传前拒绝缺失或结构错误的配置。
 3. `ROUTE_KEYS_MASTER_KEY`：更换后旧托管密钥无法解密。先记录需要重新录入的 `apiKeyRef` 名称，再更新 GitHub Secret、通过 Actions 发布，并在后台逐条重新录入线路 key。
 4. 验证工作流、生产 smoke、模型拉取和状态刷新成功；如需验证生成能力，使用用户批准的真实任务。
 5. 轮换访问码会使对应 label 的现有登录会话失效；轮换管理员 Token 会使全部旧后台会话在下一次请求时失效。
 6. 不把真实访问码、上游 Key、管理员 Token、主密钥或完整 Secret JSON 写入 issue、日志、截图和仓库文件。
+
+`wrangler deploy --secrets-file` 只新增或覆盖本次提供的值，不删除远端已有 Worker Secret。从 GitHub Secrets 或 `WORKER_SECRETS_JSON` 移除 key 后，必须先停止线路引用，再到 Cloudflare Dashboard 的 Worker Variables and Secrets 显式删除远端值，最后重新运行部署与 smoke；只删 GitHub Secret 不构成撤销。
 
 ## 回滚
 
@@ -93,7 +99,7 @@ git revert <bad-commit-sha>
 git push origin main
 ```
 
-不要使用 `git reset --hard` 改写共享历史，也不要从本机直接覆盖 Worker。回滚后以 `/release.json` 和精确 SHA smoke 为准。
+不要使用 `git reset --hard` 改写共享历史，也不要从本机直接覆盖 Worker。回滚时保持三项实例 Variables 不变，并以 `/release.json` 和精确 SHA smoke 为准。Durable Object migration tag 只能追加，代码回滚不会自动回滚已经执行的数据 schema。
 
 ## 数据与备份
 
@@ -101,7 +107,9 @@ git push origin main
 - 用户可删除本机缓存、退出所有设备或永久删除全部数据。永久删除会清除对话、摘要、记忆、反馈、用量和指标，注销全部设备，并阻止删除前的本地副本回流。
 - 长期记忆可由用户或管理员查看和编辑。
 - 访问码与线路配置的后台覆盖保存在 KV；删除覆盖后会恢复 GitHub/Worker Secret 中的配置。后台线路 key 以 AES-GCM 密文单独保存在 KV，主密钥只存在于 Worker Secret。
-- Durable Object 保存用量、指标、云端会话和删除时间线。SQLite 表通过构造器中的幂等 `CREATE TABLE IF NOT EXISTS` 升级；新增或重命名 Durable Object 类绑定时才增加 Wrangler migration tag，任何已经上线的 tag 都不能修改。
+- 根 `TeamAgent` 保存会话索引、权威长期记忆、迁移标记和删除清理状态；对话 `TeamAgent` 保存消息、流和审批状态。`UserState` 与旧 KV 记录在迁移验收前继续作为导入/回滚来源。
+- SQLite 表通过构造器中的幂等 `CREATE TABLE IF NOT EXISTS` 升级；新增或重命名 Durable Object 类绑定时才增加 Wrangler migration tag，任何已经上线的 tag 都不能修改。
+- 当前没有把 KV/DO 跨账号复制为另一实例的自动迁移命令。不要通过替换 `CHATUS_KV_NAMESPACE_ID` 或 `CHATUS_WORKER_NAME` 尝试恢复数据；先保留原实例并做专门迁移与对账。
 
 ## 开发流程
 

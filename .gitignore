@@ -1,6 +1,7 @@
 node_modules/
 .dev.vars
 .prod.secrets.json
+.wrangler.deploy.jsonc
 public/release.json
 public/react-chat/
 public/legacy/

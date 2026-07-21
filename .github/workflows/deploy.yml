@@ -9,12 +9,29 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: chatus-production-deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      CHATUS_WORKER_NAME: ${{ vars.CHATUS_WORKER_NAME }}
+      CHATUS_KV_NAMESPACE_ID: ${{ vars.CHATUS_KV_NAMESPACE_ID }}
+      CHATUS_PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Refuse a stale main revision
+        shell: bash
+        run: |
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ -z "$remote_sha" ] || [ "$remote_sha" != "$GITHUB_SHA" ]; then
+            echo "Refusing to deploy a revision that is no longer the main branch tip"
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -34,11 +51,10 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Validate Worker bundle
-        run: npx wrangler deploy --dry-run
-
-      - name: Prepare Worker secrets
+      - name: Prepare deployment configuration and Worker secrets
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           UPSTREAM_API_KEY: ${{ secrets.UPSTREAM_API_KEY }}
           ACCESS_CODES: ${{ secrets.ACCESS_CODES }}
           ROUTES_CONFIG: ${{ secrets.ROUTES_CONFIG }}
@@ -47,61 +63,10 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           ROUTE_KEYS_MASTER_KEY: ${{ secrets.ROUTE_KEYS_MASTER_KEY }}
           WORKER_SECRETS_JSON: ${{ secrets.WORKER_SECRETS_JSON }}
-        run: |
-          node - <<'NODE'
-          const fs = require("fs");
-          if (!process.env.ACCESS_CODES) {
-            throw new Error("ACCESS_CODES GitHub secret is required");
-          }
-          if (!process.env.ROUTES_CONFIG && !process.env.UPSTREAM_API_KEY) {
-            throw new Error("Set ROUTES_CONFIG for multi-route mode, or UPSTREAM_API_KEY for legacy mode");
-          }
-          if (process.env.ROUTES_CONFIG) {
-            JSON.parse(process.env.ROUTES_CONFIG);
-          }
-          if (process.env.ROUTE_KEYS_MASTER_KEY) {
-            const normalized = process.env.ROUTE_KEYS_MASTER_KEY.trim();
-            const decoded = Buffer.from(normalized, "base64");
-            if (decoded.length !== 32 || decoded.toString("base64") !== normalized) {
-              throw new Error("ROUTE_KEYS_MASTER_KEY must be Base64-encoded 32 random bytes");
-            }
-          }
-          const extraSecrets = process.env.WORKER_SECRETS_JSON
-            ? JSON.parse(process.env.WORKER_SECRETS_JSON)
-            : {};
-          if (
-            extraSecrets === null ||
-            Array.isArray(extraSecrets) ||
-            typeof extraSecrets !== "object"
-          ) {
-            throw new Error("WORKER_SECRETS_JSON must be a JSON object when set");
-          }
+        run: npm run prepare:deployment
 
-          const keys = [
-            "ACCESS_CODES",
-            "ROUTES_CONFIG",
-            "UPSTREAM_API_KEY",
-            "SYSTEM_PROMPT",
-            "BLOCKED_PROMPTS",
-            "ADMIN_TOKEN",
-            "ROUTE_KEYS_MASTER_KEY",
-          ];
-          const secrets = Object.fromEntries(
-            keys
-              .filter((key) => process.env[key])
-              .map((key) => [key, process.env[key]]),
-          );
-          for (const [key, value] of Object.entries(extraSecrets)) {
-            if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
-              throw new Error(`Invalid Worker secret name in WORKER_SECRETS_JSON: ${key}`);
-            }
-            if (typeof value !== "string" || !value) {
-              throw new Error(`Worker secret ${key} must be a non-empty string`);
-            }
-            secrets[key] = value;
-          }
-          fs.writeFileSync(".prod.secrets.json", JSON.stringify(secrets, null, 2));
-          NODE
+      - name: Validate Worker bundle
+        run: npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc
 
       - name: Prepare release metadata
         run: |
@@ -137,7 +102,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           for attempt in 1 2 3; do
-            if npx wrangler deploy --secrets-file .prod.secrets.json; then
+            if npx wrangler deploy --config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -150,8 +115,10 @@ jobs:
           done
 
       - name: Verify production
-        run: npm run smoke:production -- https://chatus.ciallobill.qzz.io "$GITHUB_SHA"
+        env:
+          PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
+        run: npm run smoke:production -- "$PRODUCTION_URL" "$GITHUB_SHA"
 
-      - name: Remove prepared secrets
+      - name: Remove prepared deployment files
         if: always()
-        run: rm -f .prod.secrets.json
+        run: rm -f .prod.secrets.json .wrangler.deploy.jsonc

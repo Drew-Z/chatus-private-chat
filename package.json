@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:client": "vite --config client/vite.config.ts",
-    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "prepare:deployment": "node scripts/prepare-deployment.mjs",
     "build:client": "vite build --config client/vite.config.ts",
     "check:frontend": "npm run build:client && node scripts/check-frontend.mjs",
     "smoke:production": "node scripts/smoke-production.mjs",

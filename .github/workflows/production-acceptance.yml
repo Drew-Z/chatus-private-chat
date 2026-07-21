@@ -30,11 +30,11 @@ jobs:
 
       - name: Verify deployed revision
         env:
-          PRODUCTION_URL: https://chatus.ciallobill.qzz.io
+          PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
         run: npm run smoke:production -- "$PRODUCTION_URL" "$GITHUB_SHA"
 
       - name: Run temporary-member acceptance
         env:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-          PRODUCTION_URL: https://chatus.ciallobill.qzz.io
+          PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
         run: npm run acceptance:production

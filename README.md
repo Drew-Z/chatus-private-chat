@@ -1,23 +1,25 @@
-# Chatus Private Chat
+# Chatus
 
-一个部署在 Cloudflare Workers 上的私有多模态聊天窗口。它只暴露网页聊天 UI，不提供 OpenAI-compatible API 分发入口。
+一个部署在 Cloudflare Workers 上、面向受信任成员的邀请制私有工作 Agent。编程与项目协作是首个内置能力包，产品本身仍保持通用；它只暴露网页体验，不提供公开的 OpenAI-compatible API 分发入口。
 
 ## 架构
 
 ```text
 Browser
-  -> Cloudflare Worker + Static Assets
-  -> KV sessions, configuration and long-term memory
-  -> per-user SQLite Durable Object (quota, metrics and cloud chats)
-  -> route adapter
-     -> OpenAI-compatible /chat/completions
-     -> Anthropic /v1/messages
+  -> Cloudflare Worker gateway + typed React assets
+  -> per-member TeamAgent Durable Objects
+     -> root Agent (conversation index, memory and cleanup state)
+     -> conversation Agent (messages, resumable streams and approvals)
+  -> KV (shared configuration, access data and encrypted secret records)
+  -> capability registry (assigned Skills, tools and reviewed MCP servers)
+  -> provider router (OpenAI-compatible / Anthropic-compatible + fallback)
 ```
 
 ## 支持能力
 
 - 多线路：每条线路可配置独立 `baseUrl`、`model`、协议类型和 fallback。
 - 多朋友：按访问码 label 匹配用户，每个用户可设置允许线路、默认线路、限额和 BYOK。
+- 能力分配：管理员可按成员分配 Skills 与工具；每次会话投影和执行都会重新校验，撤销后旧会话也不能继续调用。
 - 用户身份：可为稳定 label 配置独立显示名称；修改昵称不会影响访问码、权限或历史会话归属。
 - 用户状态：可暂停或恢复某个朋友；暂停后拒绝新登录并使现有会话在下一次请求时失效，但保留其数据和配置。
 - 多协议：`openai-chat` 适合 OpenAI-compatible 中转；`anthropic-messages` 适合 Claude/Claude Code 一类 Anthropic Messages 接口。
@@ -41,11 +43,11 @@ Browser
 - 非破坏式清空：会话头部的清空操作会开始一个空白会话，原会话及云端历史完整保留。
 - 本地草稿：未发送文本按用户和会话隔离保存，刷新或切换会话后自动恢复，退出时清理。
 - 记忆草稿：长期记忆的未保存编辑按用户隔离保存在本机，刷新后自动恢复，保存或退出时清理。
-- 长期记忆：每个访问码 label 在 KV 中有一份长期记忆，支持建议写入与后台编辑。
+- 长期记忆：每个成员的根 Agent 保存权威记忆，支持用户检查、编辑和删除；旧 KV 记录只作为幂等导入与回滚证据保留。
 - 聊天体验：Markdown、代码块复制和表格渲染；历史消息编辑、重发、重新生成和截断续写都会创建独立分支，并支持会话搜索导出和移动端抽屉侧栏。
 - 安装与更新：支持 PWA 安装；检测到新版本后由用户确认刷新，不会在回答生成中途强制接管。
 - 回答反馈：朋友可标记“有帮助 / 需改进”，后台查看近期好评率；只记录线路与消息标识，不保存反馈对应的对话正文。
-- 管理后台：`/admin.html` 可管理访问码、用户额度、专属提示词、允许线路、默认模型、长期记忆、7 日用量/错误率，并可按需手动检查线路；运营报表不包含敏感字段。
+- 管理后台：`/admin.html` 可管理访问码、用户额度、专属提示词、线路与能力分配、长期记忆和 7 日用量/错误率；线路状态来自配置就绪度与真实任务的脱敏遥测，不发送主动测活提示。
 - 后台编辑保护：用户、线路、访问码、JSON 和长期记忆存在未保存修改时，切换对象、刷新、退出或关闭页面前会提醒确认。
 - 配置并发保护：后台保存或恢复 Secret 配置时校验版本指纹，避免旧标签页或另一台设备覆盖较新的线路与用户配置。
 - 凭据并发保护：访问码保存、轮换、撤销和恢复 Secret 时校验版本指纹，旧后台不能恢复已经失效的访问码。
@@ -57,7 +59,7 @@ Browser
 
 ```bash
 ACCESS_CODES="friend:change-this-long-random-code"
-ADMIN_TOKEN="change-this-admin-token"
+ADMIN_TOKEN="change-this-long-admin-token"
 ROUTES_CONFIG="{...}"
 UPSTREAM_GROK_MAIN_KEY="sk-..."
 UPSTREAM_GROK_BACKUP_KEY="sk-..."
@@ -142,7 +144,17 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 
 ## GitHub Actions Secrets
 
-仓库需要设置：
+首次部署还需要配置三项非敏感 Repository Variables：
+
+```text
+CHATUS_WORKER_NAME       稳定的 Worker 名称，例如 chatus-team
+CHATUS_KV_NAMESPACE_ID  新建 KV namespace 后得到的 32 位 ID
+CHATUS_PRODUCTION_URL   完整 HTTPS origin，不带路径，例如 https://chat.example.com
+```
+
+`CHATUS_PRODUCTION_URL` 以 `.workers.dev` 结尾时，部署脚本会启用 Workers.dev；其他域名会生成 Cloudflare Custom Domain 配置。三项值在首次生产部署后都应保持稳定，尤其不要用“改 Worker 名”的方式改品牌，否则会形成新的 Worker/持久化边界。
+
+仓库 Secrets 需要设置：
 
 ```text
 CLOUDFLARE_API_TOKEN   Cloudflare API Token，用于 GitHub Actions 部署
@@ -157,11 +169,7 @@ BLOCKED_PROMPTS        可选，全局屏蔽的短提示词列表
 UPSTREAM_API_KEY       可选，旧单线路 fallback
 ```
 
-当前 Cloudflare Account ID：
-
-```text
-f04d5c8ecf3260827f1ea87b22454ae8
-```
+从零创建 Cloudflare 资源、设置最小变量/密钥并完成首次 Actions 发布的完整流程见 [`docs/self-hosting.md`](docs/self-hosting.md)。仓库不保存维护者的 Account ID、KV ID 或生产域名。
 
 若要在管理后台直接新增和轮换线路 key，先生成 32 个随机字节的 Base64 值：
 
@@ -221,10 +229,10 @@ https://你的 Worker 域名/admin.html
 
 当前实现借鉴了常见聊天项目的分层方式，但保持轻量：
 
-- 会话历史：按用户存入 SQLite Durable Object + 浏览器 localStorage 缓存；换设备可恢复，最多 30 个会话。旧版 KV 会话会在首次读取时自动迁移。
+- 会话历史：按成员存入对话 Agent 的 SQLite + 浏览器 localStorage 缓存；根 Agent 维护索引，换设备可恢复，最多 30 个会话。旧版 KV/UserState 会话会幂等导入且暂不删除源记录。
 - 短期上下文：前后端按字符预算裁剪（默认约 14000 字符 / 最近 40 条），并优先保留最近对话；历史图片只保留最近 2 轮用户消息。
 - 会话摘要：聊天达到一定长度后自动调用当前线路生成滚动摘要，并在后续请求里作为 system 信息注入；自动摘要不扣用户消息额度，同一会话不会并发生成重复摘要。
-- 长期记忆：保存在 Cloudflare KV 的 `memory:<label>`，默认最多 4000 字符；支持手写编辑与「建议写入」确认后追加。
+- 长期记忆：根 Agent SQLite 是权威来源，默认最多 4000 字符；支持手写编辑与「建议写入」确认后追加，旧 KV 仅用于首次导入和回滚核验。
 - System 注入：`SYSTEM_PROMPT` + 长期记忆 + 会话摘要，会放到请求最前面。
 
 聊天 UI 支持 Markdown/代码块复制、消息编辑/重发/重新生成、会话搜索与导出、粘贴/拖拽图片，以及移动端侧栏抽屉。
@@ -239,7 +247,7 @@ https://你的 Worker 域名/admin.html
 - 用户可配置专属 System Prompt（叠加在全局 `SYSTEM_PROMPT` 之后，最多 2000 字）。
 - 访问码支持按 label 生成随机长码并追加到列表。
 - 新朋友可从用户表单一次完成权限配置与访问码生成，避免用户配置和访问控制不同步。
-- 线路仅在管理员主动点击时执行手动检查（最小 completion，查看延迟与连通性）。
+- 线路状态刷新只读取配置就绪度和真实任务的脱敏遥测，不发送 completion 或隐藏探测提示。
 - 生产配置不注册线路测活 Cron，也不会在后台自动向模型发送探测请求。
 - 线路支持从上游安全拉取模型列表，API Key 由 Worker Secret 注入，浏览器可直接选择模型 ID。
 - 可导出每日趋势、线路成功率和用户额度概况 CSV；报表不包含访问码、API Key、Base URL、Prompt、记忆或对话正文。
@@ -256,20 +264,15 @@ https://你的 Worker 域名/admin.html
 推送到 `main` 分支会自动执行 `.github/workflows/deploy.yml`：
 
 ```text
-install -> typecheck -> test -> write .prod.secrets.json -> wrangler deploy
+install -> typecheck/frontend/test -> instance + secret preflight
+        -> generated Wrangler dry-run -> GitHub Actions deploy -> exact-SHA smoke
 ```
 
-Wrangler 上传遇到 Cloudflare 控制面临时 `5xx` 时会自动重试 3 次；代码检查和生产 smoke 失败不会重试或被忽略。
+工作流从 Repository Variables 生成忽略提交的 `.wrangler.deploy.jsonc`，从 GitHub Secrets 生成权限受限的 `.prod.secrets.json`。缺少实例参数、Cloudflare 凭据、管理员凭据或模型线路时，会在上传前按变量名失败，错误不会输出值。Wrangler 上传遇到 Cloudflare 控制面临时 `5xx` 时会自动重试 3 次；代码检查和生产 smoke 失败不会重试或被忽略。
 
 生产运行、故障判断、密钥轮换、回滚和数据恢复流程见 [`docs/operations.md`](docs/operations.md)。
 
-当前 KV namespace 已绑定：
-
-```text
-chatus_private_chat -> 677a99ca03f14921ac091851fb95a8da
-```
-
-`wrangler.jsonc` 包含 `UserState` Durable Object 的 `v1` SQLite 类迁移，首次部署会自动创建，不需要在 Dashboard 手动建库。现有 SQLite 表由 Durable Object 构造器通过 `CREATE TABLE IF NOT EXISTS` 幂等升级；只有新增、删除或重命名 Durable Object 类绑定时才需要增加 Wrangler migration tag，不能修改已经上线的 tag。自定义域名可以继续在 Cloudflare Dashboard 管理，部署不会移除它。
+`wrangler.jsonc` 只保留可共享的本地/干跑基线，不包含任何生产实例 ID。生成后的生产配置包含 `UserState` 与 `TeamAgent` 的 SQLite 类迁移，首次部署会自动创建 Durable Object namespace；只有新增、删除或重命名 Durable Object 类绑定时才增加 migration tag，不能修改已经上线的 tag。
 
 ## 开发
 
@@ -286,8 +289,10 @@ npm install
 npm run dev
 npm run typecheck
 npm test
-npx wrangler deploy --dry-run
+npm run deploy:dry-run
 ```
+
+仓库没有本地生产 `deploy` 脚本。生产发布只通过 GitHub Actions 读取已配置的实例参数和 Secrets。
 
 ## 借鉴项目
 

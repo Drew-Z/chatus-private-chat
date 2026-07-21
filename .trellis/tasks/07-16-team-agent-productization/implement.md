@@ -66,6 +66,7 @@
 - [ ] Complete installation, operations, backup, migration, rollback, English README, and Chinese README documentation.
 - [x] Add a manual GitHub Actions production-member acceptance workflow with revision-safe temporary access-code cleanup and no model calls.
 - [x] Run the full release gate and record remaining production-only manual actions.
+- [x] Parameterize third-party Worker/KV/domain identity through GitHub Variables, add deployment/Secret preflight, and remove maintainer production identifiers from the repository.
 
 ## Verification Record
 
@@ -75,6 +76,7 @@
 - 2026-07-20: Local Wrangler acceptance passed with two generated members, per-member Agent/WebSocket isolation, conversation/memory conflicts, tombstones, user-data deletion, and exact access-code restoration. Production acceptance remains a manual post-deployment Actions step.
 - 2026-07-21: GitHub Actions run `29799778848` passed authenticated production acceptance for commit `b3ecfc5`, including temporary-member cleanup and access-code configuration restoration.
 - 2026-07-21: Per-member Skill assignment passed frontend checks, 14 test files / 129 tests, strict type-check, Wrangler deployment dry-run, and diff checks. Revoked persisted Skill selections are filtered again by both chat execution paths.
+- 2026-07-21: Third-party instance generation and deployment preflight passed 15 test files / 155 tests, strict type-check, frontend checks, generic and generated-config Wrangler dry-runs, and diff checks. Production identifiers are supplied only by GitHub Variables; no production deployment was run.
 - No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation

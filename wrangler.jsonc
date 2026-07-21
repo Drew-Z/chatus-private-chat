@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "chatus-private-chat",
+  "name": "chatus",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-09",
   "compatibility_flags": ["nodejs_compat"],
@@ -13,8 +13,7 @@
   },
   "kv_namespaces": [
     {
-      "binding": "CHAT_STORE",
-      "id": "677a99ca03f14921ac091851fb95a8da"
+      "binding": "CHAT_STORE"
     }
   ],
   "durable_objects": {
