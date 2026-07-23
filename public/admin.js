@@ -2723,6 +2723,7 @@ function sourceLabel(source) {
   const labels = {
     kv: "后台 KV",
     secret: "Secret",
+    managed: "后台托管（待创建）",
     default: "默认值",
   };
   return labels[source] || source || "--";

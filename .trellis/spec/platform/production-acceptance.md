@@ -16,12 +16,12 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 ## 3. Contracts
 
 - Log in through `POST /api/admin/login`; keep the returned admin cookie in memory only.
-- Read `GET /api/admin/access-codes` and retain `accessCodes`, `source`, and `revision` without logging them.
+- Read `GET /api/admin/access-codes` and retain `accessCodes`, `source`, and `revision` without logging them. `source` may be `kv`, `secret`, or `managed`; a managed empty source is the supported first-deployment bootstrap state.
 - Generate two random labels and access codes before mutation, append them with `PUT /api/admin/access-codes`, and pass `expectedRevision`.
 - Verify member login, `/api/session`, opaque per-member Agent identities, conversation and memory isolation, `409` stale writes, cookie-authenticated `/agent` WebSockets, tombstones, and `DELETE /api/user-data`.
 - Do not send a chat turn, completion request, route probe, or any other model request.
 - Always purge temporary member data and remove both access-code entries in `finally`.
-- When no concurrent edit occurred, restore the exact original access-code text and its `kv` or `secret` source. If a concurrent edit occurred, remove only the temporary labels, preserve other entries, and fail the run for operator review.
+- When no concurrent edit occurred, restore the exact original access-code text and its `kv`, `secret`, or `managed` source. If a concurrent edit occurred, remove only the temporary labels, preserve other entries, and fail the run for operator review.
 - Logs may contain milestone names and HTTP status codes only. Never print tokens, access codes, cookies, raw access-code payloads, memory, or conversation content.
 
 ## 4. Validation & Error Matrix
@@ -47,7 +47,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 
 ## 6. Tests Required
 
-- Run the acceptance script against local Wrangler with dummy `ACCESS_CODES` and `ADMIN_TOKEN`; assert every milestone completes and the original access code still works afterward.
+- Run the acceptance script against local Wrangler with dummy `ADMIN_TOKEN`, both a legacy access-code fixture and an empty managed bootstrap fixture; assert every milestone completes and the original source is restored afterward.
 - Parse the workflow YAML and assert the job is restricted to `refs/heads/main`.
 - Run `node --check scripts/acceptance-production.mjs`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.

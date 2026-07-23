@@ -33,9 +33,13 @@ If the production host is `<worker>.<account-subdomain>.workers.dev`, generated 
 Required GitHub Secrets:
 
 - `CLOUDFLARE_API_TOKEN` and 32-character `CLOUDFLARE_ACCOUNT_ID` for Wrangler only; they never enter the Worker Secret file.
-- `ACCESS_CODES` with one or more `label:code` entries and at least 16 characters per code.
 - `ADMIN_TOKEN` with at least 24 characters.
 - A structurally valid `ROUTES_CONFIG` with at least one enabled route, or legacy `UPSTREAM_API_KEY`.
+
+`ACCESS_CODES` is no longer a required production Secret. The generated deployment config sets
+`ACCESS_CODES_MODE="managed"`, so production access codes are created and rotated in KV through
+the authenticated administrator surface. A local `ACCESS_CODES` value remains supported only for
+legacy/local development mode; it is never read by the managed production deployment.
 
 Optional Worker Secrets are `SYSTEM_PROMPT`, `BLOCKED_PROMPTS`, `ROUTE_KEYS_MASTER_KEY`, and extra uppercase string entries from `WORKER_SECRETS_JSON`. The master key must be canonical Base64 for exactly 32 bytes. Extra entries cannot override core Worker Secrets, Cloudflare credentials, or instance Variables.
 
@@ -53,7 +57,7 @@ Deploy workflow runs are mutually exclusive, newer runs cancel older runs, and a
 | workers.dev hostname does not match Worker name | Fail preflight |
 | `ROUTES_CONFIG` is not an object or has no valid enabled route | Fail preflight |
 | Default/user/fallback references an unknown route | Fail preflight |
-| Access code or admin token is below the minimum length | Fail preflight |
+| Legacy-mode access code or admin token is below the minimum length | Fail preflight |
 | Extra Secret tries to replace a reserved name | Fail preflight |
 | Checked-out SHA is no longer the `main` tip | Fail before deployment |
 | Generated Wrangler config fails current Wrangler validation | Fail dry-run before deployment |
@@ -68,7 +72,7 @@ Deploy workflow runs are mutually exclusive, newer runs cancel older runs, and a
 ## 6. Tests Required
 
 - Unit-test custom-domain and workers.dev projections, input immutability, KV binding injection, and removal of stale routes.
-- Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak access/admin credentials, malformed master keys, and reserved Secret overrides.
+- Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
 - Import workflow/config files as raw fixtures and assert Repository Variables, generated `--config`, concurrency, stale-SHA check, parameterized production URL, generic Wrangler baseline, and absence of a local `deploy` script.
 - Run `node --check` for both deployment scripts.
 - Execute the generator with dummy values and run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc`.

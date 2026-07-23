@@ -105,7 +105,7 @@ export type AdminMemberProjection = {
 export type AdminMembersSnapshot = {
   members: AdminMemberProjection[];
   accessRevision: string;
-  accessSource: "kv" | "secret";
+  accessSource: "kv" | "secret" | "managed";
 };
 
 export type AdminSessionRevocation = {
@@ -525,7 +525,7 @@ export function isAdminMemberListResponse(
     || !Array.isArray(value.members)
     || !value.members.every(isAdminMemberProjection)
     || typeof value.accessRevision !== "string"
-    || (value.accessSource !== "kv" && value.accessSource !== "secret")) {
+    || (value.accessSource !== "kv" && value.accessSource !== "secret" && value.accessSource !== "managed")) {
     return false;
   }
   const labels = value.members.map((member) => member.label);

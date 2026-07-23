@@ -95,7 +95,7 @@ type AdminMemberProjection = {
 
 type AccessCodeSnapshot = {
   accessCodes: string;
-  source: "kv" | "secret";
+  source: "kv" | "secret" | "managed";
   entries: AccessEntry[];
   revision: string;
 };
@@ -218,7 +218,8 @@ export type Env = {
   USER_STATE: DurableObjectNamespace<UserState>;
   TEAM_AGENT: DurableObjectNamespace<TeamAgent>;
   PROVIDER_COORDINATOR: DurableObjectNamespace<ProviderCoordinator>;
-  ACCESS_CODES: string;
+  ACCESS_CODES?: string;
+  ACCESS_CODES_MODE?: string;
   ROUTES_CONFIG?: string;
   SYSTEM_PROMPT?: string;
   UPSTREAM_BASE_URL?: string;
@@ -831,7 +832,8 @@ async function handleHealthCheck(env: Env): Promise<Response> {
       getTeamAgent(env, "health:probe").then((agent) => agent.healthCheck()),
     ]);
     void kvProbe;
-    const configured = Object.values(config.routes).some((route) => route.enabled !== false) && parseAccessCodes(accessCodes).length > 0;
+    const configured = Object.values(config.routes).some((route) => route.enabled !== false);
+    const memberAccessConfigured = parseAccessCodes(accessCodes).length > 0;
     const agentReady = teamAgent.ok === true && teamAgent.storage === true;
     const durableObject = Boolean(legacyDurableObject && agentReady);
     const ok = Boolean(durableObject && configured);
@@ -843,6 +845,7 @@ async function handleHealthCheck(env: Env): Promise<Response> {
         legacyDurableObject: Boolean(legacyDurableObject),
         teamAgent: agentReady,
         configured,
+        memberAccessConfigured,
       },
     }, ok ? 200 : 503);
   } catch {
@@ -854,6 +857,7 @@ async function handleHealthCheck(env: Env): Promise<Response> {
         legacyDurableObject: false,
         teamAgent: false,
         configured: false,
+        memberAccessConfigured: false,
       },
     }, 503);
   }
@@ -1358,7 +1362,7 @@ async function handleCreateAdminMemberAccess(request: Request, env: Env): Promis
   return jsonResponse({
     member: projectAdminMember(config, label, true),
     accessCode,
-    accessRevision: await secretFingerprint(nextAccessCodes),
+    accessRevision: await accessCodesFingerprint(nextAccessCodes),
     sessionRevocation: { revoked: 0, complete: true },
   });
 }
@@ -1396,7 +1400,7 @@ async function handleRotateAdminMemberAccess(request: Request, env: Env, rawLabe
   return jsonResponse({
     member: projectAdminMember(config, label, true),
     accessCode,
-    accessRevision: await secretFingerprint(nextAccessCodes),
+    accessRevision: await accessCodesFingerprint(nextAccessCodes),
     sessionRevocation,
   });
 }
@@ -1430,7 +1434,7 @@ async function handleRevokeAdminMemberAccess(request: Request, env: Env, rawLabe
   );
   return jsonResponse({
     member: projectAdminMember(config, label, false),
-    accessRevision: await secretFingerprint(nextAccessCodes),
+    accessRevision: await accessCodesFingerprint(nextAccessCodes),
     sessionRevocation,
   });
 }
@@ -1526,7 +1530,7 @@ async function loadAccessCodeSnapshot(env: Env): Promise<AccessCodeSnapshot> {
   return {
     ...editable,
     entries: parseAccessCodes(editable.accessCodes),
-    revision: await secretFingerprint(editable.accessCodes),
+    revision: await accessCodesFingerprint(editable.accessCodes),
   };
 }
 
@@ -2014,7 +2018,7 @@ async function handleGetAdminAccessCodes(env: Env): Promise<Response> {
     accessCodes,
     entries: parseAccessCodes(accessCodes).map(({ label }) => ({ label })),
     source,
-    revision: await secretFingerprint(accessCodes),
+    revision: await accessCodesFingerprint(accessCodes),
   });
 }
 
@@ -2034,7 +2038,7 @@ async function handlePutAdminAccessCodes(request: Request, env: Env): Promise<Re
     ok: true,
     entries: entries.map(({ label }) => ({ label })),
     source: "kv",
-    revision: await secretFingerprint(accessCodes),
+    revision: await accessCodesFingerprint(accessCodes),
   });
 }
 
@@ -2042,7 +2046,7 @@ async function accessRevisionConflict(env: Env, expectedValue: unknown): Promise
   const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
   if (!expectedRevision) return null;
   const current = await loadEditableAccessCodes(env);
-  const currentRevision = await secretFingerprint(current.accessCodes);
+  const currentRevision = await accessCodesFingerprint(current.accessCodes);
   if (currentRevision === expectedRevision) return null;
   return jsonResponse({
     error: "access_codes_conflict",
@@ -2333,7 +2337,7 @@ async function handleCreateAdminUser(request: Request, env: Env): Promise<Respon
     accessCode,
     config: sanitizeAdminConfig(nextConfig),
     configRevision: await configRevision(nextConfig),
-    accessRevision: await secretFingerprint(nextAccessCodes),
+    accessRevision: await accessCodesFingerprint(nextAccessCodes),
   });
 }
 
@@ -6732,12 +6736,17 @@ function parsePromptList(value: unknown): string[] {
 async function loadAccessCodes(env: Env): Promise<string> {
   const stored = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
   if (stored?.trim()) return stored.trim();
+  if (env.ACCESS_CODES_MODE === "managed") return "";
   return env.ACCESS_CODES?.trim() || "";
 }
 
-async function loadEditableAccessCodes(env: Env): Promise<{ accessCodes: string; source: "kv" | "secret" }> {
+async function loadEditableAccessCodes(env: Env): Promise<{
+  accessCodes: string;
+  source: "kv" | "secret" | "managed";
+}> {
   const stored = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
   if (stored?.trim()) return { accessCodes: stored.trim(), source: "kv" };
+  if (env.ACCESS_CODES_MODE === "managed") return { accessCodes: "", source: "managed" };
   return { accessCodes: env.ACCESS_CODES?.trim() || "", source: "secret" };
 }
 
@@ -7167,6 +7176,10 @@ async function secretFingerprint(value: string): Promise<string> {
   if (!value) return "";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function accessCodesFingerprint(value: string): Promise<string> {
+  return secretFingerprint(`chatus:access-codes:v1:${value.length}:${value}`);
 }
 
 function positiveCount(value: string | null): number {

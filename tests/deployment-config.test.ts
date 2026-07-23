@@ -53,6 +53,7 @@ describe("deployment configuration", () => {
       workers_dev: false,
       routes: [{ pattern: "chat.example.test", custom_domain: true }],
       kv_namespaces: [{ binding: "CHAT_STORE", id: "0123456789abcdef0123456789abcdef" }],
+      vars: { ACCESS_CODES_MODE: "managed" },
     });
     expect(baseConfig).toEqual(expect.objectContaining({ name: "chatus", kv_namespaces: [{ binding: "CHAT_STORE" }] }));
   });
@@ -131,6 +132,20 @@ describe("deployment secret preflight", () => {
     });
   });
 
+  it("omits deployment access codes in managed mode", () => {
+    const secrets = collectWorkerSecrets({
+      ...validEnvironment,
+      ACCESS_CODES_MODE: "managed",
+      ACCESS_CODES: "forgotten-short-code",
+    });
+
+    expect(secrets).not.toHaveProperty("ACCESS_CODES");
+    expect(secrets).toMatchObject({
+      ADMIN_TOKEN: validEnvironment.ADMIN_TOKEN,
+      ROUTES_CONFIG: validEnvironment.ROUTES_CONFIG,
+    });
+  });
+
   it("accepts provider-pool routes and shared provider credentials", () => {
     const routesConfig = {
       providers: {
@@ -163,6 +178,7 @@ describe("deployment secret preflight", () => {
     [{ ...validEnvironment, ACCESS_CODES: "" }, /ACCESS_CODES/],
     [{ ...validEnvironment, ACCESS_CODES: "test-access-code-without-label" }, /label:code/],
     [{ ...validEnvironment, ACCESS_CODES: "member:short" }, /at least 16 characters/],
+    [{ ...validEnvironment, ACCESS_CODES_MODE: "unknown" }, /ACCESS_CODES_MODE/],
     [{ ...validEnvironment, ADMIN_TOKEN: "" }, /ADMIN_TOKEN/],
     [{ ...validEnvironment, ADMIN_TOKEN: "short-admin-token" }, /at least 24 characters/],
     [{ ...validEnvironment, ROUTES_CONFIG: "[]" }, /JSON object/],
@@ -245,6 +261,8 @@ describe("repository deployment contract", () => {
     expect(deployWorkflow).toContain("--config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json");
     expect(deployWorkflow).toContain("cancel-in-progress: true");
     expect(deployWorkflow).toContain("git ls-remote origin refs/heads/main");
+    expect(deployWorkflow).toContain("ACCESS_CODES_MODE: managed");
+    expect(deployWorkflow).not.toContain("secrets.ACCESS_CODES");
     expect(deployWorkflow).not.toMatch(/PRODUCTION_URL:\s*https:/);
     expect(acceptanceWorkflow).toContain("vars.CHATUS_PRODUCTION_URL");
     expect(acceptanceWorkflow).not.toMatch(/PRODUCTION_URL:\s*https:/);

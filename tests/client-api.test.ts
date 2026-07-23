@@ -135,6 +135,11 @@ describe("React client runtime validation", () => {
       accessSource: "kv",
     })).toBe(true);
     expect(isAdminMemberListResponse({
+      members: [],
+      accessRevision: "b".repeat(64),
+      accessSource: "managed",
+    })).toBe(true);
+    expect(isAdminMemberListResponse({
       members: [
         { label: "bill", displayName: "Bill", configured: true, hasAccessCode: true },
         { label: "bill", displayName: "Bill", configured: false, hasAccessCode: false },

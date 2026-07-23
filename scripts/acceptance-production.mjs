@@ -75,7 +75,10 @@ async function getAccessCodes(cookie) {
   const payload = await json(response, "read access-code configuration");
   assert(typeof payload.accessCodes === "string", "read access-code configuration: value missing");
   assert(typeof payload.revision === "string" && payload.revision, "read access-code configuration: revision missing");
-  assert(payload.source === "kv" || payload.source === "secret", "read access-code configuration: invalid source");
+  assert(
+    payload.source === "kv" || payload.source === "secret" || payload.source === "managed",
+    "read access-code configuration: invalid source",
+  );
   return payload;
 }
 
@@ -328,13 +331,13 @@ async function cleanupTemporaryMembers(adminCookie, original, members, augmented
     const kept = currentEntries.filter((entry) => !temporaryLabels.has(entry.label));
     const cleaned = kept.map((entry) => `${entry.label}:${entry.code}`).join(",");
     try {
-      if (exactTemporaryValue && original.source === "secret") {
+      if (exactTemporaryValue && original.source !== "kv") {
         const response = await request("/api/admin/access-codes", {
           cookie: adminCookie,
           method: "DELETE",
           body: { expectedRevision: current.revision },
         });
-        await expectStatus(response, 200, "restore access-code secret source");
+        await expectStatus(response, 200, "restore access-code bootstrap source");
       } else {
         const restoreValue = exactTemporaryValue ? original.accessCodes.trim() : cleaned;
         assert(restoreValue, "restore access-code configuration: no remaining access code");
@@ -345,8 +348,8 @@ async function cleanupTemporaryMembers(adminCookie, original, members, augmented
       if (!exactTemporaryValue) {
         throw new Error("restore access-code configuration: concurrent modification detected after cleanup");
       }
-      if (original.source === "secret") {
-        assert(restored.source === "secret", "restore access-code configuration: secret source was not restored");
+      if (original.source !== "kv") {
+        assert(restored.source === original.source, "restore access-code configuration: bootstrap source was not restored");
       } else {
         assert(restored.accessCodes === original.accessCodes.trim(), "restore access-code configuration: original value changed");
       }

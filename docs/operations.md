@@ -16,7 +16,7 @@ git diff --check
 
 推送后确认 `Deploy to Cloudflare` 工作流成功。工作流会检查精确提交 SHA、`/healthz`、登录页、管理后台、PWA、静态图标、安全响应头和未登录 API 行为。
 
-工作流只从 GitHub Repository Variables 读取实例定位信息：`CHATUS_WORKER_NAME`、`CHATUS_KV_NAMESPACE_ID`、`CHATUS_PRODUCTION_URL`。它会先运行 `scripts/prepare-deployment.mjs`，在上传前校验这些变量、Cloudflare 凭据、`ACCESS_CODES`、`ADMIN_TOKEN` 以及 `ROUTES_CONFIG` / `UPSTREAM_API_KEY`，再生成忽略提交的 Wrangler 配置与 Secret 文件。Preflight 失败时只记录变量名，不记录值。
+工作流只从 GitHub Repository Variables 读取实例定位信息：`CHATUS_WORKER_NAME`、`CHATUS_KV_NAMESPACE_ID`、`CHATUS_PRODUCTION_URL`。它会先运行 `scripts/prepare-deployment.mjs`，在上传前校验这些变量、Cloudflare 凭据、`ADMIN_TOKEN` 以及 `ROUTES_CONFIG` / `UPSTREAM_API_KEY`，再生成忽略提交的 Wrangler 配置与 Secret 文件。生产配置启用 KV 托管访问码模式，不读取 GitHub `ACCESS_CODES`。Preflight 失败时只记录变量名，不记录值。
 
 三项实例变量在首次部署后应视为持久化身份。修改 Worker 名、KV ID 或 Cloudflare Account 会切换到新的 Worker/数据边界，不是普通配置更新。第三方首次安装流程见 [`self-hosting.md`](self-hosting.md)。
 
@@ -55,7 +55,7 @@ $CHATUS_PRODUCTION_URL/release.json
 
 ## 故障判断
 
-1. 查看 `/healthz`。`kv`、`legacyDurableObject`、`teamAgent`、`durableObject`、`configured` 应全部为 `true`。
+1. 查看 `/healthz`。`kv`、`legacyDurableObject`、`teamAgent`、`durableObject`、`configured` 应全部为 `true`；首次引导期间 `memberAccessConfigured` 可以是 `false`。
 2. 查看 `/release.json`，确认 `commit` 是预期的完整 Git SHA。
 3. 查看 GitHub Actions 中失败的具体步骤。
 4. 用户错误中的 8 位“请求编号”对应响应头 `X-Request-ID` 的前 8 位；在 Cloudflare Observability 中按完整 ID 检索结构化日志。
@@ -70,7 +70,7 @@ $CHATUS_PRODUCTION_URL/release.json
 - 页面仍是旧版本：等待 PWA 更新提示并点击“立即刷新”；用 `/release.json` 判断生产版本，不以浏览器缓存内容为准。
 - 云端同步冲突：系统会保留云端新版，并把当前设备内容创建为“此设备副本”，不要手工覆盖原会话。
 - 已删除会话重新出现：先确认生产版本；当前版本会取消前端保存队列，并用单会话墓碑与账户级删除时间线拒绝旧设备数据。不要通过清空墓碑解决同步问题。
-- 核心健康异常：先检查 KV 和 Durable Object 绑定，再检查 `ACCESS_CODES` 与至少一条启用线路是否存在。
+- 核心健康异常：先检查 KV 和 Durable Object 绑定，再检查至少一条启用线路。首次部署没有成员访问码时属于正常引导状态，应使用管理员后台创建首个成员。
 
 ## 后台 provider 密钥
 
@@ -94,7 +94,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ## 密钥轮换
 
 1. 普通上游 provider key：直接在管理后台替换并立即运行模型拉取与状态刷新，不需要部署。
-2. `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、兼容用 `WORKER_SECRETS_JSON`：在 GitHub Secrets 更新后运行 `Deploy to Cloudflare`；preflight 会在上传前拒绝缺失或结构错误的配置。
+2. `ADMIN_TOKEN`、`ROUTES_CONFIG`、兼容用 `WORKER_SECRETS_JSON`：在 GitHub Secrets 更新后运行 `Deploy to Cloudflare`；preflight 会在上传前拒绝缺失或结构错误的配置。生产 `ACCESS_CODES` 不再放入 GitHub，管理员在 `/react-chat/admin` 中创建或轮换并写入 KV。
 3. `ROUTE_KEYS_MASTER_KEY`：更换后旧托管密钥无法解密。先记录需要重新录入的 `apiKeyRef` 名称，再更新 GitHub Secret、通过 Actions 发布，并在后台逐条重新录入 provider key。
 4. 验证工作流、生产 smoke、模型拉取和状态刷新成功；如需验证生成能力，使用用户批准的真实任务。
 5. 轮换访问码会使对应 label 的现有登录会话失效；轮换管理员 Token 会使全部旧后台会话在下一次请求时失效。
@@ -122,7 +122,7 @@ git push origin main
 - 用户可在设置中下载经过脱敏的用户数据 JSON。导出包含成员标签、长期记忆、会话元数据、文本和文件名/类型，不包含访问码、provider/admin 配置、原始工具载荷或文件 URL；附件最多 5 MB、单会话最多 512 KB，超出部分保留最新消息并以 `truncated` / `messagesTruncated` 标记。手动导入使用 `restore` 语义，可恢复明确选择的旧备份；后台自动同步只使用 `merge`，不会绕过删除时间线。
 - 用户可删除本机缓存、退出所有设备或永久删除全部数据。永久删除会清除对话、摘要、记忆、反馈、用量和指标，注销全部设备，并阻止删除前的本地副本回流。
 - 长期记忆可由用户或管理员查看和编辑。
-- 访问码与 provider/逻辑模型配置的后台覆盖保存在 KV；删除覆盖后会恢复 GitHub/Worker Secret 中的配置。后台 provider key 以 AES-GCM 密文单独保存在 KV，主密钥只存在于 Worker Secret。
+- provider/逻辑模型等后台覆盖保存在 KV，删除后按各配置的兼容来源恢复；生产成员访问码由 KV 托管，删除后不会回退到 GitHub/Worker `ACCESS_CODES`，空值表示等待管理员创建首个成员。后台 provider key 以 AES-GCM 密文单独保存在 KV，主密钥只存在于 Worker Secret。
 - 根 `TeamAgent` 保存会话索引、权威长期记忆、迁移标记和删除清理状态；对话 `TeamAgent` 保存消息、流和审批状态。`UserState` 与旧 KV 记录在迁移验收前继续作为导入/回滚来源。
 - SQLite 表通过构造器中的幂等 `CREATE TABLE IF NOT EXISTS` 升级；新增或重命名 Durable Object 类绑定时才增加 Wrangler migration tag，任何已经上线的 tag 都不能修改。
 - 当前没有把 KV/DO 跨账号复制为另一实例的自动迁移命令。不要通过替换 `CHATUS_KV_NAMESPACE_ID` 或 `CHATUS_WORKER_NAME` 尝试恢复数据；先保留原实例并做专门迁移与对账。

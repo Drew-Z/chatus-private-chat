@@ -67,13 +67,13 @@ ANTHROPIC_KEY="sk-ant-..."
 SYSTEM_PROMPT="You are a helpful assistant."
 ```
 
-`ACCESS_CODES` 支持多个访问码，用英文逗号分隔：
+本地兼容模式下，`ACCESS_CODES` 支持多个访问码，用英文逗号分隔：
 
 ```bash
 ACCESS_CODES="friend:code-one,alice:code-two"
 ```
 
-登录后的用户 label 就是 `friend`、`alice`，会用于匹配 `ROUTES_CONFIG.users`。
+登录后的用户 label 就是 `friend`、`alice`，会用于匹配 `ROUTES_CONFIG.users`。生产部署不读取 GitHub `ACCESS_CODES`；成员访问码由管理员在 `/react-chat/admin` 中生成并托管到 KV。
 
 ## ROUTES_CONFIG
 
@@ -193,7 +193,6 @@ CHATUS_PRODUCTION_URL   完整 HTTPS origin，不带路径，例如 https://chat
 ```text
 CLOUDFLARE_API_TOKEN   Cloudflare API Token，用于 GitHub Actions 部署
 CLOUDFLARE_ACCOUNT_ID  当前 Cloudflare 账号 ID
-ACCESS_CODES           聊天窗口访问码
 ADMIN_TOKEN            管理后台登录 token，用于 /admin.html
 ROUTES_CONFIG          provider、逻辑模型与成员权限配置，推荐设置
 ROUTE_KEYS_MASTER_KEY  可选但推荐，后台加密管理 provider key 的一次性主密钥
@@ -204,6 +203,8 @@ UPSTREAM_API_KEY       可选，旧单线路 fallback
 ```
 
 从零创建 Cloudflare 资源、设置最小变量/密钥并完成首次 Actions 发布的完整流程见 [`docs/self-hosting.md`](docs/self-hosting.md)。仓库不保存维护者的 Account ID、KV ID 或生产域名。
+
+首次发布不需要在 GitHub 保存成员访问码。部署成功后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建 `bill` 或其他成员；随机访问码只在创建/轮换成功时显示一次。忘记旧码时直接在后台轮换，旧码和该成员已有会话会同时失效。
 
 若要在管理后台直接新增和轮换 provider key，先生成 32 个随机字节的 Base64 值：
 
@@ -247,10 +248,10 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 https://你的 Worker 域名/admin.html
 ```
 
-后台使用单独的 `ADMIN_TOKEN` 登录。登录后可以：
+后台使用单独的 `ADMIN_TOKEN` 登录。成员与访问控制优先使用 `/react-chat/admin`；其余尚未迁移的设置仍在 `/admin.html`。登录后可以：
 
 - 查看今天每个朋友的用量、剩余额度、活跃 session、长期记忆长度。
-- 编辑访问码，格式仍是 `friend:code-one,alice:code-two`。
+- 创建、轮换和撤销成员访问码；访问码由服务端生成、仅显示一次并存入 KV，不需要 GitHub `ACCESS_CODES`。
 - 用表单快速配置某个朋友可用的线路、默认模型、每日额度、每分钟额度、是否允许 BYOK。
 - 在服务商池中一次配置 provider 的协议、`baseUrl`、`apiKeyRef`、并发模式和默认优先级，并把多个上游模型映射成用户可选的逻辑模型。
 - 拉取 provider 的完整模型列表，批量创建逻辑模型或合并 offering；批量操作不复制 endpoint/key，也不自动扩大成员的 `allowedRoutes`。

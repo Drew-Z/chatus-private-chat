@@ -1255,6 +1255,7 @@ describe("Worker API", () => {
         legacyDurableObject: true,
         teamAgent: true,
         configured: true,
+        memberAccessConfigured: true,
       },
     });
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -1262,6 +1263,20 @@ describe("Worker API", () => {
     expect(serialized).not.toContain("health-access-code");
     expect(serialized).not.toContain("baseUrl");
     expect(serialized).not.toContain("model");
+  });
+
+  it("keeps model-free health ready during access-code bootstrap", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await exports.default.fetch(new Request("https://example.test/healthz"));
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ok",
+      checks: {
+        configured: true,
+        memberAccessConfigured: false,
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("returns a display name without changing the stable user label", async () => {
@@ -1609,6 +1624,35 @@ describe("Worker API", () => {
     const fullAdmin = await exports.default.fetch(new Request("https://example.test/admin.html"));
     expect(fullAdmin.status).toBe(200);
     expect(await fullAdmin.text()).toContain('href="/react-chat/admin"');
+  });
+
+  it("bootstraps the first KV member without importing a deployment access-code secret", async () => {
+    const adminCookie = await adminLogin();
+    const managedEnv = {
+      ...env,
+      ACCESS_CODES_MODE: "managed",
+      ACCESS_CODES: "legacy:legacy-access-code",
+    } as any;
+    const membersResponse = await worker.fetch(new Request("https://example.test/api/admin/members", {
+      headers: { Cookie: adminCookie },
+    }), managedEnv);
+    expect(membersResponse.status).toBe(200);
+    const members = await membersResponse.json() as any;
+    expect(members).toMatchObject({ members: [], accessSource: "managed" });
+    expect(members.accessRevision).toMatch(/^[0-9a-f]{64}$/);
+
+    const label = `bootstrap-${crypto.randomUUID()}`;
+    const createdResponse = await worker.fetch(new Request("https://example.test/api/admin/members", {
+      method: "POST",
+      headers: { Cookie: adminCookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ label, expectedAccessRevision: members.accessRevision }),
+    }), managedEnv);
+    expect(createdResponse.status).toBe(200);
+    const created = await createdResponse.json() as any;
+    expect(created.member).toMatchObject({ label, hasAccessCode: true });
+    expect(await env.CHAT_STORE.get(ACCESS_CODES_KEY)).toBe(`${label}:${created.accessCode}`);
+    expect(await loginWithCode("legacy-access-code")).toBeNull();
+    expect(await loginWithCode(created.accessCode)).toMatch(/^chatus_session=/);
   });
 
   it("creates, rotates, and revokes member access through revisioned secret-safe endpoints", async () => {

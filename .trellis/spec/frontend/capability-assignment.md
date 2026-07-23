@@ -189,7 +189,7 @@ The pure draft boundary owns inheritance, all/selected route intent, default-rou
 
 ```text
 GET    /api/admin/members
-  -> { members, accessRevision, accessSource }
+  -> { members, accessRevision, accessSource: "kv" | "secret" | "managed" }
 
 POST   /api/admin/members
   <- { label, expectedAccessRevision }
@@ -212,7 +212,7 @@ DELETE /api/admin/members/:label/access-code
 - Create may issue access for an existing configured member without replacing configuration. A new access-only member inherits defaults until an assignment is saved.
 - Rotate replaces every historical code for the label with one new code and revokes all sessions for the label. Revoke removes every code for the label and revokes sessions.
 - Session cleanup is part of the server action. A response reports `{ revoked, complete }`; an incomplete cleanup must be shown as a warning rather than as full success.
-- Revoking the last parsed access entry returns `409 last_access_code`. Writing or deleting an empty KV override would otherwise fall back to the deployment `ACCESS_CODES` Secret and could revive an old credential.
+- Revoking the last parsed access entry returns `409 last_access_code`. In legacy mode, writing or deleting an empty KV override could fall back to the deployment `ACCESS_CODES` Secret and revive an old credential; managed production mode deliberately has no environment fallback and uses the `managed` empty source until the first KV code is created.
 - Revoke returns the configured member with `hasAccessCode: false`, or `member: null` when the label existed only through access data. It never deletes `config.users[label]` or user-owned data.
 - The React client keeps a returned code only in the mounted one-time credential dialog. Closing the dialog, logging out, or unmounting clears it; `beforeunload` warns while it is visible. The code is never stored in member state, notices, browser storage, URLs, logs, or clipboard fallback elements.
 - The typed client must not call `/api/admin/access-codes` or generate credentials in the browser. That raw-document endpoint remains legacy-only until the full administration surface is removed.

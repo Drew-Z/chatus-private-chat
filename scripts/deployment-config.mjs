@@ -16,6 +16,7 @@ const RESERVED_EXTRA_SECRET_NAMES = new Set([
   "CHATUS_WORKER_NAME",
   "CHATUS_KV_NAMESPACE_ID",
   "CHATUS_PRODUCTION_URL",
+  "ACCESS_CODES_MODE",
 ]);
 
 function hasText(value) {
@@ -296,9 +297,16 @@ export function readInstanceConfiguration(environment) {
 }
 
 export function collectWorkerSecrets(environment) {
-  const accessCodes = requireText(environment, "ACCESS_CODES");
+  const accessCodesMode = environment.ACCESS_CODES_MODE?.trim() || "legacy";
+  if (accessCodesMode !== "legacy" && accessCodesMode !== "managed") {
+    throw new Error("ACCESS_CODES_MODE must be legacy or managed");
+  }
+  const accessCodes = hasText(environment.ACCESS_CODES) ? environment.ACCESS_CODES.trim() : "";
   const adminToken = requireText(environment, "ADMIN_TOKEN");
-  validateAccessCodes(accessCodes);
+  if (accessCodesMode === "legacy") {
+    if (!accessCodes) throw new Error("ACCESS_CODES is required in legacy mode");
+    validateAccessCodes(accessCodes);
+  }
   if (adminToken.length < 24) {
     throw new Error("ADMIN_TOKEN must contain at least 24 characters");
   }
@@ -313,9 +321,11 @@ export function collectWorkerSecrets(environment) {
   }
 
   const secrets = Object.fromEntries(
-    WORKER_SECRET_NAMES.filter((name) => hasText(environment[name])).map((name) => [name, environment[name]]),
+    WORKER_SECRET_NAMES
+      .filter((name) => name !== "ACCESS_CODES" && hasText(environment[name]))
+      .map((name) => [name, environment[name]]),
   );
-  secrets.ACCESS_CODES = accessCodes;
+  if (accessCodesMode === "legacy") secrets.ACCESS_CODES = accessCodes;
   secrets.ADMIN_TOKEN = adminToken;
 
   if (hasText(environment.ROUTE_KEYS_MASTER_KEY)) {
@@ -366,6 +376,10 @@ export function buildDeploymentConfig(baseConfig, instance) {
   }
 
   config.name = instance.workerName;
+  config.vars = {
+    ...(isRecord(config.vars) ? config.vars : {}),
+    ACCESS_CODES_MODE: "managed",
+  };
   config.kv_namespaces = namespaces.map((namespace) =>
     namespace?.binding === "CHAT_STORE" ? { ...namespace, id: instance.kvNamespaceId } : namespace,
   );

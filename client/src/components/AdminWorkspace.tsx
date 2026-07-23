@@ -53,7 +53,7 @@ type AdminData = {
   snapshot: AdminConfigSnapshot;
   members: AdminMemberProjection[];
   accessRevision: string;
-  accessSource: "kv" | "secret";
+  accessSource: "kv" | "secret" | "managed";
 };
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
