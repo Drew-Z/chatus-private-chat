@@ -1,5 +1,7 @@
 import { buildAdminReportCsv } from "./admin-report.js?v=development";
 
+const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+
 const adminLoginView = document.querySelector("#adminLoginView");
 const adminView = document.querySelector("#adminView");
 const adminLoginForm = document.querySelector("#adminLoginForm");
@@ -47,32 +49,53 @@ const revokeUserSessionsButton = document.querySelector("#revokeUserSessionsButt
 const createdAccessCode = document.querySelector("#createdAccessCode");
 const createdAccessCodeInput = document.querySelector("#createdAccessCodeInput");
 const copyCreatedAccessCode = document.querySelector("#copyCreatedAccessCode");
+const providerForm = document.querySelector("#providerForm");
+const providerAdminSelect = document.querySelector("#providerAdminSelect");
+const providerIdInput = document.querySelector("#providerIdInput");
+const providerLabelInput = document.querySelector("#providerLabelInput");
+const providerTypeInput = document.querySelector("#providerTypeInput");
+const providerBaseUrlInput = document.querySelector("#providerBaseUrlInput");
+const providerKeyRefInput = document.querySelector("#providerKeyRefInput");
+const providerSecretInput = document.querySelector("#providerSecretInput");
+const saveProviderSecretButton = document.querySelector("#saveProviderSecretButton");
+const deleteProviderSecretButton = document.querySelector("#deleteProviderSecretButton");
+const providerSecretStatus = document.querySelector("#providerSecretStatus");
+const providerConcurrencyInput = document.querySelector("#providerConcurrencyInput");
+const providerMaxConcurrentInput = document.querySelector("#providerMaxConcurrentInput");
+const providerQueueTimeoutInput = document.querySelector("#providerQueueTimeoutInput");
+const providerPriorityInput = document.querySelector("#providerPriorityInput");
+const providerImagesInput = document.querySelector("#providerImagesInput");
+const providerToolsInput = document.querySelector("#providerToolsInput");
+const providerAllowUserKeyInput = document.querySelector("#providerAllowUserKeyInput");
+const providerRequiresKeyInput = document.querySelector("#providerRequiresKeyInput");
+const providerEnabledInput = document.querySelector("#providerEnabledInput");
+const providerDirectEndpointInput = document.querySelector("#providerDirectEndpointInput");
+const providerStatus = document.querySelector("#providerStatus");
+const fetchProviderModelsButton = document.querySelector("#fetchProviderModelsButton");
+const deleteProviderButton = document.querySelector("#deleteProviderButton");
+const routeEditorTabs = [...document.querySelectorAll("[data-route-editor-tab]")];
+const providerEditorPanel = document.querySelector("#providerEditorPanel");
+const routeEditorPanel = document.querySelector("#routeEditorPanel");
 const routeForm = document.querySelector("#routeForm");
 const routeAdminSelect = document.querySelector("#routeAdminSelect");
 const routeIdInput = document.querySelector("#routeIdInput");
 const routeLabelInput = document.querySelector("#routeLabelInput");
-const routeTypeInput = document.querySelector("#routeTypeInput");
-const routeBaseUrlInput = document.querySelector("#routeBaseUrlInput");
-const routeModelInput = document.querySelector("#routeModelInput");
-const fetchRouteModelsButton = document.querySelector("#fetchRouteModelsButton");
-const browseRouteModelsButton = document.querySelector("#browseRouteModelsButton");
-const routeModelDialog = document.querySelector("#routeModelDialog");
-const routeModelDialogSummary = document.querySelector("#routeModelDialogSummary");
-const routeModelSearchInput = document.querySelector("#routeModelSearchInput");
-const routeModelList = document.querySelector("#routeModelList");
-const routeModelPrefixInput = document.querySelector("#routeModelPrefixInput");
-const routeModelSelectionStatus = document.querySelector("#routeModelSelectionStatus");
-const batchCreateRoutesButton = document.querySelector("#batchCreateRoutesButton");
-const routeKeyRefInput = document.querySelector("#routeKeyRefInput");
-const routeSecretInput = document.querySelector("#routeSecretInput");
-const saveRouteSecretButton = document.querySelector("#saveRouteSecretButton");
-const deleteRouteSecretButton = document.querySelector("#deleteRouteSecretButton");
-const routeSecretStatus = document.querySelector("#routeSecretStatus");
 const routeFallbacksInput = document.querySelector("#routeFallbacksInput");
 const routeImagesInput = document.querySelector("#routeImagesInput");
 const routeToolsInput = document.querySelector("#routeToolsInput");
 const routeEnabledInput = document.querySelector("#routeEnabledInput");
+const routeAllowUserKeyInput = document.querySelector("#routeAllowUserKeyInput");
 const routeRequiresKeyInput = document.querySelector("#routeRequiresKeyInput");
+const routeOfferingsList = document.querySelector("#routeOfferingsList");
+const routeOfferingStatus = document.querySelector("#routeOfferingStatus");
+const addRouteOfferingButton = document.querySelector("#addRouteOfferingButton");
+const legacyRoutePanel = document.querySelector("#legacyRoutePanel");
+const legacyRouteType = document.querySelector("#legacyRouteType");
+const legacyRouteBaseUrl = document.querySelector("#legacyRouteBaseUrl");
+const legacyRouteModel = document.querySelector("#legacyRouteModel");
+const legacyRouteKeyRef = document.querySelector("#legacyRouteKeyRef");
+const migrateLegacyRouteButton = document.querySelector("#migrateLegacyRouteButton");
+const legacyRouteStatus = document.querySelector("#legacyRouteStatus");
 const deleteRouteButton = document.querySelector("#deleteRouteButton");
 const accessCodesInput = document.querySelector("#accessCodesInput");
 const accessEntryList = document.querySelector("#accessEntryList");
@@ -92,6 +115,13 @@ const healthRouteButton = document.querySelector("#healthRouteButton");
 const healthAllRoutesButton = document.querySelector("#healthAllRoutesButton");
 const routeHealthStatus = document.querySelector("#routeHealthStatus");
 const routeHealthList = document.querySelector("#routeHealthList");
+const providerModelDialog = document.querySelector("#providerModelDialog");
+const providerModelDialogSummary = document.querySelector("#providerModelDialogSummary");
+const providerModelSearchInput = document.querySelector("#providerModelSearchInput");
+const providerModelList = document.querySelector("#providerModelList");
+const providerModelPrefixInput = document.querySelector("#providerModelPrefixInput");
+const providerModelSelectionStatus = document.querySelector("#providerModelSelectionStatus");
+const batchAddOfferingsButton = document.querySelector("#batchAddOfferingsButton");
 const adminNavItems = [...document.querySelectorAll("[data-admin-target]")];
 const adminSections = [...document.querySelectorAll("[data-admin-section]")];
 const adminPageTitle = document.querySelector("#adminPageTitle");
@@ -144,20 +174,22 @@ const ADMIN_SECTION_KEY = "chatus.admin.section.v1";
 const ADMIN_SECTION_TITLES = {
   overview: "概览",
   users: "用户管理",
-  routes: "模型线路",
+  routes: "模型与服务商",
   capabilities: "AI 能力",
   access: "访问控制",
   advanced: "高级配置",
 };
 
-let config = { routes: {}, users: {}, defaults: {} };
+let config = { providers: {}, routes: {}, users: {}, defaults: {} };
 let stats = null;
 let accessLabels = [];
 let routeHealth = {};
 let feedbackEntries = [];
 let coreHealth = null;
 let selectedUser = DEFAULT_USER;
+let selectedProvider = "";
 let selectedRoute = "";
+let currentRouteEditorTab = "providers";
 let selectedSkill = "__new";
 let selectedTool = "";
 let selectedMcp = "__new";
@@ -175,8 +207,8 @@ let routeSecretMasterMessage = "";
 let mcpSecrets = {};
 let mcpSecretMasterReady = false;
 let mcpSecretMasterMessage = "";
-let routeModelSuggestions = [];
-let selectedRouteModels = new Set();
+let providerModelSuggestions = [];
+let selectedProviderModels = new Set();
 const dirtyScopes = new Set();
 
 for (const item of adminNavItems) {
@@ -190,6 +222,7 @@ for (const item of adminNavItems) {
 
 for (const [element, scope] of [
   [userForm, "user"],
+  [providerForm, "provider"],
   [routeForm, "route"],
   [skillForm, "capability"],
   [toolForm, "capability"],
@@ -199,10 +232,10 @@ for (const [element, scope] of [
   [adminMemoryInput, "memory"],
 ]) {
   element?.addEventListener("input", (event) => {
-    if (event.target !== routeSecretInput && event.target !== mcpSecretInput) markDirty(scope);
+    if (event.target !== providerSecretInput && event.target !== mcpSecretInput) markDirty(scope);
   });
   element?.addEventListener("change", (event) => {
-    if (event.target !== routeSecretInput && event.target !== mcpSecretInput) markDirty(scope);
+    if (event.target !== providerSecretInput && event.target !== mcpSecretInput) markDirty(scope);
   });
 }
 
@@ -245,23 +278,49 @@ memoryUserSelect?.addEventListener("change", async () => {
 });
 healthRouteButton?.addEventListener("click", () => checkRouteHealth());
 healthAllRoutesButton?.addEventListener("click", () => checkAllRoutesHealth());
-fetchRouteModelsButton?.addEventListener("click", () => fetchRouteModels());
-browseRouteModelsButton?.addEventListener("click", () => openRouteModelDialog());
-routeModelSearchInput?.addEventListener("input", () => renderRouteModelList());
-batchCreateRoutesButton?.addEventListener("click", () => createSelectedModelRoutes());
-saveRouteSecretButton?.addEventListener("click", () => saveRouteSecret());
-deleteRouteSecretButton?.addEventListener("click", () => deleteRouteSecret());
-routeKeyRefInput?.addEventListener("input", () => renderRouteSecretStatus());
-for (const field of [routeTypeInput, routeBaseUrlInput, routeKeyRefInput]) {
+fetchProviderModelsButton?.addEventListener("click", () => fetchProviderModels());
+providerModelSearchInput?.addEventListener("input", () => renderProviderModelList());
+batchAddOfferingsButton?.addEventListener("click", () => addSelectedProviderOfferings());
+saveProviderSecretButton?.addEventListener("click", () => saveProviderSecret());
+deleteProviderSecretButton?.addEventListener("click", () => deleteProviderSecret());
+providerKeyRefInput?.addEventListener("input", () => renderProviderSecretStatus());
+for (const field of [providerTypeInput, providerBaseUrlInput, providerKeyRefInput]) {
   field?.addEventListener("input", () => invalidateRouteModels());
   field?.addEventListener("change", () => invalidateRouteModels());
 }
-routeSecretInput?.addEventListener("input", () => renderRouteSecretStatus());
-routeSecretInput?.addEventListener("keydown", (event) => {
+providerSecretInput?.addEventListener("input", () => renderProviderSecretStatus());
+providerSecretInput?.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
-  saveRouteSecret();
+  saveProviderSecret();
 });
+providerConcurrencyInput?.addEventListener("change", () => updateProviderCapacityFields());
+addRouteOfferingButton?.addEventListener("click", () => {
+  appendOfferingRow({ providerId: selectedProvider || "", model: "" });
+  markDirty("route");
+});
+migrateLegacyRouteButton?.addEventListener("click", () => migrateLegacyRoute());
+
+for (const tab of routeEditorTabs) {
+  tab.addEventListener("click", async () => {
+    const next = tab.dataset.routeEditorTab;
+    if (!next || next === currentRouteEditorTab) return;
+    if (!(await confirmDiscardChanges("切换模型配置"))) return;
+    showRouteEditorTab(next);
+  });
+  tab.addEventListener("keydown", (event) => {
+    const current = routeEditorTabs.indexOf(tab);
+    let next = -1;
+    if (event.key === "ArrowRight") next = (current + 1) % routeEditorTabs.length;
+    if (event.key === "ArrowLeft") next = (current - 1 + routeEditorTabs.length) % routeEditorTabs.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = routeEditorTabs.length - 1;
+    if (next < 0) return;
+    event.preventDefault();
+    routeEditorTabs[next].click();
+    routeEditorTabs[next].focus();
+  });
+}
 mcpSecretRefInput?.addEventListener("input", () => renderMcpSecretStatus());
 mcpAuthTypeInput?.addEventListener("change", () => {
   if (mcpAuthTypeInput.value === "none") clearMcpSecretInput();
@@ -422,10 +481,75 @@ revokeUserSessionsButton?.addEventListener("click", async () => {
   }
 });
 
+providerAdminSelect?.addEventListener("change", async () => {
+  const next = providerAdminSelect.value;
+  providerAdminSelect.value = selectedProvider;
+  if (!(await confirmDiscardChanges("切换服务商"))) return;
+  selectedProvider = next;
+  providerAdminSelect.value = next;
+  populateProviderForm();
+});
+
+providerForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  syncConfigFromEditor();
+  const editor = readProviderEditor();
+  if (!PROVIDER_ID_PATTERN.test(editor.providerId)) {
+    setProviderStatus("服务商 ID 必须以字母或数字开头，只能包含字母、数字、点、下划线和短横线", true);
+    return;
+  }
+  if (!/^https?:\/\//i.test(editor.baseUrl)) {
+    setProviderStatus("请填写有效的 http(s) Base URL", true);
+    return;
+  }
+  if (editor.concurrency === "bounded" && (!Number.isInteger(editor.maxConcurrent) || editor.maxConcurrent < 1 || editor.maxConcurrent > 100)) {
+    setProviderStatus("固定并发容量必须是 1 到 100 的整数", true);
+    return;
+  }
+  if (!Number.isInteger(editor.queueTimeoutMs) || editor.queueTimeoutMs < 0 || editor.queueTimeoutMs > 10_000) {
+    setProviderStatus("全忙等待必须是 0 到 10000 毫秒", true);
+    return;
+  }
+
+  config.providers = config.providers || {};
+  const previous = selectedProvider && selectedProvider !== "__new" ? selectedProvider : "";
+  if (previous !== editor.providerId && config.providers[editor.providerId]) {
+    setProviderStatus("该服务商 ID 已存在，请先选择它或使用其他 ID", true);
+    return;
+  }
+  const existing = config.providers[previous] || config.providers[editor.providerId] || {};
+  const rollbackState = captureModelAdminState();
+  if (previous && previous !== editor.providerId) delete config.providers[previous];
+  const nextProvider = buildProviderFromEditor(editor, existing);
+  config.providers[editor.providerId] = nextProvider;
+  replaceProviderReferences(previous, editor.providerId);
+  selectedProvider = editor.providerId;
+  const saved = await attemptSaveConfig("服务商配置已保存");
+  if (!saved) restoreModelAdminState(rollbackState);
+});
+
+deleteProviderButton?.addEventListener("click", async () => {
+  if (!selectedProvider || selectedProvider === "__new") return;
+  syncConfigFromEditor();
+  const routeRefs = Object.entries(config.routes || {})
+    .filter(([, route]) => (route.offerings || []).some((offering) => offering.providerId === selectedProvider))
+    .map(([routeId]) => routeLabel(routeId));
+  if (routeRefs.length) {
+    setProviderStatus(`仍被 ${routeRefs.length} 个逻辑模型使用，先移除服务商映射`, true);
+    return;
+  }
+  if (!(await confirmAdminAction("删除服务商？", `${providerLabel(selectedProvider)} 将不再出现在模型映射中。`, "删除服务商"))) return;
+  const rollbackState = captureModelAdminState();
+  delete config.providers[selectedProvider];
+  selectedProvider = Object.keys(config.providers)[0] || "__new";
+  const saved = await attemptSaveConfig("服务商已删除");
+  if (!saved) restoreModelAdminState(rollbackState);
+});
+
 routeAdminSelect.addEventListener("change", async () => {
   const next = routeAdminSelect.value;
   routeAdminSelect.value = selectedRoute;
-  if (!(await confirmDiscardChanges("切换线路"))) return;
+  if (!(await confirmDiscardChanges("切换逻辑模型"))) return;
   selectedRoute = next;
   routeAdminSelect.value = next;
   populateRouteForm();
@@ -442,20 +566,35 @@ routeForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (!editor.baseUrl || !editor.model) {
-    setStatus("Base URL 和模型名必填", true);
+  if (!editor.offerings.length && !editor.legacy) {
+    setStatus("至少添加一个有效的服务商映射", true);
+    return;
+  }
+  if (editor.invalidOffering) {
+    setStatus("每个服务商映射都需要有效服务商和上游模型", true);
+    return;
+  }
+  if (editor.duplicateProvider) {
+    setStatus(`同一逻辑模型不能重复引用服务商 ${editor.duplicateProvider}`, true);
     return;
   }
 
   config.routes = config.routes || {};
   const previous = selectedRoute && selectedRoute !== "__new" ? selectedRoute : "";
+  if (previous !== routeId && config.routes[routeId]) {
+    setStatus("该逻辑模型 ID 已存在，请先选择它或使用其他 ID", true);
+    return;
+  }
   const existing = config.routes[previous] || config.routes[routeId] || {};
+  const rollbackState = captureModelAdminState();
   if (previous && previous !== routeId) delete config.routes[previous];
 
-  config.routes[routeId] = buildRouteFromEditor(editor.model, existing, true);
+  config.routes[routeId] = buildRouteFromEditor(editor, existing);
+  replaceRouteReferences(previous, routeId);
   if (!routeEnabledInput.checked) repairDisabledRouteAssignments(routeId);
   selectedRoute = routeId;
-  await attemptSaveConfig("线路配置已保存");
+  const saved = await attemptSaveConfig("逻辑模型配置已保存");
+  if (!saved) restoreModelAdminState(rollbackState);
 });
 
 skillSelect?.addEventListener("change", async () => {
@@ -597,11 +736,13 @@ deleteRouteButton.addEventListener("click", async () => {
   }
   if (!(await confirmAdminAction("删除模型线路？", `${routeLabel(selectedRoute)} 将被删除，关联用户会自动调整到其他线路。`, "删除线路"))) return;
 
+  const rollbackState = captureModelAdminState();
   delete config.routes[selectedRoute];
   const fallbackRoute = Object.keys(config.routes)[0] || "";
-  pruneRouteFromUsers(selectedRoute, fallbackRoute);
+  pruneRouteReferences(selectedRoute, fallbackRoute);
   selectedRoute = fallbackRoute;
-  await attemptSaveConfig("线路已删除");
+  const saved = await attemptSaveConfig("线路已删除");
+  if (!saved) restoreModelAdminState(rollbackState);
 });
 
 saveAccessCodesButton.addEventListener("click", async () => {
@@ -655,7 +796,7 @@ async function bootAdmin() {
 }
 
 function showLogin() {
-  clearRouteSecretInput();
+  clearProviderSecretInput();
   clearMcpSecretInput();
   clearDirty();
   adminView.hidden = true;
@@ -701,8 +842,23 @@ function showCapabilityTab(tab) {
   clearMcpSecretInput();
 }
 
+function showRouteEditorTab(tab) {
+  const target = tab === "routes" ? "routes" : "providers";
+  currentRouteEditorTab = target;
+  if (providerEditorPanel) providerEditorPanel.hidden = target !== "providers";
+  if (routeEditorPanel) routeEditorPanel.hidden = target !== "routes";
+  for (const control of routeEditorTabs) {
+    const active = control.dataset.routeEditorTab === target;
+    control.classList.toggle("active", active);
+    control.setAttribute("aria-selected", String(active));
+    control.tabIndex = active ? 0 : -1;
+  }
+  if (target === "providers") populateProviderForm();
+  else populateRouteForm();
+}
+
 async function loadDashboard(message = "") {
-  clearRouteSecretInput();
+  clearProviderSecretInput();
   clearMcpSecretInput();
   setStatus("读取中");
   const [configData, accessData, statsData, releaseData, healthData, auditData, feedbackData, coreHealthData, routeSecretsData, mcpSecretsData] = await Promise.all([
@@ -753,13 +909,16 @@ async function loadDashboard(message = "") {
   accessSourceText.textContent = sourceLabel(accessData.source);
   adminSourceText.textContent = `配置：${sourceLabel(configData.source)} · 访问码：${sourceLabel(accessData.source)}`;
 
+  if (!selectedProvider || !config.providers[selectedProvider]) selectedProvider = Object.keys(config.providers)[0] || "__new";
   if (!selectedRoute || !config.routes[selectedRoute]) selectedRoute = Object.keys(config.routes)[0] || "__new";
   if (!getUserLabels().includes(selectedUser)) selectedUser = DEFAULT_USER;
 
   renderStats();
   renderAttentionCenter();
   renderUserPicker();
+  renderProviderPicker();
   renderRoutePicker();
+  showRouteEditorTab(currentRouteEditorTab);
   renderCapabilityEditors();
   clearDirty();
   setStatus(message || "已同步");
@@ -1518,6 +1677,60 @@ function repairDisabledRouteAssignments(routeId) {
   for (const user of Object.values(config.users || {})) repair(user);
 }
 
+function renderProviderPicker() {
+  if (!providerAdminSelect) return;
+  providerAdminSelect.textContent = "";
+  const entries = Object.entries(config.providers || {}).sort((left, right) => providerLabel(left[0]).localeCompare(providerLabel(right[0]), "zh-CN"));
+  for (const [providerId, provider] of entries) {
+    const option = document.createElement("option");
+    option.value = providerId;
+    option.textContent = `${provider.label || providerId}${provider.enabled === false ? "（已停用）" : ""}`;
+    providerAdminSelect.append(option);
+  }
+  const newOption = document.createElement("option");
+  newOption.value = "__new";
+  newOption.textContent = "新增服务商";
+  providerAdminSelect.append(newOption);
+  if (selectedProvider !== "__new" && !config.providers?.[selectedProvider]) selectedProvider = entries[0]?.[0] || "__new";
+  providerAdminSelect.value = selectedProvider;
+  populateProviderForm();
+}
+
+function populateProviderForm() {
+  if (!providerForm) return;
+  clearProviderSecretInput();
+  invalidateRouteModels();
+  const provider = selectedProvider === "__new" ? {} : config.providers?.[selectedProvider] || {};
+  providerIdInput.value = selectedProvider === "__new" ? "" : selectedProvider;
+  providerLabelInput.value = provider.label || "";
+  providerTypeInput.value = provider.type || "openai-chat";
+  providerBaseUrlInput.value = provider.baseUrl || "";
+  providerKeyRefInput.value = provider.apiKeyRef || "";
+  providerConcurrencyInput.value = ["exclusive", "bounded"].includes(provider.concurrency) ? provider.concurrency : "unlimited";
+  providerMaxConcurrentInput.value = String(provider.concurrency === "exclusive" ? 1 : positiveInteger(provider.maxConcurrent, 1, 100, 1));
+  providerQueueTimeoutInput.value = String(nonNegativeInteger(provider.queueTimeoutMs, 10_000, 10_000));
+  providerPriorityInput.value = String(finiteNumber(provider.priority, 0));
+  providerImagesInput.checked = provider.supportsImages !== false;
+  providerToolsInput.checked = provider.supportsTools === true;
+  providerAllowUserKeyInput.checked = provider.allowUserKey !== false;
+  providerRequiresKeyInput.checked = provider.requiresUserKey === true;
+  providerEnabledInput.checked = provider.enabled !== false;
+  providerDirectEndpointInput.checked = provider.directEndpoint === true;
+  deleteProviderButton.disabled = selectedProvider === "__new";
+  updateProviderCapacityFields();
+  renderProviderSecretStatus();
+  setProviderStatus("");
+}
+
+function updateProviderCapacityFields() {
+  const concurrency = providerConcurrencyInput?.value || "unlimited";
+  if (providerMaxConcurrentInput) {
+    providerMaxConcurrentInput.disabled = concurrency !== "bounded";
+    if (concurrency === "exclusive") providerMaxConcurrentInput.value = "1";
+  }
+  if (providerQueueTimeoutInput) providerQueueTimeoutInput.disabled = concurrency === "unlimited";
+}
+
 function renderRoutePicker() {
   routeAdminSelect.textContent = "";
   const routeIds = Object.keys(config.routes || {});
@@ -1530,7 +1743,7 @@ function renderRoutePicker() {
 
   const newOption = document.createElement("option");
   newOption.value = "__new";
-  newOption.textContent = "新增线路";
+  newOption.textContent = "新增逻辑模型";
   routeAdminSelect.append(newOption);
 
   routeAdminSelect.value = routeIds.includes(selectedRoute) ? selectedRoute : routeIds[0] || "__new";
@@ -1562,12 +1775,14 @@ function renderRouteHealthList() {
     copy.append(title, detail);
     const model = document.createElement("small");
     model.className = "route-health-model";
-    model.textContent = config.routes[routeId]?.model || routeId;
+    const route = config.routes[routeId] || {};
+    model.textContent = route.model || `${Array.isArray(route.offerings) ? route.offerings.length : 0} 个服务商`;
     row.append(indicator, copy, model);
     row.addEventListener("click", async () => {
-      if (routeId !== selectedRoute && !(await confirmDiscardChanges("切换线路"))) return;
+      if (routeId !== selectedRoute && !(await confirmDiscardChanges("切换逻辑模型"))) return;
       selectedRoute = routeId;
       routeAdminSelect.value = routeId;
+      showRouteEditorTab("routes");
       populateRouteForm();
       routeIdInput.focus();
     });
@@ -1605,35 +1820,143 @@ function relativeTime(value) {
 }
 
 function populateRouteForm() {
-  clearRouteSecretInput();
-  invalidateRouteModels();
   const route = selectedRoute === "__new" ? {} : config.routes?.[selectedRoute] || {};
   routeIdInput.value = selectedRoute === "__new" ? "" : selectedRoute;
   routeLabelInput.value = route.label || "";
-  routeTypeInput.value = route.type || "openai-chat";
-  routeBaseUrlInput.value = route.baseUrl || "";
-  routeModelInput.value = route.model || "";
-  routeKeyRefInput.value = route.apiKeyRef || "";
   routeFallbacksInput.value = Array.isArray(route.fallbacks) ? route.fallbacks.join(",") : "";
   routeImagesInput.checked = route.supportsImages !== false;
   routeToolsInput.checked = route.supportsTools === true;
   routeEnabledInput.checked = route.enabled !== false;
+  routeAllowUserKeyInput.checked = route.allowUserKey !== false;
   routeRequiresKeyInput.checked = Boolean(route.requiresUserKey);
+  routeOfferingsList.textContent = "";
+  for (const offering of Array.isArray(route.offerings) ? route.offerings : []) appendOfferingRow(offering);
+  const legacy = isLegacyRoute(route);
+  if (!legacy && !routeOfferingsList.children.length && selectedRoute === "__new") {
+    appendOfferingRow({ providerId: selectedProvider === "__new" ? "" : selectedProvider, model: "" });
+  }
+  legacyRoutePanel.hidden = !legacy;
+  if (legacy) {
+    legacyRouteType.textContent = route.type === "anthropic-messages" ? "Anthropic Messages" : "OpenAI Chat";
+    legacyRouteBaseUrl.textContent = route.baseUrl || "--";
+    legacyRouteModel.textContent = route.model || "--";
+    legacyRouteKeyRef.textContent = route.apiKeyRef || "未配置";
+    legacyRouteStatus.textContent = route.hasLegacyKey === true
+      ? isConfiguredRouteSecret(route.apiKeyRef)
+        ? "安全密钥已就绪，可以迁移；旧式 Key 不会复制到服务商配置。"
+        : "迁移前需要先为该 Key Ref 配置后台密钥或同名 Worker Secret。"
+      : "迁移后 endpoint 与凭据引用由服务商统一管理。";
+  } else {
+    legacyRouteStatus.textContent = "";
+  }
+  routeOfferingStatus.textContent = legacy
+    ? "旧式线路仍可使用；迁移后可为该逻辑模型添加多个服务商。"
+    : routeOfferingsList.children.length
+      ? `${routeOfferingsList.children.length} 个服务商映射`
+      : "尚未添加服务商映射";
   deleteRouteButton.disabled = selectedRoute === "__new";
-  renderRouteSecretStatus();
   renderStoredRouteHealth(selectedRoute);
 }
 
-function renderRouteSecretStatus(message = "", isError = false) {
-  if (!routeSecretStatus) return;
-  const apiKeyRef = routeKeyRefInput.value.trim();
+function appendOfferingRow(offering = {}) {
+  if (!routeOfferingsList) return;
+  const row = document.createElement("div");
+  row.className = "offering-row";
+
+  const providerField = document.createElement("label");
+  providerField.append(document.createTextNode("服务商"));
+  const providerInput = document.createElement("select");
+  providerInput.className = "offering-provider-input";
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "选择服务商";
+  providerInput.append(blank);
+  for (const [providerId, provider] of Object.entries(config.providers || {})) {
+    const option = document.createElement("option");
+    option.value = providerId;
+    option.textContent = `${provider.label || providerId}${provider.enabled === false ? "（已停用）" : ""}`;
+    providerInput.append(option);
+  }
+  providerInput.value = offering.providerId || "";
+  providerField.append(providerInput);
+
+  const modelField = document.createElement("label");
+  modelField.append(document.createTextNode("上游模型"));
+  const modelInput = document.createElement("input");
+  modelInput.className = "offering-model-input";
+  modelInput.autocomplete = "off";
+  modelInput.maxLength = 200;
+  modelInput.placeholder = "model-name";
+  modelInput.value = offering.model || "";
+  modelField.append(modelInput);
+
+  const priorityField = document.createElement("label");
+  priorityField.append(document.createTextNode("优先级覆盖"));
+  const priorityInput = document.createElement("input");
+  priorityInput.className = "offering-priority-input";
+  priorityInput.type = "number";
+  priorityInput.step = "1";
+  priorityInput.placeholder = "继承";
+  priorityInput.value = Number.isFinite(Number(offering.priority)) ? String(Number(offering.priority)) : "";
+  priorityField.append(priorityInput);
+
+  const imagesField = offeringCapabilityField("图片", "offering-images-input", offering.supportsImages);
+  const toolsField = offeringCapabilityField("工具", "offering-tools-input", offering.supportsTools);
+
+  const enabledField = document.createElement("label");
+  enabledField.className = "offering-enabled-field";
+  const enabledInput = document.createElement("input");
+  enabledInput.className = "offering-enabled-input";
+  enabledInput.type = "checkbox";
+  enabledInput.checked = offering.enabled !== false;
+  enabledField.append(enabledInput, document.createTextNode("启用"));
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "icon-control offering-remove-button";
+  removeButton.textContent = "×";
+  removeButton.title = "删除服务商映射";
+  removeButton.setAttribute("aria-label", "删除服务商映射");
+  removeButton.addEventListener("click", () => {
+    row.remove();
+    routeOfferingStatus.textContent = routeOfferingsList.children.length
+      ? `${routeOfferingsList.children.length} 个服务商映射`
+      : "尚未添加服务商映射";
+    markDirty("route");
+  });
+
+  row.append(providerField, modelField, priorityField, imagesField, toolsField, enabledField, removeButton);
+  routeOfferingsList.append(row);
+  routeOfferingStatus.textContent = `${routeOfferingsList.children.length} 个服务商映射`;
+}
+
+function offeringCapabilityField(labelText, className, value) {
+  const label = document.createElement("label");
+  label.append(document.createTextNode(labelText));
+  const select = document.createElement("select");
+  select.className = className;
+  for (const [optionValue, text] of [["", "继承"], ["true", "支持"], ["false", "不支持"]]) {
+    const option = document.createElement("option");
+    option.value = optionValue;
+    option.textContent = text;
+    select.append(option);
+  }
+  select.value = typeof value === "boolean" ? String(value) : "";
+  label.append(select);
+  return label;
+}
+
+function renderProviderSecretStatus(message = "", isError = false) {
+  if (!providerSecretStatus) return;
+  const apiKeyRef = providerKeyRefInput.value.trim();
   const validRef = /^[A-Z][A-Z0-9_]{1,63}$/.test(apiKeyRef);
   const item = validRef ? routeSecrets[apiKeyRef] : null;
-  const route = selectedRoute === "__new" ? null : config.routes?.[selectedRoute];
-  const hasLegacyKey = Boolean(route?.apiKey && route?.apiKeyRef === apiKeyRef);
+  const provider = selectedProvider === "__new" ? null : config.providers?.[selectedProvider];
+  const hasLegacyKey = provider?.hasLegacyKey === true;
+  const hasServerSecret = isConfiguredRouteSecret(apiKeyRef);
 
-  saveRouteSecretButton.disabled = !routeSecretMasterReady || !validRef || !routeSecretInput.value.trim();
-  deleteRouteSecretButton.disabled = !item?.managed;
+  saveProviderSecretButton.disabled = !routeSecretMasterReady || !validRef || !providerSecretInput.value.trim();
+  deleteProviderSecretButton.disabled = !item?.managed;
 
   let statusMessage = message;
   let statusError = isError;
@@ -1643,8 +1966,10 @@ function renderRouteSecretStatus(message = "", isError = false) {
     } else if (!validRef) {
       statusMessage = "仅支持大写字母、数字和下划线，且必须以字母开头";
       statusError = true;
+    } else if (hasLegacyKey && hasServerSecret) {
+      statusMessage = "安全密钥已配置；保存服务商后会移除旧式配置 Key";
     } else if (hasLegacyKey) {
-      statusMessage = "当前线路使用旧式配置 Key；保存后台密钥后仍会优先使用旧式 Key";
+      statusMessage = "当前服务商仍使用旧式配置 Key；请写入后台密钥完成迁移";
     } else if (item?.source === "managed" && item.status === "configured") {
       statusMessage = `后台密钥已配置${item.updatedAt ? ` · ${formatRouteSecretTime(item.updatedAt)}` : ""}`;
     } else if (item?.source === "managed" && item.status === "unavailable") {
@@ -1653,15 +1978,20 @@ function renderRouteSecretStatus(message = "", isError = false) {
     } else if (item?.source === "worker") {
       statusMessage = "使用 Worker Secret；保存后将改用后台加密密钥";
     } else if (!routeSecretMasterReady) {
-      statusMessage = routeSecretMasterMessage || "尚未配置线路密钥主密钥";
+      statusMessage = routeSecretMasterMessage || "尚未配置服务商密钥主密钥";
       statusError = true;
     } else {
       statusMessage = "尚未配置后台密钥";
     }
   }
 
-  routeSecretStatus.textContent = statusMessage;
-  routeSecretStatus.classList.toggle("is-error", statusError);
+  providerSecretStatus.textContent = statusMessage;
+  providerSecretStatus.classList.toggle("is-error", statusError);
+}
+
+function isConfiguredRouteSecret(apiKeyRef) {
+  const item = typeof apiKeyRef === "string" ? routeSecrets[apiKeyRef.trim()] : null;
+  return item?.status === "configured" && (item.source === "managed" || item.source === "worker");
 }
 
 function formatRouteSecretTime(value) {
@@ -1669,8 +1999,8 @@ function formatRouteSecretTime(value) {
   return Number.isNaN(date.valueOf()) ? "更新时间未知" : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-function clearRouteSecretInput() {
-  if (routeSecretInput) routeSecretInput.value = "";
+function clearProviderSecretInput() {
+  if (providerSecretInput) providerSecretInput.value = "";
 }
 
 function renderMcpSecretStatus(message = "", isError = false) {
@@ -1873,7 +2203,7 @@ async function saveConfigObject(message) {
   config = normalizeClientConfig(data.config);
   configRevision = data.revision || configRevision;
   configJsonInput.value = JSON.stringify(config, null, 2);
-  clearDirty("user", "route", "capability", "config");
+  clearDirty("user", "provider", "route", "capability", "config");
   await loadDashboard(message);
 }
 
@@ -1887,16 +2217,35 @@ async function attemptSaveConfig(message) {
   }
 }
 
-function normalizeClientConfig(value) {
-  const input = value && typeof value === "object" ? value : {};
+function captureModelAdminState() {
   return {
-    defaults: input.defaults && typeof input.defaults === "object" ? input.defaults : {},
-    users: input.users && typeof input.users === "object" ? input.users : {},
-    routes: input.routes && typeof input.routes === "object" ? input.routes : {},
-    skills: input.skills && typeof input.skills === "object" ? input.skills : {},
-    tools: input.tools && typeof input.tools === "object" ? input.tools : {},
-    mcpServers: input.mcpServers && typeof input.mcpServers === "object" ? input.mcpServers : {},
+    config: structuredClone(config),
+    selectedProvider,
+    selectedRoute,
   };
+}
+
+function restoreModelAdminState(state) {
+  config = state.config;
+  selectedProvider = state.selectedProvider;
+  selectedRoute = state.selectedRoute;
+}
+
+function normalizeClientConfig(value) {
+  const input = isClientRecord(value) ? value : {};
+  return {
+    defaults: isClientRecord(input.defaults) ? input.defaults : {},
+    users: isClientRecord(input.users) ? input.users : {},
+    providers: isClientRecord(input.providers) ? input.providers : {},
+    routes: isClientRecord(input.routes) ? input.routes : {},
+    skills: isClientRecord(input.skills) ? input.skills : {},
+    tools: isClientRecord(input.tools) ? input.tools : {},
+    mcpServers: isClientRecord(input.mcpServers) ? input.mcpServers : {},
+  };
+}
+
+function isClientRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function renderCapabilityEditors() {
@@ -2114,7 +2463,7 @@ function mcpToolIds(serverId) {
     .map(([toolId]) => toolId);
 }
 
-function pruneRouteFromUsers(routeId, fallbackRoute) {
+function pruneRouteReferences(routeId, fallbackRoute) {
   const entries = [config.defaults, ...Object.values(config.users || {})].filter(Boolean);
   for (const user of entries) {
     if (Array.isArray(user.allowedRoutes)) {
@@ -2123,46 +2472,215 @@ function pruneRouteFromUsers(routeId, fallbackRoute) {
     }
     if (user.defaultRoute === routeId) user.defaultRoute = fallbackRoute;
   }
+  for (const route of Object.values(config.routes || {})) {
+    if (Array.isArray(route.fallbacks)) route.fallbacks = route.fallbacks.filter((id) => id !== routeId);
+  }
+}
+
+function replaceRouteReferences(previousId, nextId) {
+  if (!previousId || previousId === nextId) return;
+  for (const user of [config.defaults, ...Object.values(config.users || {})]) {
+    if (!user) continue;
+    if (user.defaultRoute === previousId) user.defaultRoute = nextId;
+    if (Array.isArray(user.allowedRoutes)) {
+      user.allowedRoutes = [...new Set(user.allowedRoutes.map((id) => id === previousId ? nextId : id))];
+    }
+  }
+  for (const route of Object.values(config.routes || {})) {
+    if (!Array.isArray(route.fallbacks)) continue;
+    route.fallbacks = [...new Set(route.fallbacks.map((id) => id === previousId ? nextId : id))];
+  }
 }
 
 function routeLabel(routeId) {
   const route = config.routes?.[routeId];
-  return route ? `${route.label || routeId} · ${route.model || routeId}` : routeId;
+  if (!route) return routeId;
+  const model = route.model || route.offerings?.[0]?.model || routeId;
+  return `${route.label || routeId} · ${model}`;
 }
 
-function readRouteEditor() {
+function providerLabel(providerId) {
+  const provider = config.providers?.[providerId];
+  return provider ? `${provider.label || providerId} · ${providerId}` : providerId;
+}
+
+function readProviderEditor() {
+  const concurrency = ["exclusive", "bounded"].includes(providerConcurrencyInput.value)
+    ? providerConcurrencyInput.value
+    : "unlimited";
   return {
-    routeId: routeIdInput.value.trim(),
-    label: routeLabelInput.value.trim(),
-    type: routeTypeInput.value,
-    baseUrl: routeBaseUrlInput.value.trim(),
-    model: routeModelInput.value.trim(),
-    apiKeyRef: routeKeyRefInput.value.trim(),
-    fallbacks: splitCsv(routeFallbacksInput.value),
-    enabled: routeEnabledInput.checked,
-    requiresUserKey: routeRequiresKeyInput.checked,
-    supportsImages: routeImagesInput.checked,
-    supportsTools: routeToolsInput.checked,
+    providerId: providerIdInput.value.trim(),
+    label: providerLabelInput.value.trim(),
+    type: providerTypeInput.value === "anthropic-messages" ? "anthropic-messages" : "openai-chat",
+    baseUrl: providerBaseUrlInput.value.trim(),
+    apiKeyRef: providerKeyRefInput.value.trim(),
+    concurrency,
+    maxConcurrent: concurrency === "exclusive" ? 1 : Number(providerMaxConcurrentInput.value),
+    queueTimeoutMs: concurrency === "unlimited" ? 10_000 : Number(providerQueueTimeoutInput.value),
+    priority: finiteNumber(Number(providerPriorityInput.value), 0),
+    enabled: providerEnabledInput.checked,
+    directEndpoint: providerDirectEndpointInput.checked,
+    allowUserKey: providerAllowUserKeyInput.checked,
+    requiresUserKey: providerRequiresKeyInput.checked,
+    supportsImages: providerImagesInput.checked,
+    supportsTools: providerToolsInput.checked,
   };
 }
 
-function buildRouteFromEditor(model, existing = {}, preserveLegacyKey = false) {
-  const editor = readRouteEditor();
+function buildProviderFromEditor(editor, existing = {}) {
   const inherited = { ...existing };
-  if (!preserveLegacyKey) delete inherited.apiKey;
+  delete inherited.apiKey;
+  if (inherited.hasLegacyKey === true && isConfiguredRouteSecret(editor.apiKeyRef)) {
+    delete inherited.hasLegacyKey;
+  }
   return compactObject({
     ...inherited,
-    label: editor.label || editor.routeId || model,
+    enabled: editor.enabled,
+    label: editor.label || editor.providerId,
     type: editor.type,
     baseUrl: editor.baseUrl,
     apiKeyRef: editor.apiKeyRef,
-    model,
+    directEndpoint: editor.directEndpoint,
+    allowUserKey: editor.allowUserKey,
+    requiresUserKey: editor.requiresUserKey,
+    supportsImages: editor.supportsImages,
+    supportsTools: editor.supportsTools,
+    concurrency: editor.concurrency,
+    maxConcurrent: editor.concurrency === "bounded" ? editor.maxConcurrent : undefined,
+    queueTimeoutMs: editor.concurrency === "unlimited" ? undefined : editor.queueTimeoutMs,
+    priority: editor.priority,
+  });
+}
+
+function replaceProviderReferences(previousId, nextId) {
+  if (!previousId || previousId === nextId) return;
+  for (const route of Object.values(config.routes || {})) {
+    if (!Array.isArray(route.offerings)) continue;
+    route.offerings = route.offerings.map((offering) => (
+      offering.providerId === previousId ? { ...offering, providerId: nextId } : offering
+    ));
+  }
+}
+
+function readRouteEditor() {
+  const rows = [...routeOfferingsList.querySelectorAll(".offering-row")];
+  const offerings = rows.map((row) => {
+    const priorityValue = row.querySelector(".offering-priority-input")?.value.trim() || "";
+    const imagesValue = row.querySelector(".offering-images-input")?.value || "";
+    const toolsValue = row.querySelector(".offering-tools-input")?.value || "";
+    return compactObject({
+      providerId: row.querySelector(".offering-provider-input")?.value.trim() || "",
+      model: row.querySelector(".offering-model-input")?.value.trim() || "",
+      enabled: row.querySelector(".offering-enabled-input")?.checked !== false,
+      priority: priorityValue ? Number(priorityValue) : undefined,
+      supportsImages: imagesValue ? imagesValue === "true" : undefined,
+      supportsTools: toolsValue ? toolsValue === "true" : undefined,
+    });
+  });
+  const existing = selectedRoute === "__new" ? {} : config.routes?.[selectedRoute] || {};
+  return {
+    routeId: routeIdInput.value.trim(),
+    label: routeLabelInput.value.trim(),
+    fallbacks: splitCsv(routeFallbacksInput.value),
+    enabled: routeEnabledInput.checked,
+    allowUserKey: routeAllowUserKeyInput.checked,
+    requiresUserKey: routeRequiresKeyInput.checked,
+    supportsImages: routeImagesInput.checked,
+    supportsTools: routeToolsInput.checked,
+    offerings,
+    invalidOffering: offerings.some((offering) => !offering.providerId || !offering.model || !config.providers?.[offering.providerId]),
+    duplicateProvider: offerings.find((offering, index) => offerings.findIndex((item) => item.providerId === offering.providerId) !== index)?.providerId || "",
+    legacy: isLegacyRoute(existing) && !offerings.length,
+  };
+}
+
+function buildRouteFromEditor(editor, existing = {}) {
+  const inherited = { ...existing };
+  if (editor.offerings.length) {
+    for (const field of ["type", "baseUrl", "model", "apiKey", "apiKeyRef", "authHeader", "authPrefix", "directEndpoint", "headers"]) {
+      delete inherited[field];
+    }
+  }
+  return compactObject({
+    ...inherited,
+    label: editor.label || editor.routeId,
+    offerings: editor.offerings,
     fallbacks: editor.fallbacks,
     enabled: editor.enabled,
+    allowUserKey: editor.allowUserKey,
     requiresUserKey: editor.requiresUserKey,
     supportsImages: editor.supportsImages,
     supportsTools: editor.supportsTools,
   });
+}
+
+function isLegacyRoute(route) {
+  return Boolean(
+    route
+    && (route.type === "openai-chat" || route.type === "anthropic-messages")
+    && typeof route.baseUrl === "string"
+    && route.baseUrl
+    && typeof route.model === "string"
+    && route.model,
+  );
+}
+
+async function migrateLegacyRoute() {
+  const routeId = selectedRoute;
+  if (!routeId) return;
+  syncConfigFromEditor();
+  const current = config.routes?.[routeId];
+  if (!isLegacyRoute(current)) return setStatus("线路已变化，请刷新后重试", true);
+  const apiKeyRef = typeof current.apiKeyRef === "string" ? current.apiKeyRef.trim() : "";
+  if (current.hasLegacyKey === true && !isConfiguredRouteSecret(apiKeyRef)) {
+    const instruction = apiKeyRef
+      ? `请先为 ${apiKeyRef} 录入后台密钥或配置同名 Worker Secret，再执行迁移。`
+      : "请先在高级配置中为该旧式线路设置 API Key Ref，并录入后台密钥，再执行迁移。";
+    setStatus(instruction, true);
+    return;
+  }
+  const providerId = uniqueProviderId(normalizeRouteId(`${routeId}-provider`) || "provider", config.providers || {});
+  const credentialNote = current.hasLegacyKey === true ? "旧式 Key 不会复制到新服务商。" : "";
+  if (!(await confirmAdminAction(
+    "迁移旧式线路？",
+    `${routeLabel(routeId)} 将改为逻辑模型，并创建服务商 ${providerId}。${credentialNote}`,
+    "开始迁移",
+  ))) return;
+  const rollbackState = captureModelAdminState();
+  config.providers = config.providers || {};
+  config.providers[providerId] = compactObject({
+    enabled: current.enabled !== false,
+    label: current.label || providerId,
+    type: current.type,
+    baseUrl: current.baseUrl,
+    apiKeyRef: current.apiKeyRef,
+    authHeader: current.authHeader,
+    authPrefix: current.authPrefix,
+    directEndpoint: current.directEndpoint === true,
+    headers: current.headers,
+    headerSourceRouteId: current.hasCustomHeaders === true ? routeId : undefined,
+    allowUserKey: current.allowUserKey !== false,
+    requiresUserKey: current.requiresUserKey === true,
+    supportsImages: current.supportsImages !== false,
+    supportsTools: current.supportsTools === true,
+    concurrency: "unlimited",
+    priority: 0,
+  });
+  const migrated = { ...current };
+  for (const field of ["type", "baseUrl", "model", "apiKey", "apiKeyRef", "hasLegacyKey", "authHeader", "authPrefix", "directEndpoint", "headers"]) {
+    delete migrated[field];
+  }
+  migrated.offerings = [{
+    providerId,
+    model: current.model,
+    enabled: true,
+    supportsImages: current.supportsImages !== false,
+    supportsTools: current.supportsTools === true,
+  }];
+  config.routes[routeId] = migrated;
+  selectedProvider = providerId;
+  const saved = await attemptSaveConfig("旧式线路已迁移到服务商池");
+  if (!saved) restoreModelAdminState(rollbackState);
 }
 
 function splitCsv(value) {
@@ -2175,6 +2693,20 @@ function splitCsv(value) {
 function positiveNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function positiveInteger(value, min, max, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function nonNegativeInteger(value, max, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? Math.min(max, Math.max(0, parsed)) : fallback;
+}
+
+function finiteNumber(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function compactObject(input) {
@@ -2244,8 +2776,10 @@ function resetUnsavedEditors() {
   adminMemoryInput.value = savedMemory;
   renderAccessEntries();
   populateUserForm();
+  populateProviderForm();
   populateRouteForm();
   renderCapabilityEditors();
+  clearProviderSecretInput();
   clearMcpSecretInput();
   clearDirty();
 }
@@ -2321,24 +2855,24 @@ function generateAccessCode() {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function saveRouteSecret() {
-  const apiKeyRef = routeKeyRefInput.value.trim();
-  const apiKey = routeSecretInput.value.trim();
+async function saveProviderSecret() {
+  const apiKeyRef = providerKeyRefInput.value.trim();
+  const apiKey = providerSecretInput.value.trim();
   if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(apiKeyRef)) {
-    renderRouteSecretStatus("请先填写有效的 API Key Ref", true);
-    routeKeyRefInput.focus();
+    renderProviderSecretStatus("请先填写有效的 API Key Ref", true);
+    providerKeyRefInput.focus();
     return;
   }
   if (!apiKey) {
-    renderRouteSecretStatus("请输入要保存的线路密钥", true);
-    routeSecretInput.focus();
+    renderProviderSecretStatus("请输入要保存的服务商密钥", true);
+    providerSecretInput.focus();
     return;
   }
 
   let resultMessage = "";
   let resultError = false;
-  saveRouteSecretButton.disabled = true;
-  renderRouteSecretStatus("正在加密保存…");
+  saveProviderSecretButton.disabled = true;
+  renderProviderSecretStatus("正在加密保存…");
   try {
     const data = await api(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, {
       method: "PUT",
@@ -2348,47 +2882,47 @@ async function saveRouteSecret() {
       }),
     });
     if (data.item) routeSecrets[apiKeyRef] = data.item;
-    resultMessage = "后台线路密钥已保存";
+    resultMessage = "后台服务商密钥已保存";
     setStatus(resultMessage);
   } catch (error) {
-    resultMessage = error.message || "线路密钥保存失败";
+    resultMessage = error.message || "服务商密钥保存失败";
     resultError = true;
     setStatus(resultMessage, true);
   } finally {
-    clearRouteSecretInput();
-    renderRouteSecretStatus(resultMessage, resultError);
+    clearProviderSecretInput();
+    renderProviderSecretStatus(resultMessage, resultError);
   }
 }
 
-async function deleteRouteSecret() {
-  clearRouteSecretInput();
-  const apiKeyRef = routeKeyRefInput.value.trim();
+async function deleteProviderSecret() {
+  clearProviderSecretInput();
+  const apiKeyRef = providerKeyRefInput.value.trim();
   const item = routeSecrets[apiKeyRef];
   if (!item?.managed) {
-    renderRouteSecretStatus("当前没有可删除的后台密钥", true);
+    renderProviderSecretStatus("当前没有可删除的后台密钥", true);
     return;
   }
   if (!(await confirmAdminAction(
-    "删除后台线路密钥？",
+    "删除后台服务商密钥？",
     item.environmentFallback
       ? `${apiKeyRef} 将恢复使用同名 Worker Secret。`
       : `${apiKeyRef} 删除后将不可用于服务端请求。`,
     "删除密钥",
   ))) return;
 
-  deleteRouteSecretButton.disabled = true;
-  renderRouteSecretStatus("正在删除…");
+  deleteProviderSecretButton.disabled = true;
+  renderProviderSecretStatus("正在删除…");
   try {
     const data = await api(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, {
       method: "DELETE",
       body: JSON.stringify({ expectedRevision: item.revision || undefined }),
     });
     if (data.item) routeSecrets[apiKeyRef] = data.item;
-    renderRouteSecretStatus(data.item?.source === "worker" ? "后台密钥已删除，已恢复 Worker Secret" : "后台密钥已删除");
-    setStatus("后台线路密钥已删除");
+    renderProviderSecretStatus(data.item?.source === "worker" ? "后台密钥已删除，已恢复 Worker Secret" : "后台密钥已删除");
+    setStatus("后台服务商密钥已删除");
   } catch (error) {
-    renderRouteSecretStatus(error.message || "线路密钥删除失败", true);
-    setStatus(error.message || "线路密钥删除失败", true);
+    renderProviderSecretStatus(error.message || "服务商密钥删除失败", true);
+    setStatus(error.message || "服务商密钥删除失败", true);
   }
 }
 
@@ -2451,196 +2985,215 @@ async function checkAllRoutesHealth() {
   }
 }
 
-async function fetchRouteModels() {
-  const baseUrl = routeBaseUrlInput.value.trim();
-  const apiKeyRef = routeKeyRefInput.value.trim();
-  if (!baseUrl) {
-    setRouteHealth("请先填写 Base URL", true);
-    routeBaseUrlInput.focus();
+async function fetchProviderModels() {
+  const providerId = selectedProvider === "__new" ? "" : selectedProvider;
+  if (!providerId || !config.providers?.[providerId]) {
+    setProviderStatus("请先保存服务商配置", true);
     return;
   }
-  setRouteHealth("正在拉取模型列表…");
-  fetchRouteModelsButton.disabled = true;
+  if (dirtyScopes.has("provider")) {
+    setProviderStatus("服务商配置有未保存修改，请先保存", true);
+    return;
+  }
+  setProviderStatus("正在拉取模型列表…");
+  fetchProviderModelsButton.disabled = true;
   try {
-    const routeId = selectedRoute === "__new" ? routeIdInput.value.trim() : selectedRoute;
     const data = await api("/api/admin/route-models", {
       method: "POST",
-      body: JSON.stringify({
-        routeId,
-        type: routeTypeInput.value,
-        baseUrl,
-        apiKeyRef,
-      }),
+      body: JSON.stringify({ providerId }),
     });
     const models = Array.isArray(data.models) ? data.models : [];
-    routeModelSuggestions = [...new Set(models.filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim()))];
-    selectedRouteModels = new Set();
-    browseRouteModelsButton.disabled = routeModelSuggestions.length === 0;
-    setRouteHealth(`已拉取 ${routeModelSuggestions.length} 个模型，可搜索、单选或批量创建线路`);
-    openRouteModelDialog();
+    providerModelSuggestions = [...new Set(models.filter((model) => typeof model === "string" && model.trim()).map((model) => model.trim()))];
+    selectedProviderModels = new Set();
+    setProviderStatus(`已拉取 ${providerModelSuggestions.length} 个模型`);
+    openProviderModelDialog();
   } catch (error) {
-    setRouteHealth(error.message || "模型列表拉取失败", true);
+    setProviderStatus(error.message || "模型列表拉取失败", true);
   } finally {
-    fetchRouteModelsButton.disabled = false;
+    fetchProviderModelsButton.disabled = false;
   }
 }
 
 function invalidateRouteModels() {
-  routeModelSuggestions = [];
-  selectedRouteModels = new Set();
-  if (browseRouteModelsButton) browseRouteModelsButton.disabled = true;
-  if (routeModelDialog?.open) routeModelDialog.close();
-  if (routeModelSearchInput) routeModelSearchInput.value = "";
-  if (routeModelPrefixInput) routeModelPrefixInput.value = "";
-  renderRouteModelList();
+  providerModelSuggestions = [];
+  selectedProviderModels = new Set();
+  if (providerModelDialog?.open) providerModelDialog.close();
+  if (providerModelSearchInput) providerModelSearchInput.value = "";
+  if (providerModelPrefixInput) providerModelPrefixInput.value = "";
+  renderProviderModelList();
 }
 
-function openRouteModelDialog() {
-  if (!routeModelDialog || !routeModelSuggestions.length) {
-    setRouteHealth("请先拉取当前服务商的模型列表", true);
+function openProviderModelDialog() {
+  if (!providerModelDialog || !providerModelSuggestions.length) {
+    setProviderStatus("当前服务商没有可用模型", true);
     return;
   }
-  routeModelSearchInput.value = "";
-  if (!routeModelPrefixInput.value.trim()) routeModelPrefixInput.value = deriveRoutePrefix();
-  renderRouteModelList();
-  if (!routeModelDialog.open) routeModelDialog.showModal();
-  routeModelSearchInput.focus();
+  providerModelSearchInput.value = "";
+  if (!providerModelPrefixInput.value.trim()) providerModelPrefixInput.value = deriveProviderModelPrefix();
+  renderProviderModelList();
+  if (!providerModelDialog.open) providerModelDialog.showModal();
+  providerModelSearchInput.focus();
 }
 
-function renderRouteModelList() {
-  if (!routeModelList) return;
-  const query = routeModelSearchInput?.value.trim().toLocaleLowerCase() || "";
-  const visible = routeModelSuggestions.filter((model) => model.toLocaleLowerCase().includes(query));
-  routeModelList.textContent = "";
+function renderProviderModelList() {
+  if (!providerModelList) return;
+  const query = providerModelSearchInput?.value.trim().toLocaleLowerCase() || "";
+  const visible = providerModelSuggestions.filter((model) => model.toLocaleLowerCase().includes(query));
+  providerModelList.textContent = "";
 
   for (const model of visible) {
     const row = document.createElement("div");
     row.className = "route-model-row";
     const select = document.createElement("input");
     select.type = "checkbox";
-    select.checked = selectedRouteModels.has(model);
-    select.setAttribute("aria-label", `选择 ${model} 用于批量创建线路`);
+    select.checked = selectedProviderModels.has(model);
+    select.setAttribute("aria-label", `选择 ${model} 添加到模型池`);
     select.addEventListener("change", () => {
-      if (select.checked) selectedRouteModels.add(model);
-      else selectedRouteModels.delete(model);
-      updateRouteModelSelection();
+      if (select.checked) selectedProviderModels.add(model);
+      else selectedProviderModels.delete(model);
+      updateProviderModelSelection();
     });
     const use = document.createElement("button");
     use.type = "button";
     use.className = "route-model-use";
     use.textContent = model;
-    use.title = `使用 ${model}`;
+    use.title = `选择 ${model}`;
     use.addEventListener("click", () => {
-      routeModelInput.value = model;
-      markDirty("route");
-      routeModelDialog.close();
-      setRouteHealth(`已选择模型 ${model}，保存线路后生效`);
-      routeModelInput.focus();
+      if (selectedProviderModels.has(model)) selectedProviderModels.delete(model);
+      else selectedProviderModels.add(model);
+      select.checked = selectedProviderModels.has(model);
+      updateProviderModelSelection();
     });
     row.append(select, use);
-    routeModelList.append(row);
+    providerModelList.append(row);
   }
 
   if (!visible.length) {
     const empty = document.createElement("p");
     empty.className = "route-model-empty";
     empty.textContent = "没有匹配的模型";
-    routeModelList.append(empty);
+    providerModelList.append(empty);
   }
 
-  if (routeModelDialogSummary) {
-    routeModelDialogSummary.textContent = query
-      ? `共 ${routeModelSuggestions.length} 个模型，当前显示 ${visible.length} 个`
-      : `共 ${routeModelSuggestions.length} 个模型，打开时始终显示完整列表`;
+  if (providerModelDialogSummary) {
+    providerModelDialogSummary.textContent = query
+      ? `共 ${providerModelSuggestions.length} 个模型，当前显示 ${visible.length} 个`
+      : `共 ${providerModelSuggestions.length} 个模型，当前显示完整列表`;
   }
-  updateRouteModelSelection();
+  updateProviderModelSelection();
 }
 
-function updateRouteModelSelection() {
-  const count = selectedRouteModels.size;
-  if (routeModelSelectionStatus) routeModelSelectionStatus.textContent = count ? `已选择 ${count} 个模型` : "未选择模型";
-  if (batchCreateRoutesButton) batchCreateRoutesButton.disabled = count === 0;
+function updateProviderModelSelection() {
+  const count = selectedProviderModels.size;
+  if (providerModelSelectionStatus) providerModelSelectionStatus.textContent = count ? `已选择 ${count} 个模型` : "未选择模型";
+  if (batchAddOfferingsButton) batchAddOfferingsButton.disabled = count === 0;
 }
 
-async function createSelectedModelRoutes() {
-  const models = [...selectedRouteModels];
+async function addSelectedProviderOfferings() {
+  const models = [...selectedProviderModels];
   if (!models.length) return;
 
   let parsedConfig;
   try {
     parsedConfig = normalizeClientConfig(JSON.parse(configJsonInput.value));
   } catch {
-    setRouteHealth("高级配置 JSON 无法解析，请先修正后再批量创建", true);
+    providerModelSelectionStatus.textContent = "高级配置 JSON 无法解析，请先修正";
     return;
   }
 
-  const editor = readRouteEditor();
-  if (!/^https?:\/\//i.test(editor.baseUrl)) {
-    setRouteHealth("请先填写有效的 http(s) Base URL", true);
-    routeModelDialog.close();
-    routeBaseUrlInput.focus();
+  const providerId = selectedProvider === "__new" ? "" : selectedProvider;
+  const provider = parsedConfig.providers?.[providerId];
+  if (!provider) {
+    providerModelSelectionStatus.textContent = "请先保存服务商配置";
     return;
   }
-  const prefix = normalizeRouteId(routeModelPrefixInput.value);
+  const prefix = normalizeRouteId(providerModelPrefixInput.value);
   if (!prefix) {
-    routeModelSelectionStatus.textContent = "请填写有效的线路 ID 前缀";
-    routeModelPrefixInput.focus();
+    providerModelSelectionStatus.textContent = "请填写有效的模型 ID 前缀";
+    providerModelPrefixInput.focus();
     return;
   }
 
-  const source = selectedRoute !== "__new" ? parsedConfig.routes?.[selectedRoute] || {} : {};
   const nextRoutes = { ...(parsedConfig.routes || {}) };
   const created = [];
+  const merged = [];
   const skipped = [];
   for (const model of models) {
-    const duplicate = Object.entries(nextRoutes).find(([, route]) => (
-      (route?.type || "openai-chat") === editor.type
-      && route?.baseUrl === editor.baseUrl
-      && (route?.apiKeyRef || "") === editor.apiKeyRef
-      && route?.model === model
-    ));
-    if (duplicate) {
-      skipped.push(model);
+    const match = findLogicalRouteForModel(model, nextRoutes);
+    if (match) {
+      const [routeId, route] = match;
+      const offerings = Array.isArray(route.offerings) ? [...route.offerings] : [];
+      if (offerings.some((offering) => offering.providerId === providerId)) {
+        skipped.push(model);
+        continue;
+      }
+      nextRoutes[routeId] = { ...route, offerings: [...offerings, { providerId, model, enabled: true }] };
+      merged.push({ routeId, model });
       continue;
     }
     const routeId = uniqueRouteId(`${prefix}-${normalizeRouteId(model) || "model"}`, nextRoutes);
-    nextRoutes[routeId] = buildRouteFromEditor(model, source, false);
+    nextRoutes[routeId] = compactObject({
+      label: model,
+      offerings: [{ providerId, model, enabled: true }],
+      enabled: true,
+      allowUserKey: true,
+      requiresUserKey: false,
+      supportsImages: provider.supportsImages !== false,
+      supportsTools: provider.supportsTools === true,
+    });
     created.push({ routeId, model });
   }
 
-  if (!created.length) {
-    routeModelSelectionStatus.textContent = skipped.length ? "所选模型已经存在对应线路" : "没有可创建的线路";
+  const changed = [...merged, ...created];
+  if (!changed.length) {
+    providerModelSelectionStatus.textContent = skipped.length ? "所选模型已关联当前服务商" : "没有可添加的模型";
     return;
   }
 
   const previousConfig = config;
   const previousSelectedRoute = selectedRoute;
   config = { ...parsedConfig, routes: nextRoutes };
-  selectedRoute = created[0].routeId;
-  batchCreateRoutesButton.disabled = true;
+  selectedRoute = changed[0].routeId;
+  batchAddOfferingsButton.disabled = true;
   const saved = await attemptSaveConfig(
-    `已创建 ${created.length} 条模型线路${skipped.length ? `，跳过 ${skipped.length} 个已有模型` : ""}`,
+    `已新增 ${created.length} 个逻辑模型，合并 ${merged.length} 个服务商映射${skipped.length ? `，跳过 ${skipped.length} 个已有映射` : ""}`,
   );
   if (!saved) {
     config = previousConfig;
     selectedRoute = previousSelectedRoute;
-    routeModelSelectionStatus.textContent = "保存失败，请检查配置后重试";
-    batchCreateRoutesButton.disabled = false;
+    providerModelSelectionStatus.textContent = "保存失败，请检查配置后重试";
+    batchAddOfferingsButton.disabled = false;
     return;
   }
 
-  selectedRouteModels = new Set();
-  if (routeModelDialog.open) routeModelDialog.close();
+  selectedProviderModels = new Set();
+  if (providerModelDialog.open) providerModelDialog.close();
 }
 
-function deriveRoutePrefix() {
-  const label = normalizeRouteId(routeLabelInput.value);
-  if (label) return label;
-  try {
-    const hostname = normalizeRouteId(new URL(routeBaseUrlInput.value).hostname.replace(/^api\./i, ""));
-    if (hostname) return hostname;
-  } catch {}
-  return normalizeRouteId(routeIdInput.value) || "provider";
+function findLogicalRouteForModel(model, routes) {
+  return Object.entries(routes).find(([, route]) => (
+    !isLegacyRoute(route)
+    && Array.isArray(route.offerings)
+    && route.offerings.some((offering) => offering.model === model)
+  ));
+}
+
+function deriveProviderModelPrefix() {
+  const providerId = selectedProvider === "__new" ? providerIdInput.value : selectedProvider;
+  const label = normalizeRouteId(providerLabelInput.value);
+  return label || normalizeRouteId(providerId) || "model";
+}
+
+function uniqueProviderId(candidate, providers) {
+  const base = candidate.slice(0, 80) || "provider";
+  if (!providers[base]) return base;
+  let suffix = 2;
+  let next = "";
+  do {
+    const suffixText = `-${suffix++}`;
+    next = `${base.slice(0, 80 - suffixText.length)}${suffixText}`;
+  } while (providers[next]);
+  return next;
 }
 
 function normalizeRouteId(value) {
@@ -2672,4 +3225,13 @@ function setRouteHealth(message, isError = false) {
   }
   routeHealthStatus.textContent = message;
   routeHealthStatus.classList.toggle("is-error", isError);
+}
+
+function setProviderStatus(message, isError = false) {
+  if (!providerStatus) {
+    setStatus(message, isError);
+    return;
+  }
+  providerStatus.textContent = message;
+  providerStatus.classList.toggle("is-error", isError);
 }

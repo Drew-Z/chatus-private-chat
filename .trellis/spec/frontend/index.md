@@ -15,13 +15,13 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Static assets, page controllers, Worker and tests | Ready |
-| [Component Guidelines](./component-guidelines.md) | DOM-region rendering and accessibility patterns | Ready |
+| [Component Guidelines](./component-guidelines.md) | DOM-region rendering, accessibility, and provider/logical-model administration | Ready |
 | [Hook Guidelines](./hook-guidelines.md) | Browser events, lifecycle and fetch patterns | Ready |
 | [State Management](./state-management.md) | Module, local-storage and server-state boundaries | Ready |
 | [Quality Guidelines](./quality-guidelines.md) | Checks, security, testing and review gates | Ready |
 | [Type Safety](./type-safety.md) | Strict Worker TypeScript and runtime validation | Ready |
 | [Agent Streaming And Fallback](./agent-streaming.md) | AIChat streaming, route commitment, fallback and telemetry | Ready |
-| [User Skill Assignment](./capability-assignment.md) | Per-member Skill projection, validation, and execution enforcement | Ready |
+| [Member Capability Assignment](./capability-assignment.md) | Per-member access lifecycle plus route, Skill, and tool projection, editing, validation, and execution enforcement | Ready |
 
 ---
 
@@ -32,6 +32,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 - Read `type-safety.md` for Worker/API/storage contract changes.
 - Read `capability-assignment.md` for user capability fields, Skill selection, or administration assignment changes.
 - Read `agent-streaming.md` for AIChat, provider routing, fallback, cancellation, or stream telemetry changes.
+- Read `component-guidelines.md` and `type-safety.md` for provider registry, model discovery, logical model, or offering editor changes.
 - Always read `quality-guidelines.md` before implementation and review.
 
 ## Quality Check

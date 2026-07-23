@@ -9,6 +9,7 @@ import { generateText, type ModelMessage, type UIMessage } from "ai";
 import type { TeamAgent } from "./agent/team-agent";
 import {
   MAX_AGENT_CONVERSATIONS,
+  type AgentExportMessage,
   type AgentConversationInput,
   type AgentConversationMutationResult,
   type AgentConversationSummary,
@@ -29,12 +30,23 @@ import type {
   ToolExecutor,
 } from "./contracts/capability";
 import type { ChatMessage, ChatPart, ToolEventSummary } from "./contracts/chat";
-import type { ProviderCredential, ProviderType, RouteConfig } from "./contracts/provider";
+import type {
+  ProviderConfig,
+  ProviderCredential,
+  ProviderType,
+  ResolvedProviderRoute,
+  RouteConfig,
+} from "./contracts/provider";
 import type { Session } from "./contracts/session";
 import {
+  buildResolvedProviderPlan,
   buildProviderRoutePlan,
   isTerminalProviderFailure,
+  MAX_PROVIDER_CONCURRENCY,
+  MAX_PROVIDER_QUEUE_TIMEOUT_MS,
+  resolveProviderRouteCandidates,
   resolveProviderCredential,
+  routeProviderKey,
 } from "./services/provider-router";
 import {
   buildCapabilityToolDefinitions,
@@ -49,12 +61,16 @@ import {
 } from "./services/fallback-language-model";
 import {
   isRecentRouteReliability,
+  isRecentProviderRouteReliability,
+  loadProviderRouteReliability,
   loadRouteReliability,
   recordRouteReliability,
   routeReliabilityMessage,
   type RouteReliabilityOutcome,
   type RouteReliabilityRecord,
 } from "./services/route-reliability";
+import { acquireFirstAvailableProvider, acquireProviderLease, type ProviderLease } from "./services/provider-lease";
+import type { ProviderCoordinator } from "./provider-coordinator";
 
 export type { ChatMessage } from "./contracts/chat";
 export type { Session } from "./contracts/session";
@@ -68,6 +84,20 @@ type AdminSession = {
 type AccessEntry = {
   label: string;
   code: string;
+};
+
+type AdminMemberProjection = {
+  label: string;
+  displayName: string;
+  configured: boolean;
+  hasAccessCode: boolean;
+};
+
+type AccessCodeSnapshot = {
+  accessCodes: string;
+  source: "kv" | "secret";
+  entries: AccessEntry[];
+  revision: string;
 };
 
 type CapabilityChatRpcArgs = Omit<CapabilityChatArgs, "env" | "requestSignal"> & { chatId: string };
@@ -100,6 +130,7 @@ type UserConfig = CapabilityAssignment & {
 
 type AppConfig = {
   routes: Record<string, RouteConfig>;
+  providers: Record<string, ProviderConfig>;
   users?: Record<string, UserConfig>;
   defaults?: UserConfig;
   skills?: Record<string, SkillConfig>;
@@ -186,6 +217,7 @@ export type Env = {
   CHAT_STORE: KVNamespace;
   USER_STATE: DurableObjectNamespace<UserState>;
   TEAM_AGENT: DurableObjectNamespace<TeamAgent>;
+  PROVIDER_COORDINATOR: DurableObjectNamespace<ProviderCoordinator>;
   ACCESS_CODES: string;
   ROUTES_CONFIG?: string;
   SYSTEM_PROMPT?: string;
@@ -222,6 +254,10 @@ const METRICS_DAYS = 7;
 const MAX_CLOUD_SESSIONS = 30;
 const MAX_CLOUD_MESSAGES = 120;
 const MAX_CLOUD_SESSION_BYTES = 1_800_000;
+const MAX_USER_DATA_EXPORT_BYTES = 5_000_000;
+const MAX_USER_DATA_EXPORT_CONVERSATION_BYTES = 512_000;
+const USER_DATA_EXPORT_ITEM_HEADROOM_BYTES = 4_096;
+const MAX_SSE_PREFLIGHT_BYTES = 256 * 1024;
 const AGENT_LEGACY_MIGRATION_ID = "legacy-user-state-v1";
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const ADMIN_AUDIT_KEY = "config:admin_audit";
@@ -247,6 +283,8 @@ const MAX_TOOL_EVENTS = 16;
 const MAX_TOOL_ARGUMENT_SUMMARY_CHARS = 500;
 const MAX_TOOL_RESULT_PREVIEW_CHARS = 2_000;
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
+const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const MEMBER_LABEL_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
 const MCP_REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_TOOL_ROUNDS = 4;
 const MAX_TOOL_CALLS = 8;
@@ -280,6 +318,7 @@ class UpstreamRequestError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly outcome?: RouteReliabilityOutcome,
   ) {
     super(message);
     this.name = "UpstreamRequestError";
@@ -733,6 +772,13 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
   if (request.method === "GET" && url.pathname === "/react-chat") {
     return Response.redirect(new URL("/react-chat/", url).toString(), 308);
   }
+  if (
+    request.method === "GET"
+    && (url.pathname === "/react-chat/admin" || url.pathname === "/react-chat/admin/")
+  ) {
+    // Cloudflare Assets canonicalizes index.html to the directory URL, which would drop the admin pathname.
+    return fetchRewrittenAsset(request, env, url, "/react-chat/");
+  }
   if (request.method === "GET" && url.pathname === "/legacy") {
     return Response.redirect(new URL("/legacy/", url).toString(), 308);
   }
@@ -817,8 +863,7 @@ async function handleTeamAgentRequest(request: Request, env: Env, url: URL): Pro
   const session = await getSession(request, env);
   if (!session) return jsonResponse({ error: "unauthorized" }, 401);
 
-  const origin = request.headers.get("Origin");
-  if (origin && origin !== url.origin) {
+  if (hasInvalidOrigin(request, url)) {
     return jsonResponse({ error: "invalid_origin" }, 403);
   }
 
@@ -847,6 +892,9 @@ async function handleTeamAgentRequest(request: Request, env: Env, url: URL): Pro
 async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: sensitiveResponseHeaders() });
+  }
+  if (request.method !== "GET" && request.method !== "HEAD" && hasInvalidOrigin(request, url)) {
+    return jsonResponse({ error: "invalid_origin" }, 403);
   }
 
   if (url.pathname === "/api/admin/login" && request.method === "POST") {
@@ -935,6 +983,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return handlePutAgentMemory(request, env, session);
   }
 
+  if (url.pathname === "/api/user-data/export" && request.method === "GET") {
+    return handleExportUserData(env, session);
+  }
+
   if (url.pathname === "/api/memory" && request.method === "GET") {
     return handleGetMemory(env, session);
   }
@@ -993,6 +1045,11 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   return jsonResponse({ error: "not_found" }, 404);
+}
+
+function hasInvalidOrigin(request: Request, url: URL): boolean {
+  const origin = request.headers.get("Origin");
+  return Boolean(origin && origin !== url.origin);
 }
 
 async function handleLogin(request: Request, env: Env, url: URL): Promise<Response> {
@@ -1121,6 +1178,27 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleGetAdminConfig(env);
   }
 
+  if (url.pathname === "/api/admin/members" && request.method === "GET") {
+    return handleGetAdminMembers(env);
+  }
+
+  if (url.pathname === "/api/admin/members" && request.method === "POST") {
+    return handleCreateAdminMemberAccess(request, env);
+  }
+
+  const memberAccessLabel = memberAccessLabelFromAdminPath(url.pathname);
+  if (memberAccessLabel !== null && request.method === "POST") {
+    return handleRotateAdminMemberAccess(request, env, memberAccessLabel);
+  }
+  if (memberAccessLabel !== null && request.method === "DELETE") {
+    return handleRevokeAdminMemberAccess(request, env, memberAccessLabel);
+  }
+
+  const memberConfigLabel = memberConfigLabelFromAdminPath(url.pathname);
+  if (memberConfigLabel !== null && request.method === "DELETE") {
+    return handleRemoveAdminMemberConfig(request, env, memberConfigLabel);
+  }
+
   if (url.pathname === "/api/admin/config" && request.method === "PUT") {
     return handlePutAdminConfig(request, env);
   }
@@ -1206,9 +1284,13 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     const body = await readJson<{ label?: unknown }>(request);
     const label = typeof body.label === "string" ? body.label.trim() : "";
     if (!label) return jsonResponse({ error: "label_required" }, 400);
-    const revoked = await revokeSessionsByLabel(env, label);
-    await appendAdminAudit(env, "sessions.revoke", label);
-    return jsonResponse({ ok: true, label, revoked });
+    const sessionRevocation = await revokeMemberSessionsWithRetry(env, label);
+    await appendAdminAudit(
+      env,
+      sessionRevocation.complete ? "sessions.revoke" : "sessions.revoke.incomplete",
+      label,
+    );
+    return jsonResponse({ ok: true, label, ...sessionRevocation });
   }
 
   if (url.pathname === "/api/admin/route-health" && request.method === "POST") {
@@ -1232,14 +1314,273 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
 async function handleGetAdminConfig(env: Env): Promise<Response> {
   const { config, source } = await loadEditableConfig(env);
-  return jsonResponse({ config, source, revision: await configRevision(config) });
+  return jsonResponse({ config: sanitizeAdminConfig(config), source, revision: await configRevision(config) });
+}
+
+async function handleGetAdminMembers(env: Env): Promise<Response> {
+  const [{ config }, accessSnapshot] = await Promise.all([
+    loadEditableConfig(env),
+    loadAccessCodeSnapshot(env),
+  ]);
+  const accessLabels = accessSnapshot.entries.map((entry) => entry.label.trim()).filter(Boolean);
+  const accessLabelSet = new Set(accessLabels);
+  const configuredByLabel = new Map<string, string>();
+  for (const rawLabel of Object.keys(config.users || {})) {
+    const label = rawLabel.trim();
+    if (label && !configuredByLabel.has(label)) configuredByLabel.set(label, rawLabel);
+  }
+  const labels = [...new Set([...accessLabels, ...configuredByLabel.keys()])]
+    .sort((left, right) => left.localeCompare(right));
+  return jsonResponse({
+    members: labels
+      .map((label) => projectAdminMember(config, label, accessLabelSet.has(label)))
+      .filter((member): member is AdminMemberProjection => member !== null),
+    accessRevision: accessSnapshot.revision,
+    accessSource: accessSnapshot.source,
+  });
+}
+
+async function handleCreateAdminMemberAccess(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ label?: unknown; expectedAccessRevision?: unknown }>(request);
+  const label = normalizeMemberLabel(body.label);
+  if (!label) return invalidMemberLabelResponse();
+  const current = await requireAccessCodeMutationSnapshot(env, body.expectedAccessRevision);
+  if (current instanceof Response) return current;
+  if (current.entries.some((entry) => entry.label === label)) {
+    return jsonResponse({ error: "access_code_exists", message: "该成员已有访问码，请使用轮换操作" }, 409);
+  }
+
+  const { config } = await loadEditableConfig(env);
+  const accessCode = randomToken();
+  const nextAccessCodes = serializeAccessCodes([...current.entries, { label, code: accessCode }]);
+  await env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes);
+  await appendAdminAudit(env, "member.access.create", label);
+  return jsonResponse({
+    member: projectAdminMember(config, label, true),
+    accessCode,
+    accessRevision: await secretFingerprint(nextAccessCodes),
+    sessionRevocation: { revoked: 0, complete: true },
+  });
+}
+
+async function handleRotateAdminMemberAccess(request: Request, env: Env, rawLabel: string): Promise<Response> {
+  const label = normalizeMemberLabel(rawLabel);
+  if (!label) return invalidMemberLabelResponse();
+  const body = await readJson<{ expectedAccessRevision?: unknown }>(request);
+  const current = await requireAccessCodeMutationSnapshot(env, body.expectedAccessRevision);
+  if (current instanceof Response) return current;
+  if (!current.entries.some((entry) => entry.label === label)) {
+    return jsonResponse({ error: "access_code_not_found", message: "该成员当前没有可轮换的访问码" }, 404);
+  }
+
+  const { config } = await loadEditableConfig(env);
+  const accessCode = randomToken();
+  let replaced = false;
+  const nextEntries: AccessEntry[] = [];
+  for (const entry of current.entries) {
+    if (entry.label !== label) {
+      nextEntries.push(entry);
+    } else if (!replaced) {
+      nextEntries.push({ label, code: accessCode });
+      replaced = true;
+    }
+  }
+  const nextAccessCodes = serializeAccessCodes(nextEntries);
+  await env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes);
+  const sessionRevocation = await revokeMemberSessionsWithRetry(env, label);
+  await appendAdminAudit(
+    env,
+    sessionRevocation.complete ? "member.access.rotate" : "member.access.rotate.sessions_incomplete",
+    label,
+  );
+  return jsonResponse({
+    member: projectAdminMember(config, label, true),
+    accessCode,
+    accessRevision: await secretFingerprint(nextAccessCodes),
+    sessionRevocation,
+  });
+}
+
+async function handleRevokeAdminMemberAccess(request: Request, env: Env, rawLabel: string): Promise<Response> {
+  const label = normalizeMemberLabel(rawLabel);
+  if (!label) return invalidMemberLabelResponse();
+  const body = await readJson<{ expectedAccessRevision?: unknown }>(request);
+  const current = await requireAccessCodeMutationSnapshot(env, body.expectedAccessRevision);
+  if (current instanceof Response) return current;
+  if (!current.entries.some((entry) => entry.label === label)) {
+    return jsonResponse({ error: "access_code_not_found", message: "该成员当前没有访问码" }, 404);
+  }
+
+  const nextEntries = current.entries.filter((entry) => entry.label !== label);
+  if (!nextEntries.length) {
+    return jsonResponse({
+      error: "last_access_code",
+      message: "不能撤销最后一个访问码，请先创建另一名可登录成员",
+    }, 409);
+  }
+
+  const { config } = await loadEditableConfig(env);
+  const nextAccessCodes = serializeAccessCodes(nextEntries);
+  await env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes);
+  const sessionRevocation = await revokeMemberSessionsWithRetry(env, label);
+  await appendAdminAudit(
+    env,
+    sessionRevocation.complete ? "member.access.revoke" : "member.access.revoke.sessions_incomplete",
+    label,
+  );
+  return jsonResponse({
+    member: projectAdminMember(config, label, false),
+    accessRevision: await secretFingerprint(nextAccessCodes),
+    sessionRevocation,
+  });
+}
+
+async function handleRemoveAdminMemberConfig(request: Request, env: Env, rawLabel: string): Promise<Response> {
+  const label = normalizeExistingMemberLabel(rawLabel);
+  if (!label) {
+    return jsonResponse({ error: "invalid_member_label", message: "成员 label 不能为空且不能超过 160 个字符" }, 400);
+  }
+  const body = await readJson<{ expectedConfigRevision?: unknown }>(request);
+  const current = await requireConfigMutationSnapshot(env, body.expectedConfigRevision);
+  if (current instanceof Response) return current;
+
+  const configuredLabel = Object.keys(current.config.users || {}).find((key) => key.trim() === label);
+  if (configuredLabel === undefined) {
+    return jsonResponse({ error: "member_config_not_found", message: "该成员没有独立配置" }, 404);
+  }
+
+  const users = { ...(current.config.users || {}) };
+  for (const key of Object.keys(users)) {
+    if (key.trim() === label) delete users[key];
+  }
+  const nextConfig: AppConfig = { ...current.config, users };
+  const validation = validateAppConfig(nextConfig);
+  if (!validation.ok) {
+    return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
+  }
+
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(nextConfig));
+  await appendAdminAudit(env, "member.config.remove", label);
+  const access = await loadAccessCodeSnapshot(env);
+  const revision = await configRevision(nextConfig);
+  return jsonResponse({
+    member: projectAdminMember(nextConfig, label, access.entries.some((entry) => entry.label === label)),
+    config: sanitizeAdminConfig(nextConfig),
+    source: "kv",
+    revision,
+  });
+}
+
+function memberAccessLabelFromAdminPath(pathname: string): string | null {
+  return memberLabelFromAdminPath(pathname, "/access-code");
+}
+
+function memberConfigLabelFromAdminPath(pathname: string): string | null {
+  return memberLabelFromAdminPath(pathname, "/config");
+}
+
+function memberLabelFromAdminPath(pathname: string, suffix: string): string | null {
+  const prefix = "/api/admin/members/";
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
+  const encoded = pathname.slice(prefix.length, -suffix.length);
+  if (!encoded || encoded.includes("/")) return "";
+  try {
+    const label = decodeURIComponent(encoded);
+    return label.includes("/") ? "" : label;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeMemberLabel(value: unknown): string {
+  const label = typeof value === "string" ? value.trim() : "";
+  return MEMBER_LABEL_PATTERN.test(label) ? label : "";
+}
+
+function normalizeExistingMemberLabel(value: unknown): string {
+  const label = typeof value === "string" ? value.trim() : "";
+  return label.length > 0 && label.length <= 160 ? label : "";
+}
+
+function invalidMemberLabelResponse(): Response {
+  return jsonResponse({
+    error: "invalid_label",
+    message: "label 需为 1 至 80 个字母、数字、点、下划线或短横线",
+  }, 400);
+}
+
+function projectAdminMember(config: AppConfig, label: string, hasAccessCode: boolean): AdminMemberProjection | null {
+  const configuredLabel = Object.keys(config.users || {}).find((rawLabel) => rawLabel.trim() === label);
+  if (configuredLabel === undefined && !hasAccessCode) return null;
+  const user = getEffectiveUserConfig(config, configuredLabel || label);
+  return {
+    label,
+    displayName: user.displayName || label,
+    configured: configuredLabel !== undefined,
+    hasAccessCode,
+  };
+}
+
+async function loadAccessCodeSnapshot(env: Env): Promise<AccessCodeSnapshot> {
+  const editable = await loadEditableAccessCodes(env);
+  return {
+    ...editable,
+    entries: parseAccessCodes(editable.accessCodes),
+    revision: await secretFingerprint(editable.accessCodes),
+  };
+}
+
+async function requireAccessCodeMutationSnapshot(
+  env: Env,
+  expectedValue: unknown,
+): Promise<AccessCodeSnapshot | Response> {
+  if (typeof expectedValue !== "string") {
+    return jsonResponse({
+      error: "expected_access_revision_required",
+      message: "缺少访问码版本，请刷新成员列表后重试",
+    }, 400);
+  }
+  const current = await loadAccessCodeSnapshot(env);
+  if (current.revision === expectedValue) return current;
+  return jsonResponse({
+    error: "access_codes_conflict",
+    message: "访问码已在其他标签页或设备更新，请刷新后重试",
+    currentRevision: current.revision,
+  }, 409);
+}
+
+function serializeAccessCodes(entries: AccessEntry[]): string {
+  return entries.map((entry) => `${entry.label}:${entry.code}`).join(",");
+}
+
+async function revokeMemberSessionsWithRetry(
+  env: Env,
+  label: string,
+): Promise<{ revoked: number; complete: boolean }> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return { revoked: await revokeSessionsByLabel(env, label), complete: true };
+    } catch {
+      // A second full scan safely completes a partially failed first pass.
+    }
+  }
+  return { revoked: 0, complete: false };
 }
 
 async function handlePutAdminConfig(request: Request, env: Env): Promise<Response> {
   const body = await readJson<{ config?: unknown; expectedRevision?: unknown }>(request);
   const conflict = await configRevisionConflict(env, body.expectedRevision);
   if (conflict) return conflict;
-  const normalized = normalizeAppConfig(body.config);
+  const rawProviderPoolValidation = validateRawProviderPoolConfiguration(body.config);
+  if (!rawProviderPoolValidation.ok) {
+    return jsonResponse({ error: "invalid_config", message: rawProviderPoolValidation.message }, 400);
+  }
+  const editable = await loadEditableConfig(env);
+  const normalized = mergeHiddenCredentialShadows(
+    editable.config,
+    normalizeAppConfig(body.config),
+    body.config,
+  );
   const validation = validateAppConfig(normalized);
   if (!validation.ok) {
     return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
@@ -1247,7 +1588,119 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
 
   await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(normalized));
   await appendAdminAudit(env, "config.update");
-  return jsonResponse({ ok: true, config: normalized, source: "kv", revision: await configRevision(normalized) });
+  return jsonResponse({ ok: true, config: sanitizeAdminConfig(normalized), source: "kv", revision: await configRevision(normalized) });
+}
+
+function sanitizeAdminConfig(config: AppConfig): Record<string, unknown> {
+  const providers = Object.fromEntries(Object.entries(config.providers).map(([providerId, provider]) => {
+    const { apiKey, headers, ...safeProvider } = provider;
+    return [providerId, {
+      ...safeProvider,
+      ...(apiKey ? { hasLegacyKey: true } : {}),
+      ...(headers && Object.keys(headers).length ? { hasCustomHeaders: true } : {}),
+    }];
+  }));
+  const routes = Object.fromEntries(Object.entries(config.routes).map(([routeId, route]) => {
+    const { apiKey, headers, ...safeRoute } = route;
+    return [routeId, {
+      ...safeRoute,
+      ...(apiKey ? { hasLegacyKey: true } : {}),
+      ...(headers && Object.keys(headers).length ? { hasCustomHeaders: true } : {}),
+    }];
+  }));
+  return { ...config, providers, routes };
+}
+
+function mergeHiddenCredentialShadows(existing: AppConfig, next: AppConfig, projection: unknown): AppConfig {
+  const rawConfig = isRecord(projection) ? projection : {};
+  const rawProviders = isRecord(rawConfig.providers) ? rawConfig.providers : {};
+  const rawRoutes = isRecord(rawConfig.routes) ? rawConfig.routes : {};
+  const providers = { ...next.providers };
+  const rawProviderHeaders = new Map<string, boolean>();
+  const rawProviderHeaderSources = new Map<string, string>();
+  for (const [providerId, rawProvider] of Object.entries(rawProviders)) {
+    if (isRecord(rawProvider)) {
+      rawProviderHeaders.set(providerId, rawProvider.hasCustomHeaders === true);
+      if (typeof rawProvider.headerSourceRouteId === "string") {
+        rawProviderHeaderSources.set(providerId, rawProvider.headerSourceRouteId);
+      }
+    }
+  }
+  for (const [providerId, provider] of Object.entries(existing.providers)) {
+    if (
+      provider.apiKey
+      && hasOwn(providers, providerId)
+      && providers[providerId]
+      && !providers[providerId].apiKey
+      && hasOwn(rawProviders, providerId)
+      && isRecord(rawProviders[providerId])
+      && rawProviders[providerId].hasLegacyKey === true
+    ) {
+      providers[providerId] = { ...providers[providerId], apiKey: provider.apiKey };
+    }
+    if (
+      provider.headers
+      && hasOwn(providers, providerId)
+      && providers[providerId]
+      && !providers[providerId].headers
+      && rawProviderHeaders.get(providerId) === true
+    ) {
+      providers[providerId] = { ...providers[providerId], headers: provider.headers };
+    }
+  }
+  for (const [providerId, sourceRouteId] of rawProviderHeaderSources) {
+    const sourceRoute = existing.routes[sourceRouteId];
+    const rawSourceRoute = rawRoutes[sourceRouteId];
+    if (
+      sourceRoute?.headers
+      && isRecord(rawSourceRoute)
+      && rawSourceRoute.hasCustomHeaders === true
+      && hasOwn(providers, providerId)
+      && providers[providerId]
+      && !providers[providerId].headers
+    ) {
+      providers[providerId] = { ...providers[providerId], headers: sourceRoute.headers };
+    }
+  }
+
+  const routes = { ...next.routes };
+  const rawRouteHeaders = new Map<string, boolean>();
+  for (const [routeId, rawRoute] of Object.entries(rawRoutes)) {
+    if (isRecord(rawRoute)) rawRouteHeaders.set(routeId, rawRoute.hasCustomHeaders === true);
+  }
+  for (const [routeId, route] of Object.entries(existing.routes)) {
+    const candidate = routes[routeId];
+    if (
+      route.apiKey
+      && candidate
+      && isLegacyRouteConfig(candidate)
+      && !candidate.apiKey
+      && isRecord(rawRoutes[routeId])
+      && rawRoutes[routeId].hasLegacyKey === true
+    ) {
+      routes[routeId] = { ...candidate, apiKey: route.apiKey };
+    }
+    if (
+      route.headers
+      && candidate
+      && isLegacyRouteConfig(candidate)
+      && !candidate.headers
+      && rawRouteHeaders.get(routeId) === true
+    ) {
+      routes[routeId] = { ...routes[routeId], headers: route.headers };
+    }
+  }
+  return { ...next, providers, routes };
+}
+
+function isLegacyRouteConfig(route: RouteConfig): boolean {
+  return Boolean(
+    (route.type === "openai-chat" || route.type === "anthropic-messages")
+    && typeof route.baseUrl === "string"
+    && route.baseUrl.trim()
+    && typeof route.model === "string"
+    && route.model.trim(),
+  );
 }
 
 async function configRevision(config: AppConfig): Promise<string> {
@@ -1283,8 +1736,8 @@ function secretRefFromAdminPath(pathname: string, prefix: string): string | null
 async function handleGetAdminRouteSecrets(env: Env): Promise<Response> {
   const config = await loadAppConfig(env);
   const refs = new Set(
-    Object.values(config.routes)
-      .map((route) => route.apiKeyRef?.trim() || "")
+    [...Object.values(config.providers), ...Object.values(config.routes)]
+      .map((item) => item.apiKeyRef?.trim() || "")
       .filter((ref) => ROUTE_SECRET_REF_PATTERN.test(ref)),
   );
   let cursor: string | undefined;
@@ -1753,6 +2206,26 @@ async function handleGetMemory(env: Env, session: Session): Promise<Response> {
   });
 }
 
+async function requireConfigMutationSnapshot(
+  env: Env,
+  expectedValue: unknown,
+): Promise<{ config: AppConfig; source: "kv" | "secret" | "default"; revision: string } | Response> {
+  if (typeof expectedValue !== "string" || !expectedValue) {
+    return jsonResponse({
+      error: "expected_config_revision_required",
+      message: "缺少配置版本，请刷新成员配置后重试",
+    }, 400);
+  }
+  const editable = await loadEditableConfig(env);
+  const revision = await configRevision(editable.config);
+  if (revision === expectedValue) return { ...editable, revision };
+  return jsonResponse({
+    error: "config_conflict",
+    message: "配置已在其他标签页或设备更新，请刷新后重试",
+    currentRevision: revision,
+  }, 409);
+}
+
 async function handlePutMemory(request: Request, env: Env, session: Session): Promise<Response> {
   const maxChars = numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS);
   const body = await readJson<{ memory?: unknown; expectedRevision?: unknown }>(request);
@@ -1836,7 +2309,7 @@ async function handleAdminResetUsage(request: Request, env: Env): Promise<Respon
 async function handleCreateAdminUser(request: Request, env: Env): Promise<Response> {
   const body = await readJson<{ label?: unknown; user?: unknown }>(request);
   const label = typeof body.label === "string" ? body.label.trim() : "";
-  if (!/^[A-Za-z0-9._-]+$/.test(label)) {
+  if (!MEMBER_LABEL_PATTERN.test(label)) {
     return jsonResponse({ error: "invalid_label", message: "label 只能包含字母、数字、点、下划线和短横线" }, 400);
   }
   const [{ config }, { accessCodes }] = await Promise.all([loadEditableConfig(env), loadEditableAccessCodes(env)]);
@@ -1854,7 +2327,14 @@ async function handleCreateAdminUser(request: Request, env: Env): Promise<Respon
     env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes),
   ]);
   await appendAdminAudit(env, "user.create", label);
-  return jsonResponse({ ok: true, label, accessCode, config: nextConfig });
+  return jsonResponse({
+    ok: true,
+    label,
+    accessCode,
+    config: sanitizeAdminConfig(nextConfig),
+    configRevision: await configRevision(nextConfig),
+    accessRevision: await secretFingerprint(nextAccessCodes),
+  });
 }
 
 async function handleFeedback(request: Request, env: Env, session: Session): Promise<Response> {
@@ -2094,6 +2574,83 @@ async function handlePutAgentMemory(request: Request, env: Env, session: Session
   return jsonResponse({ ok: true, ...result.record, maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS) });
 }
 
+async function handleExportUserData(env: Env, session: Session): Promise<Response> {
+  try {
+    await ensureAgentLegacyImport(env, session.label);
+    await drainAgentConversationCleanup(env, session.label);
+    const root = await getTeamAgent(env, session.label);
+    const [memory, conversations] = await Promise.all([
+      root.getMemory(),
+      root.listConversations(),
+    ]);
+    const exportedConversations: Array<AgentConversationSummary & {
+      messages: AgentExportMessage[];
+      messagesTruncated: boolean;
+    }> = [];
+    const encoder = new TextEncoder();
+    const baseDocument = {
+      schema: "chatus-user-data",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      account: { label: session.label },
+      memory: { text: memory.memory, updatedAt: memory.updatedAt },
+      conversations: exportedConversations,
+      truncated: false,
+    };
+    let encodedBytes = encoder.encode(JSON.stringify(baseDocument)).byteLength;
+    let truncated = false;
+
+    for (const conversation of conversations) {
+      const remainingBytes = MAX_USER_DATA_EXPORT_BYTES
+        - encodedBytes
+        - USER_DATA_EXPORT_ITEM_HEADROOM_BYTES;
+      if (remainingBytes < 32_768) {
+        truncated = true;
+        break;
+      }
+      const agent = await getTeamAgentConversation(env, session.label, conversation.id);
+      const result = await agent.exportMessages(
+        Math.min(remainingBytes, MAX_USER_DATA_EXPORT_CONVERSATION_BYTES),
+      );
+      const exported = {
+        ...conversation,
+        messages: result.messages,
+        messagesTruncated: result.truncated,
+      };
+      const itemBytes = encoder.encode(JSON.stringify(exported)).byteLength
+        + (exportedConversations.length ? 1 : 0);
+      if (encodedBytes + itemBytes > MAX_USER_DATA_EXPORT_BYTES) {
+        truncated = true;
+        break;
+      }
+      exportedConversations.push(exported);
+      encodedBytes += itemBytes;
+      truncated ||= result.truncated;
+    }
+    if (exportedConversations.length < conversations.length) truncated = true;
+
+    const body = JSON.stringify({ ...baseDocument, truncated });
+    if (encoder.encode(body).byteLength > MAX_USER_DATA_EXPORT_BYTES) {
+      return jsonResponse({
+        error: "user_data_export_too_large",
+        message: "导出数据过大，请先删除不再需要的会话后重试",
+      }, 413);
+    }
+    return new Response(body, {
+      status: 200,
+      headers: sensitiveResponseHeaders({
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="chatus-user-data.json"',
+      }),
+    });
+  } catch {
+    return jsonResponse({
+      error: "user_data_export_unavailable",
+      message: "暂时无法完整读取个人数据，请稍后重试",
+    }, 503);
+  }
+}
+
 async function validateAgentConversationSettings(
   env: Env,
   label: string,
@@ -2307,15 +2864,26 @@ async function handleGetAdminRouteHealth(env: Env): Promise<Response> {
 async function inspectRouteStatus(env: Env, routeId: string, route: RouteConfig): Promise<RouteStatusProjection> {
   const enabled = route.enabled !== false;
   let credentialStatus: RouteStatusProjection["credentialStatus"] = "missing";
-
-  if (route.requiresUserKey) {
-    credentialStatus = "user_key_required";
-  } else {
-    try {
-      credentialStatus = await resolveRouteKey(route, env, "") ? "configured" : "missing";
-    } catch {
-      credentialStatus = "unavailable";
+  const config = await loadAppConfig(env);
+  const candidates = resolveProviderRouteCandidates(routeId, route, config.providers);
+  let unavailable = false;
+  let userKeyRequired = false;
+  for (const candidate of candidates) {
+    if (candidate.requiresUserKey) {
+      userKeyRequired = true;
+      continue;
     }
+    try {
+      if (await resolveRouteKey(candidate, env, "")) {
+        credentialStatus = "configured";
+        break;
+      }
+    } catch {
+      unavailable = true;
+    }
+  }
+  if (credentialStatus !== "configured") {
+    credentialStatus = userKeyRequired ? "user_key_required" : unavailable ? "unavailable" : "missing";
   }
 
   const configured = credentialStatus === "configured" || credentialStatus === "user_key_required";
@@ -2342,8 +2910,8 @@ async function inspectRouteStatus(env: Env, routeId: string, route: RouteConfig)
     enabled,
     configured,
     credentialStatus,
-    model: route.model,
-    type: route.type,
+    model: route.label,
+    type: candidates[0]?.type || "openai-chat",
     message,
     reliability,
     checkedAt: reliability?.observedAt,
@@ -2383,28 +2951,56 @@ function chatIndexKey(label: string): string {
 
 async function handleAdminRouteModels(request: Request, env: Env): Promise<Response> {
   const body = await readJson<{
+    providerId?: unknown;
     routeId?: unknown;
-    type?: unknown;
-    baseUrl?: unknown;
-    apiKeyRef?: unknown;
   }>(request);
+  const providerId = typeof body.providerId === "string" ? body.providerId.trim() : "";
   const routeId = typeof body.routeId === "string" ? body.routeId.trim() : "";
   const config = await loadAppConfig(env);
-  const existing = routeId ? config.routes[routeId] : undefined;
-  const type = body.type === "anthropic-messages" ? "anthropic-messages" : "openai-chat";
-  const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : existing?.baseUrl || "";
-  const apiKeyRef = typeof body.apiKeyRef === "string" ? body.apiKeyRef.trim() : existing?.apiKeyRef;
+  const existing = routeId && hasOwn(config.routes, routeId) ? config.routes[routeId] : undefined;
+  const existingProvider = providerId && hasOwn(config.providers, providerId)
+    ? config.providers[providerId]
+    : undefined;
+  const legacyCandidate = existing && routeId && isLegacyRouteConfig(existing)
+    ? resolveProviderRouteCandidates(routeId, existing, config.providers)[0]
+    : undefined;
+  if (providerId && !existingProvider) {
+    return jsonResponse({ error: "provider_not_found", message: "请先保存服务商配置" }, 404);
+  }
+  if (!providerId && !routeId) {
+    return jsonResponse({ error: "provider_required", message: "必须指定已保存的 providerId" }, 400);
+  }
+  if (!providerId && !legacyCandidate) {
+    return jsonResponse({ error: "route_not_found", message: "未找到可用的已保存线路" }, 404);
+  }
+  const type = existingProvider?.type || legacyCandidate?.type || "openai-chat";
+  const baseUrl = existingProvider?.baseUrl || legacyCandidate?.baseUrl || "";
+  const apiKeyRef = existingProvider?.apiKeyRef || legacyCandidate?.apiKeyRef;
   if (!/^https?:\/\//i.test(baseUrl)) {
     return jsonResponse({ error: "invalid_base_url", message: "请填写有效的 http(s) Base URL" }, 400);
   }
 
-  const route: RouteConfig = {
-    ...(existing || {}),
-    label: existing?.label || routeId || "临时线路",
+  const route: ResolvedProviderRoute = {
+    routeId: routeId || "model-discovery",
+    providerId: providerId || legacyCandidate?.providerId || "model-discovery",
+    label: existingProvider?.label || existing?.label || providerId || routeId || "服务提供商",
     type,
     baseUrl,
-    model: existing?.model || "model-list",
+    model: legacyCandidate?.model || "model-list",
     apiKeyRef,
+    apiKey: existingProvider?.apiKey || legacyCandidate?.apiKey,
+    authHeader: existingProvider?.authHeader || legacyCandidate?.authHeader,
+    authPrefix: existingProvider?.authPrefix || legacyCandidate?.authPrefix,
+    directEndpoint: existingProvider?.directEndpoint || legacyCandidate?.directEndpoint,
+    headers: existingProvider?.headers || legacyCandidate?.headers,
+    allowUserKey: false,
+    requiresUserKey: false,
+    supportsImages: true,
+    supportsTools: false,
+    concurrency: "unlimited",
+    maxConcurrent: 100,
+    queueTimeoutMs: 10_000,
+    priority: 0,
   };
   let apiKey = "";
   try {
@@ -2463,7 +3059,7 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
   }
 }
 
-function routeModelsUrl(route: RouteConfig): string {
+function routeModelsUrl(route: ResolvedProviderRoute): string {
   const base = route.baseUrl.trim().replace(/\/+$/, "");
   if (route.directEndpoint) {
     return base
@@ -3025,79 +3621,112 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
       chatId,
     });
   }
-  let lastError: { routeId: string; status: number; message: string } | null = null;
+  const providerPlan = (await buildRuntimeProviderPlan(env, config, routeIds))
+    .filter((route) => !hasImages || route.supportsImages);
+  const prepared = await prepareProviderPlan(env, access, providerPlan, userApiKey);
+  if (prepared.userKeyRequiredRouteId) {
+    return jsonResponse({ error: "user_api_key_required", routeId: prepared.userKeyRequiredRouteId }, 400);
+  }
+  const remaining = [...prepared.candidates];
+  let lastError: { routeId: string; status: number; message: string } | null = prepared.lastError
+    ? { ...prepared.lastError, status: 500 }
+    : null;
   let attemptedRoutes = 0;
 
-  for (const routeId of routeIds) {
-    const route = config.routes[routeId];
-    const publicRoute = access.routes.find((item) => item.id === routeId);
-    if (!route || !publicRoute) continue;
-
-    let key = "";
-    try {
-      key = await resolveRouteKey(route, env, publicRoute.allowUserKey ? userApiKey : "");
-    } catch (error) {
-      lastError = {
-        routeId,
-        status: 500,
-        message: error instanceof RouteSecretError ? error.message : "route key is unavailable",
-      };
-      continue;
+  while (remaining.length) {
+    const acquired = await acquireFirstAvailableProvider(env, remaining, request.signal);
+    if (!acquired) {
+      lastError = { routeId: remaining[0].routeId, status: 429, message: "当前服务提供商繁忙，请稍后重试" };
+      break;
     }
-    if (!key) {
-      if (publicRoute.requiresUserKey) {
-        return jsonResponse({ error: "user_api_key_required", routeId }, 400);
-      }
-      lastError = { routeId, status: 500, message: "route key is not configured" };
-      continue;
-    }
-
+    const { candidate: route, lease } = acquired;
+    remaining.splice(remaining.indexOf(route), 1);
+    const routeId = route.routeId;
     attemptedRoutes += 1;
-    const usedUserKey = Boolean(userApiKey && publicRoute.allowUserKey);
     const startedAt = Date.now();
-    const result = await callRoute({
-      route,
-      routeId,
-      apiKey: key,
-      usedUserKey,
-      messages,
-      temperature: body.temperature,
-      env,
-    });
+    const fallback = route.planIndex > 0 || attemptedRoutes > 1;
+    let handedOff = false;
+    try {
+      const result = await callRoute({
+        route,
+        routeId,
+        apiKey: route.credential.apiKey,
+        usedUserKey: route.credential.usedUserKey,
+        messages,
+        temperature: body.temperature,
+        env,
+        signal: request.signal,
+      });
 
-    if (result.response) {
+      if (result.response) {
+        result.response.headers.set("X-RateLimit-Remaining", String(limitResult.remaining));
+        result.response.headers.set("X-Chatus-Route", routeId);
+        const response = responseWithProviderLease(result.response, lease, {
+          onComplete: async () => {
+            await recordRouteReliability(env, {
+              routeId,
+              providerId: route.providerId,
+              ok: true,
+              fallback,
+              startedAt,
+            });
+            await recordChatMetric(env, { kind: "success", label: session.label, routeId, fallback });
+          },
+          onError: async (error) => {
+            await recordRouteReliability(env, {
+              routeId,
+              providerId: route.providerId,
+              ok: false,
+              status: providerErrorStatus(error),
+              error,
+              outcome: upstreamReliabilityOutcome(error),
+              fallback,
+              startedAt,
+              usedUserKey: route.credential.usedUserKey,
+            });
+            await recordChatMetric(env, { kind: "route_error", label: session.label, routeId });
+            await recordChatMetric(env, { kind: "failure", label: session.label });
+          },
+        }, result.cancelUpstream, request.signal);
+        handedOff = true;
+        return response;
+      }
+
+      lastError = result.error;
       await recordRouteReliability(env, {
         routeId,
-        ok: true,
-        fallback: routeId !== selectedRoute && attemptedRoutes > 1,
+        providerId: route.providerId,
+        ok: false,
+        status: result.error.status,
+        fallback,
         startedAt,
+        usedUserKey: route.credential.usedUserKey,
       });
-      await recordChatMetric(env, {
-        kind: "success",
-        label: session.label,
+      await recordChatMetric(env, { kind: "route_error", label: session.label, routeId });
+      if (result.terminal) break;
+    } catch (error) {
+      if (request.signal.aborted) throw error;
+      const status = providerErrorStatus(error);
+      lastError = {
         routeId,
-        fallback: routeId !== selectedRoute && attemptedRoutes > 1,
+        status: status || 502,
+        message: error instanceof Error ? error.message : "upstream request failed",
+      };
+      await recordRouteReliability(env, {
+        routeId,
+        providerId: route.providerId,
+        ok: false,
+        status,
+        error,
+        outcome: upstreamReliabilityOutcome(error),
+        fallback,
+        startedAt,
+        usedUserKey: route.credential.usedUserKey,
       });
-      result.response.headers.set("X-RateLimit-Remaining", String(limitResult.remaining));
-      result.response.headers.set("X-Chatus-Route", routeId);
-      return result.response;
+      await recordChatMetric(env, { kind: "route_error", label: session.label, routeId });
+    } finally {
+      if (!handedOff) await lease.release();
     }
-
-    lastError = result.error;
-    await recordRouteReliability(env, {
-      routeId,
-      ok: false,
-      status: result.error.status,
-      fallback: routeId !== selectedRoute && attemptedRoutes > 1,
-      startedAt,
-      usedUserKey,
-    });
-    await recordChatMetric(env, {
-      kind: "route_error",
-      label: session.label,
-      routeId,
-    });
-    if (result.terminal) break;
   }
 
   await recordChatMetric(env, {
@@ -3108,12 +3737,12 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
 
   return jsonResponse(
     {
-      error: "upstream_error",
+      error: lastError?.status === 429 ? "provider_busy" : "upstream_error",
       routeId: lastError?.routeId,
       status: lastError?.status,
       message: lastError?.message || "no route succeeded",
     },
-    502,
+    lastError?.status === 429 ? 429 : 502,
   );
 }
 
@@ -3207,17 +3836,19 @@ export async function prepareTeamAgentTurn(
     ? await buildCapabilityToolDefinitions(config, access.user, selectedSkills, secretFingerprint)
     : [];
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
+  const providerPlan = await buildRuntimeProviderPlan(env, config, routeIds);
   const userApiKey = input.userApiKey?.trim() || "";
   const candidates: FallbackModelCandidate[] = [];
   const credentials = new Map<string, ProviderCredential>();
   let lastError: { routeId: string; message: string } | null = null;
 
-  for (const routeId of routeIds) {
-    const route = config.routes[routeId];
+  for (const route of providerPlan) {
+    const routeId = route.routeId;
     const publicRoute = access.routes.find((item) => item.id === routeId);
-    if (!route || !publicRoute) continue;
+    if (!publicRoute) continue;
     if (messagesContainImages(normalized) && !publicRoute.supportsImages) continue;
-    if (toolDefinitions.length && !publicRoute.supportsTools) continue;
+    if (messagesContainImages(normalized) && !route.supportsImages) continue;
+    if (toolDefinitions.length && !route.supportsTools) continue;
 
     let credential: ProviderCredential;
     try {
@@ -3237,11 +3868,13 @@ export async function prepareTeamAgentTurn(
       continue;
     }
 
-    credentials.set(routeId, credential);
+    credentials.set(routeProviderKey(routeId, route.providerId), credential);
     candidates.push({
       routeId,
+      providerId: route.providerId,
       model: createProviderLanguageModel(route, credential.apiKey),
       usedUserKey: credential.usedUserKey,
+      acquireLease: (waitMs, signal) => acquireProviderLease(env, route, waitMs, signal),
       settings: {
         temperature: clampNumber(input.temperature, 0, route.type === "anthropic-messages" ? 1 : 2, route.temperature ?? 0.7),
         maxOutputTokens: route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
@@ -3271,6 +3904,7 @@ export async function prepareTeamAgentTurn(
     onSuccess: async (event) => {
       await recordRouteReliability(env, {
         routeId: event.routeId,
+        providerId: event.providerId,
         ok: true,
         fallback: event.fallback,
         startedAt: event.startedAt,
@@ -3283,9 +3917,10 @@ export async function prepareTeamAgentTurn(
       });
     },
     onFailure: async (event) => {
-      const credential = credentials.get(event.routeId);
+      const credential = credentials.get(routeProviderKey(event.routeId, event.providerId));
       await recordRouteReliability(env, {
         routeId: event.routeId,
+        providerId: event.providerId,
         ok: false,
         fallback: event.fallback,
         startedAt: event.startedAt,
@@ -3400,6 +4035,24 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     return { ok: false, message: `线路 ${invalidFallback} 包含不存在的 fallback` };
   }
 
+  for (const [providerId, provider] of Object.entries(config.providers)) {
+    if (!/^https?:\/\//i.test(provider.baseUrl)) {
+      return { ok: false, message: `服务提供商 ${providerId} 的 Base URL 无效` };
+    }
+    if (provider.concurrency === "bounded" && (!provider.maxConcurrent || provider.maxConcurrent < 1)) {
+      return { ok: false, message: `服务提供商 ${providerId} 的并发上限无效` };
+    }
+  }
+  for (const [routeId, route] of Object.entries(config.routes)) {
+    const missingProvider = route.offerings?.find((offering) => !hasOwn(config.providers, offering.providerId));
+    if (missingProvider) {
+      return { ok: false, message: `逻辑模型 ${routeId} 引用了不存在的服务提供商 ${missingProvider.providerId}` };
+    }
+    if (!resolveProviderRouteCandidates(routeId, route, config.providers).length) {
+      return { ok: false, message: `逻辑模型 ${routeId} 至少需要一个有效服务提供商` };
+    }
+  }
+
   const users = Object.entries(config.users || {});
   for (const [label, user] of users) {
     if (user.defaultRoute && !config.routes[user.defaultRoute]) {
@@ -3456,29 +4109,133 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   return { ok: true };
 }
 
+function validateRawProviderPoolConfiguration(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: true };
+  const rawProviders = value.providers;
+  if (rawProviders !== undefined && !isRecord(rawProviders)) {
+    return { ok: false, message: "服务提供商配置必须是对象" };
+  }
+  const providers = isRecord(rawProviders) ? rawProviders : {};
+  for (const [providerId, rawProvider] of Object.entries(providers)) {
+    if (!PROVIDER_ID_PATTERN.test(providerId)) {
+      return { ok: false, message: `服务提供商 ${providerId} 的 ID 无效，只能以字母或数字开头并包含字母、数字、点、下划线和短横线` };
+    }
+    if (!isRecord(rawProvider)) {
+      return { ok: false, message: `服务提供商 ${providerId} 配置无效` };
+    }
+    if (rawProvider.type !== "openai-chat" && rawProvider.type !== "anthropic-messages") {
+      return { ok: false, message: `服务提供商 ${providerId} 的协议无效` };
+    }
+    if (typeof rawProvider.baseUrl !== "string" || !/^https?:\/\//i.test(rawProvider.baseUrl.trim())) {
+      return { ok: false, message: `服务提供商 ${providerId} 的 Base URL 无效` };
+    }
+    if (
+      rawProvider.concurrency !== undefined
+      && rawProvider.concurrency !== "unlimited"
+      && rawProvider.concurrency !== "exclusive"
+      && rawProvider.concurrency !== "bounded"
+    ) {
+      return { ok: false, message: `服务提供商 ${providerId} 的并发模式无效` };
+    }
+    if (rawProvider.concurrency === "bounded" && !isProviderCapacity(rawProvider.maxConcurrent)) {
+      return { ok: false, message: `服务提供商 ${providerId} 的并发上限必须是 1 到 ${MAX_PROVIDER_CONCURRENCY} 的整数` };
+    }
+    if (
+      rawProvider.queueTimeoutMs !== undefined
+      && !isProviderQueueTimeout(rawProvider.queueTimeoutMs)
+    ) {
+      return { ok: false, message: `服务提供商 ${providerId} 的等待时间必须是 0 到 ${MAX_PROVIDER_QUEUE_TIMEOUT_MS} 毫秒` };
+    }
+    if (rawProvider.priority !== undefined && !isFiniteConfigNumber(rawProvider.priority)) {
+      return { ok: false, message: `服务提供商 ${providerId} 的优先级无效` };
+    }
+  }
+
+  if (!isRecord(value.routes)) return { ok: true };
+  for (const [routeId, rawRoute] of Object.entries(value.routes)) {
+    if (!isRecord(rawRoute) || rawRoute.offerings === undefined) continue;
+    if (!Array.isArray(rawRoute.offerings)) {
+      return { ok: false, message: `逻辑模型 ${routeId} 的服务提供商列表必须是数组` };
+    }
+    const legacy = (rawRoute.type === "openai-chat" || rawRoute.type === "anthropic-messages")
+      && typeof rawRoute.baseUrl === "string"
+      && rawRoute.baseUrl.trim()
+      && typeof rawRoute.model === "string"
+      && rawRoute.model.trim();
+    if (!rawRoute.offerings.length && !legacy) {
+      return { ok: false, message: `逻辑模型 ${routeId} 至少需要一个服务提供商` };
+    }
+    const seenProviderIds = new Set<string>();
+    for (const rawOffering of rawRoute.offerings) {
+      if (!isRecord(rawOffering)) {
+        return { ok: false, message: `逻辑模型 ${routeId} 包含无效的服务提供商映射` };
+      }
+      const providerId = typeof rawOffering.providerId === "string" ? rawOffering.providerId.trim() : "";
+      const model = typeof rawOffering.model === "string" ? rawOffering.model.trim() : "";
+      if (!providerId || !model) {
+        return { ok: false, message: `逻辑模型 ${routeId} 的服务提供商映射需要 providerId 和 model` };
+      }
+      if (!hasOwn(providers, providerId)) {
+        return { ok: false, message: `逻辑模型 ${routeId} 引用了不存在的服务提供商 ${providerId}` };
+      }
+      if (seenProviderIds.has(providerId)) {
+        return { ok: false, message: `逻辑模型 ${routeId} 重复引用了服务提供商 ${providerId}` };
+      }
+      seenProviderIds.add(providerId);
+      if (rawOffering.priority !== undefined && !isFiniteConfigNumber(rawOffering.priority)) {
+        return { ok: false, message: `逻辑模型 ${routeId} 的服务提供商优先级无效` };
+      }
+    }
+  }
+  return { ok: true };
+}
+
+function isProviderCapacity(value: unknown): boolean {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= 1
+    && value <= MAX_PROVIDER_CONCURRENCY;
+}
+
+function isProviderQueueTimeout(value: unknown): boolean {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= MAX_PROVIDER_QUEUE_TIMEOUT_MS;
+}
+
+function isFiniteConfigNumber(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 function normalizeAppConfig(value: unknown): AppConfig {
   const input = isRecord(value) ? value : {};
+  const providers = normalizeProviderRegistry(input.providers);
   const rawRoutes = isRecord(input.routes) ? input.routes : {};
   const routes: Record<string, RouteConfig> = {};
 
   for (const [id, rawRoute] of Object.entries(rawRoutes)) {
     if (!isRecord(rawRoute)) continue;
     const type = rawRoute.type;
-    if (type !== "openai-chat" && type !== "anthropic-messages") continue;
-    if (typeof rawRoute.baseUrl !== "string" || typeof rawRoute.model !== "string") continue;
+    const legacy = (type === "openai-chat" || type === "anthropic-messages")
+      && typeof rawRoute.baseUrl === "string"
+      && typeof rawRoute.model === "string";
+    const offerings = normalizeModelOfferings(rawRoute.offerings, providers);
+    if (!legacy && !offerings.length) continue;
 
     routes[id] = {
       enabled: rawRoute.enabled !== false,
       label: typeof rawRoute.label === "string" ? rawRoute.label : id,
-      type,
-      baseUrl: rawRoute.baseUrl,
-      model: rawRoute.model,
-      apiKey: typeof rawRoute.apiKey === "string" ? rawRoute.apiKey : undefined,
-      apiKeyRef: typeof rawRoute.apiKeyRef === "string" ? rawRoute.apiKeyRef : undefined,
-      authHeader: typeof rawRoute.authHeader === "string" ? rawRoute.authHeader : undefined,
-      authPrefix: typeof rawRoute.authPrefix === "string" ? rawRoute.authPrefix : undefined,
-      directEndpoint: rawRoute.directEndpoint === true,
-      headers: normalizeStringRecord(rawRoute.headers),
+      offerings: offerings.length ? offerings : undefined,
+      type: legacy ? type : undefined,
+      baseUrl: legacy ? rawRoute.baseUrl as string : undefined,
+      model: legacy ? rawRoute.model as string : undefined,
+      apiKey: legacy && typeof rawRoute.apiKey === "string" ? rawRoute.apiKey : undefined,
+      apiKeyRef: legacy && typeof rawRoute.apiKeyRef === "string" ? rawRoute.apiKeyRef : undefined,
+      authHeader: legacy && typeof rawRoute.authHeader === "string" ? rawRoute.authHeader : undefined,
+      authPrefix: legacy && typeof rawRoute.authPrefix === "string" ? rawRoute.authPrefix : undefined,
+      directEndpoint: legacy && rawRoute.directEndpoint === true,
+      headers: legacy ? normalizeStringRecord(rawRoute.headers) : undefined,
       maxTokens: normalizePositiveNumber(rawRoute.maxTokens),
       temperature: normalizeNumber(rawRoute.temperature),
       fallbacks: Array.isArray(rawRoute.fallbacks)
@@ -3509,12 +4266,75 @@ function normalizeAppConfig(value: unknown): AppConfig {
 
   return {
     routes,
+    providers,
     users,
     defaults,
     skills,
     tools,
     mcpServers,
   };
+}
+
+function normalizeProviderRegistry(value: unknown): Record<string, ProviderConfig> {
+  if (!isRecord(value)) return {};
+  const providers: Record<string, ProviderConfig> = {};
+  for (const [id, rawProvider] of Object.entries(value)) {
+    if (!PROVIDER_ID_PATTERN.test(id)) continue;
+    if (!isRecord(rawProvider)) continue;
+    const type = rawProvider.type;
+    if (
+      (type !== "openai-chat" && type !== "anthropic-messages")
+      || typeof rawProvider.baseUrl !== "string"
+      || !rawProvider.baseUrl.trim()
+    ) continue;
+    const concurrency = rawProvider.concurrency === "exclusive" || rawProvider.concurrency === "bounded"
+      ? rawProvider.concurrency
+      : "unlimited";
+    providers[id] = {
+      enabled: rawProvider.enabled !== false,
+      label: typeof rawProvider.label === "string" && rawProvider.label.trim() ? rawProvider.label.trim() : id,
+      type,
+      baseUrl: rawProvider.baseUrl.trim(),
+      apiKey: typeof rawProvider.apiKey === "string" ? rawProvider.apiKey : undefined,
+      apiKeyRef: typeof rawProvider.apiKeyRef === "string" ? rawProvider.apiKeyRef : undefined,
+      authHeader: typeof rawProvider.authHeader === "string" ? rawProvider.authHeader : undefined,
+      authPrefix: typeof rawProvider.authPrefix === "string" ? rawProvider.authPrefix : undefined,
+      directEndpoint: rawProvider.directEndpoint === true,
+      headers: normalizeStringRecord(rawProvider.headers),
+      allowUserKey: rawProvider.allowUserKey !== false,
+      requiresUserKey: rawProvider.requiresUserKey === true,
+      supportsImages: rawProvider.supportsImages !== false,
+      supportsTools: rawProvider.supportsTools === true,
+      concurrency,
+      maxConcurrent: concurrency === "bounded" ? normalizePositiveNumber(rawProvider.maxConcurrent) : undefined,
+      queueTimeoutMs: normalizeNonNegativeNumber(rawProvider.queueTimeoutMs),
+      priority: normalizeNumber(rawProvider.priority),
+    };
+  }
+  return providers;
+}
+
+function normalizeModelOfferings(
+  value: unknown,
+  providers: Record<string, ProviderConfig>,
+): NonNullable<RouteConfig["offerings"]> {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((rawOffering) => {
+    if (!isRecord(rawOffering)) return [];
+    const providerId = typeof rawOffering.providerId === "string" ? rawOffering.providerId.trim() : "";
+    const model = typeof rawOffering.model === "string" ? rawOffering.model.trim() : "";
+    if (!providerId || !model || !hasOwn(providers, providerId) || seen.has(providerId)) return [];
+    seen.add(providerId);
+    return [{
+      providerId,
+      model,
+      enabled: rawOffering.enabled !== false,
+      priority: normalizeNumber(rawOffering.priority),
+      supportsImages: typeof rawOffering.supportsImages === "boolean" ? rawOffering.supportsImages : undefined,
+      supportsTools: typeof rawOffering.supportsTools === "boolean" ? rawOffering.supportsTools : undefined,
+    }];
+  });
 }
 
 function defaultTextStatsTool(): ToolConfig {
@@ -3573,26 +4393,33 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
     allowedIds.map(async (id): Promise<PublicRoute | null> => {
       const route = config.routes[id];
       if (!route || route.enabled === false) return null;
+      const candidates = resolveProviderRouteCandidates(id, route, config.providers);
+      if (!candidates.length) return null;
       let hasServerKey = false;
-      if (!route.requiresUserKey) {
+      for (const candidate of candidates) {
+        if (candidate.requiresUserKey) continue;
         try {
-          hasServerKey = Boolean(await resolveRouteKey(route, env, ""));
+          if (await resolveRouteKey(candidate, env, "")) {
+            hasServerKey = true;
+            break;
+          }
         } catch {
-          hasServerKey = false;
+          // Another offering may still be usable.
         }
       }
       const allowUserKey = Boolean(user.allowBringYourOwnKey && route.allowUserKey !== false);
       if (!hasServerKey && !allowUserKey) return null;
+      const representative = candidates[0];
 
       return {
         id,
         label: route.label,
-        type: route.type,
-        model: route.model,
+        type: representative.type,
+        model: route.label,
         allowUserKey,
-        requiresUserKey: Boolean(route.requiresUserKey || !hasServerKey),
-        supportsImages: route.supportsImages !== false,
-        supportsTools: route.supportsTools === true,
+        requiresUserKey: Boolean(!hasServerKey),
+        supportsImages: candidates.some((candidate) => candidate.supportsImages),
+        supportsTools: candidates.some((candidate) => candidate.supportsTools),
       };
     }),
   )).filter((route): route is PublicRoute => Boolean(route));
@@ -3618,12 +4445,16 @@ function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
   return { ...(config.defaults || {}), ...(config.users?.[label] || {}) };
 }
 
-async function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): Promise<string> {
+async function resolveRouteKey(
+  route: RouteConfig | ResolvedProviderRoute,
+  env: Env,
+  userApiKey: string,
+): Promise<string> {
   return (await resolveRouteCredential(route, env, userApiKey)).apiKey;
 }
 
 async function resolveRouteCredential(
-  route: RouteConfig,
+  route: RouteConfig | ResolvedProviderRoute,
   env: Env,
   userApiKey: string,
 ): Promise<ProviderCredential> {
@@ -3634,6 +4465,25 @@ async function resolveRouteCredential(
     isManagedReference: (apiKeyRef) => ROUTE_SECRET_REF_PATTERN.test(apiKeyRef),
     loadManagedSecret: (apiKeyRef) => loadManagedRouteSecret(env, apiKeyRef),
   });
+}
+
+async function buildRuntimeProviderPlan(
+  env: Env,
+  config: AppConfig,
+  routeIds: string[],
+): Promise<ResolvedProviderRoute[]> {
+  const rawCandidates = routeIds.flatMap((routeId) => {
+    const route = config.routes[routeId];
+    return route ? resolveProviderRouteCandidates(routeId, route, config.providers) : [];
+  });
+  const qualityEntries = await Promise.all(rawCandidates.map(async (candidate) => {
+    const reliability = await loadProviderRouteReliability(env, candidate.routeId, candidate.providerId);
+    return [
+      routeProviderKey(candidate.routeId, candidate.providerId),
+      isRecentProviderRouteReliability(reliability) ? reliability : null,
+    ] as const;
+  }));
+  return buildResolvedProviderPlan(routeIds, config.routes, config.providers, new Map(qualityEntries));
 }
 
 async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<string | null> {
@@ -3866,6 +4716,51 @@ async function buildMessagesWithSystem(
   return [...systemMessages, ...normalized];
 }
 
+type PreparedProviderRoute = ResolvedProviderRoute & {
+  credential: ProviderCredential;
+  publicRoute: PublicRoute;
+  planIndex: number;
+};
+
+async function prepareProviderPlan(
+  env: Env,
+  access: RouteAccess,
+  providerPlan: ResolvedProviderRoute[],
+  userApiKey: string,
+): Promise<{
+  candidates: PreparedProviderRoute[];
+  lastError: { routeId: string; message: string } | null;
+  userKeyRequiredRouteId?: string;
+}> {
+  const candidates: PreparedProviderRoute[] = [];
+  let lastError: { routeId: string; message: string } | null = null;
+
+  for (const [planIndex, route] of providerPlan.entries()) {
+    const publicRoute = access.routes.find((item) => item.id === route.routeId);
+    if (!publicRoute) continue;
+    let credential: ProviderCredential;
+    try {
+      credential = await resolveRouteCredential(route, env, publicRoute.allowUserKey ? userApiKey : "");
+    } catch (error) {
+      lastError = {
+        routeId: route.routeId,
+        message: error instanceof RouteSecretError ? error.message : "route key is unavailable",
+      };
+      continue;
+    }
+    if (!credential.apiKey) {
+      if (publicRoute.requiresUserKey) {
+        return { candidates, lastError, userKeyRequiredRouteId: route.routeId };
+      }
+      lastError = { routeId: route.routeId, message: "route key is not configured" };
+      continue;
+    }
+    candidates.push({ ...route, credential, publicRoute, planIndex });
+  }
+
+  return { candidates, lastError };
+}
+
 async function completeWithUserRoute(
   env: Env,
   session: Session,
@@ -3901,44 +4796,42 @@ async function completeWithUserRoute(
 
   const selectedRoute = args.routeId || access.defaultRoute;
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
+  const providerPlan = await buildRuntimeProviderPlan(env, config, routeIds);
   const userApiKey = args.userApiKey?.trim() || "";
-  let lastError = "no route succeeded";
-  let lastRouteId = "";
+  const prepared = await prepareProviderPlan(env, access, providerPlan, userApiKey);
+  if (prepared.userKeyRequiredRouteId) {
+    return {
+      ok: false,
+      error: "user_api_key_required",
+      message: "需要填写 API Key",
+      status: 400,
+      routeId: prepared.userKeyRequiredRouteId,
+    };
+  }
+  const remaining = [...prepared.candidates];
+  let lastError = prepared.lastError?.message || "no route succeeded";
+  let lastRouteId = prepared.lastError?.routeId || "";
+  let attemptedRoutes = 0;
+  let busy = false;
 
-  for (const routeId of routeIds) {
-    const route = config.routes[routeId];
-    const publicRoute = access.routes.find((item) => item.id === routeId);
-    if (!route || !publicRoute) continue;
-
-    let key = "";
-    try {
-      key = await resolveRouteKey(route, env, publicRoute.allowUserKey ? userApiKey : "");
-    } catch (error) {
-      lastError = error instanceof RouteSecretError ? error.message : "route key is unavailable";
-      lastRouteId = routeId;
-      continue;
+  while (remaining.length) {
+    const acquired = await acquireFirstAvailableProvider(env, remaining);
+    if (!acquired) {
+      busy = true;
+      lastError = "当前服务提供商繁忙，请稍后重试";
+      lastRouteId = remaining[0].routeId;
+      break;
     }
-    if (!key) {
-      if (publicRoute.requiresUserKey) {
-        return {
-          ok: false,
-          error: "user_api_key_required",
-          message: "需要填写 API Key",
-          status: 400,
-          routeId,
-        };
-      }
-      lastError = "route key is not configured";
-      lastRouteId = routeId;
-      continue;
-    }
-
-    const usedUserKey = Boolean(userApiKey && publicRoute.allowUserKey);
+    const { candidate: route, lease } = acquired;
+    remaining.splice(remaining.indexOf(route), 1);
+    const routeId = route.routeId;
+    attemptedRoutes += 1;
     const startedAt = Date.now();
+    const fallback = route.planIndex > 0 || attemptedRoutes > 1;
     try {
       const text = await completeOnce({
         route,
-        apiKey: key,
+        apiKey: route.credential.apiKey,
         messages: args.messages,
         temperature: args.temperature ?? 0.2,
         maxTokens: args.maxTokens,
@@ -3947,17 +4840,19 @@ async function completeWithUserRoute(
       if (text.trim()) {
         await recordRouteReliability(env, {
           routeId,
+          providerId: route.providerId,
           ok: true,
-          fallback: routeId !== selectedRoute,
+          fallback,
           startedAt,
         });
         return { ok: true, text: text.trim(), routeId };
       }
       await recordRouteReliability(env, {
         routeId,
+        providerId: route.providerId,
         ok: false,
         outcome: "protocol_error",
-        fallback: routeId !== selectedRoute,
+        fallback,
         startedAt,
       });
       lastError = "empty completion";
@@ -3965,29 +4860,36 @@ async function completeWithUserRoute(
     } catch (error) {
       await recordRouteReliability(env, {
         routeId,
+        providerId: route.providerId,
         ok: false,
         status: error instanceof UpstreamRequestError ? error.status : undefined,
         error,
-        fallback: routeId !== selectedRoute,
+        fallback,
         startedAt,
-        usedUserKey,
+        usedUserKey: route.credential.usedUserKey,
       });
       lastError = error instanceof Error ? error.message : "completion failed";
       lastRouteId = routeId;
+      if (
+        error instanceof UpstreamRequestError
+        && isTerminalProviderFailure(error.status, route.credential.usedUserKey)
+      ) break;
+    } finally {
+      await lease.release();
     }
   }
 
   return {
     ok: false,
-    error: "upstream_error",
+    error: busy ? "provider_busy" : "upstream_error",
     message: lastError,
-    status: 502,
+    status: busy ? 429 : 502,
     routeId: lastRouteId || undefined,
   };
 }
 
 async function completeOnce(args: {
-  route: RouteConfig;
+  route: ResolvedProviderRoute;
   apiKey: string;
   messages: ChatMessage[];
   temperature: number;
@@ -4072,15 +4974,17 @@ function trimMessagesForContext(messages: ChatMessage[], env: Env): ChatMessage[
 }
 
 async function callRoute(args: {
-  route: RouteConfig;
+  route: ResolvedProviderRoute;
   routeId: string;
   apiKey: string;
   usedUserKey: boolean;
   messages: ChatMessage[];
   temperature: unknown;
   env: Env;
+  signal?: AbortSignal;
 }): Promise<{
   response?: Response;
+  cancelUpstream?: (reason?: unknown) => Promise<void>;
   error: { routeId: string; status: number; message: string };
   terminal: boolean;
 }> {
@@ -4091,8 +4995,9 @@ async function callRoute(args: {
       : await callOpenAiChat(args);
 
   if (response.ok && response.body) {
-    const body =
+    const normalizedBody =
       route.type === "anthropic-messages" ? transformAnthropicStream(response.body) : response.body;
+    const preparedStream = await prepareValidatedOpenAiSseStream(normalizedBody);
     const headers = securityHeaders({
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store, no-transform",
@@ -4100,7 +5005,8 @@ async function callRoute(args: {
       "X-Accel-Buffering": "no",
     });
     return {
-      response: new Response(body, { status: 200, headers }),
+      response: new Response(preparedStream.body, { status: 200, headers }),
+      cancelUpstream: preparedStream.cancel,
       error: { routeId, status: 0, message: "" },
       terminal: false,
     };
@@ -4116,6 +5022,251 @@ async function callRoute(args: {
     },
     terminal,
   };
+}
+
+type ProviderStreamLifecycle = {
+  onComplete: () => Promise<void>;
+  onError: (error: unknown) => Promise<void>;
+};
+
+class OpenAiSseValidator {
+  private readonly decoder = new TextDecoder();
+  private buffer = "";
+  private visibleContent = false;
+  private terminal = false;
+
+  get hasVisibleContent(): boolean {
+    return this.visibleContent;
+  }
+
+  get isTerminal(): boolean {
+    return this.terminal;
+  }
+
+  push(chunk: Uint8Array): void {
+    this.buffer += this.decoder.decode(chunk, { stream: true });
+    this.consumeFrames();
+  }
+
+  finish(): void {
+    this.buffer += this.decoder.decode();
+    this.consumeFrames();
+    if (this.buffer.trim()) {
+      throw protocolStreamError("upstream returned an incomplete SSE event");
+    }
+    if (!this.visibleContent) {
+      throw protocolStreamError("upstream stream ended before visible content");
+    }
+  }
+
+  private consumeFrames(): void {
+    while (true) {
+      const separator = /\r?\n\r?\n/.exec(this.buffer);
+      if (!separator) return;
+      const frame = this.buffer.slice(0, separator.index);
+      this.buffer = this.buffer.slice(separator.index + separator[0].length);
+      const kind = inspectOpenAiSseFrame(frame);
+      if (kind === "content") this.visibleContent = true;
+      if (kind === "done") {
+        if (!this.visibleContent) {
+          throw protocolStreamError("upstream stream ended before visible content");
+        }
+        this.terminal = true;
+        return;
+      }
+    }
+  }
+}
+
+async function prepareValidatedOpenAiSseStream(
+  source: ReadableStream<Uint8Array>,
+): Promise<{
+  body: ReadableStream<Uint8Array>;
+  cancel: (reason?: unknown) => Promise<void>;
+}> {
+  const reader = source.getReader();
+  const validator = new OpenAiSseValidator();
+  const prefix: Uint8Array[] = [];
+  let prefixBytes = 0;
+  let cancelled = false;
+  const cancel = async (reason?: unknown) => {
+    if (cancelled) return;
+    cancelled = true;
+    await reader.cancel(reason).catch(() => undefined);
+  };
+
+  try {
+    while (!validator.hasVisibleContent) {
+      const next = await reader.read();
+      if (next.done) {
+        validator.finish();
+        break;
+      }
+      if (!next.value.byteLength) continue;
+      prefixBytes += next.value.byteLength;
+      if (prefixBytes > MAX_SSE_PREFLIGHT_BYTES) {
+        throw protocolStreamError("upstream produced too much metadata before visible content");
+      }
+      prefix.push(next.value);
+      validator.push(next.value);
+    }
+  } catch (error) {
+    await cancel();
+    throw error;
+  }
+
+  let prefixIndex = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (prefixIndex < prefix.length) {
+        controller.enqueue(prefix[prefixIndex]);
+        prefixIndex += 1;
+        return;
+      }
+      if (validator.isTerminal) {
+        await cancel();
+        controller.close();
+        return;
+      }
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          validator.finish();
+          controller.close();
+          return;
+        }
+        if (!next.value.byteLength) return;
+        validator.push(next.value);
+        controller.enqueue(next.value);
+      } catch (error) {
+        await cancel();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await cancel(reason);
+    },
+  }, { highWaterMark: 0 });
+  return { body, cancel };
+}
+
+function inspectOpenAiSseFrame(frame: string): "ignore" | "content" | "done" {
+  const dataLines = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).replace(/^ /, ""));
+  if (!dataLines.length) return "ignore";
+  const payload = dataLines.join("\n").trim();
+  if (!payload) return "ignore";
+  if (payload === "[DONE]") return "done";
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    throw protocolStreamError("upstream returned an invalid SSE event");
+  }
+  if (!isRecord(parsed)) {
+    throw protocolStreamError("upstream returned an invalid SSE payload");
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, "error") && parsed.error !== undefined) {
+    throw protocolStreamError("upstream returned an error event");
+  }
+  if (!Array.isArray(parsed.choices) || !parsed.choices.length || !isRecord(parsed.choices[0])) {
+    return "ignore";
+  }
+  const choice = parsed.choices[0];
+  const delta = isRecord(choice.delta) ? choice.delta : {};
+  const message = isRecord(choice.message) ? choice.message : {};
+  const text = typeof delta.content === "string"
+    ? delta.content
+    : typeof message.content === "string"
+      ? message.content
+      : typeof choice.text === "string"
+        ? choice.text
+        : "";
+  return text ? "content" : "ignore";
+}
+
+function protocolStreamError(message: string): UpstreamRequestError {
+  return new UpstreamRequestError(502, message, "protocol_error");
+}
+
+export function responseWithProviderLease(
+  response: Response,
+  lease: ProviderLease,
+  lifecycle: ProviderStreamLifecycle,
+  cancelUpstream?: (reason?: unknown) => Promise<void>,
+  requestSignal?: AbortSignal,
+): Response {
+  if (!response.body) {
+    void cancelUpstream?.();
+    void lease.release();
+    return response;
+  }
+  const reader = response.body.getReader();
+  let settled = false;
+  let abortHandler: (() => void) | null = null;
+  const removeAbortHandler = () => {
+    if (!abortHandler || !requestSignal) return;
+    requestSignal.removeEventListener("abort", abortHandler);
+    abortHandler = null;
+  };
+  const settle = async (kind: "complete" | "error" | "cancel", error?: unknown) => {
+    if (settled) return;
+    settled = true;
+    removeAbortHandler();
+    await lease.release().catch(() => undefined);
+    if (kind === "complete") {
+      await lifecycle.onComplete().catch(() => undefined);
+    } else if (kind === "error") {
+      await lifecycle.onError(error).catch(() => undefined);
+    }
+  };
+  const cancelReaders = (reason?: unknown) => Promise.all([
+    reader.cancel(reason).catch(() => undefined),
+    cancelUpstream?.(reason).catch(() => undefined),
+  ]);
+  const cancelForAbort = () => {
+    void (async () => {
+      const cancellation = cancelReaders(requestSignal?.reason);
+      await settle("cancel");
+      await cancellation;
+    })();
+  };
+  if (requestSignal) {
+    abortHandler = cancelForAbort;
+    if (requestSignal.aborted) cancelForAbort();
+    else requestSignal.addEventListener("abort", abortHandler, { once: true });
+  }
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          await settle("complete");
+          controller.close();
+          return;
+        }
+        controller.enqueue(next.value);
+      } catch (error) {
+        const cancellation = cancelReaders();
+        await settle("error", error);
+        await cancellation;
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      const cancellation = cancelReaders(reason);
+      await settle("cancel");
+      await cancellation;
+    },
+  }, { highWaterMark: 0 });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 type CapabilityChatArgs = {
@@ -4265,59 +5416,70 @@ async function runCapabilityLoopInner(
   ) => ToolApprovalDecision | Promise<ToolApprovalDecision>,
 ): Promise<void> {
   const aliasMap = new Map(args.tools.map((tool) => [tool.providerName, tool]));
+  const providerPlan = (await buildRuntimeProviderPlan(args.env, args.config, args.routeIds))
+    .filter((route) => route.supportsTools);
   let selected:
     | {
         routeId: string;
-        route: RouteConfig;
+        route: ResolvedProviderRoute;
+        lease: ProviderLease;
         history: ToolProviderHistory;
         turn: ModelTurn;
         fallback: boolean;
         startedAt: number;
+        apiKey: string;
+        usedUserKey: boolean;
       }
     | null = null;
   let attemptedRoutes = 0;
   let lastError: ProviderToolError | null = null;
+  const prepared = await prepareProviderPlan(args.env, args.access, providerPlan, args.userApiKey);
+  if (prepared.userKeyRequiredRouteId) {
+    throw new CapabilityError("user_api_key_required", "当前线路需要用户 API Key");
+  }
+  if (prepared.lastError) {
+    lastError = new ProviderToolError(500, prepared.lastError.message, false);
+  }
+  const remaining = [...prepared.candidates];
 
-  for (const routeId of args.routeIds) {
+  while (remaining.length) {
     assertNotAborted(signal);
-    const route = args.config.routes[routeId];
-    const publicRoute = args.access.routes.find((item) => item.id === routeId);
-    if (!route || !publicRoute) continue;
-    let apiKey = "";
-    try {
-      apiKey = await resolveRouteKey(route, args.env, publicRoute.allowUserKey ? args.userApiKey : "");
-    } catch (error) {
-      lastError = new ProviderToolError(500, error instanceof Error ? error.message : "route key is unavailable", false);
-      continue;
+    const acquired = await acquireFirstAvailableProvider(args.env, remaining, signal);
+    if (!acquired) {
+      lastError = new ProviderToolError(429, "当前服务提供商繁忙，请稍后重试", false);
+      break;
     }
-    if (!apiKey) {
-      if (publicRoute.requiresUserKey) throw new CapabilityError("user_api_key_required", "当前线路需要用户 API Key");
-      lastError = new ProviderToolError(500, "route key is not configured", false);
-      continue;
-    }
+    const { candidate: route, lease } = acquired;
+    remaining.splice(remaining.indexOf(route), 1);
+    const routeId = route.routeId;
     attemptedRoutes += 1;
     const history = createToolProviderHistory(route, args.messages);
-    const usedUserKey = Boolean(args.userApiKey && publicRoute.allowUserKey);
     const startedAt = Date.now();
+    const fallback = route.planIndex > 0 || attemptedRoutes > 1;
+    let handedOff = false;
     try {
       const turn = await callProviderToolTurn({
         route,
-        apiKey,
+        apiKey: route.credential.apiKey,
         history,
         tools: args.tools,
         temperature: args.temperature,
         env: args.env,
         signal,
-        usedUserKey,
+        usedUserKey: route.credential.usedUserKey,
       });
       selected = {
         routeId,
         route,
+        lease,
         history,
         turn,
-        fallback: routeId !== args.selectedRoute && attemptedRoutes > 1,
+        fallback,
         startedAt,
+        apiKey: route.credential.apiKey,
+        usedUserKey: route.credential.usedUserKey,
       };
+      handedOff = true;
       break;
     } catch (error) {
       lastError = error instanceof ProviderToolError
@@ -4325,29 +5487,37 @@ async function runCapabilityLoopInner(
         : new ProviderToolError(502, error instanceof Error ? error.message : "provider response is invalid", false);
       await recordRouteReliability(args.env, {
         routeId,
+        providerId: route.providerId,
         ok: false,
         status: lastError.status,
         error,
-        fallback: routeId !== args.selectedRoute && attemptedRoutes > 1,
+        fallback,
         startedAt,
-        usedUserKey,
+        usedUserKey: route.credential.usedUserKey,
       });
       await recordChatMetric(args.env, { kind: "route_error", label: args.session.label, routeId });
       if (lastError.terminal) break;
+    } finally {
+      if (!handedOff) await lease.release();
     }
   }
 
   if (!selected) {
     await recordChatMetric(args.env, { kind: "failure", label: args.session.label });
-    throw new CapabilityError("upstream_error", lastError?.message || "no route succeeded", true);
+    throw new CapabilityError(
+      lastError?.status === 429 ? "provider_busy" : "upstream_error",
+      lastError?.message || "no route succeeded",
+      true,
+    );
   }
 
-  emit({ type: "run", runId, routeId: selected.routeId, fallback: selected.fallback });
-  let turn = selected.turn;
-  let totalCalls = 0;
-  let toolBudgetMs = 0;
+  try {
+    emit({ type: "run", runId, routeId: selected.routeId, fallback: selected.fallback });
+    let turn = selected.turn;
+    let totalCalls = 0;
+    let toolBudgetMs = 0;
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     assertNotAborted(signal);
     appendProviderTurn(selected.history, turn.providerTurn);
     if (!turn.toolCalls.length) {
@@ -4355,6 +5525,7 @@ async function runCapabilityLoopInner(
       emit({ type: "finish", finishReason: turn.finishReason || "stop" });
       await recordRouteReliability(args.env, {
         routeId: selected.routeId,
+        providerId: selected.route.providerId,
         ok: true,
         fallback: selected.fallback,
         startedAt: selected.startedAt,
@@ -4450,32 +5621,27 @@ async function runCapabilityLoopInner(
     if (round + 1 >= MAX_TOOL_ROUNDS) {
       throw new CapabilityError("tool_round_limit", `单次对话最多执行 ${MAX_TOOL_ROUNDS} 轮工具交互`);
     }
-    const publicRoute = args.access.routes.find((item) => item.id === selected.routeId);
-    const apiKey = await resolveRouteKey(
-      selected.route,
-      args.env,
-      publicRoute?.allowUserKey ? args.userApiKey : "",
-    );
     try {
       turn = await callProviderToolTurn({
         route: selected.route,
-        apiKey,
+        apiKey: selected.apiKey,
         history: selected.history,
         tools: args.tools,
         temperature: args.temperature,
         env: args.env,
         signal,
-        usedUserKey: Boolean(args.userApiKey && publicRoute?.allowUserKey),
+        usedUserKey: selected.usedUserKey,
       });
     } catch (error) {
       await recordRouteReliability(args.env, {
         routeId: selected.routeId,
+        providerId: selected.route.providerId,
         ok: false,
         status: error instanceof ProviderToolError ? error.status : undefined,
         error,
         fallback: selected.fallback,
         startedAt: selected.startedAt,
-        usedUserKey: Boolean(args.userApiKey && publicRoute?.allowUserKey),
+        usedUserKey: selected.usedUserKey,
       });
       await recordChatMetric(args.env, { kind: "route_error", label: args.session.label, routeId: selected.routeId });
       throw new CapabilityError(
@@ -4484,10 +5650,13 @@ async function runCapabilityLoopInner(
         true,
       );
     }
+    }
+  } finally {
+    await selected.lease.release();
   }
 }
 
-function createToolProviderHistory(route: RouteConfig, messages: ChatMessage[]): ToolProviderHistory {
+function createToolProviderHistory(route: ResolvedProviderRoute, messages: ChatMessage[]): ToolProviderHistory {
   if (route.type === "anthropic-messages") {
     const anthropic = toAnthropicMessages(messages);
     return { type: route.type, system: anthropic.system, messages: anthropic.messages };
@@ -4496,7 +5665,7 @@ function createToolProviderHistory(route: RouteConfig, messages: ChatMessage[]):
 }
 
 async function callProviderToolTurn(args: {
-  route: RouteConfig;
+  route: ResolvedProviderRoute;
   apiKey: string;
   history: ToolProviderHistory;
   tools: NormalizedToolDefinition[];
@@ -4525,7 +5694,7 @@ async function callProviderToolTurn(args: {
 }
 
 async function callOpenAiToolTurn(args: {
-  route: RouteConfig;
+  route: ResolvedProviderRoute;
   apiKey: string;
   history: ToolProviderHistory;
   tools: NormalizedToolDefinition[];
@@ -4561,7 +5730,7 @@ async function callOpenAiToolTurn(args: {
 }
 
 async function callAnthropicToolTurn(args: {
-  route: RouteConfig;
+  route: ResolvedProviderRoute;
   apiKey: string;
   history: ToolProviderHistory;
   tools: NormalizedToolDefinition[];
@@ -5130,6 +6299,10 @@ function providerErrorStatus(error: unknown): number | undefined {
       : undefined;
 }
 
+function upstreamReliabilityOutcome(error: unknown): RouteReliabilityOutcome | undefined {
+  return error instanceof UpstreamRequestError ? error.outcome : undefined;
+}
+
 function findErrorMessage(value: unknown): string {
   if (!isRecord(value)) return "";
   if (typeof value.message === "string") return value.message;
@@ -5138,10 +6311,11 @@ function findErrorMessage(value: unknown): string {
 }
 
 async function callOpenAiChat(args: {
-  route: RouteConfig;
+  route: ResolvedProviderRoute;
   apiKey: string;
   messages: ChatMessage[];
   temperature: unknown;
+  signal?: AbortSignal;
 }): Promise<Response> {
   const { route, apiKey, messages, temperature } = args;
   const headers = buildHeaders(route.headers);
@@ -5152,6 +6326,7 @@ async function callOpenAiChat(args: {
   return fetch(routeUrl(route, "/chat/completions"), {
     method: "POST",
     headers,
+    signal: args.signal,
     body: JSON.stringify({
       model: route.model,
       messages,
@@ -5163,11 +6338,12 @@ async function callOpenAiChat(args: {
 }
 
 async function callAnthropicMessages(args: {
-  route: RouteConfig;
+  route: ResolvedProviderRoute;
   apiKey: string;
   messages: ChatMessage[];
   temperature: unknown;
   env: Env;
+  signal?: AbortSignal;
 }): Promise<Response> {
   const { route, apiKey, messages, temperature, env } = args;
   const headers = buildHeaders(route.headers);
@@ -5183,6 +6359,7 @@ async function callAnthropicMessages(args: {
   return fetch(routeUrl(route, "/v1/messages"), {
     method: "POST",
     headers,
+    signal: args.signal,
     body: JSON.stringify({
       model: route.model,
       messages: anthropic.messages,
@@ -5253,9 +6430,8 @@ function transformAnthropicStream(body: ReadableStream<Uint8Array>): ReadableStr
       while (true) {
         const { value, done } = await reader.read();
         if (done) {
-          if (!doneSent) {
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            doneSent = true;
+          if (buffer.trim()) {
+            throw protocolStreamError("upstream returned an incomplete Anthropic SSE event");
           }
           controller.close();
           return;
@@ -5304,35 +6480,37 @@ function transformAnthropicStream(body: ReadableStream<Uint8Array>): ReadableStr
 }
 
 function anthropicPayloadToOpenAiChunk(payload: string, eventName: string): string {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(payload);
-    if (!isRecord(parsed)) return "";
-
-    if (parsed.type === "content_block_delta" && isRecord(parsed.delta)) {
-      if (parsed.delta.type === "text_delta" && typeof parsed.delta.text === "string") {
-        return openAiSseChunk(parsed.delta.text);
-      }
-
-      return "";
-    }
-
-    if (parsed.type === "error" && isRecord(parsed.error)) {
-      const message = typeof parsed.error.message === "string" ? parsed.error.message : "upstream error";
-      return openAiSseChunk(`\n[upstream error: ${message}]`);
-    }
-
-    if (parsed.type === "message_delta" && isRecord(parsed.delta) && typeof parsed.delta.stop_reason === "string") {
-      return openAiFinishChunk(parsed.delta.stop_reason === "max_tokens" ? "length" : parsed.delta.stop_reason);
-    }
-
-    if (parsed.type === "message_stop" || eventName === "message_stop") {
-      return "data: [DONE]\n\n";
-    }
-
-    return "";
+    parsed = JSON.parse(payload);
   } catch {
+    throw protocolStreamError("upstream returned an invalid Anthropic SSE event");
+  }
+  if (!isRecord(parsed)) {
+    throw protocolStreamError("upstream returned an invalid Anthropic SSE payload");
+  }
+
+  if (parsed.type === "content_block_delta" && isRecord(parsed.delta)) {
+    if (parsed.delta.type === "text_delta" && typeof parsed.delta.text === "string") {
+      return openAiSseChunk(parsed.delta.text);
+    }
+
     return "";
   }
+
+  if (parsed.type === "error" || eventName === "error") {
+    throw protocolStreamError("upstream returned an Anthropic error event");
+  }
+
+  if (parsed.type === "message_delta" && isRecord(parsed.delta) && typeof parsed.delta.stop_reason === "string") {
+    return openAiFinishChunk(parsed.delta.stop_reason === "max_tokens" ? "length" : parsed.delta.stop_reason);
+  }
+
+  if (parsed.type === "message_stop" || eventName === "message_stop") {
+    return "data: [DONE]\n\n";
+  }
+
+  return "";
 }
 
 function openAiSseChunk(text: string): string {
@@ -5609,7 +6787,12 @@ function buildHeaders(input?: Record<string, string>): Headers {
   return headers;
 }
 
-function setAuthHeader(headers: Headers, route: RouteConfig, apiKey: string, defaultHeader: string) {
+function setAuthHeader(
+  headers: Headers,
+  route: RouteConfig | ResolvedProviderRoute,
+  apiKey: string,
+  defaultHeader: string,
+) {
   const header = route.authHeader || defaultHeader;
   if (headers.has(header)) return;
   const lower = header.toLowerCase();
@@ -5618,7 +6801,7 @@ function setAuthHeader(headers: Headers, route: RouteConfig, apiKey: string, def
   headers.set(header, `${prefix}${apiKey}`);
 }
 
-function routeUrl(route: RouteConfig, suffix: string): string {
+function routeUrl(route: ResolvedProviderRoute, suffix: string): string {
   const base = route.baseUrl.trim().replace(/\/+$/, "");
   return route.directEndpoint ? base : `${base}${suffix}`;
 }
@@ -5635,6 +6818,11 @@ function normalizeStringRecord(value: unknown): Record<string, string> | undefin
 function normalizePositiveNumber(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeNonNegativeNumber(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function normalizeNumber(value: unknown): number | undefined {
@@ -6056,7 +7244,11 @@ function utcDayStringAt(nowMs: number, daysAgo = 0): string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function textResponse(body: string, status: number, contentType: string): Response {

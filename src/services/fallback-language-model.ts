@@ -6,16 +6,26 @@ import type {
   LanguageModelV3StreamResult,
 } from "@ai-sdk/provider";
 import { isTerminalProviderFailure } from "./provider-router";
+import {
+  acquireFirstAvailableLease,
+  uniqueProviderLeaseCandidates,
+  type ProviderLease,
+} from "./provider-lease";
 
 export type FallbackModelCandidate = {
   routeId: string;
+  providerId: string;
   model: LanguageModelV3;
   usedUserKey: boolean;
   settings?: Pick<LanguageModelV3CallOptions, "temperature" | "maxOutputTokens">;
+  acquireLease?: (waitMs: number, signal?: AbortSignal) => Promise<ProviderCandidateLease | null>;
 };
+
+export type ProviderCandidateLease = Pick<ProviderLease, "release">;
 
 export type ProviderAttemptEvent = {
   routeId: string;
+  providerId: string;
   fallback: boolean;
   startedAt: number;
   error?: unknown;
@@ -43,52 +53,76 @@ export function createFallbackLanguageModel(
     supportedUrls: primary.supportedUrls,
     async doGenerate(options): Promise<LanguageModelV3GenerateResult> {
       let lastError: unknown;
-      for (let index = 0; index < candidates.length; index += 1) {
-        const candidate = candidates[index];
+      const remaining = [...candidates];
+      let attemptIndex = 0;
+      while (remaining.length) {
+        const selected = await acquireNextCandidate(remaining, options.abortSignal);
+        if (!selected) throw providerBusyError();
+        const { candidate, lease } = selected;
+        remaining.splice(remaining.indexOf(candidate), 1);
         const startedAt = Date.now();
+        const fallback = isFallbackAttempt(candidates, candidate, attemptIndex);
         try {
           const result = await candidate.model.doGenerate({ ...options, ...candidate.settings });
-          await notify(callbacks.onSuccess, attemptEvent(candidate, index, startedAt, false));
+          await notify(callbacks.onSuccess, attemptEvent(candidate, fallback, startedAt, false));
           return result;
         } catch (error) {
           lastError = error;
-          await notify(callbacks.onFailure, attemptEvent(candidate, index, startedAt, false, error));
-          if (!canFallback(error, candidate.usedUserKey, options) || index === candidates.length - 1) throw error;
+          await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, error));
+          if (!canFallback(error, candidate.usedUserKey, options) || !remaining.length) throw error;
+        } finally {
+          await releaseLease(lease);
         }
+        attemptIndex += 1;
       }
       throw lastError;
     },
     async doStream(options): Promise<LanguageModelV3StreamResult> {
       let lastError: unknown;
-      for (let index = 0; index < candidates.length; index += 1) {
-        const candidate = candidates[index];
+      const remaining = [...candidates];
+      let attemptIndex = 0;
+      while (remaining.length) {
+        const selected = await acquireNextCandidate(remaining, options.abortSignal);
+        if (!selected) throw providerBusyError();
+        const { candidate, lease } = selected;
+        remaining.splice(remaining.indexOf(candidate), 1);
         const startedAt = Date.now();
+        const fallback = isFallbackAttempt(candidates, candidate, attemptIndex);
+        let handedOff = false;
         try {
           const result = await candidate.model.doStream({ ...options, ...candidate.settings });
           const primed = await primeProviderStream(result.stream);
           if (!primed.ok) {
             lastError = primed.error;
-            await notify(callbacks.onFailure, attemptEvent(candidate, index, startedAt, false, primed.error));
-            if (canFallback(primed.error, candidate.usedUserKey, options) && index < candidates.length - 1) continue;
+            await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, primed.error));
+            if (canFallback(primed.error, candidate.usedUserKey, options) && remaining.length) {
+              attemptIndex += 1;
+              continue;
+            }
             throw primed.error;
           }
+          handedOff = true;
           return {
             ...result,
             stream: monitorCommittedStream({
               candidate,
-              candidateIndex: index,
+              fallback,
               startedAt,
               buffered: primed.buffered,
               reader: primed.reader,
               callbacks,
+              lease,
             }),
           };
         } catch (error) {
           if (error === lastError) throw error;
           lastError = error;
-          await notify(callbacks.onFailure, attemptEvent(candidate, index, startedAt, false, error));
-          if (!canFallback(error, candidate.usedUserKey, options) || index === candidates.length - 1) throw error;
+          await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, error));
+          if (!canFallback(error, candidate.usedUserKey, options) || !remaining.length) throw error;
+        } finally {
+          if (!handedOff) await releaseLease(lease);
         }
+        attemptIndex += 1;
       }
       throw lastError;
     },
@@ -132,11 +166,12 @@ async function primeProviderStream(stream: ReadableStream<LanguageModelV3StreamP
 
 function monitorCommittedStream(args: {
   candidate: FallbackModelCandidate;
-  candidateIndex: number;
+  fallback: boolean;
   startedAt: number;
   buffered: LanguageModelV3StreamPart[];
   reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart>;
   callbacks: FallbackLanguageModelCallbacks;
+  lease: ProviderCandidateLease;
 }): ReadableStream<LanguageModelV3StreamPart> {
   let bufferIndex = 0;
   let settled = false;
@@ -146,21 +181,28 @@ function monitorCommittedStream(args: {
     settled = true;
     await notify(args.callbacks.onSuccess, attemptEvent(
       args.candidate,
-      args.candidateIndex,
+      args.fallback,
       args.startedAt,
       true,
     ));
+    await releaseLease(args.lease);
   };
   const settleFailure = async (error: unknown) => {
     if (settled) return;
     settled = true;
     await notify(args.callbacks.onFailure, attemptEvent(
       args.candidate,
-      args.candidateIndex,
+      args.fallback,
       args.startedAt,
       true,
       error,
     ));
+    await releaseLease(args.lease);
+  };
+  const settleCancelled = async () => {
+    if (settled) return;
+    settled = true;
+    await releaseLease(args.lease);
   };
 
   return new ReadableStream({
@@ -184,6 +226,7 @@ function monitorCommittedStream(args: {
     },
     async cancel(reason) {
       await args.reader.cancel(reason).catch(() => undefined);
+      await settleCancelled();
     },
   });
 }
@@ -209,20 +252,62 @@ function canFallback(error: unknown, usedUserKey: boolean, options: LanguageMode
 
 function attemptEvent(
   candidate: FallbackModelCandidate,
-  candidateIndex: number,
+  fallback: boolean,
   startedAt: number,
   visibleOutputStarted: boolean,
   error?: unknown,
 ): ProviderAttemptEvent {
   return {
     routeId: candidate.routeId,
-    fallback: candidateIndex > 0,
+    providerId: candidate.providerId,
+    fallback,
     startedAt,
     error,
     status: providerErrorStatus(error),
     protocolError: error instanceof Error && error.name === "ProviderProtocolError",
     visibleOutputStarted,
   };
+}
+
+function isFallbackAttempt(
+  candidates: FallbackModelCandidate[],
+  candidate: FallbackModelCandidate,
+  attemptIndex: number,
+): boolean {
+  return attemptIndex > 0 || candidates.indexOf(candidate) > 0;
+}
+
+async function acquireNextCandidate(
+  candidates: FallbackModelCandidate[],
+  signal?: AbortSignal,
+): Promise<{ candidate: FallbackModelCandidate; lease: ProviderCandidateLease } | null> {
+  return acquireFirstAvailableLease(
+    uniqueProviderLeaseCandidates(candidates),
+    (candidate, waitMs, attemptSignal) => acquireLease(candidate, waitMs, attemptSignal),
+    signal,
+  );
+}
+
+async function acquireLease(
+  candidate: FallbackModelCandidate,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<ProviderCandidateLease | null> {
+  return candidate.acquireLease ? candidate.acquireLease(waitMs, signal) : { release: async () => undefined };
+}
+
+async function releaseLease(lease: ProviderCandidateLease): Promise<void> {
+  try {
+    await lease.release();
+  } catch {
+    // Lease expiry remains the final recovery boundary.
+  }
+}
+
+function providerBusyError(): Error {
+  const error = new Error("All providers for this model are busy. Please retry shortly.");
+  error.name = "ProviderBusyError";
+  return error;
 }
 
 function providerErrorStatus(error: unknown): number | undefined {

@@ -4,7 +4,11 @@ import { getAgentByName } from "agents";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
-import worker, { getTeamAgentConversationInstanceName, getTeamAgentInstanceName } from "../src/worker";
+import worker, {
+  getTeamAgentConversationInstanceName,
+  getTeamAgentInstanceName,
+  responseWithProviderLease,
+} from "../src/worker";
 import wranglerConfig from "../wrangler.jsonc?raw";
 
 const ACCESS_CODES_KEY = "config:access_codes";
@@ -14,6 +18,7 @@ const FEEDBACK_KEY = "feedback:recent";
 const ROUTE_SECRET_PREFIX = "route-secret:";
 const MCP_SECRET_PREFIX = "mcp-secret:";
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
+const PROVIDER_ROUTE_RELIABILITY_PREFIX = "route-provider-reliability:";
 
 async function clearRouteSecrets() {
   let cursor: string | undefined;
@@ -34,12 +39,14 @@ async function clearMcpSecrets() {
 }
 
 async function clearRouteReliability() {
-  let cursor: string | undefined;
-  do {
-    const page = await env.CHAT_STORE.list({ prefix: ROUTE_RELIABILITY_PREFIX, cursor, limit: 100 });
-    await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+  for (const prefix of [ROUTE_RELIABILITY_PREFIX, PROVIDER_ROUTE_RELIABILITY_PREFIX]) {
+    let cursor: string | undefined;
+    do {
+      const page = await env.CHAT_STORE.list({ prefix, cursor, limit: 100 });
+      await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  }
 }
 
 async function login(label = `tester-${crypto.randomUUID()}`) {
@@ -57,6 +64,18 @@ async function login(label = `tester-${crypto.randomUUID()}`) {
   return { cookie: cookie!, label };
 }
 
+async function loginWithCode(code: string, ip = `code-${crypto.randomUUID()}`): Promise<string | null> {
+  const response = await exports.default.fetch(
+    new Request("https://example.test/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+      body: JSON.stringify({ code }),
+    }),
+  );
+  if (response.status !== 200) return null;
+  return response.headers.get("Set-Cookie")?.split(";", 1)[0] || null;
+}
+
 function apiRequest(path: string, cookie: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("Cookie", cookie);
@@ -70,6 +89,24 @@ async function readCapabilityEvents(response: Response): Promise<any[]> {
     .filter((line) => line.startsWith("data: "))
     .map((line) => JSON.parse(line.slice(6)));
 }
+
+function openAiTextEvent(text: string): string {
+  return `data: ${JSON.stringify({
+    choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+  })}\n\n`;
+}
+
+function openAiTextSse(text: string): string {
+  return `${openAiTextEvent(text)}data: [DONE]\n\n`;
+}
+
+function openAiTextResponse(text: string): Response {
+  return new Response(openAiTextSse(text), {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 
 async function adminLogin() {
   const response = await exports.default.fetch(
@@ -204,6 +241,100 @@ describe("Worker API", () => {
     const missingChat = await apiRequest("/agent", first.cookie);
     expect(missingChat.status).toBe(400);
     await expect(missingChat.json()).resolves.toMatchObject({ error: "invalid_chat_id" });
+  });
+
+  it("rejects cross-origin authenticated mutations before admin or user dispatch", async () => {
+    const adminCookie = await adminLogin();
+    const currentConfig = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const currentMembers = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    await env.CHAT_STORE.put(`${ROUTE_SECRET_PREFIX}BLOCKED_ROUTE`, "sentinel-route");
+    await env.CHAT_STORE.put(`${MCP_SECRET_PREFIX}BLOCKED_MCP`, "sentinel-mcp");
+
+    const attempts: Array<{ path: string; init: RequestInit }> = [
+      {
+        path: "/api/admin/config",
+        init: {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: currentConfig.config, expectedRevision: currentConfig.revision }),
+        },
+      },
+      {
+        path: "/api/admin/route-secrets/BLOCKED_ROUTE",
+        init: {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: "should-not-save" }),
+        },
+      },
+      {
+        path: "/api/admin/route-secrets/BLOCKED_ROUTE",
+        init: { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" },
+      },
+      {
+        path: "/api/admin/mcp-secrets/BLOCKED_MCP",
+        init: {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ secret: "should-not-save" }),
+        },
+      },
+      {
+        path: "/api/admin/mcp-secrets/BLOCKED_MCP",
+        init: { method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}" },
+      },
+      {
+        path: "/api/admin/members",
+        init: {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label: "blocked-member", expectedAccessRevision: currentMembers.accessRevision }),
+        },
+      },
+      {
+        path: "/api/admin/members/blocked-member/access-code",
+        init: {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedAccessRevision: currentMembers.accessRevision }),
+        },
+      },
+      {
+        path: "/api/admin/members/blocked-member/config",
+        init: {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedConfigRevision: currentConfig.revision }),
+        },
+      },
+    ];
+
+    for (const attempt of attempts) {
+      const headers = new Headers(attempt.init.headers);
+      headers.set("Origin", "https://evil.example");
+      const response = await apiRequest(attempt.path, adminCookie, { ...attempt.init, headers });
+      expect(response.status, attempt.path).toBe(403);
+      await expect(response.json(), attempt.path).resolves.toMatchObject({ error: "invalid_origin" });
+    }
+
+    await expect(env.CHAT_STORE.get(ACCESS_CODES_KEY)).resolves.toBeNull();
+
+    const member = await login(`origin-member-${crypto.randomUUID()}`);
+    const memory = await apiRequest("/api/agent/memory", member.cookie).then((response) => response.json()) as any;
+    const memberMutation = await apiRequest("/api/agent/memory", member.cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Origin: "https://evil.example" },
+      body: JSON.stringify({ memory: "should-not-save", expectedRevision: memory.revision }),
+    });
+    expect(memberMutation.status).toBe(403);
+    await expect(memberMutation.json()).resolves.toMatchObject({ error: "invalid_origin" });
+    await expect(apiRequest("/api/agent/memory", member.cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ memory: "", revision: memory.revision });
+
+    await expect(env.CHAT_STORE.get(ROUTES_CONFIG_KEY)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(`${ROUTE_SECRET_PREFIX}BLOCKED_ROUTE`)).resolves.toBe("sentinel-route");
+    await expect(env.CHAT_STORE.get(`${MCP_SECRET_PREFIX}BLOCKED_MCP`)).resolves.toBe("sentinel-mcp");
+    await expect(env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).resolves.toBeNull();
   });
 
   it("restores private TeamAgent identity after Durable Object eviction", async () => {
@@ -642,7 +773,7 @@ describe("Worker API", () => {
     }));
     const { cookie } = await login();
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () =>
-      new Response("data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } }));
+      openAiTextResponse("技能已应用"));
     const response = await apiRequest("/api/chat", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
@@ -658,6 +789,7 @@ describe("Worker API", () => {
     expect(system.indexOf("instruction-2")).toBeLessThan(system.indexOf("instruction-4"));
     expect(system).not.toContain("instruction-1");
     expect(system).not.toContain("instruction-3");
+    await expect(response.text()).resolves.toContain("技能已应用");
   });
 
   it("completes an OpenAI-compatible built-in tool round trip", async () => {
@@ -827,6 +959,287 @@ describe("Worker API", () => {
     ]);
   });
 
+  it("releases an exclusive provider lease when the legacy stream request throws", async () => {
+    const providerId = `network-failure-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Exclusive network provider",
+          type: "openai-chat",
+          baseUrl: "https://network-failure.example/v1",
+          apiKey: "network-key",
+          concurrency: "exclusive",
+        },
+      },
+      routes: {
+        model: {
+          label: "Network model",
+          offerings: [{ providerId, model: "network-model" }],
+        },
+      },
+      defaults: { defaultRoute: "model", allowedRoutes: ["model"] },
+    }));
+    const { cookie } = await login();
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network unavailable"));
+
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId: "model", messages: [{ role: "user", content: "测试网络异常" }] }),
+    });
+
+    expect(response.status).toBe(502);
+    await expect(env.PROVIDER_COORDINATOR.getByName(providerId).inspect()).resolves.toMatchObject({ active: 0 });
+  });
+
+  it("falls back when an HTTP 200 Anthropic stream starts with an error event", async () => {
+    const primaryId = `anthropic-error-${crypto.randomUUID()}`;
+    const backupId = `openai-backup-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [primaryId]: {
+          label: "Anthropic primary",
+          type: "anthropic-messages",
+          baseUrl: "https://anthropic-stream-error.example",
+          apiKey: "anthropic-primary-key",
+          concurrency: "exclusive",
+          priority: 100,
+        },
+        [backupId]: {
+          label: "OpenAI backup",
+          type: "openai-chat",
+          baseUrl: "https://openai-stream-backup.example/v1",
+          apiKey: "openai-backup-key",
+          concurrency: "exclusive",
+          priority: 10,
+        },
+      },
+      routes: {
+        model: {
+          label: "Fallback model",
+          offerings: [
+            { providerId: primaryId, model: "anthropic-primary" },
+            { providerId: backupId, model: "openai-backup" },
+          ],
+        },
+      },
+      defaults: { defaultRoute: "model", allowedRoutes: ["model"] },
+    }));
+    const { cookie } = await login();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("anthropic-stream-error.example")) {
+        return new Response(
+          'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n',
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return openAiTextResponse("备用服务商完成");
+    });
+
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId: "model", messages: [{ role: "user", content: "执行回退测试" }] }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toContain("备用服务商完成");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain("anthropic-stream-error.example");
+    expect(String(fetchSpy.mock.calls[1][0])).toContain("openai-stream-backup.example");
+    await expect(env.CHAT_STORE.get(
+      `${PROVIDER_ROUTE_RELIABILITY_PREFIX}model:${encodeURIComponent(primaryId)}`,
+      "json",
+    )).resolves.toMatchObject({ attempts: 1, successes: 0, lastOutcome: "protocol_error" });
+    await expect(env.CHAT_STORE.get(
+      `${PROVIDER_ROUTE_RELIABILITY_PREFIX}model:${encodeURIComponent(backupId)}`,
+      "json",
+    )).resolves.toMatchObject({ attempts: 1, successes: 1, lastOutcome: "success" });
+    await expect(env.CHAT_STORE.get(`${ROUTE_RELIABILITY_PREFIX}model`, "json")).resolves.toMatchObject({
+      ok: true,
+      outcome: "success",
+      fallback: true,
+    });
+    await expect(env.PROVIDER_COORDINATOR.getByName(primaryId).inspect()).resolves.toMatchObject({ active: 0 });
+    await expect(env.PROVIDER_COORDINATOR.getByName(backupId).inspect()).resolves.toMatchObject({ active: 0 });
+  });
+
+  it("rejects an empty DONE-only stream and records a protocol failure", async () => {
+    const providerId = `empty-stream-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Empty provider",
+          type: "openai-chat",
+          baseUrl: "https://empty-stream.example/v1",
+          apiKey: "empty-stream-key",
+          concurrency: "exclusive",
+        },
+      },
+      routes: {
+        model: { label: "Empty model", offerings: [{ providerId, model: "empty-model" }] },
+      },
+      defaults: { defaultRoute: "model", allowedRoutes: ["model"] },
+    }));
+    const { cookie } = await login();
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () => new Response("data: [DONE]\n\n", {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId: "model", messages: [{ role: "user", content: "测试空流" }] }),
+    });
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({ error: "upstream_error", status: 502 });
+    await expect(env.CHAT_STORE.get(`${ROUTE_RELIABILITY_PREFIX}model`, "json")).resolves.toMatchObject({
+      ok: false,
+      outcome: "protocol_error",
+    });
+    await expect(env.PROVIDER_COORDINATOR.getByName(providerId).inspect()).resolves.toMatchObject({ active: 0 });
+  });
+
+  it("releases a provider lease when visible stream output fails", async () => {
+    let pulls = 0;
+    let released = 0;
+    let upstreamCancelled = false;
+    let completed = 0;
+    const failures: unknown[] = [];
+    const failure = new Error("invalid SSE event");
+    const encoder = new TextEncoder();
+    const response = responseWithProviderLease(
+      new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulls++ === 0) {
+            controller.enqueue(encoder.encode(openAiTextEvent("已输出")));
+            return;
+          }
+          controller.error(failure);
+        },
+      }), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+      {
+        providerId: "test-provider",
+        requestId: "test-request",
+        release: async () => { released += 1; },
+      },
+      {
+        onComplete: async () => { completed += 1; },
+        onError: async (error) => { failures.push(error); },
+      },
+      async () => { upstreamCancelled = true; },
+    );
+
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await expect(reader.read()).rejects.toBe(failure);
+    expect(released).toBe(1);
+    expect(upstreamCancelled).toBe(true);
+    expect(completed).toBe(0);
+    expect(failures).toEqual([failure]);
+  });
+
+  it("releases a provider lease on stream cancellation without recording success or failure", async () => {
+    let released = 0;
+    let upstreamCancelled = false;
+    let completed = 0;
+    let failed = 0;
+    const encoder = new TextEncoder();
+    const response = responseWithProviderLease(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(openAiTextEvent("开始输出")));
+        },
+      }), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+      {
+        providerId: "test-provider",
+        requestId: "test-request",
+        release: async () => { released += 1; },
+      },
+      {
+        onComplete: async () => { completed += 1; },
+        onError: async () => { failed += 1; },
+      },
+      async () => { upstreamCancelled = true; },
+    );
+
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await reader.cancel("test cancellation");
+    expect(released).toBe(1);
+    expect(upstreamCancelled).toBe(true);
+    expect(completed).toBe(0);
+    expect(failed).toBe(0);
+  });
+
+  it("releases an exclusive provider lease after a terminal capability-provider error", async () => {
+    const providerId = `terminal-tools-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Exclusive tools provider",
+          type: "openai-chat",
+          baseUrl: "https://terminal-tools.example/v1",
+          apiKey: "tools-key",
+          concurrency: "exclusive",
+          supportsTools: true,
+        },
+      },
+      routes: {
+        tools: {
+          label: "Tools model",
+          offerings: [{ providerId, model: "tools-model", supportsTools: true }],
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "tools",
+        allowedRoutes: ["tools"],
+        allowedTools: ["builtin:text_stats"],
+      },
+      tools: {
+        "builtin:text_stats": {
+          enabled: true,
+          label: "Text stats",
+          inputSchema: { type: "object", properties: { text: { type: "string" } } },
+          executor: { type: "builtin", name: "text_stats" },
+        },
+      },
+      skills: {
+        analyze: {
+          enabled: true,
+          label: "Analyze",
+          instructions: "Use text statistics.",
+          toolIds: ["builtin:text_stats"],
+        },
+      },
+    }));
+    const { cookie } = await login();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: { message: "invalid request" } }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    ));
+
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "tools",
+        chatId: "terminal-tools-chat",
+        skillIds: ["analyze"],
+        messages: [{ role: "user", content: "测试终止错误" }],
+      }),
+    });
+    const events = await readCapabilityEvents(response);
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", code: "upstream_error" }),
+      { type: "done" },
+    ]));
+    await expect(env.PROVIDER_COORDINATOR.getByName(providerId).inspect()).resolves.toMatchObject({ active: 0 });
+  });
+
   it("reports core binding health without exposing configuration details", async () => {
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "health-user:health-access-code");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -973,9 +1386,19 @@ describe("Worker API", () => {
       }),
     });
     const payload = await response.json();
-    expect(response.status, JSON.stringify(payload)).toBe(200);
+    expect(response.status).toBe(200);
     expect(payload).toMatchObject({ label, config: { users: { [label]: { displayName: "新朋友", dailyMessageLimit: 321 } } } });
     expect(payload.accessCode).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+    expect(payload.configRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(payload.accessRevision).toMatch(/^[0-9a-f]{64}$/);
+    for (const route of Object.values(payload.config.routes) as Array<Record<string, unknown>>) {
+      expect(route).not.toHaveProperty("apiKey");
+      expect(route).not.toHaveProperty("headers");
+    }
+    for (const provider of Object.values(payload.config.providers) as Array<Record<string, unknown>>) {
+      expect(provider).not.toHaveProperty("apiKey");
+      expect(provider).not.toHaveProperty("headers");
+    }
 
     const accessCodes = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
     expect(accessCodes).toContain(`${label}:${payload.accessCode}`);
@@ -1146,6 +1569,316 @@ describe("Worker API", () => {
     const legacyHtml = await legacy.text();
     expect(legacyHtml).toContain('id="loginView"');
     expect(legacyHtml).toContain('/app.js?v=development');
+  });
+
+  it("serves the typed admin shell and a secret-free member projection", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "bill:bill-secret,alice:alice-secret");
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://provider.example/v1",
+          model: "model-a",
+          apiKey: "hidden-server-key",
+        },
+      },
+      users: { bill: { displayName: "Bill", allowedSkills: [] } },
+      defaults: { defaultRoute: "primary", allowedRoutes: ["primary"] },
+    }));
+    const cookie = await adminLogin();
+    const members = await apiRequest("/api/admin/members", cookie);
+    expect(members.status).toBe(200);
+    const memberPayload = await members.json() as { members: Array<Record<string, unknown>>; accessRevision: string; accessSource: string };
+    expect(memberPayload.members).toEqual([
+      { label: "alice", displayName: "alice", configured: false, hasAccessCode: true },
+      { label: "bill", displayName: "Bill", configured: true, hasAccessCode: true },
+    ]);
+    expect(memberPayload.accessRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(memberPayload.accessSource).toBe("kv");
+    expect(JSON.stringify(memberPayload)).not.toContain("bill-secret");
+    expect(JSON.stringify(memberPayload)).not.toContain("alice-secret");
+
+    const typedAdmin = await exports.default.fetch(new Request("https://example.test/react-chat/admin"));
+    expect(typedAdmin.status).toBe(200);
+    expect(await typedAdmin.text()).toContain('id="root"');
+    const typedAdminSlash = await exports.default.fetch(new Request("https://example.test/react-chat/admin/"));
+    expect(typedAdminSlash.status).toBe(200);
+    expect(await typedAdminSlash.text()).toContain('id="root"');
+
+    const fullAdmin = await exports.default.fetch(new Request("https://example.test/admin.html"));
+    expect(fullAdmin.status).toBe(200);
+    expect(await fullAdmin.text()).toContain('href="/react-chat/admin"');
+  });
+
+  it("creates, rotates, and revokes member access through revisioned secret-safe endpoints", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "owner:owner-code");
+    const adminCookie = await adminLogin();
+    const label = `lifecycle-${crypto.randomUUID()}`;
+    const initial = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+
+    const missingRevision = await apiRequest("/api/admin/members", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+    expect(missingRevision.status).toBe(400);
+    await expect(missingRevision.json()).resolves.toMatchObject({ error: "expected_access_revision_required" });
+    await expect(env.CHAT_STORE.get(ACCESS_CODES_KEY)).resolves.toBe("owner:owner-code");
+
+    const created = await apiRequest("/api/admin/members", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, expectedAccessRevision: initial.accessRevision }),
+    });
+    expect(created.status).toBe(200);
+    const createdPayload = await created.json() as any;
+    expect(Object.keys(createdPayload).sort()).toEqual([
+      "accessCode",
+      "accessRevision",
+      "member",
+      "sessionRevocation",
+    ]);
+    expect(createdPayload.member).toEqual({ label, displayName: label, configured: false, hasAccessCode: true });
+    expect(createdPayload.accessCode).toMatch(/^[0-9a-f]{64}$/);
+    expect(createdPayload.sessionRevocation).toEqual({ revoked: 0, complete: true });
+    expect(JSON.stringify(createdPayload).split(createdPayload.accessCode)).toHaveLength(2);
+
+    const listedAfterCreate = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    expect(Object.keys(listedAfterCreate).sort()).toEqual(["accessRevision", "accessSource", "members"]);
+    expect(listedAfterCreate.members).toContainEqual(createdPayload.member);
+    expect(JSON.stringify(listedAfterCreate)).not.toContain(createdPayload.accessCode);
+    expect(JSON.stringify(listedAfterCreate)).not.toContain("owner-code");
+
+    const firstSession = await loginWithCode(createdPayload.accessCode);
+    const secondSession = await loginWithCode(createdPayload.accessCode);
+    expect(firstSession).toMatch(/^chatus_session=/);
+    expect(secondSession).toMatch(/^chatus_session=/);
+
+    const beforeConcurrentUpdate = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, `${beforeConcurrentUpdate},other:other-code`);
+    const staleRotate = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/access-code`, adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedAccessRevision: createdPayload.accessRevision }),
+    });
+    expect(staleRotate.status).toBe(409);
+    await expect(staleRotate.json()).resolves.toMatchObject({ error: "access_codes_conflict" });
+    expect((await apiRequest("/api/session", firstSession!)).status).toBe(200);
+
+    const current = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    const rotated = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/access-code`, adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedAccessRevision: current.accessRevision }),
+    });
+    expect(rotated.status).toBe(200);
+    const rotatedPayload = await rotated.json() as any;
+    expect(Object.keys(rotatedPayload).sort()).toEqual([
+      "accessCode",
+      "accessRevision",
+      "member",
+      "sessionRevocation",
+    ]);
+    expect(rotatedPayload.accessCode).toMatch(/^[0-9a-f]{64}$/);
+    expect(rotatedPayload.accessCode).not.toBe(createdPayload.accessCode);
+    expect(rotatedPayload.sessionRevocation).toEqual({ revoked: 2, complete: true });
+    expect((await apiRequest("/api/session", firstSession!)).status).toBe(401);
+    expect((await apiRequest("/api/session", secondSession!)).status).toBe(401);
+    expect(await loginWithCode(createdPayload.accessCode)).toBeNull();
+
+    const rotatedSession = await loginWithCode(rotatedPayload.accessCode);
+    expect(rotatedSession).toMatch(/^chatus_session=/);
+    const revoked = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/access-code`, adminCookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedAccessRevision: rotatedPayload.accessRevision }),
+    });
+    expect(revoked.status).toBe(200);
+    const revokedPayload = await revoked.json() as any;
+    expect(Object.keys(revokedPayload).sort()).toEqual(["accessRevision", "member", "sessionRevocation"]);
+    expect(revokedPayload.member).toBeNull();
+    expect(revokedPayload.sessionRevocation).toEqual({ revoked: 1, complete: true });
+    expect(revokedPayload).not.toHaveProperty("accessCode");
+    expect((await apiRequest("/api/session", rotatedSession!)).status).toBe(401);
+    expect(await loginWithCode(rotatedPayload.accessCode)).toBeNull();
+
+    const stored = await env.CHAT_STORE.get(ACCESS_CODES_KEY);
+    expect(stored).toBe("owner:owner-code,other:other-code");
+    const listedAfterRevoke = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    expect(listedAfterRevoke.members.some((member: any) => member.label === label)).toBe(false);
+    expect(JSON.stringify(listedAfterRevoke)).not.toContain(createdPayload.accessCode);
+    expect(JSON.stringify(listedAfterRevoke)).not.toContain(rotatedPayload.accessCode);
+
+    const audit = JSON.parse((await env.CHAT_STORE.get(ADMIN_AUDIT_KEY)) || "[]");
+    expect(audit.map((entry: any) => entry.action)).toEqual(expect.arrayContaining([
+      "member.access.create",
+      "member.access.rotate",
+      "member.access.revoke",
+    ]));
+    expect(JSON.stringify(audit)).not.toContain(createdPayload.accessCode);
+    expect(JSON.stringify(audit)).not.toContain(rotatedPayload.accessCode);
+  });
+
+  it("refuses to revoke the last access code instead of falling back to the deployment secret", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "only:only-code");
+    const memberCookie = await loginWithCode("only-code");
+    const adminCookie = await adminLogin();
+    const initial = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+
+    const revoked = await apiRequest("/api/admin/members/only/access-code", adminCookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedAccessRevision: initial.accessRevision }),
+    });
+    expect(revoked.status).toBe(409);
+    await expect(revoked.json()).resolves.toMatchObject({ error: "last_access_code" });
+    await expect(env.CHAT_STORE.get(ACCESS_CODES_KEY)).resolves.toBe("only:only-code");
+    expect((await apiRequest("/api/session", memberCookie!)).status).toBe(200);
+  });
+
+  it("keeps configured member assignments when access is issued and later revoked", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "owner:owner-code");
+    const adminCookie = await adminLogin();
+    const label = `configured-${crypto.randomUUID()}`;
+    const configSnapshot = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const configSave = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          ...configSnapshot.config,
+          users: { ...configSnapshot.config.users, [label]: { displayName: "Configured member" } },
+        },
+        expectedRevision: configSnapshot.revision,
+      }),
+    });
+    expect(configSave.status).toBe(200);
+
+    const initial = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    expect(initial.members).toContainEqual({
+      label,
+      displayName: "Configured member",
+      configured: true,
+      hasAccessCode: false,
+    });
+    const created = await apiRequest("/api/admin/members", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, expectedAccessRevision: initial.accessRevision }),
+    }).then((response) => response.json()) as any;
+    expect(created.member).toEqual({
+      label,
+      displayName: "Configured member",
+      configured: true,
+      hasAccessCode: true,
+    });
+
+    const revoked = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/access-code`, adminCookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedAccessRevision: created.accessRevision }),
+    }).then((response) => response.json()) as any;
+    expect(revoked.member).toEqual({
+      label,
+      displayName: "Configured member",
+      configured: true,
+      hasAccessCode: false,
+    });
+    const storedConfig = JSON.parse((await env.CHAT_STORE.get(ROUTES_CONFIG_KEY)) || "{}");
+    expect(storedConfig.users[label]).toEqual({ displayName: "Configured member" });
+  });
+
+  it("removes only custom member configuration through a required current revision", async () => {
+    const label = `reset-config-${crypto.randomUUID()}`;
+    const providerSecret = `provider-secret-${crypto.randomUUID()}`;
+    const memory = `member-memory-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, `owner:owner-code,${label}:member-code`);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://member-config.example/v1",
+          model: "member-config-model",
+          apiKey: providerSecret,
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      users: {
+        [label]: { displayName: "Configured member", allowedRoutes: ["default"], allowedSkills: [] },
+        [`${label} `]: { displayName: "Duplicate configured member" },
+        retained: { displayName: "Retained member" },
+      },
+    }));
+    await env.CHAT_STORE.put(`memory:${encodeURIComponent(label)}`, memory);
+    const memberCookie = await loginWithCode("member-code");
+    expect(memberCookie).toBeTruthy();
+    const adminCookie = await adminLogin();
+    const initial = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+
+    const missingRevision = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/config`, adminCookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(missingRevision.status).toBe(400);
+    await expect(missingRevision.json()).resolves.toMatchObject({ error: "expected_config_revision_required" });
+
+    const concurrentConfig = JSON.parse((await env.CHAT_STORE.get(ROUTES_CONFIG_KEY)) || "{}");
+    concurrentConfig.users.concurrent = { displayName: "Concurrent member" };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(concurrentConfig));
+    const stale = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/config`, adminCookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedConfigRevision: initial.revision }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "config_conflict" });
+    await expect(env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json")).resolves.toMatchObject({
+      users: {
+        [label]: { displayName: "Configured member" },
+        [`${label} `]: { displayName: "Duplicate configured member" },
+        concurrent: { displayName: "Concurrent member" },
+      },
+    });
+
+    const current = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const removed = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/config`, adminCookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedConfigRevision: current.revision }),
+    });
+    expect(removed.status).toBe(200);
+    const removedPayload = await removed.json() as any;
+    expect(Object.keys(removedPayload).sort()).toEqual(["config", "member", "revision", "source"]);
+    expect(removedPayload.member).toEqual({
+      label,
+      displayName: label,
+      configured: false,
+      hasAccessCode: true,
+    });
+    expect(removedPayload.source).toBe("kv");
+    expect(removedPayload.config.users[label]).toBeUndefined();
+    expect(removedPayload.config.users[`${label} `]).toBeUndefined();
+    expect(removedPayload.config.users.retained).toEqual({ displayName: "Retained member" });
+    expect(removedPayload.config.users.concurrent).toEqual({ displayName: "Concurrent member" });
+    expect(removedPayload.config.routes.default).toMatchObject({ hasLegacyKey: true });
+    expect(JSON.stringify(removedPayload)).not.toContain(providerSecret);
+
+    const stored = await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json");
+    expect(stored.users[label]).toBeUndefined();
+    expect(stored.users[`${label} `]).toBeUndefined();
+    expect(stored.routes.default.apiKey).toBe(providerSecret);
+    await expect(env.CHAT_STORE.get(ACCESS_CODES_KEY)).resolves.toBe(`owner:owner-code,${label}:member-code`);
+    expect((await apiRequest("/api/session", memberCookie!)).status).toBe(200);
+    await expect(env.CHAT_STORE.get(`memory:${encodeURIComponent(label)}`)).resolves.toBe(memory);
+
+    const audit = await apiRequest("/api/admin/audit", adminCookie).then((response) => response.text());
+    expect(audit).toContain("member.config.remove");
+    expect(audit).toContain(label);
+    expect(audit).not.toContain(providerSecret);
+    expect(audit).not.toContain("member-code");
   });
 
   it("caches only fingerprinted JavaScript and CSS assets as immutable", async () => {
@@ -1383,6 +2116,140 @@ describe("Worker API", () => {
     expect(oldDeviceMerge.chats[0]).toMatchObject({ id: "delete-me", title: "从备份恢复" });
   });
 
+  it("exports bounded user conversations and memory without message metadata or file URLs", async () => {
+    const { cookie, label } = await login();
+    await apiRequest("/api/agent/memory", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: "偏好简洁回答", expectedRevision: "" }),
+    });
+    const created = await apiRequest("/api/agent/conversations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "可导出会话" }),
+    });
+    expect(created.status).toBe(201);
+    const conversation = (await created.json() as any).conversation;
+    const agent = await getConversationAgent(label, conversation.id);
+    await agent.importLegacyMessages([
+      {
+        id: "message-1",
+        role: "user",
+        metadata: { internal: "omit" },
+        parts: [{ type: "text", text: "导出文本" }],
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        parts: [{ type: "file", mediaType: "image/png", url: "data:image/png;base64,omit", filename: "image.png" }],
+      },
+    ] as any);
+
+    const response = await apiRequest("/api/user-data/export", cookie);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    expect(response.headers.get("Content-Disposition")).toContain("chatus-user-data.json");
+    const payload = await response.json() as any;
+    expect(payload).toMatchObject({
+      schema: "chatus-user-data",
+      version: 1,
+      account: { label },
+      memory: { text: "偏好简洁回答" },
+      conversations: [{
+        id: conversation.id,
+        messagesTruncated: false,
+        messages: [
+          { id: "message-1", role: "user", parts: [{ type: "text", text: "导出文本" }] },
+          { id: "message-2", role: "assistant", parts: [{ type: "file", mediaType: "image/png", name: "image.png" }] },
+        ],
+      }],
+      truncated: false,
+    });
+    expect(JSON.stringify(payload)).not.toContain("internal");
+    expect(JSON.stringify(payload)).not.toContain("data:image");
+    expect(JSON.stringify(payload)).not.toContain("omit");
+  });
+
+  it("keeps user exports isolated and requires an authenticated session", async () => {
+    const unauthorized = await exports.default.fetch(new Request("https://example.test/api/user-data/export"));
+    expect(unauthorized.status).toBe(401);
+
+    const first = await login(`export-first-${crypto.randomUUID()}`);
+    const firstRoot = await getRootAgent(first.label);
+    const firstConversationId = crypto.randomUUID();
+    await firstRoot.createConversation({
+      id: firstConversationId,
+      title: "First export",
+      createdAt: 10,
+      updatedAt: 10,
+      summary: "",
+      pinned: false,
+      skillIds: [],
+    });
+    await (await getConversationAgent(first.label, firstConversationId)).importLegacyMessages([{
+      id: "first-message",
+      role: "user",
+      parts: [{ type: "text", text: "first-user-export-marker" }],
+    }] as UIMessage[]);
+
+    const second = await login(`export-second-${crypto.randomUUID()}`);
+    const secondRoot = await getRootAgent(second.label);
+    const secondConversationId = crypto.randomUUID();
+    await secondRoot.createConversation({
+      id: secondConversationId,
+      title: "Second export",
+      createdAt: 20,
+      updatedAt: 20,
+      summary: "",
+      pinned: false,
+      skillIds: [],
+    });
+    await (await getConversationAgent(second.label, secondConversationId)).importLegacyMessages([{
+      id: "second-message",
+      role: "user",
+      parts: [{ type: "text", text: "second-user-export-marker" }],
+    }] as UIMessage[]);
+
+    const response = await apiRequest("/api/user-data/export", first.cookie);
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(body).toContain("first-user-export-marker");
+    expect(body).not.toContain("second-user-export-marker");
+    expect(body).not.toContain(second.label);
+  });
+
+  it("bounds large user exports and marks omitted earlier messages", async () => {
+    const { cookie, label } = await login();
+    const root = await getRootAgent(label);
+    const conversationId = crypto.randomUUID();
+    await root.createConversation({
+      id: conversationId,
+      title: "Bounded export",
+      createdAt: 10,
+      updatedAt: 10,
+      summary: "",
+      pinned: false,
+      skillIds: [],
+    });
+    const agent = await getConversationAgent(label, conversationId);
+    await agent.importLegacyMessages(Array.from({ length: 40 }, (_, index) => ({
+      id: `large-message-${index}`,
+      role: "user",
+      parts: [{ type: "text", text: `${index}:`.padEnd(20_000, "x") }],
+    })) as UIMessage[]);
+
+    const response = await apiRequest("/api/user-data/export", cookie);
+    const body = await response.text();
+    const payload = JSON.parse(body) as any;
+    expect(response.status).toBe(200);
+    expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(5_000_000);
+    expect(payload.truncated).toBe(true);
+    expect(payload.conversations[0].messagesTruncated).toBe(true);
+    expect(payload.conversations[0].messages.length).toBeLessThan(40);
+    expect(payload.conversations[0].messages.at(-1).id).toBe("large-message-39");
+    expect(body).not.toContain("large-message-0");
+  });
+
   it("rejects auxiliary model calls without the web client marker", async () => {
     const { cookie } = await login();
     const response = await apiRequest("/api/session-summary", cookie, {
@@ -1455,6 +2322,173 @@ describe("Worker API", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ secret: "test-private-value" }),
     }))).status).toBe(401);
+  });
+
+  it("rejects malformed managed-secret inputs without mutating storage", async () => {
+    const cookie = await adminLogin();
+    const cases = [
+      {
+        path: "/api/admin/route-secrets/not-valid",
+        body: { apiKey: "value" },
+        error: "invalid_api_key_ref",
+      },
+      {
+        path: "/api/admin/route-secrets/BOUNDARY_ROUTE",
+        body: { apiKey: "" },
+        error: "api_key_required",
+      },
+      {
+        path: "/api/admin/route-secrets/BOUNDARY_ROUTE",
+        body: { apiKey: "x".repeat(8_193) },
+        error: "api_key_too_long",
+      },
+      {
+        path: "/api/admin/mcp-secrets/not-valid",
+        body: { secret: "value" },
+        error: "invalid_secret_ref",
+      },
+      {
+        path: "/api/admin/mcp-secrets/BOUNDARY_MCP",
+        body: { secret: "" },
+        error: "secret_required",
+      },
+      {
+        path: "/api/admin/mcp-secrets/BOUNDARY_MCP",
+        body: { secret: "x".repeat(8_193) },
+        error: "secret_too_long",
+      },
+    ];
+
+    for (const entry of cases) {
+      const response = await apiRequest(entry.path, cookie, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(entry.body),
+      });
+      expect(response.status, entry.error).toBe(400);
+      await expect(response.json(), entry.error).resolves.toMatchObject({ error: entry.error });
+    }
+
+    const malformed = await apiRequest("/api/admin/route-secrets/BOUNDARY_ROUTE", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({ error: "api_key_required" });
+    await expect(env.CHAT_STORE.get(`${ROUTE_SECRET_PREFIX}BOUNDARY_ROUTE`)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(`${MCP_SECRET_PREFIX}BOUNDARY_MCP`)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).resolves.toBeNull();
+  });
+
+  it("sanitizes admin config credentials while preserving explicit legacy shadows", async () => {
+    const adminCookie = await adminLogin();
+    const providerKey = `provider-secret-${crypto.randomUUID()}`;
+    const legacyKey = `legacy-secret-${crypto.randomUUID()}`;
+    const providerHeader = `provider-header-${crypto.randomUUID()}`;
+    const legacyHeader = `legacy-header-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        shared: {
+          label: "Shared",
+          type: "openai-chat",
+          baseUrl: "https://shared-config.example/v1",
+          apiKey: providerKey,
+          apiKeyRef: "SHARED_CONFIG_KEY",
+          headers: { "X-Provider-Token": providerHeader },
+        },
+      },
+      routes: {
+        pooled: {
+          label: "Pooled",
+          offerings: [{ providerId: "shared", model: "pooled-model" }],
+        },
+        legacy: {
+          label: "Legacy",
+          type: "openai-chat",
+          baseUrl: "https://legacy-config.example/v1",
+          model: "legacy-model",
+          apiKey: legacyKey,
+          apiKeyRef: "LEGACY_CONFIG_KEY",
+          headers: { "X-Legacy-Token": legacyHeader },
+        },
+      },
+      defaults: { defaultRoute: "pooled", allowedRoutes: ["pooled", "legacy"] },
+    }));
+
+    const initial = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const initialText = JSON.stringify(initial);
+    expect(initialText).not.toContain(providerKey);
+    expect(initialText).not.toContain(legacyKey);
+    expect(initialText).not.toContain(providerHeader);
+    expect(initialText).not.toContain(legacyHeader);
+    expect(initial.config.providers.shared).toMatchObject({ hasLegacyKey: true, hasCustomHeaders: true, apiKeyRef: "SHARED_CONFIG_KEY" });
+    expect(initial.config.providers.shared).not.toHaveProperty("apiKey");
+    expect(initial.config.providers.shared).not.toHaveProperty("headers");
+    expect(initial.config.routes.legacy).toMatchObject({ hasLegacyKey: true, hasCustomHeaders: true, apiKeyRef: "LEGACY_CONFIG_KEY" });
+    expect(initial.config.routes.legacy).not.toHaveProperty("apiKey");
+    expect(initial.config.routes.legacy).not.toHaveProperty("headers");
+
+    const saved = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: initial.config, expectedRevision: initial.revision }),
+    });
+    const savedText = await saved.text();
+    expect(saved.status).toBe(200);
+    expect(savedText).not.toContain(providerKey);
+    expect(savedText).not.toContain(legacyKey);
+    expect(savedText).not.toContain(providerHeader);
+    expect(savedText).not.toContain(legacyHeader);
+    const savedPayload = JSON.parse(savedText);
+    const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json") as any;
+    expect(stored.providers.shared.apiKey).toBe(providerKey);
+    expect(stored.providers.shared.headers).toEqual({ "X-Provider-Token": providerHeader });
+    expect(stored.routes.legacy.apiKey).toBe(legacyKey);
+    expect(stored.routes.legacy.headers).toEqual({ "X-Legacy-Token": legacyHeader });
+
+    const withoutProviderShadow = structuredClone(savedPayload.config);
+    delete withoutProviderShadow.providers.shared.hasLegacyKey;
+    delete withoutProviderShadow.providers.shared.hasCustomHeaders;
+    const replaced = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: withoutProviderShadow, expectedRevision: savedPayload.revision }),
+    });
+    expect(replaced.status).toBe(200);
+    const replacedPayload = await replaced.json() as any;
+    const afterReplacement = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json") as any;
+    expect(afterReplacement.providers.shared.apiKey).toBeUndefined();
+    expect(afterReplacement.providers.shared.headers).toBeUndefined();
+    expect(afterReplacement.routes.legacy.apiKey).toBe(legacyKey);
+    expect(afterReplacement.routes.legacy.headers).toEqual({ "X-Legacy-Token": legacyHeader });
+
+    const migrationConfig = structuredClone(replacedPayload.config);
+    const legacyRoute = migrationConfig.routes.legacy;
+    migrationConfig.providers["legacy-provider"] = {
+      enabled: true,
+      label: legacyRoute.label,
+      type: legacyRoute.type,
+      baseUrl: legacyRoute.baseUrl,
+      apiKeyRef: legacyRoute.apiKeyRef,
+      concurrency: "unlimited",
+      headerSourceRouteId: "legacy",
+    };
+    for (const field of ["type", "baseUrl", "model", "apiKeyRef", "hasLegacyKey", "authHeader", "authPrefix", "directEndpoint", "headers"]) {
+      delete legacyRoute[field];
+    }
+    legacyRoute.offerings = [{ providerId: "legacy-provider", model: "legacy-model" }];
+    const migrated = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: migrationConfig, expectedRevision: replacedPayload.revision }),
+    });
+    const migratedText = await migrated.text();
+    expect(migrated.status, migratedText).toBe(200);
+    expect(migratedText).not.toContain(legacyHeader);
+    const afterMigration = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json") as any;
+    expect(afterMigration.providers["legacy-provider"].headers).toEqual({ "X-Legacy-Token": legacyHeader });
+    expect(afterMigration.routes.legacy.headers).toBeUndefined();
   });
 
   it("encrypts, rotates and deletes managed route keys without exposing plaintext", async () => {
@@ -1925,15 +2959,25 @@ describe("Worker API", () => {
     expect((await putRouteSecret(cookie, sourceRef, "source-managed-test-value")).status).toBe(200);
     const raw = await env.CHAT_STORE.get(`${ROUTE_SECRET_PREFIX}${sourceRef}`);
     await env.CHAT_STORE.put(`${ROUTE_SECRET_PREFIX}${targetRef}`, raw!);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        moved: {
+          label: "Moved secret provider",
+          type: "openai-chat",
+          baseUrl: "https://moved.example/v1",
+          apiKeyRef: targetRef,
+        },
+      },
+      routes: {
+        moved: { label: "Moved model", offerings: [{ providerId: "moved", model: "moved-model" }] },
+      },
+      defaults: { defaultRoute: "moved", allowedRoutes: ["moved"] },
+    }));
 
     const response = await apiRequest("/api/admin/route-models", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "openai-chat",
-        baseUrl: "https://moved.example/v1",
-        apiKeyRef: targetRef,
-      }),
+      body: JSON.stringify({ providerId: "moved" }),
     });
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({ error: "decrypt_failed" });
@@ -1948,6 +2992,27 @@ describe("Worker API", () => {
     const cookie = await adminLogin();
     const apiKeyRef = "MASTER_MISMATCH_TEST_KEY";
     expect((await putRouteSecret(cookie, apiKeyRef, "master-mismatch-test-value")).status).toBe(200);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        mismatch: {
+          label: "Mismatched master provider",
+          type: "openai-chat",
+          baseUrl: "https://master-mismatch.example/v1",
+          apiKeyRef,
+        },
+        worker: {
+          label: "Worker fallback provider",
+          type: "openai-chat",
+          baseUrl: "https://worker-fallback.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        mismatch: { label: "Mismatch", offerings: [{ providerId: "mismatch", model: "mismatch-model" }] },
+        worker: { label: "Worker", offerings: [{ providerId: "worker", model: "worker-model" }] },
+      },
+      defaults: { defaultRoute: "mismatch", allowedRoutes: ["mismatch", "worker"] },
+    }));
     const withMasterKey = (masterKey: string | undefined) => new Proxy(env, {
       get(target, property, receiver) {
         if (property === "ROUTE_KEYS_MASTER_KEY") return masterKey;
@@ -1967,11 +3032,7 @@ describe("Worker API", () => {
       withMasterKey(changedMaster),
       {
         method: "POST",
-        body: JSON.stringify({
-          type: "openai-chat",
-          baseUrl: "https://master-mismatch.example/v1",
-          apiKeyRef,
-        }),
+        body: JSON.stringify({ providerId: "mismatch" }),
       },
     );
     expect(unreadable.status).toBe(503);
@@ -1994,11 +3055,7 @@ describe("Worker API", () => {
       missingMaster,
       {
         method: "POST",
-        body: JSON.stringify({
-          type: "openai-chat",
-          baseUrl: "https://worker-fallback.example/v1",
-          apiKeyRef: "TEST_ROUTE_KEY",
-        }),
+        body: JSON.stringify({ providerId: "worker" }),
       },
     );
     expect(fallback.status).toBe(200);
@@ -2010,6 +3067,14 @@ describe("Worker API", () => {
     const managedValue = "managed-model-list-test-key";
     expect((await putRouteSecret(cookie, "TEST_ROUTE_KEY", managedValue)).status).toBe(200);
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        managed: {
+          label: "Managed provider",
+          type: "openai-chat",
+          baseUrl: "https://managed-models.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
       routes: {
         legacy: {
           label: "Legacy",
@@ -2032,11 +3097,7 @@ describe("Worker API", () => {
     const managed = await apiRequest("/api/admin/route-models", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: "openai-chat",
-        baseUrl: "https://managed-models.example/v1",
-        apiKeyRef: "TEST_ROUTE_KEY",
-      }),
+      body: JSON.stringify({ providerId: "managed" }),
     });
     expect(managed.status).toBe(200);
     expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe(`Bearer ${managedValue}`);
@@ -2044,12 +3105,7 @@ describe("Worker API", () => {
     const legacy = await apiRequest("/api/admin/route-models", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        routeId: "legacy",
-        type: "openai-chat",
-        baseUrl: "https://legacy-models.example/v1",
-        apiKeyRef: "TEST_ROUTE_KEY",
-      }),
+      body: JSON.stringify({ routeId: "legacy" }),
     });
     expect(legacy.status).toBe(200);
     expect(new Headers(fetchSpy.mock.calls[1]?.[1]?.headers).get("Authorization")).toBe("Bearer legacy-model-list-test-key");
@@ -2057,6 +3113,20 @@ describe("Worker API", () => {
 
   it("fetches and normalizes models through the admin API", async () => {
     const cookie = await adminLogin();
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        models: {
+          label: "Models provider",
+          type: "openai-chat",
+          baseUrl: "https://models.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        models: { label: "Models", offerings: [{ providerId: "models", model: "model-a" }] },
+      },
+      defaults: { defaultRoute: "models", allowedRoutes: ["models"] },
+    }));
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       new Response(JSON.stringify({ data: [{ id: "model-b" }, { id: "model-a" }, { id: "model-a" }] }), {
         status: 200,
@@ -2068,11 +3138,7 @@ describe("Worker API", () => {
       const response = await apiRequest("/api/admin/route-models", cookie, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "openai-chat",
-          baseUrl: "https://models.example/v1",
-          apiKeyRef: "TEST_ROUTE_KEY",
-        }),
+        body: JSON.stringify({ providerId: "models" }),
       });
       const payload = await response.json();
       expect(response.status, JSON.stringify(payload)).toBe(200);
@@ -2084,6 +3150,32 @@ describe("Worker API", () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it("requires model discovery to use a saved provider or route", async () => {
+    const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const injected = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "openai-chat",
+        baseUrl: "https://unsaved.example/v1",
+        apiKeyRef: "TEST_ROUTE_KEY",
+      }),
+    });
+    expect(injected.status).toBe(400);
+    await expect(injected.json()).resolves.toMatchObject({ error: "provider_required" });
+
+    const missing = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "missing-provider" }),
+    });
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toMatchObject({ error: "provider_not_found" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("uses managed route keys for passive readiness and real chat requests", async () => {
@@ -2103,12 +3195,7 @@ describe("Worker API", () => {
       },
       defaults: { defaultRoute: "managed", allowedRoutes: ["managed"] },
     }));
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      new Response('data: {"choices":[{"delta":{"content":"完成"}}]}\n\n', {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      }),
-    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => openAiTextResponse("完成"));
 
     const health = await apiRequest("/api/admin/route-health", adminCookie, {
       method: "POST",
@@ -2137,6 +3224,7 @@ describe("Worker API", () => {
       body: JSON.stringify({ routeId: "managed", messages: [{ role: "user", content: "完成一个简短任务" }] }),
     });
     expect(chat.status).toBe(200);
+    await expect(chat.text()).resolves.toContain("完成");
     expect(fetchSpy).toHaveBeenCalledOnce();
     for (const [, init] of fetchSpy.mock.calls) {
       expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${managedKey}`);
@@ -2171,13 +3259,16 @@ describe("Worker API", () => {
         allowedRoutes: ["byok"],
         allowBringYourOwnKey: true,
       },
-      users: { [label]: { allowBringYourOwnKey: true } },
+      users: { [label]: { allowBringYourOwnKey: true, systemPrompt: "Keep test responses concise." } },
     }));
     const { cookie } = await login(label);
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("data: done\n\n", {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => openAiTextResponse("BYOK 完成"));
+
+    const session = await apiRequest("/api/session", cookie);
+    await expect(session.json()).resolves.toMatchObject({
+      allowBringYourOwnKey: true,
+      hasUserSystemPrompt: true,
+    });
 
     const missing = await apiRequest("/api/chat", cookie, {
       method: "POST",
@@ -2198,6 +3289,7 @@ describe("Worker API", () => {
       }),
     });
     expect(supplied.status).toBe(200);
+    await expect(supplied.text()).resolves.toContain("BYOK 完成");
     expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get("Authorization")).toBe("Bearer user-supplied-test-key");
   });
 
@@ -2283,6 +3375,121 @@ describe("Worker API", () => {
     await expect(missingSkill.json()).resolves.toMatchObject({
       message: "用户 friend 允许了不存在的 Skill missing",
     });
+  });
+
+  it("rejects invalid provider-pool fields before normalization can discard them", async () => {
+    const cookie = await adminLogin();
+    const baseConfig = {
+      providers: {
+        shared: {
+          label: "Shared provider",
+          type: "openai-chat",
+          baseUrl: "https://shared-provider.example/v1",
+          apiKeyRef: "SHARED_PROVIDER_KEY",
+          concurrency: "exclusive",
+          queueTimeoutMs: 10_000,
+        },
+      },
+      routes: {
+        model: {
+          label: "Logical model",
+          offerings: [{ providerId: "shared", model: "upstream-model" }],
+        },
+      },
+      defaults: { defaultRoute: "model", allowedRoutes: ["model"] },
+    };
+
+    const invalidProviderId = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          ...baseConfig,
+          providers: { ["__proto__"]: baseConfig.providers.shared },
+        },
+      }),
+    });
+    expect(invalidProviderId.status).toBe(400);
+    await expect(invalidProviderId.json()).resolves.toMatchObject({
+      error: "invalid_config",
+      message: expect.stringContaining("服务提供商 __proto__ 的 ID 无效"),
+    });
+
+    const inheritedProvider = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          ...baseConfig,
+          routes: {
+            model: {
+              ...baseConfig.routes.model,
+              offerings: [{ providerId: "constructor", model: "upstream-model" }],
+            },
+          },
+        },
+      }),
+    });
+    expect(inheritedProvider.status).toBe(400);
+    await expect(inheritedProvider.json()).resolves.toMatchObject({
+      error: "invalid_config",
+      message: "逻辑模型 model 引用了不存在的服务提供商 constructor",
+    });
+
+    const missingProvider = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          ...baseConfig,
+          routes: {
+            model: {
+              ...baseConfig.routes.model,
+              offerings: [
+                ...baseConfig.routes.model.offerings,
+                { providerId: "missing", model: "other-model" },
+              ],
+            },
+          },
+        },
+      }),
+    });
+    expect(missingProvider.status).toBe(400);
+    await expect(missingProvider.json()).resolves.toMatchObject({
+      error: "invalid_config",
+      message: "逻辑模型 model 引用了不存在的服务提供商 missing",
+    });
+
+    const excessiveWait = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        config: {
+          ...baseConfig,
+          providers: {
+            shared: { ...baseConfig.providers.shared, queueTimeoutMs: 10_001 },
+          },
+        },
+      }),
+    });
+    expect(excessiveWait.status).toBe(400);
+    await expect(excessiveWait.json()).resolves.toMatchObject({
+      error: "invalid_config",
+      message: "服务提供商 shared 的等待时间必须是 0 到 10000 毫秒",
+    });
+
+    const arrayProviders = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: { ...baseConfig, providers: [] } }),
+    });
+    expect(arrayProviders.status).toBe(400);
+    await expect(arrayProviders.json()).resolves.toMatchObject({
+      error: "invalid_config",
+      message: "服务提供商配置必须是对象",
+    });
+
+    expect(await env.CHAT_STORE.get(ROUTES_CONFIG_KEY)).toBeNull();
   });
 
   it("rejects stale admin configuration updates", async () => {
@@ -2384,12 +3591,7 @@ describe("Worker API", () => {
       },
       defaults: { defaultRoute: "health", allowedRoutes: ["health"] },
     }));
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      new Response('data: {"choices":[{"delta":{"content":"真实任务完成"}}]}\n\n', {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      }),
-    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => openAiTextResponse("真实任务完成"));
     const initial = await apiRequest("/api/admin/route-health", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2406,6 +3608,7 @@ describe("Worker API", () => {
       body: JSON.stringify({ routeId: "health", messages: [{ role: "user", content: "整理三条发布检查事项" }] }),
     });
     expect(chat.status).toBe(200);
+    await expect(chat.text()).resolves.toContain("真实任务完成");
     expect(fetchSpy).toHaveBeenCalledOnce();
 
     const status = await apiRequest("/api/admin/route-health", cookie);
@@ -2437,7 +3640,7 @@ describe("Worker API", () => {
       body: JSON.stringify({ label }),
     });
     expect(revoke.status).toBe(200);
-    await expect(revoke.json()).resolves.toMatchObject({ ok: true, label, revoked: 2 });
+    await expect(revoke.json()).resolves.toMatchObject({ ok: true, label, revoked: 2, complete: true });
     expect((await apiRequest("/api/session", first.cookie)).status).toBe(401);
     expect((await apiRequest("/api/session", second.cookie)).status).toBe(401);
     const audit = await apiRequest("/api/admin/audit", adminCookie);

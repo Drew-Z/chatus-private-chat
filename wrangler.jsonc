@@ -25,6 +25,10 @@
       {
         "name": "TEAM_AGENT",
         "class_name": "TeamAgent"
+      },
+      {
+        "name": "PROVIDER_COORDINATOR",
+        "class_name": "ProviderCoordinator"
       }
     ]
   },
@@ -36,6 +40,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["TeamAgent"]
+    },
+    {
+      "tag": "v3",
+      "new_classes": ["ProviderCoordinator"]
     }
   ],
   "vars": {

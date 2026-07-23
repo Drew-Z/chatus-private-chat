@@ -57,6 +57,103 @@ function validateRouteReferences(value, routeIds, context) {
   }
 }
 
+function validateProviderRegistry(value) {
+  if (value === undefined) return new Map();
+  if (!isRecord(value)) {
+    throw new Error("ROUTES_CONFIG.providers must be a JSON object");
+  }
+  const providers = new Map();
+  for (const [providerId, provider] of Object.entries(value)) {
+    if (!providerId || !isRecord(provider)) {
+      throw new Error("ROUTES_CONFIG contains an invalid provider entry");
+    }
+    if (provider.type !== "openai-chat" && provider.type !== "anthropic-messages") {
+      throw new Error(`ROUTES_CONFIG provider ${providerId} has an unsupported type`);
+    }
+    if (!hasText(provider.baseUrl) || !isHttpUrl(provider.baseUrl)) {
+      throw new Error(`ROUTES_CONFIG provider ${providerId} requires a valid HTTP(S) baseUrl`);
+    }
+    if (
+      provider.concurrency !== undefined
+      && provider.concurrency !== "unlimited"
+      && provider.concurrency !== "exclusive"
+      && provider.concurrency !== "bounded"
+    ) {
+      throw new Error(`ROUTES_CONFIG provider ${providerId} has an unsupported concurrency mode`);
+    }
+    if (
+      provider.concurrency === "bounded"
+      && (!Number.isInteger(provider.maxConcurrent) || provider.maxConcurrent < 1 || provider.maxConcurrent > 100)
+    ) {
+      throw new Error(`ROUTES_CONFIG provider ${providerId} maxConcurrent must be an integer from 1 to 100`);
+    }
+    if (
+      provider.queueTimeoutMs !== undefined
+      && (!Number.isInteger(provider.queueTimeoutMs) || provider.queueTimeoutMs < 0 || provider.queueTimeoutMs > 10_000)
+    ) {
+      throw new Error(`ROUTES_CONFIG provider ${providerId} queueTimeoutMs must be an integer from 0 to 10000`);
+    }
+    if (provider.priority !== undefined && !Number.isFinite(provider.priority)) {
+      throw new Error(`ROUTES_CONFIG provider ${providerId} priority must be a finite number`);
+    }
+    providers.set(providerId, provider);
+  }
+  return providers;
+}
+
+function validateRouteProviders(routeId, route, providers) {
+  const legacy = (route.type === "openai-chat" || route.type === "anthropic-messages")
+    && hasText(route.baseUrl)
+    && hasText(route.model);
+  if (route.offerings !== undefined && !Array.isArray(route.offerings)) {
+    throw new Error(`ROUTES_CONFIG route ${routeId} offerings must be an array`);
+  }
+  if (route.offerings === undefined || route.offerings.length === 0) {
+    if (!legacy) {
+      if (route.type !== undefined && route.type !== "openai-chat" && route.type !== "anthropic-messages") {
+        throw new Error(`ROUTES_CONFIG route ${routeId} has an unsupported type`);
+      }
+      throw new Error(`ROUTES_CONFIG route ${routeId} requires baseUrl and model or provider offerings`);
+    }
+    if (!isHttpUrl(route.baseUrl)) {
+      throw new Error(`ROUTES_CONFIG route ${routeId} requires a valid HTTP(S) baseUrl`);
+    }
+    return;
+  }
+  const seen = new Set();
+  let activeOfferings = 0;
+  for (const offering of route.offerings) {
+    if (!isRecord(offering) || !hasText(offering.providerId) || !hasText(offering.model)) {
+      throw new Error(`ROUTES_CONFIG route ${routeId} contains an invalid provider offering`);
+    }
+    const providerId = offering.providerId.trim();
+    const provider = providers.get(providerId);
+    if (!provider) {
+      throw new Error(`ROUTES_CONFIG route ${routeId} references unknown provider ${providerId}`);
+    }
+    if (seen.has(providerId)) {
+      throw new Error(`ROUTES_CONFIG route ${routeId} references provider ${providerId} more than once`);
+    }
+    seen.add(providerId);
+    if (offering.priority !== undefined && !Number.isFinite(offering.priority)) {
+      throw new Error(`ROUTES_CONFIG route ${routeId} provider ${providerId} priority must be a finite number`);
+    }
+    if (offering.enabled !== false && provider.enabled !== false) activeOfferings += 1;
+  }
+  if (!activeOfferings) {
+    throw new Error(`ROUTES_CONFIG route ${routeId} must have at least one enabled provider offering`);
+  }
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function validateRoutesConfiguration(config) {
   if (!isRecord(config.routes)) {
     throw new Error("ROUTES_CONFIG.routes must be a JSON object");
@@ -68,17 +165,13 @@ export function validateRoutesConfiguration(config) {
   }
   const routeIds = new Set(routes.map(([routeId]) => routeId));
   const enabledRouteIds = new Set();
+  const providers = validateProviderRegistry(config.providers);
 
   for (const [routeId, route] of routes) {
     if (!routeId || !isRecord(route)) {
       throw new Error("ROUTES_CONFIG contains an invalid route entry");
     }
-    if (route.type !== "openai-chat" && route.type !== "anthropic-messages") {
-      throw new Error(`ROUTES_CONFIG route ${routeId} has an unsupported type`);
-    }
-    if (!hasText(route.baseUrl) || !hasText(route.model)) {
-      throw new Error(`ROUTES_CONFIG route ${routeId} requires baseUrl and model`);
-    }
+    validateRouteProviders(routeId, route, providers);
     if (route.enabled !== false) enabledRouteIds.add(routeId);
     validateRouteReferences(route.fallbacks, routeIds, `ROUTES_CONFIG route ${routeId} fallbacks`);
   }

@@ -15,6 +15,9 @@ import {
 } from "ai";
 import {
   MAX_AGENT_CONVERSATIONS,
+  type AgentExportMessage,
+  type AgentExportMessagesResult,
+  type AgentExportPart,
   type AgentConversationCleanupRecord,
   type AgentConversationActivity,
   type AgentConversationInput,
@@ -38,6 +41,8 @@ import {
 } from "../worker";
 
 const MAX_PERSISTED_TOOL_TEXT_CHARS = 4_000;
+const MAX_EXPORT_MESSAGE_TEXT_CHARS = 20_000;
+const MAX_EXPORT_MESSAGE_PARTS = 32;
 const MAX_CONVERSATION_TITLE_CHARS = 80;
 const MAX_SELECTED_SKILLS = 3;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
@@ -456,6 +461,32 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     return this.messages.length;
   }
 
+  async exportMessages(maxBytes = 512_000): Promise<AgentExportMessagesResult> {
+    this.requireConversationScope();
+    await this.waitUntilStable();
+    const byteLimit = Number.isFinite(maxBytes)
+      ? Math.max(32_768, Math.min(Math.floor(maxBytes), 1_000_000))
+      : 512_000;
+    const source = this.messages.slice(-this.maxPersistedMessages);
+    const messages: AgentExportMessage[] = [];
+    let bytes = 2;
+    let truncated = false;
+    for (let index = source.length - 1; index >= 0; index -= 1) {
+      const exported = exportMessage(source[index]);
+      truncated ||= exported.truncated;
+      const messageBytes = new TextEncoder().encode(JSON.stringify(exported.message)).byteLength;
+      const separatorBytes = messages.length ? 1 : 0;
+      if (bytes + separatorBytes + messageBytes > byteLimit) {
+        truncated = true;
+        break;
+      }
+      messages.unshift(exported.message);
+      bytes += separatorBytes + messageBytes;
+    }
+    if (messages.length < source.length) truncated = true;
+    return { messages, truncated };
+  }
+
   async onChatMessage(
     onFinish: StreamTextOnFinishCallback<ToolSet>,
     options?: OnChatMessageOptions,
@@ -748,6 +779,44 @@ function conversationRowToSummary(row: ConversationRow): AgentConversationSummar
     parentChatId: row.parent_chat_id || undefined,
     skillIds: parseSkillIds(row.skill_ids),
     messageCount: Math.max(0, row.message_count),
+  };
+}
+
+function exportMessage(message: UIMessage): { message: AgentExportMessage; truncated: boolean } {
+  const parts: AgentExportPart[] = [];
+  let truncated = message.parts.length > MAX_EXPORT_MESSAGE_PARTS;
+  let remainingTextChars = MAX_EXPORT_MESSAGE_TEXT_CHARS;
+  for (const part of message.parts.slice(0, MAX_EXPORT_MESSAGE_PARTS)) {
+    if (part.type === "text" && typeof part.text === "string") {
+      if (remainingTextChars <= 0) {
+        truncated = true;
+        continue;
+      }
+      const text = part.text.slice(0, remainingTextChars);
+      if (text.length < part.text.length) truncated = true;
+      remainingTextChars -= text.length;
+      parts.push({
+        type: "text",
+        text: text.length < part.text.length ? `${text}\n[truncated]` : text,
+      });
+      continue;
+    }
+    if (part.type === "file" && typeof part.mediaType === "string") {
+      const name = typeof part.filename === "string" ? boundedString(part.filename, 200) : "";
+      parts.push({
+        type: "file",
+        mediaType: boundedString(part.mediaType, 120) || "application/octet-stream",
+        ...(name ? { name } : {}),
+      });
+    }
+  }
+  return {
+    message: {
+      id: boundedString(message.id, 160) || "message",
+      role: message.role === "assistant" ? "assistant" : message.role === "system" ? "system" : "user",
+      parts,
+    },
+    truncated,
   };
 }
 

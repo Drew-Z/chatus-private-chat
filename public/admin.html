@@ -42,6 +42,7 @@
           </nav>
           <div class="admin-sidebar-footer">
             <a href="/">返回聊天</a>
+            <a href="/react-chat/admin">成员能力（新版）</a>
             <button id="adminLogoutButton" type="button">退出登录</button>
           </div>
         </aside>
@@ -202,86 +203,177 @@
 
         <section class="admin-panel admin-route-panel" data-admin-section="routes" hidden>
           <div class="panel-title">
-            <h2>线路模型</h2>
-            <span>线路 Key 由后台加密管理</span>
+            <h2>模型与服务商</h2>
+            <span>服务商凭据只保存一次</span>
           </div>
-          <form class="admin-form" id="routeForm">
-            <div class="form-grid">
-              <label>
-                选择线路
-                <select id="routeAdminSelect"></select>
-              </label>
-              <label>
-                线路 ID
-                <input id="routeIdInput" autocomplete="off" placeholder="line-a" required />
-              </label>
-              <label>
-                显示名称
-                <input id="routeLabelInput" autocomplete="off" placeholder="主线路" />
-              </label>
-              <label>
-                接口类型
-                <select id="routeTypeInput">
-                  <option value="openai-chat">OpenAI Chat</option>
-                  <option value="anthropic-messages">Anthropic Messages</option>
-                </select>
-              </label>
-              <label class="wide-field">
-                Base URL
-                <input id="routeBaseUrlInput" autocomplete="off" placeholder="https://example.com/v1" required />
-              </label>
-              <label>
-                模型名
-                <span class="inline-field-action route-model-action">
-                  <input id="routeModelInput" autocomplete="off" placeholder="model-name" required />
-                  <button class="plain-button compact" id="fetchRouteModelsButton" type="button">拉取</button>
-                  <button class="plain-button compact" id="browseRouteModelsButton" type="button" disabled>选择</button>
-                </span>
-                <small class="field-hint">可手动输入，或拉取服务商模型后选择</small>
-              </label>
-              <label>
-                API Key Ref
-                <input id="routeKeyRefInput" autocomplete="off" placeholder="LINE_A_KEY" />
-              </label>
-              <label class="wide-field">
-                后台线路密钥
-                <span class="inline-field-action route-secret-action">
-                  <input id="routeSecretInput" type="password" autocomplete="new-password" placeholder="输入新密钥或替换现有密钥" />
-                  <button class="ghost-button compact" id="saveRouteSecretButton" type="button" disabled>保存密钥</button>
-                  <button class="plain-button compact" id="deleteRouteSecretButton" type="button" disabled>删除</button>
-                </span>
-                <small class="route-secret-status" id="routeSecretStatus" role="status"></small>
-              </label>
-              <label>
-                Fallbacks
-                <input id="routeFallbacksInput" autocomplete="off" placeholder="line-b,line-c" />
-              </label>
-              <label class="check-line">
-                <input id="routeImagesInput" type="checkbox" checked />
-                支持图片
-              </label>
-              <label class="check-line">
-                <input id="routeToolsInput" type="checkbox" />
-                支持工具调用
-              </label>
-              <label class="check-line">
-                <input id="routeEnabledInput" type="checkbox" checked />
-                启用该线路
-              </label>
-              <label class="check-line">
-                <input id="routeRequiresKeyInput" type="checkbox" />
-                必须由朋友填写 Key
-              </label>
-            </div>
-            <div class="form-actions">
-              <button class="ghost-button compact" type="submit">保存线路</button>
-              <button class="ghost-button compact" id="healthRouteButton" type="button">刷新状态</button>
-              <button class="ghost-button compact" id="healthAllRoutesButton" type="button">刷新全部</button>
-              <button class="plain-button compact" id="deleteRouteButton" type="button">删除线路</button>
-            </div>
-            <p class="admin-status" id="routeHealthStatus" role="status"></p>
-            <div class="route-health-list" id="routeHealthList" aria-label="线路真实任务状态"></div>
-          </form>
+          <div class="route-editor-tabs" role="tablist" aria-label="模型配置类型">
+            <button class="route-editor-tab active" id="providerEditorTab" type="button" role="tab" aria-selected="true" aria-controls="providerEditorPanel" data-route-editor-tab="providers">服务商</button>
+            <button class="route-editor-tab" id="routeEditorTab" type="button" role="tab" aria-selected="false" aria-controls="routeEditorPanel" data-route-editor-tab="routes">逻辑模型</button>
+          </div>
+
+          <section class="route-editor-panel" id="providerEditorPanel" role="tabpanel" aria-labelledby="providerEditorTab">
+            <form class="admin-form" id="providerForm">
+              <div class="form-grid">
+                <label>
+                  选择服务商
+                  <select id="providerAdminSelect"></select>
+                </label>
+                <label>
+                  服务商 ID
+                  <input id="providerIdInput" autocomplete="off" placeholder="openrouter" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,79}" maxlength="80" required />
+                </label>
+                <label>
+                  显示名称
+                  <input id="providerLabelInput" autocomplete="off" placeholder="OpenRouter" />
+                </label>
+                <label>
+                  接口类型
+                  <select id="providerTypeInput">
+                    <option value="openai-chat">OpenAI Chat</option>
+                    <option value="anthropic-messages">Anthropic Messages</option>
+                  </select>
+                </label>
+                <label class="wide-field">
+                  Base URL
+                  <input id="providerBaseUrlInput" type="url" autocomplete="off" placeholder="https://example.com/v1" required />
+                </label>
+                <label>
+                  API Key Ref
+                  <input id="providerKeyRefInput" autocomplete="off" placeholder="OPENROUTER_KEY" />
+                </label>
+                <label class="wide-field">
+                  后台服务商密钥
+                  <span class="inline-field-action route-secret-action">
+                    <input id="providerSecretInput" type="password" autocomplete="new-password" placeholder="输入新密钥或替换现有密钥" />
+                    <button class="ghost-button compact" id="saveProviderSecretButton" type="button" disabled>保存密钥</button>
+                    <button class="plain-button compact" id="deleteProviderSecretButton" type="button" disabled>删除</button>
+                  </span>
+                  <small class="route-secret-status" id="providerSecretStatus" role="status"></small>
+                </label>
+                <label>
+                  并发模式
+                  <select id="providerConcurrencyInput">
+                    <option value="unlimited">不限</option>
+                    <option value="exclusive">独占（一条活动请求）</option>
+                    <option value="bounded">固定并发</option>
+                  </select>
+                </label>
+                <label>
+                  并发容量
+                  <input id="providerMaxConcurrentInput" type="number" min="1" max="100" step="1" value="1" />
+                </label>
+                <label>
+                  全忙等待（毫秒）
+                  <input id="providerQueueTimeoutInput" type="number" min="0" max="10000" step="500" value="10000" />
+                </label>
+                <label>
+                  管理优先级
+                  <input id="providerPriorityInput" type="number" min="-10000" max="10000" step="1" value="0" />
+                </label>
+                <label class="check-line">
+                  <input id="providerImagesInput" type="checkbox" checked />
+                  支持图片
+                </label>
+                <label class="check-line">
+                  <input id="providerToolsInput" type="checkbox" />
+                  支持工具调用
+                </label>
+                <label class="check-line">
+                  <input id="providerAllowUserKeyInput" type="checkbox" checked />
+                  允许用户 Key
+                </label>
+                <label class="check-line">
+                  <input id="providerRequiresKeyInput" type="checkbox" />
+                  必须用户 Key
+                </label>
+                <label class="check-line">
+                  <input id="providerEnabledInput" type="checkbox" checked />
+                  启用服务商
+                </label>
+                <label class="check-line">
+                  <input id="providerDirectEndpointInput" type="checkbox" />
+                  Base URL 已含完整接口
+                </label>
+              </div>
+              <div class="form-actions">
+                <button class="ghost-button compact" type="submit">保存服务商</button>
+                <button class="ghost-button compact" id="fetchProviderModelsButton" type="button">拉取模型</button>
+                <button class="plain-button compact" id="deleteProviderButton" type="button">删除服务商</button>
+              </div>
+              <p class="admin-status" id="providerStatus" role="status"></p>
+            </form>
+          </section>
+
+          <section class="route-editor-panel" id="routeEditorPanel" role="tabpanel" aria-labelledby="routeEditorTab" hidden>
+            <form class="admin-form" id="routeForm">
+              <div class="form-grid">
+                <label>
+                  选择逻辑模型
+                  <select id="routeAdminSelect"></select>
+                </label>
+                <label>
+                  模型 ID
+                  <input id="routeIdInput" autocomplete="off" placeholder="general" required />
+                </label>
+                <label>
+                  显示名称
+                  <input id="routeLabelInput" autocomplete="off" placeholder="通用模型" />
+                </label>
+                <label class="wide-field">
+                  Fallbacks
+                  <input id="routeFallbacksInput" autocomplete="off" placeholder="coding,fast" />
+                </label>
+                <label class="check-line">
+                  <input id="routeImagesInput" type="checkbox" checked />
+                  支持图片
+                </label>
+                <label class="check-line">
+                  <input id="routeToolsInput" type="checkbox" />
+                  支持工具调用
+                </label>
+                <label class="check-line">
+                  <input id="routeAllowUserKeyInput" type="checkbox" checked />
+                  允许用户 Key
+                </label>
+                <label class="check-line">
+                  <input id="routeRequiresKeyInput" type="checkbox" />
+                  必须用户 Key
+                </label>
+                <label class="check-line">
+                  <input id="routeEnabledInput" type="checkbox" checked />
+                  启用逻辑模型
+                </label>
+              </div>
+              <fieldset class="admin-choice-group offering-group">
+                <legend>服务商映射</legend>
+                <div class="offering-list" id="routeOfferingsList"></div>
+                <button class="plain-button compact offering-add-button" id="addRouteOfferingButton" type="button">添加服务商映射</button>
+                <p class="field-hint" id="routeOfferingStatus" role="status"></p>
+              </fieldset>
+              <div class="legacy-route-panel" id="legacyRoutePanel" hidden>
+                <div class="legacy-route-heading">
+                  <strong>旧式线路配置</strong>
+                  <span>此模型尚未迁移到服务商池</span>
+                </div>
+                <dl class="legacy-route-details">
+                  <div><dt>协议</dt><dd id="legacyRouteType"></dd></div>
+                  <div><dt>Base URL</dt><dd id="legacyRouteBaseUrl"></dd></div>
+                  <div><dt>上游模型</dt><dd id="legacyRouteModel"></dd></div>
+                  <div><dt>API Key Ref</dt><dd id="legacyRouteKeyRef"></dd></div>
+                </dl>
+                <button class="plain-button compact" id="migrateLegacyRouteButton" type="button">迁移到服务商池</button>
+                <p class="field-hint" id="legacyRouteStatus" role="status"></p>
+              </div>
+              <div class="form-actions">
+                <button class="ghost-button compact" type="submit">保存逻辑模型</button>
+                <button class="ghost-button compact" id="healthRouteButton" type="button">刷新状态</button>
+                <button class="ghost-button compact" id="healthAllRoutesButton" type="button">刷新全部</button>
+                <button class="plain-button compact" id="deleteRouteButton" type="button">删除逻辑模型</button>
+              </div>
+              <p class="admin-status" id="routeHealthStatus" role="status"></p>
+              <div class="route-health-list" id="routeHealthList" aria-label="逻辑模型真实任务状态"></div>
+            </form>
+          </section>
         </section>
 
         <section class="admin-panel capability-panel" data-admin-section="capabilities" hidden>
@@ -485,30 +577,30 @@
       </form>
     </dialog>
 
-    <dialog class="app-dialog route-model-dialog" id="routeModelDialog">
+    <dialog class="app-dialog route-model-dialog" id="providerModelDialog">
       <form method="dialog">
         <div class="dialog-heading">
           <div>
             <h2>选择服务商模型</h2>
-            <p id="routeModelDialogSummary">尚未拉取模型</p>
+            <p id="providerModelDialogSummary">尚未拉取模型</p>
           </div>
           <button class="icon-control" value="cancel" type="submit" aria-label="关闭">×</button>
         </div>
         <label class="route-model-search-field">
           搜索模型
-          <input id="routeModelSearchInput" type="search" autocomplete="off" placeholder="输入模型名筛选" />
+          <input id="providerModelSearchInput" type="search" autocomplete="off" placeholder="输入模型名筛选" />
         </label>
-        <div class="route-model-list" id="routeModelList" aria-label="可用模型"></div>
+        <div class="route-model-list" id="providerModelList" aria-label="可用模型"></div>
         <div class="route-model-batch">
           <label>
-            批量线路 ID 前缀
-            <input id="routeModelPrefixInput" autocomplete="off" placeholder="例如 openrouter" />
+            新模型 ID 前缀
+            <input id="providerModelPrefixInput" autocomplete="off" placeholder="例如 general" />
           </label>
-          <span id="routeModelSelectionStatus" role="status">未选择模型</span>
+          <span id="providerModelSelectionStatus" role="status">未选择模型</span>
         </div>
         <div class="dialog-actions">
           <button class="ghost-button" value="cancel" type="submit">关闭</button>
-          <button class="dialog-primary" id="batchCreateRoutesButton" type="button" disabled>批量创建线路</button>
+          <button class="dialog-primary" id="batchAddOfferingsButton" type="button" disabled>添加到模型池</button>
         </div>
       </form>
     </dialog>

@@ -40,11 +40,13 @@ describe("fallback language model", () => {
     const router = createFallbackLanguageModel([
       {
         routeId: "primary",
+        providerId: "primary-provider",
         usedUserKey: false,
         model: model({ stream: [{ type: "stream-start", warnings: [] }, { type: "error", error: primaryError }] }),
       },
       {
         routeId: "backup",
+        providerId: "backup-provider",
         usedUserKey: false,
         model: model({ stream: successfulStream("ok") }),
       },
@@ -69,6 +71,7 @@ describe("fallback language model", () => {
     const router = createFallbackLanguageModel([
       {
         routeId: "primary",
+        providerId: "primary-provider",
         usedUserKey: false,
         model: model({ stream: [
           { type: "stream-start", warnings: [] },
@@ -77,7 +80,7 @@ describe("fallback language model", () => {
           { type: "error", error: { statusCode: 503 } },
         ] }),
       },
-      { routeId: "backup", usedUserKey: false, model: backup },
+      { routeId: "backup", providerId: "backup-provider", usedUserKey: false, model: backup },
     ], { onFailure: (event) => failure.push(event) });
 
     const result = await router.doStream(CALL_OPTIONS);
@@ -94,8 +97,8 @@ describe("fallback language model", () => {
     const backup = model({ generate: generated });
     const backupSpy = vi.spyOn(backup, "doGenerate");
     const retrying = createFallbackLanguageModel([
-      { routeId: "primary", usedUserKey: false, model: model({ generateError: { statusCode: 503 } }) },
-      { routeId: "backup", usedUserKey: false, model: backup },
+      { routeId: "primary", providerId: "primary-provider", usedUserKey: false, model: model({ generateError: { statusCode: 503 } }) },
+      { routeId: "backup", providerId: "backup-provider", usedUserKey: false, model: backup },
     ]);
     await expect(retrying.doGenerate(CALL_OPTIONS)).resolves.toBe(generated);
     expect(backupSpy).toHaveBeenCalledOnce();
@@ -103,11 +106,93 @@ describe("fallback language model", () => {
     const terminalBackup = model({ generate: generated });
     const terminalSpy = vi.spyOn(terminalBackup, "doGenerate");
     const terminal = createFallbackLanguageModel([
-      { routeId: "primary", usedUserKey: false, model: model({ generateError: { statusCode: 400 } }) },
-      { routeId: "backup", usedUserKey: false, model: terminalBackup },
+      { routeId: "primary", providerId: "primary-provider", usedUserKey: false, model: model({ generateError: { statusCode: 400 } }) },
+      { routeId: "backup", providerId: "backup-provider", usedUserKey: false, model: terminalBackup },
     ]);
     await expect(terminal.doGenerate(CALL_OPTIONS)).rejects.toMatchObject({ statusCode: 400 });
     expect(terminalSpy).not.toHaveBeenCalled();
+  });
+
+  it("retries a different logical model on the same provider after a pre-output failure", async () => {
+    const primaryRelease = vi.fn();
+    const fallbackRelease = vi.fn();
+    const fallback = model({ generate: generateResult("same-provider fallback") });
+    const fallbackSpy = vi.spyOn(fallback, "doGenerate");
+    const router = createFallbackLanguageModel([
+      {
+        routeId: "primary",
+        providerId: "shared-provider",
+        usedUserKey: false,
+        model: model({ generateError: { statusCode: 503 } }),
+        acquireLease: async () => ({ release: primaryRelease }),
+      },
+      {
+        routeId: "fallback",
+        providerId: "shared-provider",
+        usedUserKey: false,
+        model: fallback,
+        acquireLease: async () => ({ release: fallbackRelease }),
+      },
+    ]);
+
+    await expect(router.doGenerate(CALL_OPTIONS)).resolves.toMatchObject({
+      content: [{ type: "text", text: "same-provider fallback" }],
+    });
+    expect(fallbackSpy).toHaveBeenCalledOnce();
+    expect(primaryRelease).toHaveBeenCalledOnce();
+    expect(fallbackRelease).toHaveBeenCalledOnce();
+  });
+
+  it("releases every losing lease when busy providers become available together", async () => {
+    const releases = [vi.fn(), vi.fn()];
+    const router = createFallbackLanguageModel([
+      {
+        routeId: "main",
+        providerId: "provider-a",
+        usedUserKey: false,
+        model: model({ generate: generateResult("a") }),
+        acquireLease: async (waitMs) => waitMs ? { release: releases[0] } : null,
+      },
+      {
+        routeId: "main",
+        providerId: "provider-b",
+        usedUserKey: false,
+        model: model({ generate: generateResult("b") }),
+        acquireLease: async (waitMs) => waitMs ? { release: releases[1] } : null,
+      },
+    ]);
+
+    await expect(router.doGenerate(CALL_OPTIONS)).resolves.toMatchObject({
+      content: [{ type: "text", text: "a" }],
+    });
+    expect(releases[0]).toHaveBeenCalledOnce();
+    expect(releases[1]).toHaveBeenCalledOnce();
+  });
+
+  it("marks a lower-priority provider selected because the preferred provider is busy as fallback", async () => {
+    const success: ProviderAttemptEvent[] = [];
+    const router = createFallbackLanguageModel([
+      {
+        routeId: "main",
+        providerId: "preferred-provider",
+        usedUserKey: false,
+        model: model({ generate: generateResult("preferred") }),
+        acquireLease: async () => null,
+      },
+      {
+        routeId: "main",
+        providerId: "available-provider",
+        usedUserKey: false,
+        model: model({ generate: generateResult("available") }),
+      },
+    ], { onSuccess: (event) => success.push(event) });
+
+    await expect(router.doGenerate(CALL_OPTIONS)).resolves.toMatchObject({
+      content: [{ type: "text", text: "available" }],
+    });
+    expect(success).toEqual([
+      expect.objectContaining({ providerId: "available-provider", fallback: true }),
+    ]);
   });
 });
 

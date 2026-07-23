@@ -2,7 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI, type OpenAIProviderSettings } from "@ai-sdk/openai";
 import type { ImagePart, ModelMessage, TextPart } from "ai";
 import type { ChatMessage } from "../contracts/chat";
-import type { RouteConfig } from "../contracts/provider";
+import type { ResolvedProviderRoute } from "../contracts/provider";
 
 type ProviderFetch = NonNullable<OpenAIProviderSettings["fetch"]>;
 
@@ -11,7 +11,7 @@ type CreateProviderLanguageModelOptions = {
 };
 
 export function createProviderLanguageModel(
-  route: RouteConfig,
+  route: ResolvedProviderRoute,
   apiKey: string,
   options: CreateProviderLanguageModelOptions = {},
 ) {
@@ -37,7 +37,7 @@ export function createProviderLanguageModel(
 }
 
 export function buildProviderHeaders(
-  route: RouteConfig,
+  route: ResolvedProviderRoute,
   apiKey: string,
   defaultAuthHeader: string,
 ): Record<string, string> {
@@ -80,7 +80,7 @@ export function toProviderModelMessages(messages: ChatMessage[]): ModelMessage[]
 }
 
 function createRouteFetch(
-  route: RouteConfig,
+  route: ResolvedProviderRoute,
   defaultAuthHeader: string,
   fetchImpl: ProviderFetch = fetch,
 ): ProviderFetch {

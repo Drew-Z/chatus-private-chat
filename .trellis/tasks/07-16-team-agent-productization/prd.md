@@ -45,6 +45,17 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 - A model call may be used for validation only when a user explicitly approves a real, useful task. There is no hidden ping, doctor, or synthetic prompt.
 - Infrastructure `/healthz` remains model-free and checks only Worker bindings, durable state availability, and non-secret configuration readiness.
 
+### R4A. Logical Model And Provider Pool Routing
+
+- Teammates select a logical model name rather than a physical upstream route. One logical model may be backed by multiple provider instances, and one provider instance may offer multiple logical models.
+- A provider instance owns its protocol, endpoint, encrypted credential reference, concurrency policy, and administrator priority. Model offerings reference a provider instance plus the upstream model ID instead of duplicating provider credentials.
+- Candidate offerings are ordered first by administrator priority and then by passive real-task quality for that exact logical-model/provider pair. No synthetic model probe is introduced.
+- An `exclusive` provider instance permits one active upstream model request across all of its models and all teammates. While occupied, it accepts no new request for either the same model or another model; the active request is never interrupted.
+- A bounded provider instance permits the configured number of active requests. An unlimited provider instance does not acquire a concurrency lease.
+- A request skips an occupied provider when another candidate for the selected logical model is immediately available. When every eligible candidate is occupied, it waits up to 10 seconds for the first available candidate, then returns a stable busy response.
+- Provider leases are released on success, upstream failure, stream cancellation, and client disconnect. Expiring leases recover capacity after Worker or upstream failures without requiring an administrator action.
+- Existing one-route-per-upstream configuration remains readable and is projected as a single-provider logical model during migration.
+
 ### R5. Safe Skills, Tools, And MCP
 
 - The Agent selects relevant Skills and tools from the user's assigned allow-list; users do not need to manually classify every request.
@@ -85,6 +96,9 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 - [ ] Existing route adapters, fallback, BYOK, quota, memory, Skills, tools, MCP, and audit capabilities survive the migration under explicit module boundaries.
 - [ ] Automatic and scheduled model liveness prompts are absent; `/healthz` and normal diagnostics make zero model calls.
 - [ ] Real-task telemetry provides redacted route reliability and fallback evidence.
+- [x] A logical model can use multiple ordered provider offerings, and one provider credential can be reused by multiple models without redeployment.
+- [x] Exclusive and bounded provider capacity is enforced atomically across teammates and across every model offered by the provider; all-busy requests wait no longer than 10 seconds.
+- [x] Lease release, cancellation, expiry recovery, pre-output fallback, legacy route compatibility, and provider/model configuration validation have deterministic tests without live model calls.
 - [ ] The web client supports streaming/recovery, history, memory, tool approvals, run traces, mobile/PWA states, and actionable errors.
 - [ ] User data and credentials remain isolated from BIAU Operator and from other Chatus users.
 - [ ] README, operations docs, environment examples, and CI describe a clean installation and GitHub-Actions-only release flow.

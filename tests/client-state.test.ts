@@ -5,6 +5,7 @@ import {
   resolveLoadedMemoryDraft,
   resolvePendingDraftAction,
 } from "../client/src/lib/state";
+import { resolveClientSurface } from "../client/src/lib/routing";
 
 describe("React client state recovery", () => {
   it("restores a rejected send without overwriting newer input", () => {
@@ -34,5 +35,12 @@ describe("React client state recovery", () => {
       message: "工具续接上下文无法恢复。",
     }), true)).toBe("工具续接上下文无法恢复。");
     expect(friendlyAgentError("timeout", false)).toBe("网络已断开，草稿仍保存在当前设备。");
+  });
+
+  it("routes only the nested React admin shell to the typed administration surface", () => {
+    expect(resolveClientSurface("/react-chat/admin")).toBe("admin");
+    expect(resolveClientSurface("/react-chat/admin/")).toBe("admin");
+    expect(resolveClientSurface("/react-chat/")).toBe("chat");
+    expect(resolveClientSurface("/admin")).toBe("chat");
   });
 });

@@ -38,6 +38,21 @@ export type AgentConversationSummary = {
   messageCount: number;
 };
 
+export type AgentExportPart =
+  | { type: "text"; text: string }
+  | { type: "file"; mediaType: string; name?: string };
+
+export type AgentExportMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  parts: AgentExportPart[];
+};
+
+export type AgentExportMessagesResult = {
+  messages: AgentExportMessage[];
+  truncated: boolean;
+};
+
 export type AgentConversationInput = Omit<AgentConversationSummary, "messageCount"> & {
   messageCount?: number;
 };

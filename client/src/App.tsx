@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
 import { LoginView } from "./components/LoginView";
 import { ChatWorkspace } from "./components/ChatWorkspace";
+import { AdminApp } from "./components/AdminApp";
+import { PageState } from "./components/PageState";
 import { fetchSession, login, logout, type SessionProjection } from "./lib/api";
+import type { ClientSurface } from "./lib/routing";
 
 type AppState =
   | { status: "loading" }
@@ -10,7 +12,12 @@ type AppState =
   | { status: "error"; message: string }
   | { status: "authenticated"; session: SessionProjection };
 
-export function App() {
+export function App({ surface = "chat" }: { surface?: ClientSurface }) {
+  if (surface === "admin") return <AdminApp />;
+  return <ChatApp />;
+}
+
+function ChatApp() {
   const [state, setState] = useState<AppState>({ status: "loading" });
 
   const refresh = useCallback(async () => {
@@ -58,16 +65,5 @@ export function App() {
         setState({ status: "login" });
       }}
     />
-  );
-}
-
-function PageState({ title, detail, onRetry }: { title: string; detail: string; onRetry?: () => void }) {
-  return (
-    <main className="page-state" aria-live="polite">
-      <div className="brand-mark">C</div>
-      <h1>{title}</h1>
-      <p>{detail}</p>
-      {onRetry && <button className="primary-button icon-text-button" type="button" onClick={onRetry}><RefreshCw size={16} /><span>重新连接</span></button>}
-    </main>
   );
 }

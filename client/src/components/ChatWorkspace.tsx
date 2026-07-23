@@ -15,7 +15,10 @@ import {
   ApiError,
   createAgentConversation,
   deleteAgentConversation,
+  deleteUserData,
+  exportUserData,
   listAgentConversations,
+  revokeAllSessions,
   updateAgentConversation,
   type AgentConversation,
   type SessionProjection,
@@ -40,6 +43,7 @@ export function ChatWorkspace({
   const [loading, setLoading] = useState(true);
   const [workspaceError, setWorkspaceError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const bootstrapped = useRef(false);
@@ -164,9 +168,52 @@ export function ChatWorkspace({
   };
 
   const handleLogout = async () => {
-    if (busy) return;
+    if (busy || accountBusy) return;
     clearUserDrafts(session.user);
     await onLogout();
+  };
+
+  const handleRevokeAllSessions = async () => {
+    if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
+    setAccountBusy(true);
+    try {
+      await revokeAllSessions();
+      clearUserDrafts(session.user);
+      await onLogout();
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const handleDeleteUserData = async () => {
+    if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
+    setAccountBusy(true);
+    try {
+      await deleteUserData();
+      clearUserDrafts(session.user);
+      await onLogout();
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const handleUserDataExport = async () => {
+    if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
+    setAccountBusy(true);
+    try {
+      const result = await exportUserData();
+      const href = URL.createObjectURL(result.blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = `chatus-user-data-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(href), 0);
+      return { truncated: result.truncated };
+    } finally {
+      setAccountBusy(false);
+    }
   };
 
   const handleConversationChanged = useCallback(() => {
@@ -194,13 +241,13 @@ export function ChatWorkspace({
         </div>
         <div className="header-actions">
           <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
-          <button className="icon-text-button quiet-button" type="button" onClick={() => setMemoryOpen(true)}><Brain size={17} /><span>记忆</span></button>
+          <button className="icon-text-button quiet-button" type="button" onClick={() => setMemoryOpen(true)} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
           <button
             className="icon-button"
             type="button"
             onClick={() => void handleLogout()}
-            disabled={busy}
-            title={busy ? "请先停止当前任务" : "退出登录"}
+            disabled={busy || accountBusy}
+            title={busy ? "请先停止当前任务" : accountBusy ? "账号操作正在处理" : "退出登录"}
             aria-label="退出登录"
           ><LogOut size={18} /></button>
         </div>
@@ -214,7 +261,7 @@ export function ChatWorkspace({
           activeId={activeId}
           routeId={routeId}
           skillIds={skillIds}
-          busy={busy}
+          busy={busy || accountBusy}
           loading={loading}
           onClose={() => setSidebarOpen(false)}
           onSelect={(conversation) => setActiveId(conversation.id)}
@@ -223,6 +270,9 @@ export function ChatWorkspace({
           onDelete={removeConversation}
           onRouteChange={(nextRouteId) => { setRouteId(nextRouteId); void persistSettings({ routeId: nextRouteId }); }}
           onSkillChange={(nextSkillIds) => { setSkillIds(nextSkillIds); void persistSettings({ skillIds: nextSkillIds }); }}
+          onRevokeAllSessions={handleRevokeAllSessions}
+          onDeleteUserData={handleDeleteUserData}
+          onExportUserData={handleUserDataExport}
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
 
@@ -242,6 +292,7 @@ export function ChatWorkspace({
               conversation={activeConversation}
               routeId={routeId}
               skillIds={skillIds}
+              blocked={accountBusy}
               onBusyChange={setBusy}
               onConversationChanged={handleConversationChanged}
             />
@@ -263,6 +314,7 @@ function ConversationChat({
   conversation,
   routeId,
   skillIds,
+  blocked,
   onBusyChange,
   onConversationChanged,
 }: {
@@ -270,6 +322,7 @@ function ConversationChat({
   conversation: AgentConversation;
   routeId: string;
   skillIds: string[];
+  blocked: boolean;
   onBusyChange: (busy: boolean) => void;
   onConversationChanged: () => void;
 }) {
@@ -296,6 +349,7 @@ function ConversationChat({
     body: () => ({ routeId, skillIds, chatId: conversation.id }),
   });
   const busy = chat.status === "submitted" || chat.status === "streaming" || chat.isStreaming || chat.isRecovering;
+  const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
 
@@ -336,7 +390,7 @@ function ConversationChat({
   const send = async (event: FormEvent) => {
     event.preventDefault();
     const text = input.trim();
-    if (!text || busy || !online || !routeAvailable) return;
+    if (!text || interactionBlocked || !online || !routeAvailable) return;
     const submittedDraft = input;
     const submissionId = submissionGeneration.current + 1;
     submissionGeneration.current = submissionId;
@@ -402,13 +456,13 @@ function ConversationChat({
             }}
             placeholder={!online ? "等待网络恢复" : routeAvailable ? "输入消息" : "等待管理员配置线路"}
             rows={2}
-            disabled={busy || !online || !routeAvailable}
+            disabled={interactionBlocked || !online || !routeAvailable}
             aria-label="消息"
           />
           {busy ? (
             <button className="composer-action stop" type="button" onClick={() => chat.stop()} title="停止生成" aria-label="停止生成"><Square size={17} /></button>
           ) : (
-            <button className="composer-action" type="submit" disabled={!input.trim() || !online || !agent.identified || !routeAvailable} title="发送" aria-label="发送"><SendHorizontal size={18} /></button>
+            <button className="composer-action" type="submit" disabled={blocked || !input.trim() || !online || !agent.identified || !routeAvailable} title="发送" aria-label="发送"><SendHorizontal size={18} /></button>
           )}
         </div>
         {(chat.isRecovering || chat.isServerStreaming) && <span className="composer-status">{chat.isRecovering ? "正在恢复任务" : "Agent 正在继续处理"}</span>}

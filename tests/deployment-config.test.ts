@@ -20,11 +20,13 @@ const baseConfig = {
     bindings: [
       { name: "USER_STATE", class_name: "UserState" },
       { name: "TEAM_AGENT", class_name: "TeamAgent" },
+      { name: "PROVIDER_COORDINATOR", class_name: "ProviderCoordinator" },
     ],
   },
   migrations: [
     { tag: "v1", new_sqlite_classes: ["UserState"] },
     { tag: "v2", new_sqlite_classes: ["TeamAgent"] },
+    { tag: "v3", new_classes: ["ProviderCoordinator"] },
   ],
 };
 
@@ -129,6 +131,34 @@ describe("deployment secret preflight", () => {
     });
   });
 
+  it("accepts provider-pool routes and shared provider credentials", () => {
+    const routesConfig = {
+      providers: {
+        shared: {
+          label: "Shared provider",
+          type: "openai-chat",
+          baseUrl: "https://provider.example.test/v1",
+          apiKeyRef: "SHARED_PROVIDER_KEY",
+          concurrency: "exclusive",
+          queueTimeoutMs: 10_000,
+          priority: 20,
+        },
+      },
+      routes: {
+        fast: { label: "Fast", offerings: [{ providerId: "shared", model: "fast-model" }] },
+        deep: { label: "Deep", offerings: [{ providerId: "shared", model: "deep-model" }] },
+      },
+      defaults: { defaultRoute: "fast", allowedRoutes: ["fast", "deep"] },
+    };
+
+    const secrets = collectWorkerSecrets({
+      ...validEnvironment,
+      ROUTES_CONFIG: JSON.stringify(routesConfig),
+    });
+
+    expect(JSON.parse(secrets.ROUTES_CONFIG)).toEqual(routesConfig);
+  });
+
   it.each([
     [{ ...validEnvironment, ACCESS_CODES: "" }, /ACCESS_CODES/],
     [{ ...validEnvironment, ACCESS_CODES: "test-access-code-without-label" }, /label:code/],
@@ -139,7 +169,34 @@ describe("deployment secret preflight", () => {
     [{ ...validEnvironment, ROUTES_CONFIG: "{}" }, /ROUTES_CONFIG\.routes/],
     [
       { ...validEnvironment, ROUTES_CONFIG: JSON.stringify({ routes: { main: { type: "openai-chat" } } }) },
-      /requires baseUrl and model/,
+      /requires baseUrl and model or provider offerings/,
+    ],
+    [
+      {
+        ...validEnvironment,
+        ROUTES_CONFIG: JSON.stringify({
+          providers: {
+            shared: {
+              type: "openai-chat",
+              baseUrl: "https://provider.example.test/v1",
+              concurrency: "exclusive",
+              queueTimeoutMs: 10_001,
+            },
+          },
+          routes: { main: { offerings: [{ providerId: "shared", model: "test" }] } },
+        }),
+      },
+      /queueTimeoutMs/,
+    ],
+    [
+      {
+        ...validEnvironment,
+        ROUTES_CONFIG: JSON.stringify({
+          providers: {},
+          routes: { main: { offerings: [{ providerId: "missing", model: "test" }] } },
+        }),
+      },
+      /unknown provider missing/,
     ],
     [
       {

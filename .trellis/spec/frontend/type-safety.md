@@ -13,6 +13,11 @@ The Worker, tests, and default React client use strict TypeScript. Legacy module
 - Tests may use `as const` to preserve literal values, as in `tests/user-state.test.ts`.
 - Keep browser HTTP response decoders and validators in `client/src/lib/api.ts`; components consume validated projections instead of casting raw JSON.
 - Keep pure draft/conflict recovery helpers in `client/src/lib/` so they can be tested without a DOM runtime.
+- Keep the session decoder synchronized with the Worker projection. Policy flags such as `allowBringYourOwnKey` and `hasUserSystemPrompt` are required booleans, not optional component guesses.
+- Treat member lifecycle payloads as exact shapes. Member objects, list envelopes, session-revocation metadata, credential responses, and revoke responses reject unknown keys so a server regression cannot silently smuggle a code or token into long-lived client state.
+- Access codes belong only to the create/rotate mutation response type. They must not be added to `AdminMemberProjection`, member-list snapshots, revoke responses, configuration snapshots, or error details.
+- Member configuration-removal and standalone session-revocation responses also use exact envelopes. The former validates the full sanitized config projection; the latter requires `{ ok, label, revoked, complete }` and accepts no token or credential fields.
+- User-data export responses use an exact `chatus-user-data` v1 envelope with bounded conversation/message/file metadata and explicit truncation flags. Parse and validate the JSON body before creating a browser download; do not treat a MIME type or a Blob size alone as proof of the contract.
 
 ## Validation
 
@@ -39,8 +44,8 @@ The Worker, tests, and default React client use strict TypeScript. Legacy module
 
 ### 1. Scope / Trigger
 
-- Trigger: adding or changing admin-managed upstream route credentials, their storage format, resolver precedence, or deployment secret wiring.
-- The browser is write-only for route keys. Plaintext may cross the authenticated write request boundary, but it must never enter route configuration, read responses, diagnostics, audit targets, or exports.
+- Trigger: adding or changing admin-managed provider credentials, their storage format, resolver precedence, or deployment secret wiring.
+- The browser is write-only for provider keys. Plaintext may cross the authenticated write request boundary, but it must never enter provider/logical-route configuration, offerings, read responses, diagnostics, audit targets, or exports.
 
 ### 2. Signatures
 
@@ -51,7 +56,7 @@ DELETE /api/admin/route-secrets/:apiKeyRef
 ```
 
 ```typescript
-async function resolveRouteKey(route: RouteConfig, env: Env, userApiKey: string): Promise<string>
+async function resolveRouteKey(route: RouteConfig | ResolvedProviderRoute, env: Env, userApiKey: string): Promise<string>
 ```
 
 KV records use `route-secret:<url-encoded apiKeyRef>` and the following stored shape:
@@ -73,8 +78,10 @@ type EncryptedRouteSecret = {
 - AES-GCM uses a fresh 12-byte IV for every write and AAD `chatus:route-secret:v1:<apiKeyRef>`.
 - `PUT` accepts `{ apiKey: string, expectedRevision?: string }`; `DELETE` accepts `{ expectedRevision?: string }`.
 - Read and mutation responses expose only reference, source/status, timestamps, and revision metadata. They never expose plaintext, IV, or ciphertext.
-- Resolver precedence is user BYOK when allowed, `requiresUserKey` blocking server keys, legacy `route.apiKey`, managed encrypted key, same-name Worker binding, then missing.
+- Runtime resolution receives `ResolvedProviderRoute`, whose provider-level credential reference is authoritative. Resolver precedence is user BYOK when allowed, `requiresUserKey` blocking server keys, legacy route/provider `apiKey` compatibility, managed encrypted key, same-name Worker binding, then missing.
 - If a managed record exists but cannot be parsed or decrypted, do not silently fall back to a same-name Worker binding.
+- Admin config projections use `hasLegacyKey` and `hasCustomHeaders` as non-sensitive markers. Ordinary config round-trips preserve the server-side legacy key or custom headers only while the corresponding marker remains explicit; deleting a marker is the only way to remove that hidden compatibility value. Marker values and any temporary migration reference are not credentials and must not be treated as secret material.
+- Legacy route migration is allowed only after the referenced `apiKeyRef` resolves to managed storage or a same-name Worker Secret. Migration stores the reference and removes the inline key without reading it into browser state or copying it into the provider registry.
 
 ### 4. Validation & Error Matrix
 
@@ -100,6 +107,7 @@ type EncryptedRouteSecret = {
 - Assert authorization, revision conflicts, create/replace/delete, and invalid master-key errors.
 - Assert precedence for BYOK, `requiresUserKey`, legacy `apiKey`, managed storage, and Worker Secret fallback.
 - Assert managed keys are used by model listing, public route access, chat, and manual health checks.
+- Assert admin config GET/PUT never returns legacy plaintext keys or custom header values, preserves hidden compatibility values only with `hasLegacyKey`/`hasCustomHeaders`, and removes them when the marker is explicitly deleted.
 - Assert the Worker export and `wrangler.jsonc` do not register scheduled model-health checks.
 - Assert the password input clears on save, route changes, refresh/login transitions, and failure paths.
 
@@ -122,4 +130,4 @@ await api(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, {
 clearRouteSecretInput();
 ```
 
-Keep route configuration limited to `apiKeyRef`; the Worker owns encryption, storage, and resolution.
+Keep new `apiKeyRef` values in the provider registry; offerings never contain credentials. Legacy route-level `apiKeyRef` is read only for migration compatibility, while the Worker owns encryption, storage, and resolution.

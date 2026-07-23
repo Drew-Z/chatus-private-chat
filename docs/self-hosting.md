@@ -34,16 +34,65 @@ Durable Object namespace 不需要手工创建。工作流中的 Wrangler migrat
 | `CLOUDFLARE_ACCOUNT_ID` | 目标 Cloudflare Account ID |
 | `ACCESS_CODES` | 邀请成员，格式为 `label:random-code`，每个 code 至少 16 位，多个条目用逗号分隔 |
 | `ADMIN_TOKEN` | 管理后台登录 Token，至少 24 位 |
-| `ROUTES_CONFIG` | 推荐的多线路 JSON 配置；也可仅用兼容项 `UPSTREAM_API_KEY` |
+| `ROUTES_CONFIG` | provider、逻辑模型、offerings 与成员权限 JSON；旧式单 route 配置仍可读取 |
 
 推荐同时设置：
 
 | Secret | 用途 |
 | --- | --- |
-| `ROUTE_KEYS_MASTER_KEY` | 32 随机字节的 Base64，用于后台加密托管线路 key |
-| `WORKER_SECRETS_JSON` | 可选的线路 key JSON 对象，key 必须是大写环境变量名 |
+| `ROUTE_KEYS_MASTER_KEY` | 32 随机字节的 Base64，用于后台加密托管 provider key |
+| `WORKER_SECRETS_JSON` | 可选的 provider key JSON 对象，key 必须是大写环境变量名 |
 | `SYSTEM_PROMPT` | 可选的全局 System Prompt |
 | `BLOCKED_PROMPTS` | 可选的低价值短提示词阻止列表 |
+
+`ROUTES_CONFIG` 推荐从 provider pool 开始。下面的最小结构同时展示一个逻辑模型使用两个 provider，以及同一个 provider 复用到多个上游模型：
+
+```json
+{
+  "providers": {
+    "primary": {
+      "label": "Primary",
+      "type": "openai-chat",
+      "baseUrl": "https://provider-a.example/v1",
+      "apiKeyRef": "PRIMARY_PROVIDER_KEY",
+      "concurrency": "exclusive",
+      "queueTimeoutMs": 10000,
+      "priority": 100
+    },
+    "backup": {
+      "label": "Backup",
+      "type": "openai-chat",
+      "baseUrl": "https://provider-b.example/v1",
+      "apiKeyRef": "BACKUP_PROVIDER_KEY",
+      "concurrency": "bounded",
+      "maxConcurrent": 4,
+      "queueTimeoutMs": 8000,
+      "priority": 60
+    }
+  },
+  "routes": {
+    "general": {
+      "label": "General",
+      "offerings": [
+        { "providerId": "primary", "model": "general-model" },
+        { "providerId": "backup", "model": "general-model" }
+      ]
+    },
+    "reasoning": {
+      "label": "Reasoning",
+      "offerings": [
+        { "providerId": "primary", "model": "reasoning-model" }
+      ]
+    }
+  },
+  "defaults": {
+    "defaultRoute": "general",
+    "allowedRoutes": ["general", "reasoning"]
+  }
+}
+```
+
+`exclusive` 在该 provider 的所有模型和成员之间只允许一个活动请求；`bounded` 使用 `maxConcurrent`；`unlimited` 不获取租约。`queueTimeoutMs` 必须是 `0..10000` 的整数。管理员优先级先决定候选顺序，同优先级才使用真实任务的脱敏成功率和延迟；不要配置 Cron、doctor 或隐藏 completion 做模型测活。流式 fallback 只在首次可见输出前发生，HTTP `200` 的错误/空 SSE 也会被判为失败；输出后断流不会切换 provider。
 
 在可信终端生成随机值，并只把输出放进对应 GitHub Secret：
 
@@ -55,17 +104,19 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-`WORKER_SECRETS_JSON` 只用于额外线路 key，例如：
+`WORKER_SECRETS_JSON` 只用于额外 provider key，例如：
 
 ```json
 {
-  "UPSTREAM_MAIN_KEY": "replace-in-github-secret"
+  "PRIMARY_PROVIDER_KEY": "replace-in-github-secret"
 }
 ```
 
-它不能覆盖 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、Cloudflare 凭据或三项实例 Variables。更方便的长期做法是只设置一次 `ROUTE_KEYS_MASTER_KEY`，部署后在 `/admin.html` 中按 `apiKeyRef` 录入和轮换托管线路 key。
+它不能覆盖 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、Cloudflare 凭据或三项实例 Variables。更方便的长期做法是只设置一次 `ROUTE_KEYS_MASTER_KEY`，部署后在 `/admin.html` 中按 provider 的 `apiKeyRef` 录入和轮换托管密钥。密钥输入在提交后立即清空，页面和读取 API 只返回来源、状态与更新时间，永不回显明文。
 
 Wrangler 的 `--secrets-file` 是增量上传：从 GitHub 删除一个可选 Secret 或从 `WORKER_SECRETS_JSON` 删除一个 key，**不会从 Cloudflare Worker 删除已经存在的远端 Secret**。需要撤销时，先让线路/`apiKeyRef` 停止引用它，再在 Cloudflare Dashboard 的 Worker Variables and Secrets 中显式删除，并重新运行部署与 smoke。仅删除 GitHub Secret 不是凭据撤销。
+
+管理后台可从 provider 拉取完整模型列表，并批量创建逻辑模型或合并 offering。新增模型不会复制 endpoint 或 credential，也不会自动修改成员 `allowedRoutes`。旧式 route 的 `type`、`baseUrl`、`model`、`apiKeyRef` 会继续投影为单一 `unlimited` provider；旧明文 key 只在服务端兼容保留，显式迁移前必须先让该 `apiKeyRef` 对应后台托管密钥或同名 Worker Secret。迁移只保存 credential reference 并移除旧内嵌字段，不会复制明文。
 
 ## 4. 首次发布
 
@@ -85,7 +136,8 @@ Preflight 错误只指出缺失或无效的变量名，不输出 Secret 值。�
 - 常规更新：把上游改动合并到 fork 的 `main`，由同一工作流发布。不要改三项实例 Variables。
 - 成员数据验收：部署后手动运行 **Production member acceptance**。它读取 `CHATUS_PRODUCTION_URL` 与 `ADMIN_TOKEN`，创建并清理随机临时成员，不调用模型。
 - 代码回滚：对错误提交执行 `git revert` 并推送 `main`，让完整 Actions 门禁重新发布。不要 force-push，也不要本地覆盖 Worker。
-- 配置恢复：GitHub Secrets 定义每次部署要上传的基线值，但不会自动清理远端旧 Worker Secret；后台 KV 覆盖可单独删除以恢复基线。托管线路 key 依赖原 `ROUTE_KEYS_MASTER_KEY`，更换主密钥后需重新录入。
+- 配置恢复：GitHub Secrets 定义每次部署要上传的基线值，但不会自动清理远端旧 Worker Secret；后台 KV 覆盖可单独删除以恢复基线。托管 provider key 依赖原 `ROUTE_KEYS_MASTER_KEY`，更换主密钥后需重新录入。
+- provider 配置迁移：旧式 route 可在迁移期间继续运行。先创建 provider 与 offering，核对逻辑模型 fallback、成员权限和密钥引用，再移除旧内嵌 endpoint 字段；配置回滚不应修改 Worker 名、KV ID 或 Account。
 - 数据边界：切换 KV ID、Worker 名或 Cloudflare Account 会指向新的存储边界，不是数据迁移。现阶段不要删除旧 KV/UserState 数据；Agent 导入仍以这些源记录作为回滚证据。
 
 详细生产诊断、密钥轮换和回滚约束见 [`operations.md`](operations.md)。

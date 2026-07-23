@@ -232,22 +232,37 @@ messages: await convertToModelMessages(this.messages, { tools })
 
 ## Fallback Contract
 
-- AI SDK provider retries are disabled with `maxRetries: 0`; Chatus owns cross-route retry and telemetry.
-- A route may fall back only before user-visible output begins. Provider metadata, response metadata, empty text starts, and raw chunks may be buffered and discarded.
-- Text/reasoning deltas, sources/files, tool input/calls/results, or approval events commit the route. Errors after commitment are surfaced and recorded; another route must not continue the same answer.
+- AI SDK provider retries are disabled with `maxRetries: 0`; Chatus owns retries across offerings and fallback logical routes plus their telemetry.
+- A provider offering or logical route may fall back only before user-visible output begins. Provider metadata, response metadata, empty text starts, and raw chunks may be buffered and discarded.
+- Text/reasoning deltas, sources/files, tool input/calls/results, or approval events commit the selected offering. Errors after commitment are surfaced and recorded; another provider or logical route must not continue the same answer.
 - User cancellation never triggers fallback.
 - HTTP `400`/`422` and BYOK `401`/`403` are terminal. Retryable upstream, timeout, protocol-before-output, and network failures may advance to an allowed configured fallback.
+- Preserve candidates by exact `(logicalRouteId, providerId)` pair. The same provider may appear again for a different logical fallback model because a failure can be model-specific; do not globally deduplicate the fallback plan by provider ID.
+
+## Provider Capacity Contract
+
+- Capacity is provider-scoped across every offered model and every teammate. `exclusive` has capacity one, `bounded` uses `maxConcurrent`, and `unlimited` bypasses lease acquisition.
+- Try ordered candidates without waiting first. Skip an occupied provider while another eligible candidate is immediately available; wait only when every eligible candidate is occupied.
+- The all-busy wait uses one shared deadline of at most 10 seconds. The first granted lease wins and losing waits are cancelled; timeout returns the stable busy response.
+- During one availability-selection round, enqueue at most one waiter per provider even when later logical fallbacks reuse that provider. After a failed attempt releases its lease, a later model on the same provider may enter a new selection round.
+- A repeated acquisition for the same request ID while queued shares the original waiter promise; it must never create a second lease.
+- Hold a streaming lease until success, upstream failure, cancellation, or client disconnect. Lease TTL and coordinator alarms recover abandoned capacity without interrupting an active request.
+- On Durable Object restart, discard malformed and expired lease records, keep at most one lease per token and request ID, retain the longest valid duplicate, rewrite normalized storage, and schedule the alarm for the earliest surviving expiry.
 
 ## Reliability And Quota
 
 - Quota is consumed once during turn preparation, not once per fallback attempt.
-- Every real route attempt records redacted passive reliability. BYOK authentication failures do not overwrite shared route reliability.
-- A successful fallback records the selected route as `fallback: true`; exhausted or post-output failures also record the overall request failure.
+- Every real offering attempt records redacted passive reliability keyed by the exact `(logicalRouteId, providerId)` pair. BYOK authentication failures do not overwrite shared provider quality.
+- Administrator priority is authoritative. Passive real-task success rate and latency order only offerings at the same priority; no active probe may influence this ordering.
+- A successful logical-route fallback records the selected route as `fallback: true`; exhausted or post-output failures also record the overall request failure.
 - Telemetry callbacks are best effort and must never alter stream success or failure.
 
 ## Required Tests
 
 - Unit-test pre-output fallback, post-output route locking, terminal failure classes, cancellation, and telemetry callback isolation.
+- Assert a retryable failure may advance to a different logical model on the same provider, while one lease-selection round still creates at most one candidate per provider.
+- Test lease/error lifecycle directly in the Worker isolate. Do not pass an intentionally errored response body across the workerd RPC boundary merely to assert rejection; workerd reports that expected stream failure as an uncaught isolate warning even when the host assertion catches it.
 - Integration-test `prepareTeamAgentTurn -> streamText -> UIMessageStream` with local fake provider responses; no test may contact a model channel.
+- Seed malformed, expired, and duplicate persisted leases, evict the coordinator, and assert normalized capacity, storage, idempotent request recovery, and the earliest alarm.
 - Pass the Agent request abort signal through to `streamText`.
 - Keep `chatRecovery` configured as a class field, never inside `onStart()`.

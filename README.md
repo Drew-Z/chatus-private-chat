@@ -12,12 +12,12 @@ Browser
      -> conversation Agent (messages, resumable streams and approvals)
   -> KV (shared configuration, access data and encrypted secret records)
   -> capability registry (assigned Skills, tools and reviewed MCP servers)
-  -> provider router (OpenAI-compatible / Anthropic-compatible + fallback)
+  -> provider router (logical models -> ordered offerings -> provider capacity + fallback)
 ```
 
 ## 支持能力
 
-- 多线路：每条线路可配置独立 `baseUrl`、`model`、协议类型和 fallback。
+- 模型池：用户选择逻辑模型；一个逻辑模型可按优先级关联多个 provider，一个 provider 的 endpoint 和凭据可复用于多个上游模型。
 - 多朋友：按访问码 label 匹配用户，每个用户可设置允许线路、默认线路、限额和 BYOK。
 - 能力分配：管理员可按成员分配 Skills 与工具；每次会话投影和执行都会重新校验，撤销后旧会话也不能继续调用。
 - 用户身份：可为稳定 label 配置独立显示名称；修改昵称不会影响访问码、权限或历史会话归属。
@@ -61,8 +61,8 @@ Browser
 ACCESS_CODES="friend:change-this-long-random-code"
 ADMIN_TOKEN="change-this-long-admin-token"
 ROUTES_CONFIG="{...}"
-UPSTREAM_GROK_MAIN_KEY="sk-..."
-UPSTREAM_GROK_BACKUP_KEY="sk-..."
+PRIMARY_OPENAI_KEY="sk-..."
+BACKUP_OPENAI_KEY="sk-..."
 ANTHROPIC_KEY="sk-ant-..."
 SYSTEM_PROMPT="You are a helpful assistant."
 ```
@@ -81,16 +81,53 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 
 ```json
 {
+  "providers": {
+    "primary-openai": {
+      "label": "Primary OpenAI-compatible",
+      "type": "openai-chat",
+      "baseUrl": "https://provider-a.example/v1",
+      "apiKeyRef": "PRIMARY_OPENAI_KEY",
+      "concurrency": "exclusive",
+      "queueTimeoutMs": 10000,
+      "priority": 100,
+      "supportsImages": true,
+      "supportsTools": true
+    },
+    "backup-openai": {
+      "label": "Backup OpenAI-compatible",
+      "type": "openai-chat",
+      "baseUrl": "https://provider-b.example/v1",
+      "apiKeyRef": "BACKUP_OPENAI_KEY",
+      "concurrency": "bounded",
+      "maxConcurrent": 4,
+      "queueTimeoutMs": 8000,
+      "priority": 60,
+      "supportsImages": true
+    },
+    "anthropic-team": {
+      "label": "Anthropic team",
+      "type": "anthropic-messages",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKeyRef": "ANTHROPIC_KEY",
+      "headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "concurrency": "unlimited",
+      "priority": 80,
+      "supportsImages": true,
+      "supportsTools": true
+    }
+  },
   "defaults": {
-    "defaultRoute": "grok-main",
-    "allowedRoutes": ["grok-main"],
+    "defaultRoute": "general-chat",
+    "allowedRoutes": ["general-chat", "reasoning-mini", "claude-code"],
     "allowBringYourOwnKey": false,
     "blockedPrompts": ["你好", "hi", "hello", "测试", "test", "在吗", "嗨", "哈喽", "hey", "ping"]
   },
   "users": {
     "friend": {
-      "defaultRoute": "grok-main",
-      "allowedRoutes": ["grok-main", "grok-backup", "claude-code"],
+      "defaultRoute": "general-chat",
+      "allowedRoutes": ["general-chat", "reasoning-mini", "claude-code"],
       "allowBringYourOwnKey": true,
       "dailyMessageLimit": 500,
       "minuteMessageLimit": 12,
@@ -98,33 +135,29 @@ ACCESS_CODES="friend:code-one,alice:code-two"
     }
   },
   "routes": {
-    "grok-main": {
-      "label": "Grok 主线路",
-      "type": "openai-chat",
-      "baseUrl": "https://example-a.com/v1",
-      "apiKeyRef": "UPSTREAM_GROK_MAIN_KEY",
-      "model": "grok-4.20-multi-agent-xhigh",
-      "fallbacks": ["grok-backup"],
-      "supportsImages": true
+    "general-chat": {
+      "label": "General chat",
+      "offerings": [
+        { "providerId": "primary-openai", "model": "grok-4.20-multi-agent-xhigh", "enabled": true },
+        { "providerId": "backup-openai", "model": "grok-4.20-multi-agent-xhigh", "priority": 55, "enabled": true }
+      ],
+      "fallbacks": ["claude-code"],
+      "supportsImages": true,
+      "supportsTools": true
     },
-    "grok-backup": {
-      "label": "Grok 备用线路",
-      "type": "openai-chat",
-      "baseUrl": "https://example-b.com/v1",
-      "apiKeyRef": "UPSTREAM_GROK_BACKUP_KEY",
-      "model": "grok-4.20-multi-agent-xhigh",
+    "reasoning-mini": {
+      "label": "Reasoning mini",
+      "offerings": [
+        { "providerId": "primary-openai", "model": "reasoning-mini", "enabled": true },
+        { "providerId": "backup-openai", "model": "reasoning-mini", "enabled": true }
+      ],
       "supportsImages": true
     },
     "claude-code": {
       "label": "Claude Code",
-      "type": "anthropic-messages",
-      "baseUrl": "https://api.anthropic.com",
-      "apiKeyRef": "ANTHROPIC_KEY",
-      "model": "claude-sonnet-4-5",
-      "headers": {
-        "anthropic-version": "2023-06-01"
-      },
-      "maxTokens": 4096,
+      "offerings": [
+        { "providerId": "anthropic-team", "model": "claude-sonnet-4-5", "enabled": true }
+      ],
       "supportsImages": true
     }
   }
@@ -133,14 +166,15 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 
 字段说明：
 
-- `type`: 目前支持 `openai-chat` 和 `anthropic-messages`。
-- `apiKeyRef`: 线路密钥的稳定逻辑名称，例如 `UPSTREAM_GROK_MAIN_KEY`。Worker 会依次查找后台加密密钥和同名 Worker Secret。
-- `apiKey`: 仅为旧配置兼容保留。新配置不要把明文 key 写进 `ROUTES_CONFIG`。
-- `requiresUserKey`: 设为 `true` 时，这条线路必须由朋友填写自己的 API key。
-- `allowUserKey`: 设为 `false` 时，即使用户开启 BYOK，这条线路也不允许覆盖服务端 key。
-- `enabled`: 设为 `false` 可临时停用线路；配置和统计会保留，但用户不可选择，fallback 也不会调用。
-- `directEndpoint`: 设为 `true` 时，`baseUrl` 会被当作完整 endpoint，不再自动拼 `/chat/completions` 或 `/v1/messages`。
-- `blockedPrompts`: 精确屏蔽低价值短提示词，例如 `["你好", "hi", "hello", "测试", "test"]`。只拦最后一条纯文本用户消息，带图片或更长任务不会被拦。
+- `providers.<id>` 是物理服务商实例。ID 必须以字母或数字开头，最多 80 个字符，只能包含字母、数字、点、下划线和短横线。`type` 支持 `openai-chat` 和 `anthropic-messages`；`baseUrl`、`headers`、`apiKeyRef`、BYOK 策略和 endpoint 只在这里配置一次。
+- `routes.<id>` 是用户选择的逻辑模型和权限 ID。`fallbacks` 引用其他逻辑模型，不是同一 provider 的备用副本。
+- `offerings` 只连接 `providerId` 与上游 `model`，可覆盖 `priority`、`supportsImages`、`supportsTools`；不要在 offering 中复制 endpoint 或密钥。
+- `priority` 数值越大越优先；同优先级才按该逻辑模型/provider 对的真实任务成功率和延迟排序。系统不发送主动测活请求。
+- `concurrency: "exclusive"` 让 provider 在所有模型、所有成员之间只允许一个活动请求；`"bounded"` 使用 `maxConcurrent`；`"unlimited"` 不获取并发租约。
+- provider 忙时会先跳过并尝试其他 offering；全部候选都忙才统一等待，`queueTimeoutMs` 只能是 `0..10000` 毫秒，超时返回稳定的忙碌错误，不打断已有请求。
+- fallback 只发生在首次可见输出之前。HTTP `200` 中的错误事件、畸形 SSE、空流或只有 `[DONE]` 的响应仍会被判为失败并尝试下一个候选；一旦已有文本、推理、工具或审批输出，后续断流会直接报错，不会把另一个 provider 的内容拼到同一回答中。用户取消也不会触发 fallback。
+- `requiresUserKey`、`allowUserKey`、`enabled`、`directEndpoint`、`blockedPrompts` 的语义保持不变；新配置的密钥只写 `apiKeyRef`，明文 key 不进入配置。
+- 旧式 route 中的 `type`、`baseUrl`、`model`、`apiKeyRef` 仍可读取，并会投影为 `legacy:<routeId>` 的单一 `unlimited` provider offering。旧明文 key 只在服务端兼容保留，管理 API 永不回显；显式迁移前，原 `apiKeyRef` 必须已有后台托管密钥或同名 Worker Secret。迁移只保存引用并删除旧内嵌 key，不会复制明文。
 
 ## GitHub Actions Secrets
 
@@ -161,9 +195,9 @@ CLOUDFLARE_API_TOKEN   Cloudflare API Token，用于 GitHub Actions 部署
 CLOUDFLARE_ACCOUNT_ID  当前 Cloudflare 账号 ID
 ACCESS_CODES           聊天窗口访问码
 ADMIN_TOKEN            管理后台登录 token，用于 /admin.html
-ROUTES_CONFIG          多线路配置，推荐设置
-ROUTE_KEYS_MASTER_KEY  可选但推荐，后台加密管理线路 key 的一次性主密钥
-WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态线路 key
+ROUTES_CONFIG          provider、逻辑模型与成员权限配置，推荐设置
+ROUTE_KEYS_MASTER_KEY  可选但推荐，后台加密管理 provider key 的一次性主密钥
+WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态 provider key
 SYSTEM_PROMPT          可选，默认系统提示词
 BLOCKED_PROMPTS        可选，全局屏蔽的短提示词列表
 UPSTREAM_API_KEY       可选，旧单线路 fallback
@@ -171,25 +205,25 @@ UPSTREAM_API_KEY       可选，旧单线路 fallback
 
 从零创建 Cloudflare 资源、设置最小变量/密钥并完成首次 Actions 发布的完整流程见 [`docs/self-hosting.md`](docs/self-hosting.md)。仓库不保存维护者的 Account ID、KV ID 或生产域名。
 
-若要在管理后台直接新增和轮换线路 key，先生成 32 个随机字节的 Base64 值：
+若要在管理后台直接新增和轮换 provider key，先生成 32 个随机字节的 Base64 值：
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-把输出仅保存为 GitHub Secret `ROUTE_KEYS_MASTER_KEY`，再通过 `Deploy to Cloudflare` 工作流发布一次。之后可以在 `/admin.html` 的线路编辑器中填写 `API Key Ref`，输入新密钥并点击“保存密钥”；密钥会使用 AES-GCM 加密后写入 KV，页面和 API 都不会读回明文。
+把输出仅保存为 GitHub Secret `ROUTE_KEYS_MASTER_KEY`，再通过 `Deploy to Cloudflare` 工作流发布一次。之后可以在 `/admin.html` 的服务商编辑器中填写 `API Key Ref`，输入新密钥并点击“保存密钥”；密钥会使用 AES-GCM 加密后写入 KV，页面和 API 都不会读回明文。
 
 已有 Worker Secret 仍然兼容。也可以把这些动态 key 集中放进 GitHub Secret `WORKER_SECRETS_JSON`，让 Actions 部署时一起上传：
 
 ```json
 {
-  "UPSTREAM_GROK_MAIN_KEY": "sk-...",
-  "UPSTREAM_GROK_BACKUP_KEY": "sk-...",
+  "PRIMARY_OPENAI_KEY": "sk-...",
+  "BACKUP_OPENAI_KEY": "sk-...",
   "ANTHROPIC_KEY": "sk-ant-..."
 }
 ```
 
-托管密钥优先于同名 Worker Secret；删除托管密钥后会自动恢复使用 Worker Secret。生产发布只通过 GitHub Actions，不要从本机 Wrangler 账号部署。更换 `ROUTE_KEYS_MASTER_KEY` 后，原有托管密钥无法解密，需要在后台逐条重新录入。
+托管密钥优先于同名 Worker Secret；只有显式删除托管密钥后才会恢复使用同名 Worker Secret，损坏或无法解密的托管记录不会静默回退。生产发布只通过 GitHub Actions，不要从本机 Wrangler 账号部署。更换 `ROUTE_KEYS_MASTER_KEY` 后，原有托管密钥无法解密，需要在后台逐条重新录入。
 
 `BLOCKED_PROMPTS` 可以填逗号分隔：
 
@@ -218,12 +252,13 @@ https://你的 Worker 域名/admin.html
 - 查看今天每个朋友的用量、剩余额度、活跃 session、长期记忆长度。
 - 编辑访问码，格式仍是 `friend:code-one,alice:code-two`。
 - 用表单快速配置某个朋友可用的线路、默认模型、每日额度、每分钟额度、是否允许 BYOK。
-- 用表单新增/修改线路的 `baseUrl`、`model`、`apiKeyRef`、协议类型、fallback 和图片支持。
-- 在不重新部署的情况下新增、替换或删除后台加密线路 key；后台只显示配置状态，不回显密钥。
+- 在服务商池中一次配置 provider 的协议、`baseUrl`、`apiKeyRef`、并发模式和默认优先级，并把多个上游模型映射成用户可选的逻辑模型。
+- 拉取 provider 的完整模型列表，批量创建逻辑模型或合并 offering；批量操作不复制 endpoint/key，也不自动扩大成员的 `allowedRoutes`。
+- 在不重新部署的情况下新增、替换或删除后台加密 provider key；后台只显示配置状态，不回显密钥。
 - 直接编辑完整 `ROUTES_CONFIG` JSON，处理 `headers`、`authHeader`、`directEndpoint` 等高级字段。
 - 删除 KV 覆盖配置，恢复到 GitHub/Cloudflare Secret 中的默认配置。
 
-后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。线路密钥解析优先级为：用户 BYOK（允许时）→ 旧式 `apiKey` → 后台加密密钥 → 同名 Worker Secret。`requiresUserKey` 会阻止使用所有服务端密钥。
+后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。provider 密钥解析优先级为：用户 BYOK（允许时）→ 旧式 route/provider `apiKey` → 后台加密密钥 → 同名 Worker Secret。`requiresUserKey` 会阻止使用所有服务端密钥。
 
 ## 会话与记忆
 
@@ -249,7 +284,7 @@ https://你的 Worker 域名/admin.html
 - 新朋友可从用户表单一次完成权限配置与访问码生成，避免用户配置和访问控制不同步。
 - 线路状态刷新只读取配置就绪度和真实任务的脱敏遥测，不发送 completion 或隐藏探测提示。
 - 生产配置不注册线路测活 Cron，也不会在后台自动向模型发送探测请求。
-- 线路支持从上游安全拉取模型列表，API Key 由 Worker Secret 注入，浏览器可直接选择模型 ID。
+- 服务商支持从上游安全拉取完整模型列表；浏览器只发送 `providerId`，密钥由服务端解析，批量选择后生成或合并逻辑模型 offering。
 - 可导出每日趋势、线路成功率和用户额度概况 CSV；报表不包含访问码、API Key、Base URL、Prompt、记忆或对话正文。
 
 ## 会话同步 API

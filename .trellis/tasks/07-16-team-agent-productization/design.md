@@ -6,7 +6,7 @@ Chatus remains one Cloudflare application and one independently deployed reposit
 
 1. **Edge gateway**: validates access-code sessions, admin sessions, CSRF/origin rules, request limits, and asset/API routing.
 2. **Per-user Agent**: a Cloudflare Agents SDK instance backed by Durable Objects owns conversation execution, resumable streams, task state, approvals, durable user context, and run traces.
-3. **Provider router**: resolves the user's allowed route, protocol adapter, server-managed or BYOK credential, fallback chain, timeout, and redacted result telemetry.
+3. **Provider router**: resolves the user's logical model, ordered provider offerings, protocol adapter, server-managed or BYOK credential, provider-capacity lease, fallback chain, timeout, and redacted result telemetry.
 4. **Capability registry**: resolves assigned Skills, tools, and MCP servers; validates schemas and confirmation policies before the Agent sees them.
 5. **Administration service**: owns users/access codes, route definitions, encrypted secret references, assignments, quotas, audit records, and passive reliability views.
 6. **Typed web client**: a component-based frontend uses the Agents SDK client transport for streaming and recovery while ordinary administration APIs remain explicit HTTP contracts.
@@ -24,6 +24,7 @@ The product-level capability model is domain-neutral. The initial curated pack f
 | Durable user memory | Per-user Agent | Structured Agent SQLite records with user-visible controls |
 | Route and capability assignments | Administration service | KV initially, behind typed repository interfaces |
 | Provider and MCP secret material | Administration service | Cloudflare Secrets or encrypted KV records; never Agent/client state |
+| Provider capacity leases and waiters | Provider Coordinator Durable Object | One deterministic instance per provider ID, with expiring active leases and bounded in-memory waiters |
 | Usage and real-task reliability | Per-user Agent plus aggregate admin view | Durable counters/events with redacted aggregation |
 | Public assets and PWA metadata | Web client | Versioned static assets |
 
@@ -69,6 +70,27 @@ names:
 
 The Agent is responsible for deciding whether retrieval, a Skill, a tool, or ordinary reasoning is appropriate. The UI does not require the user to preselect an intent category.
 
+## Logical Model And Provider Pool
+
+The public model catalog and the physical provider inventory are separate domains:
+
+- `RouteConfig` remains the stable logical model and permission identifier during migration. It owns the teammate-facing label, fallback logical models, capability flags, and an ordered list of provider offerings.
+- `ProviderConfig` owns one real endpoint/account instance: protocol, Base URL, encrypted `apiKeyRef`, headers, BYOK policy, concurrency policy, and default priority.
+- A provider offering links one logical route to one provider and one upstream model ID. It may override priority and capability flags without copying credentials.
+- Legacy routes that still contain `type`, `baseUrl`, `model`, and `apiKeyRef` are normalized into an implicit single offering so existing deployments remain usable.
+
+Candidate order follows the useful parts of CLIProxyAPI's scheduler: discard disabled/unavailable candidates, choose the highest administrator priority, and use passive model/provider quality as a tie-breaker. Chatus does not copy CLIProxyAPI's local credential files or treat failure cooldown as an active-request lock.
+
+Fallback plans retain each exact logical-route/provider pair, so a provider may be tried again for a different upstream model after a pre-output model-specific failure. Capacity acquisition still submits at most one waiter per provider in a single selection round; a later same-provider candidate can acquire only after the earlier attempt releases its lease.
+
+Each limited provider maps to one deterministic `ProviderCoordinator` Durable Object. `exclusive` means capacity one; `bounded` uses `maxConcurrent`; `unlimited` bypasses the coordinator. Acquisition is atomic for the provider ID, not for a route or model, so using any offered model closes every other new exit through that provider until release.
+
+The router first attempts ordered candidates without waiting. Occupied candidates are skipped while any lower-ranked candidate is immediately available. Only when all eligible candidates are occupied does the router register bounded waits, selecting the first lease granted within a shared 10-second deadline and cancelling any losing waits. Lease tokens have a TTL, are released in `finally`/stream cancellation paths, and are pruned by the coordinator alarm after failures.
+
+Fallback still cannot cross a visible-output boundary. A busy provider is a pre-output retryable condition; a successful stream keeps its provider lease until finish, failure, or cancellation.
+
+Passive reliability is keyed by logical route plus provider ID. Administrator priority is authoritative; recent success, timeout, server failure, and latency only order candidates at the same priority and never create active probes.
+
 ## Frontend Direction
 
 Replace the large handwritten `public/app.js`, `public/admin.js`, and shared CSS surface with a typed Vite/React client that still builds into Worker assets. Use stable routes for sign-in, chats, memory, capabilities/settings, and administration. Reuse the current product's proven behavior rather than preserving its file layout.
@@ -80,6 +102,10 @@ worker navigation caches stay isolated for root, React, legacy, and admin shells
 and rate-limit responses remain visible and an absent cache preserves the original error.
 
 The main workspace should prioritize the conversation and current task. Route, Skill, and tool details belong in compact inspectable controls and run traces, not permanent explanatory walls. Mobile behavior must preserve normal vertical scrolling, avoid overlapping navigation, and make tool approval usable without horizontal page scrolling.
+
+The typed administration migration keeps member route, Skill, and tool assignments in one atomic revisioned draft. Route definitions and provider credentials remain in the full legacy administration surface for now. Member route editing distinguishes inherited access, all-route intent (`allowedRoutes: []`), and explicit route lists; keeps an enabled allowed default route; and rebases those intentions onto the latest configuration after a revision conflict without overwriting unrelated member fields.
+
+Member login access uses a separate revision from capability configuration. The typed surface creates, rotates, and revokes one member through narrow server-generated credential operations; only create/rotate returns the code, while list/revoke projections remain exact and secret-free. Rotate/revoke invalidate sessions for that label, but revocation never deletes configuration or user-owned data. A separate revision-checked member-config operation removes all matching `config.users` overrides and restores defaults without touching access, sessions, or user data. Session management reports cleanup completeness independently. The last access entry cannot be removed because an empty KV override would fall back to the deployment Secret. Cloudflare Assets serves the typed admin shell through the `/react-chat/` directory entry so `/react-chat/admin` is preserved rather than canonicalized to the chat URL.
 
 ## Route Reliability Without Model Probes
 

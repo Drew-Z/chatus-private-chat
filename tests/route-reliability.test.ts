@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   isRecentRouteReliability,
+  loadProviderRouteReliability,
   loadRouteReliability,
   recordRouteReliability,
   type RouteReliabilityRecord,
@@ -143,5 +144,41 @@ describe("route reliability service", () => {
       httpStatusClass: "5xx",
     });
     await expect(loadRouteReliability(env, "network")).resolves.toMatchObject({ outcome: "network_error" });
+  });
+
+  it("aggregates passive quality independently for each provider offering", async () => {
+    await recordRouteReliability(env, {
+      routeId: "reasoning",
+      providerId: "provider-a",
+      ok: true,
+      fallback: false,
+      startedAt: Date.now() - 100,
+    });
+    await recordRouteReliability(env, {
+      routeId: "reasoning",
+      providerId: "provider-a",
+      ok: false,
+      fallback: true,
+      startedAt: Date.now() - 300,
+      status: 503,
+    });
+    await recordRouteReliability(env, {
+      routeId: "reasoning",
+      providerId: "provider-b",
+      ok: true,
+      fallback: false,
+      startedAt: Date.now() - 50,
+    });
+
+    await expect(loadProviderRouteReliability(env, "reasoning", "provider-a")).resolves.toMatchObject({
+      attempts: 2,
+      successes: 1,
+      lastOutcome: "upstream_server",
+    });
+    await expect(loadProviderRouteReliability(env, "reasoning", "provider-b")).resolves.toMatchObject({
+      attempts: 1,
+      successes: 1,
+      lastOutcome: "success",
+    });
   });
 });

@@ -18,11 +18,16 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - Keep service-worker updates explicit: install does not immediately activate; the page sends `SKIP_WAITING` after user-visible release detection.
 - Navigation responses with HTTP `404` or `5xx` may fall back to the matching cached shell. Missing caches preserve the original HTTP response, and `401`/`403`/`429` must never be hidden by an offline shell.
 - Protect destructive and concurrent operations with confirmation, undo where available, and revision/version preconditions.
+- Reject a present cross-origin `Origin` header on every state-changing API request before authentication dispatch, body parsing, or storage mutation; trusted non-browser callers may omit the header.
 - Keep diagnostics operational and non-sensitive.
 - Preserve keyboard focus indicators and reduced-motion behavior.
 - Keep `nodejs_compat` enabled while the pinned Cloudflare Agents SDK dependency graph imports Node built-ins; `wrangler deploy --dry-run` is the executable guard for this contract.
 - Do not rebuild a WebSocket upgrade `Response` to add ordinary headers. Return Agent upgrade responses unchanged so the Cloudflare `webSocket` handle survives.
 - Keep deleted conversation tombstones authoritative, persist transcript-cleanup retries across requests, and rotate failed records behind unattempted cleanup work.
+- Member access mutations require the current access revision, generate credentials server-side, revoke label sessions on rotate/revoke, and reject removal of the last access entry so an empty KV override cannot fall back to the deployment Secret.
+- Member configuration removal requires the current config revision and must leave access codes, sessions, conversations, memory, usage, and provider secrets untouched. Standalone session revocation reports incomplete cleanup instead of claiming success.
+- The typed member client must never read the legacy raw access-code endpoint. One-time credential screenshots, notices, diagnostics, audit records, and persistent browser state must remain secret-free.
+- When rewriting the typed admin shell through Cloudflare Assets, fetch `/react-chat/` rather than `/react-chat/index.html`; the latter may canonicalize with a redirect that loses `/react-chat/admin`.
 - A conversation cleanup must remove the pinned AIChat SDK message, resumable-stream, request-context, tool-run, and capability-trust persistence; `persistMessages([])` is not a destructive clear operation.
 - GitHub Actions must run `npx wrangler deploy --dry-run` after tests and before preparing production secrets or starting the real deploy.
 - `/healthz` and route status endpoints may inspect bindings, SQLite, KV configuration, and passive real-task telemetry only. They must never send a completion prompt.
@@ -41,6 +46,8 @@ npm run typecheck
 npx wrangler deploy --dry-run
 git diff --check
 ```
+
+- Run `npm run check:frontend` before `npm test`, not concurrently. The Vite build replaces generated files under `public/react-chat/` while Worker asset tests read that directory; parallel execution can create transient legacy-shell or missing-fingerprinted-asset failures.
 
 ## Code Review Checklist
 
