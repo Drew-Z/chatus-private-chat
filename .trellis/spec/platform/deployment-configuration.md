@@ -45,6 +45,8 @@ Optional Worker Secrets are `SYSTEM_PROMPT`, `BLOCKED_PROMPTS`, `ROUTE_KEYS_MAST
 
 Wrangler `--secrets-file` is additive. Omitting a previously uploaded name does not delete the remote Worker Secret. Revocation requires stopping references, explicitly deleting the remote Secret in Cloudflare, and re-running deployment/smoke.
 
+New Durable Object namespaces must use `new_sqlite_classes`; `new_classes` selects the key-value storage backend, which Workers Free cannot create. Never edit a migration tag that reached a successful deployment. If Cloudflare rejects a new tag before applying it, correct that unapplied tag before retrying rather than inventing a follow-up migration for a namespace that does not exist.
+
 Deploy workflow runs are mutually exclusive, newer runs cancel older runs, and a run must verify `GITHUB_SHA` is still the remote `main` tip before deployment.
 
 ## 4. Validation & Error Matrix
@@ -73,6 +75,7 @@ Deploy workflow runs are mutually exclusive, newer runs cancel older runs, and a
 
 - Unit-test custom-domain and workers.dev projections, input immutability, KV binding injection, and removal of stale routes.
 - Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
+- Assert every newly introduced Durable Object uses a SQLite-backed migration and reject `new_classes` in the checked-in Wrangler contract.
 - Import workflow/config files as raw fixtures and assert Repository Variables, generated `--config`, concurrency, stale-SHA check, parameterized production URL, generic Wrangler baseline, and absence of a local `deploy` script.
 - Run `node --check` for both deployment scripts.
 - Execute the generator with dummy values and run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc`.

@@ -43,7 +43,7 @@
     },
     {
       "tag": "v3",
-      "new_classes": ["ProviderCoordinator"]
+      "new_sqlite_classes": ["ProviderCoordinator"]
     }
   ],
   "vars": {

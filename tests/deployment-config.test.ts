@@ -26,7 +26,7 @@ const baseConfig = {
   migrations: [
     { tag: "v1", new_sqlite_classes: ["UserState"] },
     { tag: "v2", new_sqlite_classes: ["TeamAgent"] },
-    { tag: "v3", new_classes: ["ProviderCoordinator"] },
+    { tag: "v3", new_sqlite_classes: ["ProviderCoordinator"] },
   ],
 };
 
@@ -251,6 +251,15 @@ describe("repository deployment contract", () => {
     const config = JSON.parse(wranglerSource);
     expect(config.name).toBe("chatus");
     expect(config.kv_namespaces).toEqual([{ binding: "CHAT_STORE" }]);
+  });
+
+  it("uses free-plan-compatible SQLite migrations for Durable Objects", () => {
+    const config = JSON.parse(wranglerSource);
+    expect(config.migrations).toContainEqual({
+      tag: "v3",
+      new_sqlite_classes: ["ProviderCoordinator"],
+    });
+    expect(config.migrations.some((migration: Record<string, unknown>) => "new_classes" in migration)).toBe(false);
   });
 
   it("prepares and deploys only with the generated Wrangler config", () => {
