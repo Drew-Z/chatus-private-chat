@@ -56,6 +56,15 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 - Provider leases are released on success, upstream failure, stream cancellation, and client disconnect. Expiring leases recover capacity after Worker or upstream failures without requiring an administrator action.
 - Existing one-route-per-upstream configuration remains readable and is projected as a single-provider logical model during migration.
 
+### R4B. Provider Pool Product Surface
+
+- The implemented logical-model/provider runtime must be visible as one coherent administrator workflow rather than a typed member screen plus a separate legacy route editor.
+- Administrators manage a provider inventory, logical model catalog, and offering mappings as distinct concepts. One provider can serve many models, and one logical model can use many ordered providers without duplicating credentials.
+- The provider surface shows protocol, endpoint identity, write-only credential readiness, capacity policy, administrator priority, offered upstream model IDs, and passive real-task quality. It never returns plaintext credentials or sends synthetic model probes.
+- Model discovery remains provider-scoped. Adding discovered models creates or merges credential-free offerings and never expands member permissions implicitly.
+- Members continue to select logical models only. Physical providers, secret references, internal failure payloads, and other members' assignments remain administrator-only.
+- Recent real-task diagnostics distinguish waiting for provider capacity, time to first visible output, upstream authentication/rate-limit/server failures, protocol incompatibility, and buffered or single-chunk responses without recording prompts or completions.
+
 ### R5. Safe Skills, Tools, And MCP
 
 - The Agent selects relevant Skills and tools from the user's assigned allow-list; users do not need to manually classify every request.
@@ -76,6 +85,12 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 - First-use states explain only the next required action and do not expose a wall of configuration text.
 - Provider failures are translated into actionable, non-secret diagnostics such as timeout, upstream status class, route unavailable, fallback used, or configuration missing.
 - Accessibility, responsive layout, loading, empty, degraded, offline, and permission-denied states are covered.
+- A submitted turn has explicit queued/waiting-first-output, streaming, tool-running, recovering, stopped, and failed states. After a short threshold the UI shows elapsed waiting time and keeps the stop action available.
+- Genuine upstream deltas render progressively. When an upstream buffers and returns one complete response, the client does not fake token streaming; it keeps a clear waiting state and the administrator diagnostics identify the buffered behavior.
+- User-message actions include copy, edit in a branch, resend in a branch, and create branch. Assistant-message actions include copy, regenerate in a branch, feedback, create branch, and continue when output was truncated. Failed turns expose a focused retry action.
+- Editing, resending, and regenerating preserve the original conversation. Branch creation is durable, server-authorized, quota-aware, and linked to its parent conversation.
+- Message actions remain discoverable on touch layouts, keyboard accessible on desktop, disabled while their owning run is active, and never depend on hover as the only way to find them.
+- The workspace uses a restrained responsive hierarchy: a scannable conversation rail, centered readable transcript, compact route/status header, sticky composer, and stable message/action dimensions across desktop and mobile.
 
 ### R8. Optional Read-only BIAU Integration
 
@@ -99,7 +114,11 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 - [x] A logical model can use multiple ordered provider offerings, and one provider credential can be reused by multiple models without redeployment.
 - [x] Exclusive and bounded provider capacity is enforced atomically across teammates and across every model offered by the provider; all-busy requests wait no longer than 10 seconds.
 - [x] Lease release, cancellation, expiry recovery, pre-output fallback, legacy route compatibility, and provider/model configuration validation have deterministic tests without live model calls.
+- [ ] Typed administration exposes provider inventory, logical models, offerings, capacity, credential readiness, model discovery, and passive health without revealing secret material.
 - [ ] The web client supports streaming/recovery, history, memory, tool approvals, run traces, mobile/PWA states, and actionable errors.
+- [ ] Slow turns show a truthful waiting/first-output/streaming state; local fake-provider tests cover delayed SSE, single-chunk output, provider-busy timeout, cancellation, and recovery without live model calls.
+- [ ] Copy, edit, resend, regenerate, feedback, branch, continue, and failed-turn retry actions follow role/state availability rules and preserve the source conversation.
+- [ ] Desktop and 390px touch acceptance confirms readable transcript width, stable composer/actions, visible touch controls, keyboard focus, no horizontal overflow, and no overlapping UI.
 - [ ] User data and credentials remain isolated from BIAU Operator and from other Chatus users.
 - [ ] README, operations docs, environment examples, and CI describe a clean installation and GitHub-Actions-only release flow.
 - [ ] `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` pass with no live model calls.
@@ -111,3 +130,5 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 - Modifying the concurrently developed `D:\workspace4Cursor\learn\duoduo` repository.
 - Local production deployment or force-pushing the four existing local commits.
 - Active provider probes disguised as diagnostics or test prompts.
+- Fake typewriter animation that presents a buffered upstream response as real provider streaming.
+- Copying a competitor's visual system or adding every available chat action before its data and branch semantics are defined.

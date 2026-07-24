@@ -91,6 +91,42 @@ Fallback still cannot cross a visible-output boundary. A busy provider is a pre-
 
 Passive reliability is keyed by logical route plus provider ID. Administrator priority is authoritative; recent success, timeout, server failure, and latency only order candidates at the same priority and never create active probes.
 
+### Provider Pool Administration Surface
+
+The provider router is already the runtime source of truth, but its management surface must converge into the typed product:
+
+- A **Providers** view owns provider identity, protocol, Base URL, write-only credential reference/readiness, concurrency policy, capacity, queue timeout, and default priority.
+- A **Logical Models** view owns the teammate-facing route label, enabled/capability flags, fallback logical models, and an ordered offering table. Each offering selects one provider plus the exact upstream model ID and optional overrides.
+- A **Reliability** projection joins each logical-model/provider pair with configuration readiness and passive real-task evidence: recent outcome, total latency, time to first visible output when known, fallback use, and whether the response arrived progressively or as one visible chunk.
+- Provider model discovery is an explicit read operation against the selected saved provider. Importing selections mutates only offerings through the revisioned config boundary; it never reads a credential into browser state or grants routes to members.
+- The typed admin becomes the primary workflow. `/admin.html` remains a rollback surface until provider, logical-model, secret, discovery, and passive-health acceptance pass, then its corresponding route editor can be retired separately.
+
+No external LiteLLM/CLIProxyAPI deployment is required. Chatus keeps its current Cloudflare-native coordinator because provider-wide exclusive leases, per-member policy, encrypted KV credentials, and passive telemetry already live inside this product boundary. An external OpenAI-compatible gateway remains a valid provider endpoint, not the owner of Chatus permissions or user-visible logical models.
+
+### Durable Conversation Branching
+
+Message editing and regeneration reuse the legacy product rule: preserve the source transcript and create a linked conversation branch.
+
+- Add one narrow authenticated branch operation owned by the Agent conversation boundary. Its input identifies the source conversation, source message, action (`branch`, `edit`, `resend`, `regenerate`, or `continue`), the source conversation version, and edited text only when required.
+- The server resolves the authenticated source Agent, validates that the message and action are compatible, copies a bounded sanitized transcript prefix, and creates a destination conversation with `parentChatId` before generation begins.
+- The destination conversation inherits the source logical route and selected Skills after re-validating current member access. Revoked routes/Skills are repaired to the current allowed defaults rather than copied blindly.
+- The original transcript is never overwritten. A partially created destination is tombstoned/cleaned through the existing conversation cleanup path, and a client request ID makes retries idempotent.
+- The response returns the new conversation projection and enough transient state for the client to activate it. It never returns provider metadata, credentials, raw tool payloads, or another user's transcript.
+- Simple copy and feedback remain in-place actions. Retry after a rejected pre-stream request may reuse the current draft; retry/regenerate after an assistant attempt creates a branch so the original outcome remains inspectable.
+
+### Stream Experience Contract
+
+The provider stream and the user-visible state are related but not identical:
+
+1. `submitted`: the request is accepted and the Agent is preparing policy, context, candidate order, or provider capacity.
+2. `waiting-first-output`: a provider attempt is active but no user-visible delta has committed the route. The UI shows a neutral thinking row, elapsed time after a short threshold, and Stop.
+3. `streaming`: the first visible text/reasoning/tool/source part commits the selected offering and renders progressively.
+4. `tool-running` / `approval-required`: tool parts own their existing bounded status and approval controls.
+5. `recovering`: the client reconnects to the resumable stream without duplicating the user turn.
+6. `completed`, `stopped`, or `failed`: the composer and message actions return to their stable availability matrix.
+
+The client can derive the basic phases from `useAgentChat` status plus whether the last assistant message has visible parts. Server-side passive telemetry records first-visible and completion timing for the exact route/provider pair. A provider that emits one visible delta near completion is classified as single-chunk/buffered evidence for administrators; the client does not animate the completed text to imitate streaming.
+
 ## Frontend Direction
 
 Replace the large handwritten `public/app.js`, `public/admin.js`, and shared CSS surface with a typed Vite/React client that still builds into Worker assets. Use stable routes for sign-in, chats, memory, capabilities/settings, and administration. Reuse the current product's proven behavior rather than preserving its file layout.
@@ -102,6 +138,10 @@ worker navigation caches stay isolated for root, React, legacy, and admin shells
 and rate-limit responses remain visible and an absent cache preserves the original error.
 
 The main workspace should prioritize the conversation and current task. Route, Skill, and tool details belong in compact inspectable controls and run traces, not permanent explanatory walls. Mobile behavior must preserve normal vertical scrolling, avoid overlapping navigation, and make tool approval usable without horizontal page scrolling.
+
+The transcript uses a centered readable column with unframed assistant content and a compact user bubble. Message actions sit immediately below their owning message, stay visible for the latest message and all touch layouts, and use icon buttons with tooltips/accessible labels. User actions are copy/edit/resend/branch; assistant actions are copy/regenerate/feedback/branch and conditional continue. Less-frequent actions may move into an overflow menu only after keyboard and touch access are verified.
+
+The composer remains sticky and stable while status text changes. Waiting, streaming, recovering, offline, and error rows have reserved dimensions so they do not resize the composer or move the transcript. Desktop keeps a dense conversation rail; mobile uses the existing focus-managed drawer and full-width transcript without horizontal scrolling.
 
 The typed administration migration keeps member route, Skill, and tool assignments in one atomic revisioned draft. Route definitions and provider credentials remain in the full legacy administration surface for now. Member route editing distinguishes inherited access, all-route intent (`allowedRoutes: []`), and explicit route lists; keeps an enabled allowed default route; and rebases those intentions onto the latest configuration after a revision conflict without overwriting unrelated member fields.
 

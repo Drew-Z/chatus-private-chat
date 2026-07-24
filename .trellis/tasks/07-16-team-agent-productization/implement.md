@@ -60,6 +60,70 @@
 - [ ] Rebuild administration as typed components over the existing revisioned HTTP administration boundary.
 - [x] Update asset release fingerprinting and service-worker caching for Vite output.
 
+### Next Productization Sequence (2026-07-24)
+
+The remaining experience work should run in the following order. Each stage is independently reviewable and should become a child Trellis task before implementation so chat persistence, provider administration, and visual polish do not share one uncontrolled change set.
+
+#### A. Experience Baseline And Contracts
+
+- [ ] Record the current desktop and 390px typed-client states for empty, submitted, waiting-first-output, streaming, recovering, failed, offline, and completed turns using local fake-provider fixtures.
+- [ ] Add deterministic fake-provider cases for delayed SSE deltas, one visible chunk, provider-busy timeout, pre-output fallback, post-output failure, cancellation, and reconnect. Do not contact a live model.
+- [ ] Define the message-action availability matrix by role, message position, run state, failure state, tool approval state, and online state.
+- [ ] Define the branch API contract, idempotency key, bounded transcript-prefix rules, quota behavior, rollback behavior, and exact secret-free response decoder before changing the React UI.
+- [ ] Capture current passive route/provider telemetry gaps, especially first-visible latency and progressive-versus-single-chunk evidence.
+
+#### B. Durable Message Actions And Branches
+
+- [ ] Add a server-owned Agent branch operation for branch/edit/resend/regenerate/continue, reusing `parentChatId`, access re-validation, tombstones, and cleanup retries.
+- [ ] Add exact typed-client API decoders and pure action-state helpers with unit tests.
+- [ ] Port the legacy action set into the React `MessageView`: user copy/edit/resend/branch; assistant copy/regenerate/feedback/branch/conditional continue; failed-turn retry.
+- [ ] Use an accessible edit dialog/composer with Cancel and branch-and-send actions; restore focus to the originating message action.
+- [ ] Keep the original conversation unchanged, activate the returned branch, preserve drafts correctly, and prevent duplicate branches on request retry.
+- [ ] Add parent-origin navigation and branch naming without turning the conversation sidebar into a tree browser in the first release.
+
+#### C. Truthful Streaming And Slow-response Feedback
+
+- [ ] Derive submitted/waiting-first-output/streaming/tool/recovering/completed/stopped/failed UI phases from Agent status and visible message parts.
+- [ ] Render a stable thinking row immediately after submit, show elapsed waiting after a short threshold, keep Stop available, and avoid layout shifts.
+- [ ] Extend passive per-offering telemetry with first-visible latency and bounded stream-shape evidence; never record prompts or completion content.
+- [ ] Surface actionable failure classes and provider-busy/timeout status to the member without exposing provider IDs or secrets.
+- [ ] Show administrators whether a recent successful response was progressive or single-chunk so upstream buffering can be distinguished from client bugs.
+- [ ] Verify true provider deltas paint incrementally. Do not add fake typewriter animation for buffered output.
+
+#### D. Typed Provider-pool Administration
+
+- [ ] Add typed-admin navigation for Providers, Logical Models, Member Access, and Reliability while keeping the full backend link as rollback.
+- [ ] Implement provider inventory editing for protocol, endpoint, capacity, priority, enablement, and write-only credential readiness with revision-safe rollback.
+- [ ] Implement logical-model editing with ordered offerings, upstream model IDs, fallback logical models, capability flags, and duplicate/provider-existence validation.
+- [ ] Port provider-scoped model discovery and credential-free batch offering creation into typed components.
+- [ ] Add passive route/provider status, recent failure class, first-visible/total latency, fallback, and capacity visibility without model probes.
+- [ ] Add explicit legacy-route migration and prove one provider can serve many logical models while one logical model can use many providers.
+- [ ] Retire only the corresponding legacy route/provider panels after typed browser acceptance; keep unrelated legacy administration available.
+
+#### E. Workspace Visual And Interaction Pass
+
+- [ ] Establish shared spacing, color, focus, icon-button, status, and message-action tokens in `client/src/styles.css`; avoid decorative cards and one-note palette drift.
+- [ ] Refine the conversation rail for denser scanning, active-state clarity, stable rename/delete affordances, and mobile drawer parity.
+- [ ] Refine the chat header into compact title, logical model/status, fallback/health access, and connection state without explanatory text walls.
+- [ ] Refine assistant/user message hierarchy, readable transcript width, code/Markdown/source/tool rendering, action placement, and long-word/mobile overflow.
+- [ ] Refine the sticky composer with stable send/stop dimensions, multiline growth, waiting/error status, and touch targets.
+- [ ] Verify desktop, wide desktop, 780px, 480px, and 390px layouts with Playwright screenshots and overlap/overflow assertions.
+
+#### F. Integrated Acceptance And Release
+
+- [ ] Run `trellis-check`, focused client/Worker tests, and the full release gates in the mandated sequence.
+- [ ] Perform local Worker browser acceptance for branch persistence, retry idempotency, true delayed streaming, buffered response feedback, provider-pool editing, secret cleanup, keyboard use, and touch use.
+- [ ] Update frontend streaming/provider specs and the operator documentation with the new workflow and rollback boundary.
+- [ ] Commit each child slice independently. Push and deploy production only after explicit confirmation and only through GitHub Actions.
+
+### Current Checkpoint (2026-07-24)
+
+- The runtime/provider-pool foundation, managed-access bootstrap, Agent persistence hardening, typed member lifecycle, and the responsive React workspace are implemented and remain uncommitted in the working tree.
+- The durable message-action slice is partially complete: server-owned branch/edit/resend/regenerate/continue operations, idempotency, source preservation, secret-free client decoders, role-aware action bars, and truthful waiting-first-output feedback are implemented. Parent-origin navigation, a dedicated failed-turn retry action, and the full fake-provider timing matrix remain open.
+- The typed provider-inventory/logical-model/reliability administration surface is still pending; the legacy admin remains the rollback surface for those panels.
+- Managed-mode local browser acceptance now bootstraps a temporary member through the admin API instead of supplying `ACCESS_CODES`; desktop 1440x900 and touch 390x844 passed action visibility and horizontal-overflow assertions without a live model.
+- Final quality gates for this checkpoint passed: frontend structure checks, 19 test files / 232 tests, strict type-check, Wrangler dry-run, and `git diff --check`. No production deployment or push was performed.
+
 ### Final Product Hardening
 
 - [x] Make root Agent SQLite the authoritative memory source for Agent, legacy, and administrator APIs while retaining KV only as an import/rollback record.
@@ -100,6 +164,7 @@
 - 2026-07-23 (typed user data closure): User settings now expose bounded personal-data export, all-device session revocation, and destructive data clearing. Export reads conversations sequentially, caps the attachment at 5 MB and each conversation at 512 KB, omits credentials/raw tool payloads/file URLs, and marks truncation explicitly; the typed client rejects malformed or secret-bearing envelopes before download. Account locks cover the header, composer, memory entry, and sidebar while mutations run. Playwright fixture acceptance passed at 1440x900 and 390x844 with no horizontal overflow, mobile drawer focus trapping/Escape restoration, account-dialog focus restoration, and a correctly named JSON download. Final gates passed: `npm run check:frontend`, 19 test files / 224 tests, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`; only the known Vite oversized-chunk, plugin timing, and dependency sourcemap warnings remain non-fatal.
 - 2026-07-23 (managed access bootstrap): Production deployment no longer consumes the GitHub `ACCESS_CODES` Secret. Generated configs set `ACCESS_CODES_MODE=managed`, the Worker ignores legacy environment access codes in that mode, `/healthz` remains ready while member access is empty and reports `memberAccessConfigured=false`, and the first member can be created through the revisioned typed admin endpoint. Deployment, Worker, client-decoder, and production-acceptance contracts were updated for the `managed` source. Final gates passed with frontend structure checks, 19 test files / 228 tests, strict type-check, default and generated-config Wrangler deployment dry-runs, and `git diff --check`; the generated Secret file contained no `ACCESS_CODES`. A fresh local managed-mode Worker also passed the full no-model production-member acceptance and restored the empty `managed` source during cleanup. Known Vite chunk/plugin timing and dependency sourcemap warnings remain non-fatal.
 - 2026-07-23 (free-plan migration correction): GitHub Actions run `30020616414` reached deployment but Cloudflare rejected the unapplied `ProviderCoordinator` `v3` migration because it used `new_classes` (error 10097; Workers Free requires SQLite-backed namespaces). The preceding run had skipped deployment, so the tag was safe to correct in place. `v3` now uses `new_sqlite_classes`, the repository contract rejects `new_classes`, and local full gates passed with 19 test files / 229 tests, strict type-check, default and generated-config Wrangler dry-runs, and `git diff --check`. Production retry is pending this fix commit.
+- 2026-07-24 (message actions and managed browser acceptance): Agent branch/edit/resend/regenerate/continue operations, role-aware React action bars, waiting-first-output elapsed feedback, and safe truncated-output metadata persistence were verified. A local managed-mode Worker created a temporary member through the admin API and passed Playwright acceptance at 1440x900 and 390x844 with no horizontal overflow and visible Continue/action controls. Full gates passed with 19 test files / 232 tests, strict type-check, Wrangler dry-run, and `git diff --check`; no live model call or production deployment was used.
 - No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation
