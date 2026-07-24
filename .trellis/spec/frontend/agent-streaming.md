@@ -266,3 +266,81 @@ messages: await convertToModelMessages(this.messages, { tools })
 - Seed malformed, expired, and duplicate persisted leases, evict the coordinator, and assert normalized capacity, storage, idempotent request recovery, and the earliest alarm.
 - Pass the Agent request abort signal through to `streamText`.
 - Keep `chatRecovery` configured as a class field, never inside `onStart()`.
+
+## Scenario: Durable Message Branches And Safe Truncation Metadata
+
+### 1. Scope / Trigger
+
+This contract applies when a member edits, resends, regenerates, continues, or explicitly branches a message, or when a legacy transcript is imported into an AIChat conversation.
+
+### 2. Signatures
+
+```text
+POST /api/agent/conversations/:chatId/branches
+{
+  requestId: string,
+  action: "branch" | "edit" | "resend" | "regenerate" | "continue",
+  sourceMessageId: string,
+  expectedUpdatedAt: number,
+  editedText?: string
+}
+```
+
+```typescript
+TeamAgent.copyConversationBranchTo(input): Promise<AgentConversationBranchCopyResult>
+TeamAgent.startConversationBranch(input): Promise<AgentConversationBranchStartResult>
+```
+
+### 3. Contracts
+
+- The Worker authenticates the source conversation, checks the source version and action/role compatibility, then copies a bounded sanitized prefix into a new conversation with `parentChatId`.
+- `requestId` is idempotent for the same request fingerprint. A different payload using an existing request ID returns `branch_request_conflict`; the source transcript is never overwritten.
+- The destination re-validates the current route and Skill assignment. Revoked settings are repaired to the member's allowed default rather than copied blindly.
+- `branch` completes without a model call. `edit`, `resend`, `regenerate`, and `continue` launch a new branch turn and cannot fall back after visible output.
+- Agent message persistence has an explicit metadata allow-list: only `{ finishReason: "length" }` may be stored. Provider metadata, credentials, trace objects, and all other finish reasons are removed before SQLite persistence.
+- Legacy assistant `finishReason: "max_tokens"` is normalized to the same safe `finishReason: "length"` marker so a refreshed client can offer Continue without retaining upstream metadata.
+
+### 4. Validation & Error Matrix
+
+- Missing/invalid request ID, message ID, action, or version -> `400 invalid_branch_request`.
+- Stale source version -> `409 conversation_conflict` with the current secret-free conversation projection.
+- Existing request ID with a different fingerprint -> `409 branch_request_conflict`.
+- Source message role does not support the action -> `409 branch_action_not_allowed`.
+- Source conversation is deleted -> `410 conversation_deleted`; tombstones remain authoritative.
+- A busy source or divergent destination -> `409 conversation_busy` / `409 branch_copy_conflict`; do not partially replace either transcript.
+
+### 5. Good / Base / Bad Cases
+
+- Good: retrying the same branch request returns the original destination, and the source still contains its complete transcript.
+- Base: a legacy truncated assistant message reloads with one safe `finishReason` marker and exposes Continue only when a route is available.
+- Bad: copying the entire UI message metadata object stores provider IDs or a credential reference, or a client-only `setMessages` edit silently destroys the source history.
+
+### 6. Tests Required
+
+- Assert branch/edit/resend/regenerate/continue preserve the source, set `parentChatId`, revalidate settings, and are idempotent by request fingerprint.
+- Assert stale versions, deleted tombstones, incompatible roles, busy sources, and divergent destinations return stable errors without cleanup leaks.
+- Inspect persisted `cf_ai_chat_agent_messages` rows and assert only `{ finishReason: "length" }` survives; assert legacy `max_tokens` maps to that marker and no other metadata or secret-like field survives.
+- Run browser acceptance at desktop and 390px widths with visible action bars and a conditional Continue control; use local fake/placeholder providers only.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await destination.importLegacyMessages(source.messages);
+// source messages and arbitrary UI metadata are copied without a request fence
+```
+
+#### Correct
+
+```typescript
+const operation = await root.reserveConversationBranch({
+  requestId,
+  fingerprint,
+  sourceId,
+  sourceMessageId,
+  expectedUpdatedAt,
+  action,
+  // bounded prefix and sanitized metadata are copied by the Agent
+});
+```

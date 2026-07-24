@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { evictDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { getAgentByName } from "agents";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -143,6 +143,15 @@ async function getConversationAgent(label: string, chatId: string) {
   return getAgentByName(env.TEAM_AGENT, instance, {
     props: { userLabel: label, scope: "conversation", chatId, rootInstance },
   }) as DurableObjectStub<TeamAgent>;
+}
+
+async function getPersistedAgentMessages(agent: DurableObjectStub<TeamAgent>): Promise<UIMessage[]> {
+  return runInDurableObject(agent, async (_instance, state) => {
+    const rows = state.storage.sql.exec<{ message: string }>(
+      "SELECT message FROM cf_ai_chat_agent_messages ORDER BY created_at, id",
+    ).toArray();
+    return rows.map((row) => JSON.parse(row.message) as UIMessage);
+  });
 }
 
 describe("Worker API", () => {
@@ -389,6 +398,37 @@ describe("Worker API", () => {
     await expect(root.getMemory()).resolves.toMatchObject({ memory: "" });
   });
 
+  it("persists only the safe truncated-output marker from Agent message metadata", async () => {
+    const label = `agent-metadata-${crypto.randomUUID()}`;
+    const conversation = await getConversationAgent(label, `metadata-${crypto.randomUUID()}`);
+    await conversation.importLegacyMessages([
+      {
+        id: "assistant-length",
+        role: "assistant",
+        metadata: {
+          finishReason: "length",
+          providerTrace: "sensitive-metadata-marker",
+          internal: { credentialReference: "omit" },
+        },
+        parts: [{ type: "text", text: "truncated response" }],
+      },
+      {
+        id: "assistant-stop",
+        role: "assistant",
+        metadata: { finishReason: "stop", providerTrace: "sensitive-metadata-marker" },
+        parts: [{ type: "text", text: "complete response" }],
+      },
+    ] as UIMessage[]);
+
+    const persisted = await getPersistedAgentMessages(conversation);
+    expect(persisted.find((message) => message.id === "assistant-length")?.metadata).toEqual({
+      finishReason: "length",
+    });
+    expect(persisted.find((message) => message.id === "assistant-stop")).not.toHaveProperty("metadata");
+    expect(JSON.stringify(persisted)).not.toContain("sensitive-metadata-marker");
+    expect(JSON.stringify(persisted)).not.toContain("credentialReference");
+  });
+
   it("imports legacy chats and memory into Agent storage exactly once", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {
@@ -419,7 +459,7 @@ describe("Worker API", () => {
           skillIds: [],
           messages: [
             { role: "user", content: "Prepare release notes" },
-            { role: "assistant", content: "Draft ready" },
+            { role: "assistant", content: "Draft ready", finishReason: "max_tokens" },
           ],
         },
       }),
@@ -430,6 +470,10 @@ describe("Worker API", () => {
     expect(firstList.conversations).toEqual([
       expect.objectContaining({ id: legacyChatId, title: "Imported work", messageCount: 2 }),
     ]);
+    const importedMessages = await getPersistedAgentMessages(await getConversationAgent(label, legacyChatId));
+    expect(importedMessages.find((message) => message.role === "assistant")?.metadata).toEqual({
+      finishReason: "length",
+    });
     const secondList = await apiRequest("/api/agent/conversations", cookie).then((response) => response.json()) as any;
     expect(secondList.conversations).toHaveLength(1);
 
@@ -511,6 +555,103 @@ describe("Worker API", () => {
     });
     expect(staleAgentMemoryUpdate.status).toBe(409);
     await expect(env.CHAT_STORE.get(legacyMemoryKey)).resolves.toBe("legacy preference");
+  });
+
+  it("creates durable idempotent conversation branches without changing the source transcript", async () => {
+    const { cookie, label } = await login(`agent-branch-${crypto.randomUUID()}`);
+    const sourceId = `branch-source-${crypto.randomUUID()}`;
+    const createdResponse = await apiRequest("/api/agent/conversations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: sourceId }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const sourceAgent = await getConversationAgent(label, sourceId);
+    const sourceMessages: UIMessage[] = [
+      { id: "branch-user-1", role: "user", parts: [{ type: "text", text: "first synthetic turn" }] },
+      { id: "branch-assistant-1", role: "assistant", parts: [{ type: "text", text: "first synthetic reply" }] },
+      { id: "branch-user-2", role: "user", parts: [{ type: "text", text: "second synthetic turn" }] },
+    ];
+    await sourceAgent.importLegacyMessages(sourceMessages);
+    const root = await getRootAgent(label);
+    await root.recordConversationActivity({ id: sourceId, messageCount: sourceMessages.length });
+    const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId)!;
+    const requestId = `branch-request-${crypto.randomUUID()}`;
+    const requestBody = {
+      requestId,
+      action: "branch",
+      sourceMessageId: "branch-assistant-1",
+      expectedUpdatedAt: source.updatedAt,
+    };
+
+    const unauthenticated = await exports.default.fetch(new Request(
+      `https://example.test/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) },
+    ));
+    expect(unauthenticated.status).toBe(401);
+    const crossOrigin = await apiRequest(`/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://other.example" },
+      body: JSON.stringify(requestBody),
+    });
+    expect(crossOrigin.status).toBe(403);
+
+    const branchedResponse = await apiRequest(`/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    expect(branchedResponse.status).toBe(200);
+    const branched = await branchedResponse.json() as any;
+    expect(branched).toEqual({
+      ok: true,
+      requestId,
+      conversation: expect.objectContaining({
+        id: expect.any(String),
+        parentChatId: sourceId,
+        messageCount: 2,
+      }),
+      launch: "none",
+    });
+    expect(branched.conversation.id).not.toBe(sourceId);
+    const destinationAgent = await getConversationAgent(label, branched.conversation.id);
+    await expect(destinationAgent.exportMessages()).resolves.toMatchObject({
+      messages: sourceMessages.slice(0, 2),
+      truncated: false,
+    });
+    await expect(sourceAgent.exportMessages()).resolves.toMatchObject({
+      messages: sourceMessages,
+      truncated: false,
+    });
+
+    const repeated = await apiRequest(`/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    expect(repeated.status).toBe(200);
+    await expect(repeated.json()).resolves.toMatchObject({
+      requestId,
+      conversation: { id: branched.conversation.id },
+    });
+    expect(await root.listConversations()).toHaveLength(2);
+
+    const conflictingRequest = await apiRequest(`/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...requestBody, sourceMessageId: "branch-user-1" }),
+    });
+    expect(conflictingRequest.status).toBe(409);
+    await expect(conflictingRequest.json()).resolves.toMatchObject({ error: "branch_request_conflict" });
+
+    const staleRequest = await apiRequest(`/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...requestBody, requestId: `stale-${crypto.randomUUID()}`, expectedUpdatedAt: source.updatedAt - 1 }),
+    });
+    expect(staleRequest.status).toBe(409);
+    await expect(staleRequest.json()).resolves.toMatchObject({ error: "conversation_conflict" });
+    expect(await root.listConversations()).toHaveLength(2);
   });
 
   it("preserves Agent conversation tombstones and retries persisted transcript cleanup", async () => {

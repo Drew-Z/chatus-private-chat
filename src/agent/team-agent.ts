@@ -20,6 +20,16 @@ import {
   type AgentExportPart,
   type AgentConversationCleanupRecord,
   type AgentConversationActivity,
+  type AgentConversationBranchInput,
+  type AgentConversationBranchCopyInput,
+  type AgentConversationBranchCopyResult,
+  type AgentConversationBranchLaunch,
+  type AgentConversationBranchOperation,
+  type AgentConversationBranchReservationResult,
+  type AgentConversationBranchSnapshotInput,
+  type AgentConversationBranchSnapshotResult,
+  type AgentConversationBranchStartInput,
+  type AgentConversationBranchStartResult,
   type AgentConversationInput,
   type AgentConversationMutationResult,
   type AgentConversationPatch,
@@ -80,6 +90,25 @@ type ConversationCleanupRow = {
   requested_at: number;
   attempts: number;
   last_attempt_at: number;
+};
+
+type ConversationBranchRow = {
+  request_id: string;
+  fingerprint: string;
+  source_chat_id: string;
+  source_message_id: string;
+  source_message_count: number;
+  destination_id: string;
+  launch: string;
+  anchor_message_id: string;
+  state: string;
+};
+
+type ConversationBranchLaunchRow = {
+  request_id: string;
+  fingerprint: string;
+  state: string;
+  body_json: string;
 };
 
 export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> {
@@ -145,6 +174,31 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         last_attempt_at INTEGER NOT NULL DEFAULT 0
       )
     `;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS chatus_conversation_branches (
+        request_id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        source_chat_id TEXT NOT NULL,
+        source_message_id TEXT NOT NULL,
+        source_message_count INTEGER NOT NULL,
+        destination_id TEXT NOT NULL,
+        launch TEXT NOT NULL,
+        anchor_message_id TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS chatus_conversation_branch_launches (
+        request_id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL,
+        body_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `;
   }
 
   async ensureIdentity(props: TeamAgentProps): Promise<TeamAgentIdentityResult> {
@@ -203,6 +257,96 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const created = this.getConversationRow(normalized.id);
     if (!created) return { ok: false, error: "conversation_not_found" };
     return { ok: true, conversation: conversationRowToSummary(created), created: true };
+  }
+
+  async reserveConversationBranch(
+    input: AgentConversationBranchInput,
+  ): Promise<AgentConversationBranchReservationResult> {
+    this.requireRootScope();
+    const normalized = normalizeConversationBranchInput(input);
+    if (!normalized) return { ok: false, error: "branch_request_conflict" };
+
+    const existing = this.getConversationBranchRow(normalized.requestId);
+    if (existing) {
+      if (existing.fingerprint !== normalized.fingerprint) {
+        return { ok: false, error: "branch_request_conflict" };
+      }
+      const operation = this.conversationBranchOperation(existing);
+      if (!operation) return { ok: false, error: "branch_failed" };
+      if (operation.state === "failed") return { ok: false, error: "branch_failed" };
+      return { ok: true, operation, existing: true };
+    }
+
+    const source = this.getConversationRow(normalized.sourceId);
+    if (!source) return { ok: false, error: "conversation_not_found" };
+    if (source.deleted_at !== 0) return { ok: false, error: "conversation_deleted" };
+    if (source.updated_at !== normalized.expectedUpdatedAt) {
+      return { ok: false, error: "conversation_conflict", current: conversationRowToSummary(source) };
+    }
+    if (this.getConversationRow(normalized.destinationId)) {
+      return { ok: false, error: "branch_request_conflict" };
+    }
+    const activeCount = this.sql<{ count: number }>`
+      SELECT COUNT(*) AS count FROM chatus_conversations WHERE deleted_at = 0
+    `[0]?.count || 0;
+    if (activeCount >= MAX_AGENT_CONVERSATIONS) {
+      return { ok: false, error: "conversation_limit_reached" };
+    }
+
+    const now = monotonicNow(source.updated_at);
+    this.sql`
+      INSERT INTO chatus_conversation_branches(
+        request_id, fingerprint, source_chat_id, source_message_id, source_message_count, destination_id,
+        launch, anchor_message_id, state, created_at, updated_at
+      ) VALUES (
+        ${normalized.requestId}, ${normalized.fingerprint}, ${normalized.sourceId},
+        ${normalized.sourceMessageId}, ${normalized.sourceMessageCount}, ${normalized.destinationId}, ${normalized.launch},
+        '', 'reserved', ${now}, ${now}
+      )
+    `;
+    this.writeConversation({
+      id: normalized.destinationId,
+      title: normalized.title,
+      createdAt: now,
+      updatedAt: now,
+      summary: "",
+      pinned: false,
+      routeId: normalized.routeId,
+      parentChatId: normalized.sourceId,
+      skillIds: normalized.skillIds || [],
+      messageCount: 0,
+    }, 0);
+    const created = this.getConversationBranchRow(normalized.requestId);
+    const operation = created ? this.conversationBranchOperation(created) : undefined;
+    return operation
+      ? { ok: true, operation, existing: false }
+      : { ok: false, error: "branch_failed" };
+  }
+
+  async markConversationBranchState(
+    requestIdValue: string,
+    fingerprintValue: string,
+    stateValue: "ready" | "launched" | "failed",
+    anchorMessageIdValue?: string,
+  ): Promise<AgentConversationBranchReservationResult> {
+    this.requireRootScope();
+    const requestId = normalizeBranchRequestId(requestIdValue);
+    const fingerprint = normalizeBranchFingerprint(fingerprintValue);
+    const state = normalizeBranchState(stateValue);
+    if (!requestId || !fingerprint || !state) return { ok: false, error: "branch_request_conflict" };
+    const current = this.getConversationBranchRow(requestId);
+    if (!current || current.fingerprint !== fingerprint) return { ok: false, error: "branch_request_conflict" };
+    const anchorMessageId = normalizeBranchMessageId(anchorMessageIdValue) || current.anchor_message_id;
+    this.sql`
+      UPDATE chatus_conversation_branches
+      SET state = ${state}, anchor_message_id = ${anchorMessageId}, updated_at = ${Date.now()}
+      WHERE request_id = ${requestId} AND fingerprint = ${fingerprint}
+    `;
+    const updated = this.getConversationBranchRow(requestId);
+    const operation = updated ? this.conversationBranchOperation(updated) : undefined;
+    return operation
+      ? { ok: true, operation, existing: true }
+      : { ok: false, error: "branch_failed" };
   }
 
   async importLegacyConversation(
@@ -354,6 +498,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.clearPersistedChatState();
     this.sql`DELETE FROM chatus_conversations`;
     this.sql`DELETE FROM chatus_conversation_cleanup`;
+    this.sql`DELETE FROM chatus_conversation_branches`;
     this.sql`DELETE FROM chatus_memory`;
     this.sql`DELETE FROM chatus_migrations`;
     this.sql`DELETE FROM capability_tool_trust`;
@@ -450,6 +595,151 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     return { synced: true, messageCount: normalized.length };
   }
 
+  async copyConversationBranchTo(
+    input: AgentConversationBranchCopyInput,
+  ): Promise<AgentConversationBranchCopyResult> {
+    this.requireConversationScope();
+    const destinationId = normalizeConversationId(input.destinationId);
+    const destinationInstance = boundedString(input.destinationInstance, 120);
+    const requestId = normalizeBranchRequestId(input.requestId);
+    const fingerprint = normalizeBranchFingerprint(input.fingerprint);
+    if (!destinationId || !destinationInstance || !requestId || !fingerprint || destinationId === this.chatId) {
+      return { ok: false, error: "branch_request_conflict" };
+    }
+    const snapshot = await this.buildConversationBranchSnapshot(input);
+    if (!snapshot.ok) return snapshot;
+    const props: TeamAgentProps = {
+      userLabel: this.userLabel,
+      scope: "conversation",
+      chatId: destinationId,
+      rootInstance: this.rootInstance,
+    };
+    const destination = await getAgentByName(this.env.TEAM_AGENT, destinationInstance, { props });
+    const identity = await destination.ensureIdentity(props);
+    if (!identity.ok) return { ok: false, error: "branch_request_conflict" };
+    const started = await destination.startConversationBranch({
+      requestId,
+      fingerprint,
+      messages: snapshot.messages,
+      launch: snapshot.launch,
+      body: normalizeBranchBody(input.body),
+      ...(snapshot.anchorMessageId ? { anchorMessageId: snapshot.anchorMessageId } : {}),
+    });
+    if (!started.ok) return { ok: false, error: started.error };
+    return {
+      ok: true,
+      launch: snapshot.launch,
+      ...(snapshot.anchorMessageId ? { anchorMessageId: snapshot.anchorMessageId } : {}),
+      messageCount: snapshot.messages.length,
+    };
+  }
+
+  private async buildConversationBranchSnapshot(
+    input: AgentConversationBranchSnapshotInput,
+  ): Promise<AgentConversationBranchSnapshotResult> {
+    this.requireConversationScope();
+    const normalized = normalizeConversationBranchSnapshotInput(input);
+    if (!normalized) return { ok: false, error: "branch_action_not_allowed" };
+    if (!(await this.waitUntilStable()) || this.hasPendingInteraction()) {
+      return { ok: false, error: "conversation_busy" };
+    }
+    if (this.messages.length !== normalized.sourceMessageCount) {
+      return { ok: false, error: "conversation_conflict" };
+    }
+    const sourceIndex = this.messages.findIndex((message) => message.id === normalized.sourceMessageId);
+    if (sourceIndex < 0) return { ok: false, error: "message_not_found" };
+    const source = this.messages[sourceIndex];
+    const messages = this.messages.map((message) => this.sanitizeMessageForPersistence(message));
+
+    if (normalized.action === "branch") {
+      if (source.role === "system") return { ok: false, error: "branch_action_not_allowed" };
+      return {
+        ok: true,
+        messages: messages.slice(0, sourceIndex + 1),
+        launch: "none",
+      };
+    }
+    if (normalized.action === "edit") {
+      if (source.role !== "user") return { ok: false, error: "branch_action_not_allowed" };
+      if (!normalized.editedText) return { ok: false, error: "edited_text_required" };
+      const attachments = source.parts.filter((part) => part.type === "file");
+      return {
+        ok: true,
+        messages: [
+          ...messages.slice(0, sourceIndex),
+          {
+            id: normalized.replacementMessageId,
+            role: "user",
+            parts: [{ type: "text", text: normalized.editedText }, ...attachments],
+          },
+        ],
+        launch: "respond",
+        anchorMessageId: normalized.replacementMessageId,
+      };
+    }
+    if (normalized.action === "resend") {
+      if (source.role !== "user") return { ok: false, error: "branch_action_not_allowed" };
+      return {
+        ok: true,
+        messages: messages.slice(0, sourceIndex + 1),
+        launch: "respond",
+        anchorMessageId: source.id,
+      };
+    }
+    if (normalized.action === "regenerate") {
+      if (source.role !== "assistant") return { ok: false, error: "branch_action_not_allowed" };
+      const userIndex = findPreviousUserMessageIndex(messages, sourceIndex);
+      if (userIndex < 0) return { ok: false, error: "branch_action_not_allowed" };
+      return {
+        ok: true,
+        messages: messages.slice(0, userIndex + 1),
+        launch: "respond",
+        anchorMessageId: messages[userIndex].id,
+      };
+    }
+    if (source.role !== "assistant") return { ok: false, error: "branch_action_not_allowed" };
+    return {
+      ok: true,
+      messages: messages.slice(0, sourceIndex + 1),
+      launch: "continue",
+      anchorMessageId: source.id,
+    };
+  }
+
+  async startConversationBranch(
+    input: AgentConversationBranchStartInput,
+  ): Promise<AgentConversationBranchStartResult> {
+    this.requireConversationScope();
+    const normalized = normalizeConversationBranchStartInput(input);
+    if (!normalized) return { ok: false, error: "branch_request_conflict" };
+    const existing = this.getConversationBranchLaunchRow(normalized.requestId);
+    if (existing) {
+      if (existing.fingerprint !== normalized.fingerprint) return { ok: false, error: "branch_request_conflict" };
+      return { ok: true, started: false, state: existing.state === "ready" ? "ready" : "already_started" };
+    }
+    if (!(await this.waitUntilStable()) || this.hasPendingInteraction()) {
+      return { ok: false, error: "conversation_busy" };
+    }
+    const messages = normalized.messages.map((message) => this.sanitizeMessageForPersistence(message));
+    if (!sameUiMessageList(this.messages, messages)) {
+      if (this.messages.length) return { ok: false, error: "branch_copy_conflict" };
+      await this.persistMessages(messages);
+    }
+    const now = Date.now();
+    this.sql`
+      INSERT INTO chatus_conversation_branch_launches(
+        request_id, fingerprint, state, body_json, created_at, updated_at
+      ) VALUES (
+        ${normalized.requestId}, ${normalized.fingerprint},
+        ${normalized.launch === "none" ? "ready" : "scheduled"},
+        ${JSON.stringify(normalized.body)}, ${now}, ${now}
+      )
+    `;
+    if (normalized.launch === "none") return { ok: true, started: false, state: "ready" };
+    this.ctx.waitUntil(this.runConversationBranch(normalized.requestId, normalized.launch));
+    return { ok: true, started: true, state: "scheduled" };
+  }
+
   async clearConversation(): Promise<void> {
     this.requireConversationScope();
     this.clearPersistedChatState();
@@ -495,7 +785,8 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       return chatErrorResponse("agent_identity_unavailable", "Agent identity is unavailable.", 401);
     }
 
-    const body = isRecord(options?.body) ? options.body : {};
+    const requestedBody = isRecord(options?.body) ? options.body : {};
+    const body = Object.keys(requestedBody).length ? requestedBody : this.getPendingBranchBody();
     const now = Date.now();
     const session: Session = {
       id: this.name,
@@ -576,6 +867,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
     return result.toUIMessageStreamResponse({
       originalMessages: this.messages,
+      messageMetadata: ({ part }) => part.type === "finish" && part.finishReason === "length"
+        ? { finishReason: "length" as const }
+        : undefined,
       headers: {
         "Cache-Control": "no-store",
         "X-RateLimit-Remaining": String(prepared.remaining),
@@ -616,6 +910,89 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         parent_chat_id, skill_ids, message_count, deleted_at
       FROM chatus_conversations WHERE id = ${id} LIMIT 1
     `[0];
+  }
+
+  private getConversationBranchRow(requestId: string): ConversationBranchRow | undefined {
+    return this.sql<ConversationBranchRow>`
+      SELECT request_id, fingerprint, source_chat_id, source_message_id, source_message_count, destination_id,
+        launch, anchor_message_id, state
+      FROM chatus_conversation_branches
+      WHERE request_id = ${requestId}
+      LIMIT 1
+    `[0];
+  }
+
+  private conversationBranchOperation(row: ConversationBranchRow): AgentConversationBranchOperation | undefined {
+    const launch = normalizeBranchLaunch(row.launch);
+    const state = normalizeConversationBranchOperationState(row.state);
+    const conversation = this.getConversationRow(row.destination_id);
+    if (!launch || !state || !conversation || conversation.deleted_at !== 0) return undefined;
+    return {
+      requestId: row.request_id,
+      sourceId: row.source_chat_id,
+      sourceMessageId: row.source_message_id,
+      sourceMessageCount: Math.max(0, Math.floor(row.source_message_count)),
+      destinationId: row.destination_id,
+      launch,
+      ...(normalizeBranchMessageId(row.anchor_message_id) ? { anchorMessageId: row.anchor_message_id } : {}),
+      state,
+      conversation: conversationRowToSummary(conversation),
+    };
+  }
+
+  private getConversationBranchLaunchRow(requestId: string): ConversationBranchLaunchRow | undefined {
+    return this.sql<ConversationBranchLaunchRow>`
+      SELECT request_id, fingerprint, state, body_json
+      FROM chatus_conversation_branch_launches
+      WHERE request_id = ${requestId}
+      LIMIT 1
+    `[0];
+  }
+
+  private getPendingBranchBody(): Record<string, unknown> {
+    const row = this.sql<ConversationBranchLaunchRow>`
+      SELECT request_id, fingerprint, state, body_json
+      FROM chatus_conversation_branch_launches
+      WHERE state = 'scheduled' OR state = 'running'
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `[0];
+    if (!row) return {};
+    try {
+      return normalizeBranchBody(JSON.parse(row.body_json));
+    } catch {
+      return {};
+    }
+  }
+
+  private async runConversationBranch(
+    requestId: string,
+    launch: Exclude<AgentConversationBranchLaunch, "none">,
+  ): Promise<void> {
+    const row = this.getConversationBranchLaunchRow(requestId);
+    if (!row || row.state !== "scheduled") return;
+    this.sql`
+      UPDATE chatus_conversation_branch_launches
+      SET state = 'running', updated_at = ${Date.now()}
+      WHERE request_id = ${requestId} AND state = 'scheduled'
+    `;
+    const body = this.getPendingBranchBody();
+    try {
+      const result = launch === "continue"
+        ? await this.continueLastTurn(body)
+        : await this.saveMessages((messages) => [...messages]);
+      this.sql`
+        UPDATE chatus_conversation_branch_launches
+        SET state = ${result.status === "completed" ? "completed" : "failed"}, updated_at = ${Date.now()}
+        WHERE request_id = ${requestId}
+      `;
+    } catch {
+      this.sql`
+        UPDATE chatus_conversation_branch_launches
+        SET state = 'failed', updated_at = ${Date.now()}
+        WHERE request_id = ${requestId}
+      `;
+    }
   }
 
   private writeConversation(input: AgentConversationInput, deletedAt: number): void {
@@ -660,6 +1037,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.sql`DELETE FROM cf_ai_chat_agent_tool_milestones`;
     this.sql`DELETE FROM cf_ai_chat_agent_tool_runs`;
     this.sql`DELETE FROM capability_tool_trust`;
+    this.sql`DELETE FROM chatus_conversation_branch_launches`;
     this.messages = [];
     this.pendingActivity = undefined;
   }
@@ -734,7 +1112,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   protected sanitizeMessageForPersistence(message: UIMessage): UIMessage {
     return {
       ...message,
-      metadata: undefined,
+      metadata: normalizeAgentMessageMetadata(message.metadata),
       parts: message.parts.map((part) => {
         if ("output" in part && typeof part.output === "string" && part.output.length > MAX_PERSISTED_TOOL_TEXT_CHARS) {
           return { ...part, output: `${part.output.slice(0, MAX_PERSISTED_TOOL_TEXT_CHARS)}\n[truncated]` };
@@ -765,6 +1143,165 @@ function normalizeConversationInput(input: AgentConversationInput): AgentConvers
     skillIds: normalizeSkillIds(input.skillIds),
     messageCount: Math.max(0, Math.floor(input.messageCount || 0)),
   };
+}
+
+function normalizeConversationBranchInput(
+  input: AgentConversationBranchInput,
+): AgentConversationBranchInput | null {
+  const requestId = normalizeBranchRequestId(input.requestId);
+  const fingerprint = normalizeBranchFingerprint(input.fingerprint);
+  const sourceId = normalizeConversationId(input.sourceId);
+  const sourceMessageId = normalizeBranchMessageId(input.sourceMessageId);
+  const destinationId = normalizeConversationId(input.destinationId);
+  const action = normalizeBranchAction(input.action);
+  const launch = normalizeBranchLaunch(input.launch);
+  const expectedLaunch = action === "branch" ? "none" : action === "continue" ? "continue" : "respond";
+  const expectedUpdatedAt = finiteTimestamp(input.expectedUpdatedAt, 0);
+  const sourceMessageCount = Number.isSafeInteger(input.sourceMessageCount) && input.sourceMessageCount > 0
+    ? input.sourceMessageCount
+    : 0;
+  if (
+    !requestId
+    || !fingerprint
+    || !sourceId
+    || !sourceMessageId
+    || !destinationId
+    || sourceId === destinationId
+    || !action
+    || launch !== expectedLaunch
+    || !expectedUpdatedAt
+    || !sourceMessageCount
+  ) return null;
+  return {
+    requestId,
+    fingerprint,
+    sourceId,
+    sourceMessageId,
+    sourceMessageCount,
+    action,
+    expectedUpdatedAt,
+    destinationId,
+    title: normalizeTitle(input.title) || DEFAULT_CONVERSATION_TITLE,
+    routeId: boundedString(input.routeId, 80),
+    skillIds: normalizeSkillIds(input.skillIds),
+    launch,
+  };
+}
+
+function normalizeConversationBranchSnapshotInput(
+  input: AgentConversationBranchSnapshotInput,
+): AgentConversationBranchSnapshotInput | null {
+  const sourceMessageId = normalizeBranchMessageId(input.sourceMessageId);
+  const replacementMessageId = normalizeBranchMessageId(input.replacementMessageId);
+  const action = normalizeBranchAction(input.action);
+  const sourceMessageCount = Number.isSafeInteger(input.sourceMessageCount) && input.sourceMessageCount > 0
+    ? input.sourceMessageCount
+    : 0;
+  const editedText = typeof input.editedText === "string" && input.editedText.trim()
+    ? input.editedText.slice(0, MAX_EXPORT_MESSAGE_TEXT_CHARS)
+    : undefined;
+  if (!sourceMessageId || !replacementMessageId || !action || !sourceMessageCount) return null;
+  if (action === "edit" && !editedText) return null;
+  return {
+    sourceMessageId,
+    sourceMessageCount,
+    replacementMessageId,
+    action,
+    ...(editedText ? { editedText } : {}),
+  };
+}
+
+function normalizeConversationBranchStartInput(
+  input: AgentConversationBranchStartInput,
+): AgentConversationBranchStartInput | null {
+  const requestId = normalizeBranchRequestId(input.requestId);
+  const fingerprint = normalizeBranchFingerprint(input.fingerprint);
+  const launch = normalizeBranchLaunch(input.launch);
+  const anchorMessageId = normalizeBranchMessageId(input.anchorMessageId);
+  if (!requestId || !fingerprint || !launch || !Array.isArray(input.messages) || !input.messages.length) return null;
+  if (input.messages.length > 200 || input.messages.some((message) => (
+    !message
+    || !normalizeBranchMessageId(message.id)
+    || (message.role !== "user" && message.role !== "assistant" && message.role !== "system")
+    || !Array.isArray(message.parts)
+  ))) return null;
+  const last = input.messages[input.messages.length - 1];
+  if (launch === "respond" && (!anchorMessageId || last.id !== anchorMessageId || last.role !== "user")) return null;
+  if (launch === "continue" && (!anchorMessageId || last.id !== anchorMessageId || last.role !== "assistant")) return null;
+  return {
+    requestId,
+    fingerprint,
+    messages: input.messages,
+    launch,
+    body: normalizeBranchBody(input.body),
+    ...(anchorMessageId ? { anchorMessageId } : {}),
+  };
+}
+
+function normalizeBranchRequestId(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  return normalized && normalized.length <= 120 && /^[A-Za-z0-9._:-]+$/.test(normalized) ? normalized : "";
+}
+
+function normalizeBranchFingerprint(value: unknown): string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : "";
+}
+
+function normalizeBranchMessageId(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 160 || /[\u0000-\u001f\u007f]/.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeBranchAction(
+  value: unknown,
+): AgentConversationBranchInput["action"] | undefined {
+  return value === "branch"
+    || value === "edit"
+    || value === "resend"
+    || value === "regenerate"
+    || value === "continue"
+    ? value
+    : undefined;
+}
+
+function normalizeBranchLaunch(value: unknown): AgentConversationBranchLaunch | undefined {
+  return value === "none" || value === "respond" || value === "continue" ? value : undefined;
+}
+
+function normalizeBranchState(value: unknown): "ready" | "launched" | "failed" | undefined {
+  return value === "ready" || value === "launched" || value === "failed" ? value : undefined;
+}
+
+function normalizeConversationBranchOperationState(
+  value: unknown,
+): AgentConversationBranchOperation["state"] | undefined {
+  return value === "reserved" || value === "ready" || value === "launched" || value === "failed"
+    ? value
+    : undefined;
+}
+
+function normalizeBranchBody(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const routeId = boundedString(value.routeId, 80);
+  const skillIds = normalizeSkillIds(value.skillIds);
+  return {
+    ...(routeId ? { routeId } : {}),
+    skillIds,
+  };
+}
+
+function normalizeAgentMessageMetadata(value: unknown): { finishReason: "length" } | undefined {
+  return isRecord(value) && value.finishReason === "length" ? { finishReason: "length" } : undefined;
+}
+
+function findPreviousUserMessageIndex(messages: UIMessage[], beforeIndex: number): number {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") return index;
+  }
+  return -1;
 }
 
 function conversationRowToSummary(row: ConversationRow): AgentConversationSummary {
@@ -957,6 +1494,10 @@ function positiveNumber(value: string | undefined, fallback: number): number {
 
 function sameUiMessage(left: UIMessage | undefined, right: UIMessage | undefined): boolean {
   return Boolean(left && right && JSON.stringify(left) === JSON.stringify(right));
+}
+
+function sameUiMessageList(left: UIMessage[], right: UIMessage[]): boolean {
+  return left.length === right.length && left.every((message, index) => sameUiMessage(message, right[index]));
 }
 
 async function contentFingerprint(value: string): Promise<string> {

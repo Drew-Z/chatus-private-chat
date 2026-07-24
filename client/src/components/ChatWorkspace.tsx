@@ -13,13 +13,16 @@ import {
 } from "lucide-react";
 import {
   ApiError,
+  createAgentConversationBranch,
   createAgentConversation,
   deleteAgentConversation,
   deleteUserData,
   exportUserData,
   listAgentConversations,
   revokeAllSessions,
+  submitFeedback,
   updateAgentConversation,
+  type AgentConversationBranchAction,
   type AgentConversation,
   type SessionProjection,
 } from "../lib/api";
@@ -27,7 +30,8 @@ import { friendlyAgentError } from "../lib/agent-errors";
 import { resolvePendingDraftAction, restoreRejectedDraft } from "../lib/state";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MemoryPanel } from "./MemoryPanel";
-import { MessageView } from "./MessageView";
+import { MessageView, type MessageAction } from "./MessageView";
+import type { UIMessage } from "ai";
 
 export function ChatWorkspace({
   session,
@@ -111,6 +115,25 @@ export function ChatWorkspace({
       ).sort((left, right) => right.updatedAt - left.updatedAt);
     });
   }, []);
+
+  const handleBranch = useCallback(async (
+    source: AgentConversation,
+    action: AgentConversationBranchAction,
+    sourceMessageId: string,
+    editedText?: string,
+  ) => {
+    if (busy || accountBusy) throw new Error("请先停止当前任务。");
+    setWorkspaceError("");
+    const result = await createAgentConversationBranch(source, {
+      requestId: `branch-${crypto.randomUUID()}`,
+      action,
+      sourceMessageId,
+      ...(editedText === undefined ? {} : { editedText }),
+    });
+    updateConversationInList(result.conversation);
+    setActiveId(result.conversation.id);
+    setSidebarOpen(false);
+  }, [accountBusy, busy, updateConversationInList]);
 
   const renameConversation = async (conversation: AgentConversation, title: string) => {
     setWorkspaceError("");
@@ -295,6 +318,7 @@ export function ChatWorkspace({
               blocked={accountBusy}
               onBusyChange={setBusy}
               onConversationChanged={handleConversationChanged}
+              onBranch={handleBranch}
             />
           ) : (
             <div className="chat-loading">
@@ -317,6 +341,7 @@ function ConversationChat({
   blocked,
   onBusyChange,
   onConversationChanged,
+  onBranch,
 }: {
   session: SessionProjection;
   conversation: AgentConversation;
@@ -325,11 +350,19 @@ function ConversationChat({
   blocked: boolean;
   onBusyChange: (busy: boolean) => void;
   onConversationChanged: () => void;
+  onBranch: (
+    source: AgentConversation,
+    action: AgentConversationBranchAction,
+    sourceMessageId: string,
+    editedText?: string,
+  ) => Promise<void>;
 }) {
   const online = useOnlineStatus();
   const [input, setInput] = useState(() => localStorage.getItem(conversationDraftKey(session.user, conversation.id)) || "");
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
   const [settledSubmission, setSettledSubmission] = useState(0);
+  const [waitingElapsed, setWaitingElapsed] = useState(0);
+  const [messageActionError, setMessageActionError] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
   const wasBusy = useRef(false);
   const submissionGeneration = useRef(0);
@@ -349,6 +382,7 @@ function ConversationChat({
     body: () => ({ routeId, skillIds, chatId: conversation.id }),
   });
   const busy = chat.status === "submitted" || chat.status === "streaming" || chat.isStreaming || chat.isRecovering;
+  const waitingFirstOutput = chat.status === "submitted" && busy;
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
@@ -359,6 +393,18 @@ function ConversationChat({
     wasBusy.current = busy;
     return () => onBusyChange(false);
   }, [busy, onBusyChange, onConversationChanged]);
+
+  useEffect(() => {
+    if (!waitingFirstOutput) {
+    setWaitingElapsed(0);
+      return;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      setWaitingElapsed(Math.max(0, Math.floor((Date.now() - started) / 1_000)));
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [waitingFirstOutput]);
 
   useEffect(() => {
     const key = conversationDraftKey(session.user, conversation.id);
@@ -407,6 +453,32 @@ function ConversationChat({
     }
   };
 
+  const handleMessageAction = async (message: UIMessage, action: MessageAction, editedText?: string) => {
+    setMessageActionError("");
+    try {
+      await onBranch(conversation, action, message.id, editedText);
+    } catch (error) {
+      const messageText = error instanceof ApiError ? error.message : "消息操作失败，请稍后重试。";
+      setMessageActionError(messageText);
+      throw error;
+    }
+  };
+
+  const handleFeedback = async (message: UIMessage, rating: "up" | "down") => {
+    setMessageActionError("");
+    try {
+      await submitFeedback({
+        rating,
+        routeId,
+        chatId: conversation.id,
+        messageId: message.id,
+        ...(rating === "down" ? { reason: "other" } : {}),
+      });
+    } catch (error) {
+      setMessageActionError(error instanceof ApiError ? error.message : "反馈提交失败，请稍后重试。");
+    }
+  };
+
   return (
     <div className="conversation-chat">
       <div className="chat-toolbar">
@@ -422,6 +494,7 @@ function ConversationChat({
 
       {!online && <div className="offline-banner" role="status"><WifiOff size={16} /><span>当前离线。已保留草稿，恢复网络后可以继续发送。</span></div>}
       {!routeAvailable && <div className="configuration-banner" role="status">当前没有可用模型线路，请联系管理员完成配置。</div>}
+      {messageActionError && <div className="workspace-error" role="alert"><span>{messageActionError}</span><button className="icon-button" type="button" onClick={() => setMessageActionError("")} title="关闭提示" aria-label="关闭提示">×</button></div>}
       <div className="message-list" aria-live="polite">
         <div className="message-column">
           {chat.messages.length === 0 && (
@@ -431,8 +504,24 @@ function ConversationChat({
             </div>
           )}
           {chat.messages.map((message) => (
-            <MessageView key={message.id} message={message} onApprove={chat.addToolApprovalResponse} />
+            <MessageView
+              key={message.id}
+              message={message}
+              onApprove={chat.addToolApprovalResponse}
+              onAction={(action, editedText) => handleMessageAction(message, action, editedText)}
+              onFeedback={routeAvailable ? (rating) => handleFeedback(message, rating) : undefined}
+              canContinue={message.role === "assistant" && isTruncatedMessage(message)}
+              disabled={interactionBlocked || !online}
+              generationDisabled={!routeAvailable}
+            />
           ))}
+          {waitingFirstOutput && (
+            <div className="thinking-row" role="status" aria-live="polite">
+              <span className="thinking-indicator" aria-hidden="true" />
+              <span>{waitingElapsed >= 3 ? `正在等待首字输出 · ${waitingElapsed}s` : "正在准备响应"}</span>
+            </div>
+          )}
+          {busy && !waitingFirstOutput && !chat.isRecovering && <div className="stream-note">正在生成响应...</div>}
           {chat.isRecovering && <div className="stream-note">正在恢复中断的任务...</div>}
           <div ref={endRef} />
         </div>
@@ -483,6 +572,13 @@ function useOnlineStatus(): boolean {
     };
   }, []);
   return online;
+}
+
+function isTruncatedMessage(message: UIMessage): boolean {
+  const metadata = message.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const value = metadata as Record<string, unknown>;
+  return value.truncated === true || value.finishReason === "length" || value.finish_reason === "length";
 }
 
 function activeConversationKey(user: string): string {

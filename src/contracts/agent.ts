@@ -89,6 +89,124 @@ export type AgentConversationActivity = {
   skillIds?: string[];
 };
 
+export type AgentConversationBranchAction =
+  | "branch"
+  | "edit"
+  | "resend"
+  | "regenerate"
+  | "continue";
+
+export type AgentConversationBranchLaunch = "none" | "respond" | "continue";
+
+export type AgentConversationBranchInput = {
+  requestId: string;
+  fingerprint: string;
+  sourceId: string;
+  sourceMessageId: string;
+  sourceMessageCount: number;
+  action: AgentConversationBranchAction;
+  expectedUpdatedAt: number;
+  destinationId: string;
+  title: string;
+  routeId?: string;
+  skillIds?: string[];
+  launch: AgentConversationBranchLaunch;
+};
+
+export type AgentConversationBranchOperation = {
+  requestId: string;
+  sourceId: string;
+  sourceMessageId: string;
+  sourceMessageCount: number;
+  destinationId: string;
+  launch: AgentConversationBranchLaunch;
+  anchorMessageId?: string;
+  state: "reserved" | "ready" | "launched" | "failed";
+  conversation: AgentConversationSummary;
+};
+
+export type AgentConversationBranchReservationResult =
+  | { ok: true; operation: AgentConversationBranchOperation; existing: boolean }
+  | {
+      ok: false;
+      error:
+        | "conversation_not_found"
+        | "conversation_deleted"
+        | "conversation_conflict"
+        | "conversation_limit_reached"
+        | "branch_request_conflict"
+        | "branch_failed";
+      current?: AgentConversationSummary;
+    };
+
+export type AgentConversationBranchSnapshotInput = {
+  sourceMessageId: string;
+  sourceMessageCount: number;
+  action: AgentConversationBranchAction;
+  editedText?: string;
+  replacementMessageId: string;
+};
+
+export type AgentConversationBranchSnapshotResult =
+  | {
+      ok: true;
+      messages: UIMessage[];
+      launch: AgentConversationBranchLaunch;
+      anchorMessageId?: string;
+    }
+  | {
+      ok: false;
+      error:
+        | "conversation_busy"
+        | "conversation_conflict"
+        | "message_not_found"
+        | "branch_action_not_allowed"
+        | "edited_text_required";
+    };
+
+export type AgentConversationBranchCopyInput = AgentConversationBranchSnapshotInput & {
+  requestId: string;
+  fingerprint: string;
+  destinationId: string;
+  destinationInstance: string;
+  body: Record<string, unknown>;
+};
+
+export type AgentConversationBranchCopyResult =
+  | {
+      ok: true;
+      launch: AgentConversationBranchLaunch;
+      anchorMessageId?: string;
+      messageCount: number;
+    }
+  | {
+      ok: false;
+      error:
+        | "conversation_busy"
+        | "conversation_conflict"
+        | "message_not_found"
+        | "branch_action_not_allowed"
+        | "edited_text_required"
+        | "branch_request_conflict"
+        | "branch_copy_conflict";
+    };
+
+export type AgentConversationBranchStartInput = {
+  requestId: string;
+  fingerprint: string;
+  messages: UIMessage[];
+  launch: AgentConversationBranchLaunch;
+  body: Record<string, unknown>;
+  anchorMessageId?: string;
+};
+
+export type AgentConversationBranchStartResult =
+  | { ok: true; started: boolean; state: "ready" | "scheduled" | "already_started" }
+  | {
+      ok: false;
+      error: "branch_request_conflict" | "conversation_busy" | "branch_copy_conflict";
+    };
+
 export type AgentMemoryRecord = {
   memory: string;
   revision: string;

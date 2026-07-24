@@ -1,19 +1,51 @@
 import { useState } from "react";
-import { Check, ChevronDown, Copy, FileText, Link, Wrench } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  GitBranch,
+  Link,
+  FileText,
+  Pencil,
+  Play,
+  RotateCw,
+  Send,
+  ThumbsDown,
+  ThumbsUp,
+  Wrench,
+} from "lucide-react";
 import { isToolUIPart, type UIMessage } from "ai";
 import { copyText, sanitizeMarkdownUrl } from "../lib/markdown";
 import { MarkdownContent } from "./MarkdownContent";
 
 type ApprovalHandler = (input: { id: string; approved: boolean }) => void;
+export type MessageAction = "edit" | "resend" | "regenerate" | "continue" | "branch";
+type MessageActionHandler = (action: MessageAction, editedText?: string) => void | Promise<void>;
+type FeedbackHandler = (rating: "up" | "down") => void | Promise<void>;
 
 export function MessageView({
   message,
   onApprove,
+  onAction,
+  onFeedback,
+  canContinue = false,
+  disabled = false,
+  generationDisabled = false,
 }: {
   message: UIMessage;
   onApprove: ApprovalHandler;
+  onAction?: MessageActionHandler;
+  onFeedback?: FeedbackHandler;
+  canContinue?: boolean;
+  disabled?: boolean;
+  generationDisabled?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+  const [feedback, setFeedback] = useState<"up" | "down">();
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
   const text = message.parts
     .filter((part) => part.type === "text")
     .map((part) => part.text)
@@ -23,6 +55,36 @@ export function MessageView({
     if (!text || !(await copyText(text))) return;
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1_500);
+  };
+
+  const runAction = async (action: MessageAction, value?: string) => {
+    if (!onAction || disabled || actionBusy || (generationDisabled && action !== "branch")) return;
+    setActionBusy(true);
+    try {
+      await onAction(action, value);
+      setEditing(false);
+    } catch {
+      // The owning workspace renders the actionable error; keep this toolbar usable.
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const submitFeedback = async (rating: "up" | "down") => {
+    if (!onFeedback || disabled || feedbackBusy) return;
+    setFeedbackBusy(true);
+    try {
+      await onFeedback(rating);
+      setFeedback(rating);
+    } finally {
+      setFeedbackBusy(false);
+    }
+  };
+
+  const startEditing = () => {
+    if (disabled || generationDisabled || actionBusy) return;
+    setEditText(text);
+    setEditing(true);
   };
 
   return (
@@ -63,11 +125,53 @@ export function MessageView({
           return null;
         })}
       </div>
+      {editing && message.role === "user" && (
+        <form
+          className="message-edit-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (editText.trim()) void runAction("edit", editText);
+          }}
+        >
+          <textarea
+            value={editText}
+            onChange={(event) => setEditText(event.target.value)}
+            rows={3}
+            autoFocus
+            disabled={actionBusy}
+            aria-label="编辑消息"
+          />
+          <div className="message-edit-actions">
+            <button className="quiet-button" type="button" onClick={() => setEditing(false)} disabled={actionBusy}>取消</button>
+            <button className="primary-button" type="submit" disabled={actionBusy || !editText.trim()}><Send size={14} />分支发送</button>
+          </div>
+        </form>
+      )}
       {text && (
         <div className="message-actions" aria-label="消息操作">
           <button className="icon-button" type="button" onClick={() => void copy()} title="复制消息" aria-label="复制消息">
             {copied ? <Check size={15} /> : <Copy size={15} />}
           </button>
+          {onAction && message.role === "user" && !editing && (
+            <>
+              <button className="icon-button" type="button" onClick={startEditing} disabled={disabled || generationDisabled || actionBusy} title="编辑并分支发送" aria-label="编辑并分支发送"><Pencil size={15} /></button>
+              <button className="icon-button" type="button" onClick={() => void runAction("resend")} disabled={disabled || generationDisabled || actionBusy} title="重新发送并创建分支" aria-label="重新发送并创建分支"><RotateCw size={15} /></button>
+              <button className="icon-button" type="button" onClick={() => void runAction("branch")} disabled={disabled || actionBusy} title="创建对话分支" aria-label="创建对话分支"><GitBranch size={15} /></button>
+            </>
+          )}
+          {onAction && message.role === "assistant" && (
+            <>
+              <button className="icon-button" type="button" onClick={() => void runAction("regenerate")} disabled={disabled || generationDisabled || actionBusy} title="重新生成并创建分支" aria-label="重新生成并创建分支"><RotateCw size={15} /></button>
+              {canContinue && <button className="icon-button" type="button" onClick={() => void runAction("continue")} disabled={disabled || generationDisabled || actionBusy} title="继续生成并创建分支" aria-label="继续生成并创建分支"><Play size={15} /></button>}
+              {onFeedback && (
+                <>
+                  <button className={`icon-button ${feedback === "up" ? "selected" : ""}`} type="button" onClick={() => void submitFeedback("up")} disabled={disabled || feedbackBusy} title="有帮助" aria-label="有帮助"><ThumbsUp size={15} /></button>
+                  <button className={`icon-button ${feedback === "down" ? "selected" : ""}`} type="button" onClick={() => void submitFeedback("down")} disabled={disabled || feedbackBusy} title="没帮助" aria-label="没帮助"><ThumbsDown size={15} /></button>
+                </>
+              )}
+              <button className="icon-button" type="button" onClick={() => void runAction("branch")} disabled={disabled || actionBusy} title="创建对话分支" aria-label="创建对话分支"><GitBranch size={15} /></button>
+            </>
+          )}
         </div>
       )}
     </article>

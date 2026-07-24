@@ -188,6 +188,17 @@ export type AgentConversation = {
   messageCount: number;
 };
 
+export type AgentConversationBranchAction = "branch" | "edit" | "resend" | "regenerate" | "continue";
+
+export type AgentConversationBranchResult = {
+  requestId: string;
+  conversation: AgentConversation;
+  launch: "none" | "respond" | "continue";
+  anchorMessageId?: string;
+};
+
+export type FeedbackRating = "up" | "down";
+
 export type AgentMemory = {
   memory: string;
   revision: string;
@@ -464,6 +475,46 @@ export async function deleteAgentConversation(conversation: AgentConversation): 
   return data.conversations;
 }
 
+export async function createAgentConversationBranch(
+  conversation: AgentConversation,
+  input: {
+    requestId: string;
+    action: AgentConversationBranchAction;
+    sourceMessageId: string;
+    editedText?: string;
+  },
+): Promise<AgentConversationBranchResult> {
+  const data = await requestJson(`/api/agent/conversations/${encodeURIComponent(conversation.id)}/branches`, {
+    method: "POST",
+    body: JSON.stringify({
+      ...input,
+      expectedUpdatedAt: conversation.updatedAt,
+    }),
+  });
+  if (!isAgentConversationBranchResult(data)) {
+    throw new ApiError("invalid_branch_response", "分支会话结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function submitFeedback(input: {
+  rating: FeedbackRating;
+  routeId: string;
+  chatId: string;
+  messageId: string;
+  reason?: "inaccurate" | "misunderstood" | "verbose" | "format" | "other";
+}): Promise<FeedbackRating> {
+  const data = await requestJson("/api/feedback", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!isRecord(data) || !hasExactKeys(data, ["ok", "rating"]) || data.ok !== true
+    || (data.rating !== "up" && data.rating !== "down")) {
+    throw new ApiError("invalid_feedback_response", "反馈结果格式无效。", 502);
+  }
+  return data.rating;
+}
+
 export async function getAgentMemory(): Promise<AgentMemory> {
   const data = await requestJson("/api/agent/memory");
   if (!isAgentMemory(data)) throw new ApiError("invalid_memory_response", "长期记忆格式无效。", 502);
@@ -648,6 +699,14 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
     && (value.parentChatId === undefined || isNonEmptyString(value.parentChatId))
     && isUniqueStringIdArray(value.skillIds)
     && isNonNegativeInteger(value.messageCount);
+}
+
+export function isAgentConversationBranchResult(value: unknown): value is AgentConversationBranchResult {
+  if (!isRecord(value) || !isNonEmptyString(value.requestId) || !isAgentConversation(value.conversation)
+    || (value.launch !== "none" && value.launch !== "respond" && value.launch !== "continue")) return false;
+  const allowedKeys = new Set(["ok", "requestId", "conversation", "launch", "anchorMessageId"]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key)) || value.ok !== true) return false;
+  return value.anchorMessageId === undefined || isNonEmptyString(value.anchorMessageId);
 }
 
 export function isAgentMemory(value: unknown): value is AgentMemory {

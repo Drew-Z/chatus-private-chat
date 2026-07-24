@@ -9,8 +9,10 @@ import {
   isAdminMemberSessionsResponse,
   isAdminSessionProjection,
   isAgentConversation,
+  isAgentConversationBranchResult,
   isAgentMemory,
   isSessionProjection,
+  submitFeedback,
   isUserDataExport,
   isUserDataMutationResponse,
 } from "../client/src/lib/api";
@@ -337,6 +339,46 @@ describe("React client runtime validation", () => {
     expect(isAgentConversation({ ...conversation, updatedAt: 9 })).toBe(false);
     expect(isAgentConversation({ ...conversation, messageCount: -1 })).toBe(false);
     expect(isAgentConversation({ ...conversation, skillIds: ["coding", "coding"] })).toBe(false);
+  });
+
+  it("validates secret-free branch responses and feedback envelopes", async () => {
+    const conversation = {
+      id: "branch-1",
+      title: "Release notes · 分支",
+      createdAt: 10,
+      updatedAt: 20,
+      summary: "",
+      pinned: false,
+      parentChatId: "chat-1",
+      routeId: "primary",
+      skillIds: ["coding"],
+      messageCount: 2,
+    };
+    const branch = {
+      ok: true,
+      requestId: "branch-request-1",
+      conversation,
+      launch: "respond",
+      anchorMessageId: "message-1",
+    };
+    expect(isAgentConversationBranchResult(branch)).toBe(true);
+    expect(isAgentConversationBranchResult({ ...branch, accessCode: "secret" })).toBe(false);
+    expect(isAgentConversationBranchResult({ ...branch, conversation: { ...conversation, messageCount: -1 } })).toBe(false);
+    expect(isAgentConversationBranchResult({ ...branch, launch: "background" })).toBe(false);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, rating: "up" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(submitFeedback({ rating: "up", routeId: "primary", chatId: "chat-1", messageId: "message-2" })).resolves.toBe("up");
+    expect(fetchSpy).toHaveBeenCalledWith("/api/feedback", expect.objectContaining({ method: "POST" }));
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, rating: "up", accessCode: "secret" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(submitFeedback({ rating: "up", routeId: "primary", chatId: "chat-1", messageId: "message-2" })).rejects.toMatchObject({ code: "invalid_feedback_response" });
+    fetchSpy.mockRestore();
   });
 
   it("validates memory revision and size metadata", () => {

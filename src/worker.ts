@@ -10,6 +10,10 @@ import type { TeamAgent } from "./agent/team-agent";
 import {
   MAX_AGENT_CONVERSATIONS,
   type AgentExportMessage,
+  type AgentConversationBranchAction,
+  type AgentConversationBranchLaunch,
+  type AgentConversationBranchOperation,
+  type AgentConversationBranchReservationResult,
   type AgentConversationInput,
   type AgentConversationMutationResult,
   type AgentConversationSummary,
@@ -973,6 +977,13 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
   if (url.pathname === "/api/agent/conversations" && request.method === "POST") {
     return handleCreateAgentConversation(request, env, session);
+  }
+  if (
+    url.pathname.startsWith("/api/agent/conversations/")
+    && url.pathname.endsWith("/branches")
+    && request.method === "POST"
+  ) {
+    return handleCreateAgentConversationBranch(request, env, session, url);
   }
   if (url.pathname.startsWith("/api/agent/conversations/") && request.method === "PATCH") {
     return handleUpdateAgentConversation(request, env, session, url);
@@ -2496,6 +2507,100 @@ async function handleCreateAgentConversation(request: Request, env: Env, session
   return jsonResponse({ ok: true, conversation: result.conversation }, result.created ? 201 : 200);
 }
 
+async function handleCreateAgentConversationBranch(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+): Promise<Response> {
+  const sourceId = agentConversationBranchSourceIdFromPath(url);
+  if (!sourceId) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  const body = await readJson<{
+    requestId?: unknown;
+    action?: unknown;
+    sourceMessageId?: unknown;
+    expectedUpdatedAt?: unknown;
+    editedText?: unknown;
+  }>(request);
+  const requestId = normalizeAgentBranchRequestId(body.requestId);
+  const action = normalizeAgentBranchAction(body.action);
+  const sourceMessageId = normalizeAgentBranchMessageId(body.sourceMessageId);
+  const expectedUpdatedAt = finitePositiveInteger(body.expectedUpdatedAt);
+  const editedText = typeof body.editedText === "string" ? body.editedText : undefined;
+  if (!requestId || !action || !sourceMessageId || !expectedUpdatedAt) {
+    return jsonResponse({ error: "invalid_branch_request", message: "分支请求无效，请刷新后重试" }, 400);
+  }
+  if ((action === "edit" && !editedText?.trim()) || (action !== "edit" && editedText !== undefined)) {
+    return jsonResponse({ error: "invalid_branch_request", message: "分支编辑内容无效" }, 400);
+  }
+
+  await ensureAgentLegacyImport(env, session.label);
+  await drainAgentConversationCleanup(env, session.label);
+  const root = await getTeamAgent(env, session.label);
+  const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId);
+  if (!source) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
+  const settings = await repairAgentConversationSettings(env, session.label, source.routeId, source.skillIds);
+  const launch = branchLaunchForAction(action);
+  const fingerprint = await secretFingerprint(JSON.stringify({
+    sourceId,
+    sourceMessageId,
+    action,
+    expectedUpdatedAt,
+    editedText: editedText || "",
+  }));
+  const reservation = await root.reserveConversationBranch({
+    requestId,
+    fingerprint,
+    sourceId,
+    sourceMessageId,
+    sourceMessageCount: source.messageCount,
+    action,
+    expectedUpdatedAt,
+    destinationId: crypto.randomUUID(),
+    title: branchConversationTitle(source.title),
+    routeId: settings.routeId,
+    skillIds: settings.skillIds,
+    launch,
+  });
+  if (reservation.ok === false) return agentConversationBranchReservationError(reservation);
+  if (reservation.operation.state === "ready" || reservation.operation.state === "launched") {
+    return agentConversationBranchResponse(reservation.operation);
+  }
+
+  const sourceAgent = await getTeamAgentConversation(env, session.label, sourceId);
+  const copied = await sourceAgent.copyConversationBranchTo({
+    sourceMessageId,
+    sourceMessageCount: reservation.operation.sourceMessageCount,
+    action,
+    ...(editedText === undefined ? {} : { editedText }),
+    replacementMessageId: `branch-${requestId}`,
+    requestId,
+    fingerprint,
+    destinationId: reservation.operation.destinationId,
+    destinationInstance: await getTeamAgentConversationInstanceName(session.label, reservation.operation.destinationId),
+    body: { routeId: settings.routeId, skillIds: settings.skillIds },
+  });
+  if ("error" in copied) {
+    await failAgentConversationBranch(env, session.label, root, reservation.operation, fingerprint);
+    return agentConversationBranchCopyError(copied.error);
+  }
+
+  await root.recordConversationActivity({
+    id: reservation.operation.destinationId,
+    messageCount: copied.messageCount,
+    routeId: settings.routeId,
+    skillIds: settings.skillIds,
+  });
+  const completed = await root.markConversationBranchState(
+    requestId,
+    fingerprint,
+    copied.launch === "none" ? "ready" : "launched",
+    copied.anchorMessageId,
+  );
+  if (completed.ok === false) return agentConversationBranchReservationError(completed);
+  return agentConversationBranchResponse(completed.operation);
+}
+
 async function handleUpdateAgentConversation(
   request: Request,
   env: Env,
@@ -2687,6 +2792,142 @@ async function validateAgentConversationSettings(
     routeId: requestedRoute || (useDefaults ? access.defaultRoute : undefined),
     skillIds,
   };
+}
+
+async function repairAgentConversationSettings(
+  env: Env,
+  label: string,
+  routeValue: unknown,
+  skillValue: unknown,
+): Promise<{ routeId?: string; skillIds: string[] }> {
+  const config = await loadAppConfig(env);
+  const access = await getRouteAccess(config, label, env);
+  const requestedRoute = typeof routeValue === "string" ? routeValue.trim() : "";
+  const routeId = requestedRoute && access.routes.some((route) => route.id === requestedRoute)
+    ? requestedRoute
+    : access.defaultRoute || undefined;
+  const allowedSkills = new Set(getPublicCapabilities(config, access.user).skills.map((skill) => skill.id));
+  const skillIds = normalizeSelectedSkillIds(skillValue)
+    .filter((skillId) => allowedSkills.has(skillId));
+  return { routeId, skillIds };
+}
+
+function agentConversationBranchSourceIdFromPath(url: URL): string {
+  const prefix = "/api/agent/conversations/";
+  const suffix = "/branches";
+  if (!url.pathname.startsWith(prefix) || !url.pathname.endsWith(suffix)) return "";
+  const encoded = url.pathname.slice(prefix.length, -suffix.length);
+  if (!encoded || encoded.includes("/")) return "";
+  try {
+    return normalizeAgentConversationId(decodeURIComponent(encoded));
+  } catch {
+    return "";
+  }
+}
+
+function normalizeAgentBranchRequestId(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  return normalized && normalized.length <= 120 && /^[A-Za-z0-9._:-]+$/.test(normalized) ? normalized : "";
+}
+
+function normalizeAgentBranchMessageId(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 160 || /[\u0000-\u001f\u007f]/.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeAgentBranchAction(value: unknown): AgentConversationBranchAction | undefined {
+  return value === "branch"
+    || value === "edit"
+    || value === "resend"
+    || value === "regenerate"
+    || value === "continue"
+    ? value
+    : undefined;
+}
+
+function branchLaunchForAction(action: AgentConversationBranchAction): AgentConversationBranchLaunch {
+  if (action === "branch") return "none";
+  if (action === "continue") return "continue";
+  return "respond";
+}
+
+function branchConversationTitle(title: string): string {
+  const base = title.trim().slice(0, 68) || "新对话";
+  return `${base} · 分支`;
+}
+
+function agentConversationBranchResponse(operation: AgentConversationBranchOperation): Response {
+  return jsonResponse({
+    ok: true,
+    requestId: operation.requestId,
+    conversation: operation.conversation,
+    launch: operation.launch,
+    ...(operation.anchorMessageId ? { anchorMessageId: operation.anchorMessageId } : {}),
+  }, operation.state === "reserved" ? 202 : 200);
+}
+
+function agentConversationBranchReservationError(
+  result: Extract<AgentConversationBranchReservationResult, { ok: false }>,
+): Response {
+  if (result.error === "conversation_conflict") {
+    return jsonResponse({
+      error: result.error,
+      message: "源会话已更新，请刷新后重试",
+      current: result.current || null,
+    }, 409);
+  }
+  if (result.error === "conversation_limit_reached") {
+    return jsonResponse({ error: result.error, message: `最多保留 ${MAX_AGENT_CONVERSATIONS} 个会话` }, 409);
+  }
+  if (result.error === "conversation_deleted") {
+    return jsonResponse({ error: result.error, message: "源会话已删除" }, 410);
+  }
+  if (result.error === "branch_request_conflict") {
+    return jsonResponse({ error: result.error, message: "分支请求标识已被其他操作使用" }, 409);
+  }
+  if (result.error === "branch_failed") {
+    return jsonResponse({ error: result.error, message: "分支创建未完成，请重新发起" }, 409);
+  }
+  return jsonResponse({ error: result.error, message: "源会话不存在" }, 404);
+}
+
+function agentConversationBranchCopyError(error: string): Response {
+  if (error === "conversation_busy") {
+    return jsonResponse({ error, message: "源会话仍在处理中，请稍后重试" }, 409);
+  }
+  if (error === "conversation_conflict") {
+    return jsonResponse({ error, message: "源会话已更新，请刷新后重试" }, 409);
+  }
+  if (error === "message_not_found") {
+    return jsonResponse({ error, message: "消息已不存在，请刷新后重试" }, 409);
+  }
+  if (error === "edited_text_required") {
+    return jsonResponse({ error, message: "编辑内容不能为空" }, 400);
+  }
+  if (error === "branch_copy_conflict") {
+    return jsonResponse({ error, message: "目标分支已有不同内容，请重新发起" }, 409);
+  }
+  if (error === "branch_request_conflict") {
+    return jsonResponse({ error, message: "分支请求标识已被其他操作使用" }, 409);
+  }
+  return jsonResponse({ error, message: "当前消息不支持此操作" }, 409);
+}
+
+async function failAgentConversationBranch(
+  env: Env,
+  label: string,
+  root: DurableObjectStub<TeamAgent>,
+  operation: AgentConversationBranchOperation,
+  fingerprint: string,
+): Promise<void> {
+  await root.markConversationBranchState(operation.requestId, fingerprint, "failed").catch(() => undefined);
+  const deleted = await root.deleteConversation(operation.destinationId, operation.conversation.updatedAt).catch(() => ({ ok: false }));
+  if (deleted && "ok" in deleted && deleted.ok) {
+    await attemptAgentConversationCleanup(env, label, operation.destinationId, root);
+  }
 }
 
 function agentConversationMutationError(result: AgentConversationMutationResult): Response {
@@ -3344,6 +3585,9 @@ function toAgentUiMessages(messages: ChatMessage[]): UIMessage[] {
       id: `legacy-${index}-${Math.max(0, Math.floor(message.createdAt || 0))}`,
       role: message.role,
       parts,
+      ...(message.role === "assistant" && (message.finishReason === "length" || message.finishReason === "max_tokens")
+        ? { metadata: { finishReason: "length" as const } }
+        : {}),
     });
   }
   return output;

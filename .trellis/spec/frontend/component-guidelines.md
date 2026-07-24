@@ -155,6 +155,19 @@ type ModelOffering = {
 - State clearly in the revoke confirmation that access and sessions are removed while chats, memory, and assignments remain. Full user-data deletion is a separate destructive workflow.
 - Keep "恢复默认配置" and "注销会话" as separate member operations. The former is revision-checked and resets only `config.users[label]`; the latter reports session cleanup completeness and never mutates capability assignments.
 
+## React Message Action Bar
+
+- `MessageView` owns a compact action bar immediately below the message. Copy is always available for non-empty text; user messages expose edit/resend/branch, and assistant messages expose regenerate/feedback/branch plus Continue only when the server-persisted metadata is exactly `{ finishReason: "length" }`.
+- Pass `disabled` for an active run, offline state, or account mutation. Pass `generationDisabled` when the selected logical route is unavailable. Copy and branch remain usable when generation is unavailable, while edit/resend/regenerate/continue and feedback are disabled.
+- Action buttons must remain visible and keyboard reachable on touch layouts; opacity or hover must never be the only discoverability mechanism. Use `aria-label` and `title` on every icon button.
+- The edit form is an accessible native form with an auto-focused textarea, Cancel, and branch-and-send submit. Its async result belongs to the source message and the workspace owns the actionable error banner.
+- Keep action busy state local to the owning message so two message rows cannot block or mutate one another. Disable the row while its branch request is in flight, then activate the server-returned conversation.
+
+### Tests Required
+
+- Assert the role/state matrix for copy, edit, resend, regenerate, feedback, branch, and conditional Continue, including no-route, offline, active-run, and failed-turn states.
+- Assert desktop and 390px action bars are visible, keyboard focusable, and free of horizontal overflow; assert the edit form restores focus to its originating control after cancel or completion.
+
 ## Styling Patterns
 
 - Put React visual rules in `client/src/styles.css` and legacy/admin rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in legacy scripts.
