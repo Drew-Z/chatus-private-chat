@@ -23,10 +23,12 @@
     "07-25-workspace-visual-interaction-pass",
     "07-25-integrated-stream-telemetry-acceptance",
     "07-25-public-guest-model-access",
-    "07-25-multimodal-image-input"
+    "07-25-multimodal-image-input",
+    "07-26-product-closure-docs-legacy-cleanup",
+    "07-26-workspace-file-upload-attachments"
   ],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Workspace file upload MVP ships member-only UTF-8 text-file context as deterministic provider-visible text. Folder upload, PDF/Office extraction, workspace file tree, tool-backed file operations, sandbox execution, and Codex-like goal/planning mode remain follow-up roadmap children.",
   "meta": {}
 }
