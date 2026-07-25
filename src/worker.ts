@@ -34,6 +34,13 @@ import type {
   ToolExecutor,
 } from "./contracts/capability";
 import type { ChatMessage, ChatPart, ToolEventSummary } from "./contracts/chat";
+import {
+  DEFAULT_IMAGE_INPUT_POLICY,
+  MAX_INLINE_IMAGE_BYTES_PER_MESSAGE,
+  parseDataImage,
+  type ImageInputPolicy,
+  type ImageValidationErrorCode,
+} from "./contracts/image";
 import type {
   ProviderConfig,
   ProviderCredential,
@@ -263,6 +270,7 @@ export type Env = {
   MAX_TEXT_CHARS?: string;
   MAX_IMAGE_BYTES?: string;
   MAX_IMAGES_PER_REQUEST?: string;
+  MAX_TOTAL_IMAGE_BYTES?: string;
   MAX_MEMORY_CHARS?: string;
   MAX_SUMMARY_CHARS?: string;
   MAX_CONTEXT_CHARS?: string;
@@ -980,6 +988,7 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
       defaultRoute: access.defaultRoute,
       allowBringYourOwnKey: Boolean(access.user.allowBringYourOwnKey),
       hasUserSystemPrompt: Boolean(access.user.systemPrompt?.trim()),
+      imageInput: imageInputPolicy(env),
       skills: capabilities.skills,
       tools: capabilities.tools,
       agent: {
@@ -2421,7 +2430,11 @@ async function handleMemorySuggest(request: Request, env: Env, session: Session)
     return jsonResponse({ error: "forbidden" }, 403);
   }
   const body = await readJson<{ messages?: unknown; routeId?: unknown; userApiKey?: unknown }>(request);
-  const normalized = normalizeMessages(body.messages, env);
+  const normalization = normalizeMessages(body.messages, env);
+  if (!normalization.ok) {
+    return jsonResponse({ error: normalization.error, message: normalization.message }, normalization.status);
+  }
+  const normalized = normalization.messages;
   if (!normalized.length) {
     return jsonResponse({ error: "empty_messages" }, 400);
   }
@@ -2470,7 +2483,11 @@ async function handleSessionSummary(request: Request, env: Env, session: Session
     routeId?: unknown;
     userApiKey?: unknown;
   }>(request);
-  const normalized = normalizeMessages(body.messages, env);
+  const normalization = normalizeMessages(body.messages, env);
+  if (!normalization.ok) {
+    return jsonResponse({ error: normalization.error, message: normalization.message }, normalization.status);
+  }
+  const normalized = normalization.messages;
   if (!normalized.length) {
     return jsonResponse({ error: "empty_messages" }, 400);
   }
@@ -3759,8 +3776,8 @@ function toAgentUiMessages(messages: ChatMessage[]): UIMessage[] {
 }
 
 function dataUrlMediaType(value: string): string {
-  const match = /^data:([^;,]+)[;,]/i.exec(value);
-  return match?.[1]?.slice(0, 120) || "";
+  const parsed = parseDataImage(value);
+  return parsed.ok ? parsed.image.mediaType : "";
 }
 
 async function purgeAgentUserData(env: Env, label: string): Promise<void> {
@@ -3956,7 +3973,11 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     sessionSummary?: unknown;
   }>(request);
   const selectedRoute = typeof body.routeId === "string" ? body.routeId : access.defaultRoute;
-  const normalized = trimMessagesForContext(normalizeMessages(body.messages, env), env);
+  const normalization = normalizeMessages(body.messages, env);
+  if (!normalization.ok) {
+    return jsonResponse({ error: normalization.error, message: normalization.message }, normalization.status);
+  }
+  const normalized = trimMessagesForContext(normalization.messages, env);
   if (!normalized.length) {
     return jsonResponse({ error: "empty_messages" }, 400);
   }
@@ -3979,7 +4000,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     access.routes.find((route) => route.id === selectedRoute) ||
     access.routes.find((route) => route.id === access.defaultRoute);
   if (hasImages && selectedPublicRoute?.supportsImages === false) {
-    return jsonResponse({ error: "route_does_not_support_images", routeId: selectedPublicRoute.id }, 400);
+    return jsonResponse({ error: "image_not_supported", routeId: selectedPublicRoute.id }, 400);
   }
 
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access).filter((routeId) => {
@@ -3987,7 +4008,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     return config.routes[routeId]?.supportsImages !== false;
   });
   if (!routeIds.length) {
-    return jsonResponse({ error: hasImages ? "route_does_not_support_images" : "route_not_allowed" }, 403);
+    return jsonResponse({ error: hasImages ? "image_not_supported" : "route_not_allowed" }, hasImages ? 400 : 403);
   }
 
   const limitResult = await consumeLimits(env, session, access.user);
@@ -4198,7 +4219,9 @@ export async function prepareTeamAgentTurn(
     return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
   }
 
-  const normalized = trimMessagesForContext(normalizeMessages(input.messages, env), env);
+  const normalization = normalizeMessages(input.messages, env);
+  if (!normalization.ok) return normalization;
+  const normalized = trimMessagesForContext(normalization.messages, env);
   if (!normalized.length) {
     return { ok: false, error: "empty_messages", message: "消息不能为空", status: 400 };
   }
@@ -4218,7 +4241,7 @@ export async function prepareTeamAgentTurn(
   if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
     return {
       ok: false,
-      error: "route_does_not_support_images",
+      error: "image_not_supported",
       message: "当前线路不支持图片消息",
       status: 400,
       routeId: selectedPublicRoute.id,
@@ -6812,13 +6835,13 @@ function toAnthropicMessages(messages: ChatMessage[]): {
       }
 
       const dataImage = parseDataImage(part.image_url.url);
-      if (!dataImage) continue;
+      if (!dataImage.ok) throw new Error(dataImage.error);
       content.push({
         type: "image",
         source: {
           type: "base64",
-          media_type: dataImage.mediaType,
-          data: dataImage.data,
+          media_type: dataImage.image.mediaType,
+          data: dataImage.image.data,
         },
       });
     }
@@ -7032,53 +7055,101 @@ async function countActiveSessionsByLabel(env: Env): Promise<Map<string, number>
   return output;
 }
 
-function normalizeMessages(input: unknown, env: Env): ChatMessage[] {
-  if (!Array.isArray(input)) return [];
+type MessageNormalizationError = {
+  ok: false;
+  error: ImageValidationErrorCode;
+  message: string;
+  status: 400 | 413;
+};
+
+type MessageNormalizationResult =
+  | { ok: true; messages: ChatMessage[] }
+  | MessageNormalizationError;
+
+export function imageInputPolicy(env: Env): ImageInputPolicy {
+  return {
+    acceptedMediaTypes: [...DEFAULT_IMAGE_INPUT_POLICY.acceptedMediaTypes],
+    maxImages: Math.min(
+      numberEnv(env.MAX_IMAGES_PER_REQUEST, DEFAULT_IMAGE_INPUT_POLICY.maxImages),
+      DEFAULT_IMAGE_INPUT_POLICY.maxImages,
+    ),
+    maxImageBytes: Math.min(
+      numberEnv(env.MAX_IMAGE_BYTES, DEFAULT_IMAGE_INPUT_POLICY.maxImageBytes),
+      MAX_INLINE_IMAGE_BYTES_PER_MESSAGE,
+    ),
+    maxTotalImageBytes: Math.min(
+      numberEnv(env.MAX_TOTAL_IMAGE_BYTES, DEFAULT_IMAGE_INPUT_POLICY.maxTotalImageBytes),
+      MAX_INLINE_IMAGE_BYTES_PER_MESSAGE,
+    ),
+  };
+}
+
+export function normalizeMessages(input: unknown, env: Env): MessageNormalizationResult {
+  if (!Array.isArray(input)) return { ok: true, messages: [] };
 
   const maxTextChars = numberEnv(env.MAX_TEXT_CHARS, 12_000);
-  const maxImageBytes = numberEnv(env.MAX_IMAGE_BYTES, 2_500_000);
-  const maxImages = numberEnv(env.MAX_IMAGES_PER_REQUEST, 4);
-  let imageCount = 0;
+  const policy = imageInputPolicy(env);
+  const messages: ChatMessage[] = [];
 
-  return input
-    .slice(-MAX_MESSAGES)
-    .map((item): ChatMessage | null => {
-      if (!isRecord(item)) return null;
-      const role = item.role;
-      if (role !== "system" && role !== "user" && role !== "assistant") return null;
+  for (const item of input.slice(-MAX_MESSAGES)) {
+    if (!isRecord(item)) continue;
+    const role = item.role;
+    if (role !== "system" && role !== "user" && role !== "assistant") continue;
 
-      if (typeof item.content === "string") {
-        const content = item.content.slice(0, maxTextChars);
-        if (!content.trim()) return null;
-        return {
-          role,
-          content,
-        };
+    if (typeof item.content === "string") {
+      const content = item.content.slice(0, maxTextChars);
+      if (content.trim()) messages.push({ role, content });
+      continue;
+    }
+
+    if (!Array.isArray(item.content)) continue;
+    const parts: ChatPart[] = [];
+    let imageCount = 0;
+    let totalImageBytes = 0;
+    for (const part of item.content) {
+      if (!isRecord(part)) continue;
+      if (part.type === "text" && typeof part.text === "string") {
+        parts.push({ type: "text", text: part.text.slice(0, maxTextChars) });
+        continue;
       }
-
-      if (!Array.isArray(item.content)) return null;
-
-      const parts: ChatPart[] = [];
-      for (const part of item.content) {
-        if (!isRecord(part)) continue;
-
-        if (part.type === "text" && typeof part.text === "string") {
-          parts.push({ type: "text", text: part.text.slice(0, maxTextChars) });
-        }
-
-        if (part.type === "image_url" && isRecord(part.image_url) && typeof part.image_url.url === "string") {
-          if (imageCount >= maxImages) continue;
-          const url = part.image_url.url;
-          if (isAllowedDataImage(url, maxImageBytes)) {
-            imageCount += 1;
-            parts.push({ type: "image_url", image_url: { url } });
-          }
-        }
+      if (part.type !== "image_url") continue;
+      if (imageCount >= policy.maxImages) return imageNormalizationError("too_many_images");
+      if (!isRecord(part.image_url)) return imageNormalizationError("invalid_image_data");
+      const parsed = parseDataImage(part.image_url.url);
+      if (!parsed.ok) return imageNormalizationError(parsed.error);
+      if (parsed.image.decodedBytes > policy.maxImageBytes) {
+        return imageNormalizationError("image_too_large");
       }
+      if (totalImageBytes + parsed.image.decodedBytes > policy.maxTotalImageBytes) {
+        return imageNormalizationError("images_too_large");
+      }
+      imageCount += 1;
+      totalImageBytes += parsed.image.decodedBytes;
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:${parsed.image.mediaType};base64,${parsed.image.data}` },
+      });
+    }
+    if (parts.length) messages.push({ role, content: parts });
+  }
 
-      return parts.length ? { role, content: parts } : null;
-    })
-    .filter((message): message is ChatMessage => Boolean(message));
+  return { ok: true, messages };
+}
+
+function imageNormalizationError(error: ImageValidationErrorCode): MessageNormalizationError {
+  const messages: Record<ImageValidationErrorCode, string> = {
+    invalid_image_type: "图片格式不受支持。",
+    invalid_image_data: "图片数据无效。",
+    image_too_large: "单张图片超过大小限制。",
+    too_many_images: "图片数量超过限制。",
+    images_too_large: "图片总大小超过限制。",
+  };
+  return {
+    ok: false,
+    error,
+    message: messages[error],
+    status: error === "image_too_large" || error === "images_too_large" ? 413 : 400,
+  };
 }
 
 function messagesContainImages(messages: ChatMessage[]): boolean {
@@ -7181,22 +7252,6 @@ async function findAccessLabel(accessCodes: string, code: string): Promise<strin
   }
 
   return null;
-}
-
-function isAllowedDataImage(value: string, maxBytes: number): boolean {
-  const dataImage = parseDataImage(value);
-  if (!dataImage) return false;
-
-  const base64Length = dataImage.data.length;
-  const approximateBytes = Math.floor((base64Length * 3) / 4);
-  return approximateBytes <= maxBytes;
-}
-
-function parseDataImage(value: string): { mediaType: string; data: string } | null {
-  const match = value.match(/^(data:(image\/(?:png|jpe?g|webp|gif));base64,)([A-Za-z0-9+/=]+)$/i);
-  if (!match) return null;
-
-  return { mediaType: match[2], data: match[3] };
 }
 
 function buildHeaders(input?: Record<string, string>): Headers {

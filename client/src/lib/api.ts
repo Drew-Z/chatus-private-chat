@@ -1,8 +1,11 @@
+import { IMAGE_MEDIA_TYPES, type ImageInputPolicy } from "../../../src/contracts/image";
+
 export type RouteProjection = {
   id: string;
   label: string;
   model: string;
   type: string;
+  supportsImages: boolean;
   supportsTools: boolean;
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   healthOutcome?: string;
@@ -31,6 +34,7 @@ export type SessionProjection = {
   defaultRoute: string;
   allowBringYourOwnKey: boolean;
   hasUserSystemPrompt: boolean;
+  imageInput: ImageInputPolicy;
   skills: SkillProjection[];
   tools: ToolProjection[];
   agent: { transport: string; basePath: string; instance: string };
@@ -730,6 +734,7 @@ export async function putAgentMemory(memory: AgentMemory, value: string): Promis
 
 export function isSessionProjection(value: unknown): value is SessionProjection {
   if (!isRecord(value) || !isRecord(value.usage) || !isRecord(value.agent)) return false;
+  if (!isImageInputPolicy(value.imageInput)) return false;
   if (!Array.isArray(value.routes) || !value.routes.every(isRouteProjection)) return false;
   if (!Array.isArray(value.skills) || !value.skills.every(isSkillProjection)) return false;
   if (!Array.isArray(value.tools) || !value.tools.every(isToolProjection)) return false;
@@ -967,9 +972,27 @@ function isRouteProjection(value: unknown): value is RouteProjection {
     && isNonEmptyString(value.label)
     && isNonEmptyString(value.model)
     && isNonEmptyString(value.type)
+    && typeof value.supportsImages === "boolean"
     && typeof value.supportsTools === "boolean"
     && (value.healthStatus === undefined || value.healthStatus === "healthy" || value.healthStatus === "unhealthy" || value.healthStatus === "unknown")
     && (value.healthOutcome === undefined || typeof value.healthOutcome === "string");
+}
+
+function isImageInputPolicy(value: unknown): value is ImageInputPolicy {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "acceptedMediaTypes",
+    "maxImages",
+    "maxImageBytes",
+    "maxTotalImageBytes",
+  ])) return false;
+  if (!Array.isArray(value.acceptedMediaTypes)) return false;
+  const accepted = value.acceptedMediaTypes;
+  return accepted.length === IMAGE_MEDIA_TYPES.length
+    && new Set(accepted).size === accepted.length
+    && IMAGE_MEDIA_TYPES.every((mediaType) => accepted.includes(mediaType))
+    && isPositiveInteger(value.maxImages)
+    && isPositiveInteger(value.maxImageBytes)
+    && isPositiveInteger(value.maxTotalImageBytes);
 }
 
 function isSkillProjection(value: unknown): value is SkillProjection {

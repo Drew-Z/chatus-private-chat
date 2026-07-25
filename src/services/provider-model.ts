@@ -2,6 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI, type OpenAIProviderSettings } from "@ai-sdk/openai";
 import type { ImagePart, ModelMessage, TextPart } from "ai";
 import type { ChatMessage } from "../contracts/chat";
+import { parseDataImage } from "../contracts/image";
 import type { ResolvedProviderRoute } from "../contracts/provider";
 
 type ProviderFetch = NonNullable<OpenAIProviderSettings["fetch"]>;
@@ -72,8 +73,13 @@ export function toProviderModelMessages(messages: ChatMessage[]): ModelMessage[]
         content.push({ type: "text", text: part.text });
         continue;
       }
-      const image = parseDataImage(part.image_url.url);
-      if (image) content.push({ type: "image", image: image.data, mediaType: image.mediaType });
+      const parsed = parseDataImage(part.image_url.url);
+      if (!parsed.ok) throw new Error(parsed.error);
+      content.push({
+        type: "image",
+        image: parsed.image.data,
+        mediaType: parsed.image.mediaType,
+      });
     }
     return { role: "user", content };
   });
@@ -108,9 +114,4 @@ function extractTextContent(message: ChatMessage): string {
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("\n");
-}
-
-function parseDataImage(value: string): { mediaType: string; data: string } | null {
-  const match = value.match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=]+)$/i);
-  return match ? { mediaType: match[1], data: match[2] } : null;
 }

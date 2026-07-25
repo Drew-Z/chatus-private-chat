@@ -93,10 +93,10 @@ assert(reactClient.includes('body: () => ({ routeId, skillIds, chatId: conversat
 assert(reactClient.includes("addToolApprovalResponse"), "React client: tool approval rendering is missing");
 assert(reactClient.includes("if (busy || accountBusy) return;"), "React client: logout must not abandon an active Agent or account operation");
 assert(reactWorkspaceHeader.includes("disabled={busy || accountBusy}"), "React client: logout control must be disabled during an active Agent or account operation");
-assert(reactClient.includes("await chat.sendMessage({ text })"), "React client: send failures must be observed");
+assert(reactClient.includes("await chat.sendMessage(text ? { text, files: imageParts } : { files: imageParts })"), "React client: text and image-only send failures must be observed");
 assert(reactClient.includes("resolvePendingDraftAction("), "React client: SDK resolve-with-error status must resolve pending drafts explicitly");
-assert(reactClient.includes("const value = input || pendingDraft || \"\""), "React client: a submitted draft must remain device-persisted until the request settles");
-assert(reactClient.includes("restoreRejectedDraft(current, submittedDraft)"), "React client: rejected sends must restore the draft without overwriting newer input");
+assert(reactClient.includes("const value = input || pendingSubmission?.text || \"\""), "React client: submitted text must remain device-persisted until the request settles");
+assert(reactClient.includes("draftGeneration.current === submittedDraftGeneration") && reactClient.includes("setAttachments(submittedAttachments)"), "React client: rejected sends must restore the complete submitted draft only when no newer draft exists");
 assert(reactClient.includes("retryFailedTurn") && reactClient.includes('onBranch(conversation, "resend"'), "React client: failed turns need an in-place retry branch action");
 assert(reactClient.includes("messageListRef") && reactClient.includes("nearBottom"), "React client: streaming scroll must respect manual transcript scrolling");
 assert(reactSidebar.includes("session.tools.map") && reactSidebar.includes("selectedToolIds"), "React sidebar: assigned tools and current Skill activation must remain visible");
@@ -117,6 +117,9 @@ assert(reactClient.includes("<WorkspaceHeader") && !reactClient.includes('classN
 assert(reactWorkspaceHeader.includes("route.model") && reactWorkspaceHeader.includes("routeHealthLabel") && reactWorkspaceHeader.includes("connectionState"), "React workspace header: logical model, passive health, and connection state are missing");
 assert(reactClient.includes("<MessageComposer") && reactComposer.includes("resizeComposerTextarea") && reactComposer.includes('rows={1}'), "React composer: bounded textarea auto-growth is missing");
 assert(reactComposer.includes('statusText || "\\u00a0"') && reactComposer.includes("aria-hidden={!statusText}"), "React composer: status space must remain reserved while idle");
+assert(reactComposer.includes("<Paperclip") && reactComposer.includes("onPaste={addClipboardImages}") && reactComposer.includes("onDrop={handleDrop}"), "React composer: picker, paste, and drop image acquisition must share the attachment workflow");
+assert(reactComposer.includes("attachment-strip") && reactComposer.includes("onRemoveImage") && reactComposer.includes("onRetryImage"), "React composer: image previews need remove and retry actions");
+assert(reactClient.includes("toImageFileParts(attachments)") && reactClient.includes("releaseImagePreviews"), "React client: image messages and preview cleanup are missing");
 for (const token of ["--workspace-header-height", "--rail-width", "--transcript-max-width", "--touch-target", "--composer-status-height"]) {
   assert(reactStyles.includes(token), `React styles: missing shared workspace token ${token}`);
 }

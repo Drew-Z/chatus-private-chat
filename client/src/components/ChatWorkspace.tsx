@@ -25,6 +25,14 @@ import {
   resolvePendingDraftAction,
   restoreRejectedDraft,
 } from "../lib/state";
+import {
+  addDraftImageFiles,
+  readDraftImage,
+  releaseImagePreviews,
+  restoreRejectedImages,
+  toImageFileParts,
+  type DraftImageAttachment,
+} from "../lib/image-input";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MemoryPanel } from "./MemoryPanel";
 import { MessageComposer } from "./MessageComposer";
@@ -362,16 +370,29 @@ function ConversationChat({
 }) {
   const online = useOnlineStatus();
   const [input, setInput] = useState(() => localStorage.getItem(conversationDraftKey(session.user, conversation.id)) || "");
-  const [pendingDraft, setPendingDraft] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<DraftImageAttachment[]>([]);
+  const [pendingSubmission, setPendingSubmission] = useState<{
+    text: string;
+    attachments: DraftImageAttachment[];
+    draftGeneration: number;
+  } | null>(null);
   const [settledSubmission, setSettledSubmission] = useState(0);
   const [waitingElapsed, setWaitingElapsed] = useState(0);
   const [messageActionError, setMessageActionError] = useState("");
   const [retryBusy, setRetryBusy] = useState(false);
   const [lastSubmittedText, setLastSubmittedText] = useState("");
+  const [lastSubmittedImages, setLastSubmittedImages] = useState<DraftImageAttachment[]>([]);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const wasBusy = useRef(false);
   const submissionGeneration = useRef(0);
+  const draftGeneration = useRef(0);
+  const attachmentsRef = useRef(attachments);
+  const pendingSubmissionRef = useRef(pendingSubmission);
+  const lastSubmittedImagesRef = useRef(lastSubmittedImages);
+  attachmentsRef.current = attachments;
+  pendingSubmissionRef.current = pendingSubmission;
+  lastSubmittedImagesRef.current = lastSubmittedImages;
   const agent = useAgent({
     agent: "TeamAgent",
     name: conversationAgentClientName(session.agent.instance, conversation.id),
@@ -392,6 +413,7 @@ function ConversationChat({
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
+  const imagesSupported = selectedRoute?.supportsImages === true;
   const connectionState: ConnectionState = agent.connectionError ? "error" : agent.identified ? "ready" : "connecting";
 
   useEffect(() => {
@@ -420,25 +442,47 @@ function ConversationChat({
 
   useEffect(() => {
     const key = conversationDraftKey(session.user, conversation.id);
-    const value = input || pendingDraft || "";
+    const value = input || pendingSubmission?.text || "";
     if (value) localStorage.setItem(key, value);
     else localStorage.removeItem(key);
-  }, [conversation.id, input, pendingDraft, session.user]);
+  }, [conversation.id, input, pendingSubmission, session.user]);
 
   useEffect(() => {
-    if (!pendingDraft) return;
+    if (!pendingSubmission) return;
     const action = resolvePendingDraftAction(
       chat.status,
       Boolean(chat.error),
       settledSubmission === submissionGeneration.current,
     );
     if (action === "restore") {
-      setInput((current) => restoreRejectedDraft(current, pendingDraft));
-      setPendingDraft(null);
+      if (draftGeneration.current === pendingSubmission.draftGeneration) {
+        setInput(pendingSubmission.text);
+        setAttachments(pendingSubmission.attachments);
+        setLastSubmittedText(pendingSubmission.text);
+        setLastSubmittedImages(pendingSubmission.attachments);
+      } else {
+        releaseImagePreviews(pendingSubmission.attachments);
+        setLastSubmittedText("");
+        setLastSubmittedImages([]);
+      }
+      setPendingSubmission(null);
       return;
     }
-    if (action === "clear") setPendingDraft(null);
-  }, [chat.error, chat.status, pendingDraft, settledSubmission]);
+    if (action === "clear") {
+      releaseImagePreviews(pendingSubmission.attachments);
+      setLastSubmittedText("");
+      setLastSubmittedImages([]);
+      setPendingSubmission(null);
+    }
+  }, [chat.error, chat.status, pendingSubmission, settledSubmission]);
+
+  useEffect(() => () => {
+    releaseImagePreviews([
+      ...attachmentsRef.current,
+      ...(pendingSubmissionRef.current?.attachments || []),
+      ...lastSubmittedImagesRef.current,
+    ]);
+  }, []);
 
   useEffect(() => {
     const container = messageListRef.current;
@@ -449,22 +493,82 @@ function ConversationChat({
     window.requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end", behavior }));
   }, [chat.messages, chat.isRecovering]);
 
+  const finishImageRead = (attachment: DraftImageAttachment) => {
+    void readDraftImage(attachment).then((updated) => {
+      setAttachments((current) => current.map((item) => item.id === updated.id ? updated : item));
+    });
+  };
+
+  const addImages = (files: File[]) => {
+    if (!imagesSupported || interactionBlocked || !online || !routeAvailable || !agent.identified) return;
+    draftGeneration.current += 1;
+    const existingIds = new Set(attachmentsRef.current.map((attachment) => attachment.id));
+    const next = addDraftImageFiles(attachmentsRef.current, files, session.imageInput);
+    setAttachments(next);
+    for (const attachment of next) {
+      if (!existingIds.has(attachment.id) && attachment.status === "reading") finishImageRead(attachment);
+    }
+  };
+
+  const removeImage = (id: string) => {
+    if (!attachmentsRef.current.some((attachment) => attachment.id === id)) return;
+    draftGeneration.current += 1;
+    setAttachments((current) => {
+      const removed = current.find((attachment) => attachment.id === id);
+      if (removed) releaseImagePreviews([removed]);
+      return current.filter((attachment) => attachment.id !== id);
+    });
+  };
+
+  const retryImage = (id: string) => {
+    const attachment = attachmentsRef.current.find((item) => item.id === id);
+    if (!attachment || attachment.error !== "read_failed") return;
+    draftGeneration.current += 1;
+    const reading = { ...attachment, status: "reading" as const, error: undefined, dataUrl: undefined };
+    setAttachments((current) => current.map((item) => item.id === id ? reading : item));
+    finishImageRead(reading);
+  };
+
   const send = async () => {
     const text = input.trim();
-    if (!text || interactionBlocked || !online || !routeAvailable) return;
+    const imageParts = toImageFileParts(attachments);
+    if (
+      (!text && !imageParts.length)
+      || attachments.some((attachment) => attachment.status !== "ready")
+      || (attachments.length > 0 && !imagesSupported)
+      || interactionBlocked
+      || !online
+      || !routeAvailable
+    ) return;
     const submittedDraft = input;
+    const submittedAttachments = attachments;
+    const submittedDraftGeneration = draftGeneration.current;
     const submissionId = submissionGeneration.current + 1;
     submissionGeneration.current = submissionId;
     chat.clearError();
     setLastSubmittedText("");
-    setPendingDraft(submittedDraft);
+    setLastSubmittedImages([]);
+    setPendingSubmission({
+      text: submittedDraft,
+      attachments: submittedAttachments,
+      draftGeneration: submittedDraftGeneration,
+    });
     setInput("");
+    setAttachments([]);
     try {
-      await chat.sendMessage({ text });
+      await chat.sendMessage(text ? { text, files: imageParts } : { files: imageParts });
     } catch {
-      setLastSubmittedText(submittedDraft);
-      setInput((current) => restoreRejectedDraft(current, submittedDraft));
-      setPendingDraft(null);
+      if (draftGeneration.current === submittedDraftGeneration) {
+        setLastSubmittedText(submittedDraft);
+        setLastSubmittedImages(submittedAttachments);
+        setInput(submittedDraft);
+        setAttachments(submittedAttachments);
+      } else {
+        releaseImagePreviews(submittedAttachments);
+        setLastSubmittedText("");
+        setLastSubmittedImages([]);
+      }
+      setPendingSubmission(null);
     } finally {
       setSettledSubmission(submissionId);
     }
@@ -474,10 +578,12 @@ function ConversationChat({
     if (!chat.error || retryBusy || busy || blocked || !online) return;
     const sourceMessageId = findRetrySourceMessageId(chat.messages);
     if (!sourceMessageId) {
-      if (lastSubmittedText) {
+      if (lastSubmittedText || lastSubmittedImages.length) {
         chat.clearError();
         setInput((current) => restoreRejectedDraft(current, lastSubmittedText));
+        setAttachments((current) => restoreRejectedImages(current, lastSubmittedImages));
         setLastSubmittedText("");
+        setLastSubmittedImages([]);
       }
       return;
     }
@@ -563,7 +669,16 @@ function ConversationChat({
       )}
       <MessageComposer
         value={input}
-        onChange={setInput}
+        attachments={attachments}
+        imagePolicy={session.imageInput}
+        imagesSupported={imagesSupported}
+        onChange={(value) => {
+          draftGeneration.current += 1;
+          setInput(value);
+        }}
+        onAddImages={addImages}
+        onRemoveImage={removeImage}
+        onRetryImage={retryImage}
         onSubmit={() => void send()}
         onStop={() => chat.stop()}
         busy={busy}

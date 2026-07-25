@@ -21,6 +21,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 | [Quality Guidelines](./quality-guidelines.md) | Checks, security, testing and review gates | Ready |
 | [Type Safety](./type-safety.md) | Strict Worker TypeScript and runtime validation | Ready |
 | [Agent Streaming And Fallback](./agent-streaming.md) | AIChat streaming, route commitment, fallback and telemetry | Ready |
+| [Multimodal Image Input](./multimodal-image-input.md) | Capability-aware image drafts, strict normalization, Agent persistence, provider conversion, and privacy | Ready |
 | [Member Capability Assignment](./capability-assignment.md) | Per-member access lifecycle plus route, Skill, and tool projection, editing, validation, and execution enforcement | Ready |
 
 ---
@@ -32,6 +33,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 - Read `type-safety.md` for Worker/API/storage contract changes.
 - Read `capability-assignment.md` for user capability fields, Skill selection, or administration assignment changes.
 - Read `agent-streaming.md` for AIChat, provider routing, fallback, cancellation, or stream telemetry changes.
+- Read `multimodal-image-input.md` for image policy, composer attachments, Agent file parts, provider image conversion, or image export/deletion changes.
 - Read `component-guidelines.md` and `type-safety.md` for provider registry, model discovery, logical model, or offering editor changes.
 - Always read `quality-guidelines.md` before implementation and review.
 

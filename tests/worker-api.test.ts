@@ -200,8 +200,68 @@ describe("Worker API", () => {
       authenticated: true,
       user: label,
       routes: [{ id: "default", healthStatus: "unhealthy", healthSource: "real_task" }],
+      imageInput: {
+        acceptedMediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+        maxImages: 4,
+        maxImageBytes: 1_300_000,
+        maxTotalImageBytes: 1_300_000,
+      },
       agent: { transport: "cloudflare-ai-chat", className: "team-agent", basePath: "agent" },
     });
+  });
+
+  it("rejects invalid or unsupported images before any provider request", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        images: {
+          label: "Images",
+          type: "openai-chat",
+          baseUrl: "https://images.example/v1",
+          model: "image-model",
+          apiKey: "image-key",
+          supportsImages: true,
+        },
+        text: {
+          label: "Text",
+          type: "openai-chat",
+          baseUrl: "https://text.example/v1",
+          model: "text-model",
+          apiKey: "text-key",
+          supportsImages: false,
+        },
+      },
+      defaults: { defaultRoute: "images", allowedRoutes: ["images", "text"] },
+    }));
+    const { cookie } = await login();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const request = (routeId: string, urls: string[]) => apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId,
+        messages: [{
+          role: "user",
+          content: urls.map((url) => ({ type: "image_url", image_url: { url } })),
+        }],
+      }),
+    });
+
+    const remote = await request("images", ["https://example.test/image.png"]);
+    expect(remote.status).toBe(400);
+    await expect(remote.json()).resolves.toMatchObject({ error: "invalid_image_data" });
+
+    const unsupported = await request("images", ["data:image/svg+xml;base64,PHN2Zz4="]);
+    expect(unsupported.status).toBe(400);
+    await expect(unsupported.json()).resolves.toMatchObject({ error: "invalid_image_type" });
+
+    const tooMany = await request("images", Array.from({ length: 5 }, () => "data:image/png;base64,QQ=="));
+    expect(tooMany.status).toBe(400);
+    await expect(tooMany.json()).resolves.toMatchObject({ error: "too_many_images" });
+
+    const incapable = await request("text", ["data:image/png;base64,QQ=="]);
+    expect(incapable.status).toBe(400);
+    await expect(incapable.json()).resolves.toMatchObject({ error: "image_not_supported" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("isolates TeamAgent instances by authenticated member identity", async () => {
@@ -250,6 +310,65 @@ describe("Worker API", () => {
     const missingChat = await apiRequest("/agent", first.cookie);
     expect(missingChat.status).toBe(400);
     await expect(missingChat.json()).resolves.toMatchObject({ error: "invalid_chat_id" });
+  });
+
+  it("persists an image at the projected per-image limit without truncating its file part", async () => {
+    const label = `agent-image-limit-${crypto.randomUUID()}`;
+    const chatId = `image-limit-${crypto.randomUUID()}`;
+    const agent = await getConversationAgent(label, chatId);
+    const base64 = `${"A".repeat(1_733_334)}==`;
+    const imported = await agent.importLegacyMessages([{
+      id: "image-limit-user",
+      role: "user",
+      parts: [{
+        type: "file",
+        mediaType: "image/png",
+        filename: "limit.png",
+        url: `data:image/png;base64,${base64}`,
+      }],
+    }]);
+    expect(imported).toEqual({ imported: true, messageCount: 1 });
+    const stored = await runInDurableObject(agent, async (_instance, state) => {
+      const [row] = state.storage.sql.exec<{ bytes: number }>(
+        "SELECT length(message) AS bytes FROM cf_ai_chat_agent_messages WHERE id = 'image-limit-user'",
+      ).toArray();
+      return row?.bytes || 0;
+    });
+    expect(stored).toBeGreaterThan(base64.length);
+    await evictDurableObject(agent);
+    const restored = await getConversationAgent(label, chatId);
+    await expect(restored.getConversationMessageCount()).resolves.toBe(1);
+    const [restoredMessage] = await getPersistedAgentMessages(restored);
+    const restoredFile = restoredMessage?.parts.find((part) => part.type === "file");
+    expect(restoredFile).toMatchObject({
+      type: "file",
+      mediaType: "image/png",
+      filename: "limit.png",
+    });
+    expect(restoredFile?.type === "file" ? restoredFile.url.length : 0)
+      .toBe("data:image/png;base64,".length + base64.length);
+  });
+
+  it("removes a forged Agent image turn and returns an exact error before provider execution", async () => {
+    const label = `agent-image-reject-${crypto.randomUUID()}`;
+    const agent = await getConversationAgent(label, `image-reject-${crypto.randomUUID()}`);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const rejected = await runInDurableObject(agent, async (instance) => {
+      await instance.persistMessages([{
+        id: "forged-image-user",
+        role: "user",
+        parts: [
+          { type: "text", text: "do not execute this turn" },
+          { type: "file", mediaType: "image/png", filename: "remote.png", url: "https://example.test/image.png" },
+        ],
+      }], [], { _deleteStaleRows: true });
+      const response = await instance.onChatMessage(async () => undefined, {});
+      return { status: response.status, body: await response.text() };
+    });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body).toContain("invalid_image_data");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await expect(agent.getConversationMessageCount()).resolves.toBe(0);
   });
 
   it("rejects cross-origin authenticated mutations before admin or user dispatch", async () => {
@@ -598,9 +717,33 @@ describe("Worker API", () => {
     expect(createdResponse.status).toBe(201);
     const sourceAgent = await getConversationAgent(label, sourceId);
     const sourceMessages: UIMessage[] = [
-      { id: "branch-user-1", role: "user", parts: [{ type: "text", text: "first synthetic turn" }] },
+      {
+        id: "branch-user-1",
+        role: "user",
+        parts: [
+          { type: "text", text: "first synthetic turn" },
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: "branch.png",
+            url: "data:image/png;base64,QQ==",
+          },
+        ],
+      },
       { id: "branch-assistant-1", role: "assistant", parts: [{ type: "text", text: "first synthetic reply" }] },
       { id: "branch-user-2", role: "user", parts: [{ type: "text", text: "second synthetic turn" }] },
+    ];
+    const exportedSourceMessages = [
+      {
+        id: "branch-user-1",
+        role: "user",
+        parts: [
+          { type: "text", text: "first synthetic turn" },
+          { type: "file", mediaType: "image/png", name: "branch.png" },
+        ],
+      },
+      sourceMessages[1],
+      sourceMessages[2],
     ];
     await sourceAgent.importLegacyMessages(sourceMessages);
     const root = await getRootAgent(label);
@@ -646,11 +789,19 @@ describe("Worker API", () => {
     expect(branched.conversation.id).not.toBe(sourceId);
     const destinationAgent = await getConversationAgent(label, branched.conversation.id);
     await expect(destinationAgent.exportMessages()).resolves.toMatchObject({
-      messages: sourceMessages.slice(0, 2),
+      messages: exportedSourceMessages.slice(0, 2),
       truncated: false,
     });
+    const branchedImageMessage = (await getPersistedAgentMessages(destinationAgent))
+      .find((message) => message.id === "branch-user-1");
+    expect(branchedImageMessage?.parts.find((part) => part.type === "file")).toEqual({
+      type: "file",
+      mediaType: "image/png",
+      filename: "branch.png",
+      url: "data:image/png;base64,QQ==",
+    });
     await expect(sourceAgent.exportMessages()).resolves.toMatchObject({
-      messages: sourceMessages,
+      messages: exportedSourceMessages,
       truncated: false,
     });
 
@@ -697,7 +848,14 @@ describe("Worker API", () => {
     const unversionedLegacyDelete = await apiRequest(`/api/chats?id=${encodeURIComponent(chatId)}`, cookie, { method: "DELETE" });
     expect(unversionedLegacyDelete.status).toBe(400);
     const conversationAgent = await getConversationAgent(label, chatId);
-    const seededMessages: UIMessage[] = [{ id: "cleanup-user", role: "user", parts: [{ type: "text", text: "cleanup me" }] }];
+    const seededMessages: UIMessage[] = [{
+      id: "cleanup-user",
+      role: "user",
+      parts: [
+        { type: "text", text: "cleanup me" },
+        { type: "file", mediaType: "image/png", filename: "cleanup.png", url: "data:image/png;base64,QQ==" },
+      ],
+    }];
     await conversationAgent.importLegacyMessages(seededMessages);
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(1);
     const root = await getRootAgent(label);
@@ -713,6 +871,7 @@ describe("Worker API", () => {
     await expect(listed.json()).resolves.toMatchObject({ conversations: [] });
     await expect(root.listPendingConversationCleanups()).resolves.toEqual([]);
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(0);
+    await expect(getPersistedAgentMessages(conversationAgent)).resolves.toEqual([]);
 
     const staleReconnect = await apiRequest(`/agent?chatId=${encodeURIComponent(chatId)}`, cookie);
     expect(staleReconnect.status).toBe(410);
@@ -2351,7 +2510,10 @@ describe("Worker API", () => {
         id: "message-1",
         role: "user",
         metadata: { internal: "omit" },
-        parts: [{ type: "text", text: "导出文本" }],
+        parts: [
+          { type: "text", text: "导出文本" },
+          { type: "file", mediaType: "image/png", url: "data:image/png;base64,QQ==", filename: "user-image.png" },
+        ],
       },
       {
         id: "message-2",
@@ -2374,7 +2536,14 @@ describe("Worker API", () => {
         id: conversation.id,
         messagesTruncated: false,
         messages: [
-          { id: "message-1", role: "user", parts: [{ type: "text", text: "导出文本" }] },
+          {
+            id: "message-1",
+            role: "user",
+            parts: [
+              { type: "text", text: "导出文本" },
+              { type: "file", mediaType: "image/png", name: "user-image.png" },
+            ],
+          },
           { id: "message-2", role: "assistant", parts: [{ type: "file", mediaType: "image/png", name: "image.png" }] },
         ],
       }],

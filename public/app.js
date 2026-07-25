@@ -2999,6 +2999,7 @@ function formatError(code) {
     no_routes_available: "没有可用线路",
     rate_limited: "今天或当前分钟额度已用完",
     route_does_not_support_images: "当前线路不支持图片",
+    image_not_supported: "当前线路不支持图片",
     route_does_not_support_tools: "当前线路不支持工具调用",
     route_not_allowed: "这条线路不可用",
     request_failed: "请求失败",

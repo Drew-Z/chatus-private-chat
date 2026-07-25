@@ -7,6 +7,12 @@ import { MessageView, type MessageAction } from "../../../../client/src/componen
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import type { AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
+import {
+  addDraftImageFiles,
+  readDraftImage,
+  releaseImagePreviews,
+  type DraftImageAttachment,
+} from "../../../../client/src/lib/image-input";
 import "../../../../client/src/styles.css";
 
 const now = Date.now();
@@ -55,12 +61,19 @@ const session: SessionProjection = {
     label: "高质量推理线路",
     model: "synthetic-reasoning-model-with-a-long-name",
     type: "openai-chat",
+    supportsImages: true,
     supportsTools: true,
     healthStatus: "healthy",
   }],
   defaultRoute: "reasoning",
   allowBringYourOwnKey: false,
   hasUserSystemPrompt: false,
+  imageInput: {
+    acceptedMediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    maxImages: 4,
+    maxImageBytes: 1_300_000,
+    maxTotalImageBytes: 1_300_000,
+  },
   skills: [{ id: "project", label: "项目协作", description: "合成测试能力", toolIds: ["search"] }],
   tools: [{ id: "search", label: "项目资料检索", description: "合成测试工具", source: "builtin", confirmation: "always" }],
   agent: { transport: "websocket", basePath: "agent", instance: "visual-fixture" },
@@ -143,6 +156,39 @@ const reliabilityProviders: AdminReliabilityProvider[] = [{
   }],
 }];
 
+const fixturePixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+function fixtureAttachments(mode: string | null): DraftImageAttachment[] {
+  if (mode !== "states") return [];
+  return [{
+    id: "ready-image",
+    file: new File([new Uint8Array([65])], "ready-preview.png", { type: "image/png" }),
+    filename: "ready-preview.png",
+    mediaType: "image/png",
+    size: 1,
+    previewUrl: fixturePixel,
+    dataUrl: "data:image/png;base64,QQ==",
+    status: "ready",
+  }, {
+    id: "reading-image",
+    file: new File([new Uint8Array([66])], "reading-preview.png", { type: "image/png" }),
+    filename: "reading-preview.png",
+    mediaType: "image/png",
+    size: 1,
+    previewUrl: fixturePixel,
+    status: "reading",
+  }, {
+    id: "error-image",
+    file: new File([new Uint8Array([67])], "unsupported.svg", { type: "image/svg+xml" }),
+    filename: "unsupported.svg",
+    mediaType: "",
+    size: 1,
+    previewUrl: "",
+    status: "error",
+    error: "unsupported_type",
+  }];
+}
+
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
   const [conversations, setConversations] = useState(initialConversations);
@@ -150,11 +196,24 @@ function WorkspaceFixture() {
   const [sidebarOpen, setSidebarOpen] = useState(params.get("drawer") === "open");
   const [sidebarView, setSidebarView] = useState<SidebarView>("history");
   const [input, setInput] = useState(params.get("draft") === "long" ? "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行" : "准备发送的合成消息");
+  const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const connectionState = (params.get("connection") || "ready") as ConnectionState;
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
 
   const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
+
+  const addImages = (files: File[]) => {
+    const currentIds = new Set(attachments.map((attachment) => attachment.id));
+    const next = addDraftImageFiles(attachments, files, session.imageInput);
+    setAttachments(next);
+    for (const attachment of next) {
+      if (currentIds.has(attachment.id) || attachment.status !== "reading") continue;
+      void readDraftImage(attachment).then((updated) => {
+        setAttachments((current) => current.map((item) => item.id === updated.id ? updated : item));
+      });
+    }
+  };
 
   if (params.get("view") === "reliability") {
     return (
@@ -221,7 +280,19 @@ function WorkspaceFixture() {
             </div>
             <MessageComposer
               value={input}
+              attachments={attachments}
+              imagePolicy={session.imageInput}
+              imagesSupported={params.get("images") !== "0"}
               onChange={setInput}
+              onAddImages={addImages}
+              onRemoveImage={(id) => setAttachments((current) => {
+                const removed = current.filter((attachment) => attachment.id === id);
+                releaseImagePreviews(removed);
+                return current.filter((attachment) => attachment.id !== id);
+              })}
+              onRetryImage={(id) => setAttachments((current) => current.map((attachment) => (
+                attachment.id === id ? { ...attachment, status: "reading", error: undefined } : attachment
+              )))}
               onSubmit={() => setBusy(true)}
               onStop={() => setBusy(false)}
               busy={busy}

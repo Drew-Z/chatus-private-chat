@@ -129,6 +129,75 @@ test("composer grows within its cap and keeps send stop dimensions stable", asyn
   await expect(page.locator(".composer-status")).toHaveText("Agent 正在继续处理");
 });
 
+test("image previews expose stable ready reading error and capability states", async ({ page }, testInfo) => {
+  await page.goto("/?attachments=states");
+  await expect(page.locator(".attachment-preview")).toHaveCount(3);
+  await expect(page.locator(".attachment-preview.ready")).toContainText("ready-preview.png");
+  await expect(page.locator(".attachment-preview.reading .attachment-spinner")).toBeVisible();
+  await expect(page.locator(".attachment-preview.error")).toContainText("不支持此格式");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+
+  const geometry = await page.evaluate(() => {
+    const strip = document.querySelector<HTMLElement>(".attachment-strip");
+    const box = document.querySelector<HTMLElement>(".composer-box");
+    if (!strip || !box) throw new Error("missing attachment preview strip");
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      stripFits: strip.getBoundingClientRect().right <= box.getBoundingClientRect().right + 1,
+      stripScrollsLocally: strip.scrollWidth >= strip.clientWidth,
+    };
+  });
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.stripFits).toBe(true);
+  expect(geometry.stripScrollsLocally).toBe(true);
+
+  if (testInfo.project.name === "touch-390") {
+    const size = await page.getByRole("button", { name: "添加图片" }).evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    expect(size.width).toBeGreaterThanOrEqual(44);
+    expect(size.height).toBeGreaterThanOrEqual(44);
+  }
+
+  await page.goto("/?attachments=states&images=0");
+  await expect(page.getByRole("button", { name: "当前模型不支持图片" })).toBeDisabled();
+  await expect(page.locator(".attachment-error")).toHaveText([
+    "当前模型不支持图片",
+    "当前模型不支持图片",
+    "当前模型不支持图片",
+  ]);
+  await attachScreenshot(page, testInfo, "image-previews");
+});
+
+test("picker paste and drop share the attachment workflow", async ({ page }) => {
+  const fileInput = page.locator('input[type="file"]');
+  await fileInput.setInputFiles({ name: "picked.png", mimeType: "image/png", buffer: Buffer.from([65]) });
+  await expect(page.locator(".attachment-preview.ready")).toContainText("picked.png");
+
+  await page.getByRole("button", { name: "移除 picked.png" }).click();
+  await expect(page.locator(".attachment-preview")).toHaveCount(0);
+
+  await page.getByRole("textbox", { name: "消息" }).evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array([66])], "pasted.png", { type: "image/png" }));
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, clipboardData: transfer }));
+  });
+  await expect(page.locator(".attachment-preview.ready")).toContainText("pasted.png");
+
+  await page.getByRole("textbox", { name: "消息" }).evaluate((element) => {
+    const form = element.closest("form");
+    if (!form) throw new Error("missing composer form");
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array([67])], "dropped.png", { type: "image/png" }));
+    for (const type of ["dragenter", "dragover", "drop"]) {
+      form.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    }
+  });
+  await expect(page.locator(".attachment-preview.ready")).toHaveCount(2);
+  await expect(page.locator(".attachment-strip")).toContainText("dropped.png");
+});
+
 test("reliability stream evidence stays contained on narrow viewports", async ({ page }, testInfo) => {
   await page.goto("/?view=reliability");
   await expect(page.getByText("渐进", { exact: true })).toBeVisible();

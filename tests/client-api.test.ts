@@ -67,12 +67,19 @@ const validSession = {
     label: "Primary",
     model: "model-a",
     type: "openai-chat",
+    supportsImages: true,
     supportsTools: true,
     healthStatus: "unknown",
   }],
   defaultRoute: "primary",
   allowBringYourOwnKey: false,
   hasUserSystemPrompt: true,
+  imageInput: {
+    acceptedMediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    maxImages: 4,
+    maxImageBytes: 1_300_000,
+    maxTotalImageBytes: 1_300_000,
+  },
   skills: [{ id: "coding", label: "Coding", toolIds: ["builtin:text_stats"] }],
   tools: [{
     id: "builtin:text_stats",
@@ -309,6 +316,15 @@ describe("React client runtime validation", () => {
     expect(isSessionProjection({ ...validSession, hasUserSystemPrompt: undefined })).toBe(false);
     expect(isSessionProjection({ ...validSession, allowBringYourOwnKey: "no" })).toBe(false);
     expect(isSessionProjection({ ...validSession, hasUserSystemPrompt: 1 })).toBe(false);
+    expect(isSessionProjection({ ...validSession, imageInput: undefined })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      imageInput: { ...validSession.imageInput, maxTotalImageBytes: 0 },
+    })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      imageInput: { ...validSession.imageInput, acceptedMediaTypes: ["image/png", "image/svg+xml"] },
+    })).toBe(false);
   });
 
   it.each([
