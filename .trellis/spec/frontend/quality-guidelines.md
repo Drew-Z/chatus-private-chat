@@ -37,6 +37,7 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - Pure reusable browser helpers receive focused Vitest tests.
 - Worker/API behavior receives integration tests using `cloudflare:test`.
 - Bug fixes include a regression test or a structural assertion in `scripts/check-frontend.mjs` when browser DOM behavior is impractical to unit test.
+- Keep the Cloudflare Vitest pool serial (`maxWorkers: 1`) on Windows. Parallel pool workers can fall back to random Miniflare ports, and Node/undici rejects some random port values as forbidden ports after the test assertions have already passed.
 - Browser geometry, focus, overflow, and touch contracts use the Playwright component fixture under `tests/browser/`. Keep that directory excluded from the Cloudflare Vitest pool with `configDefaults.exclude`, and type-check its Node/DOM boundary separately.
 - The workspace fixture may import real presentational React components with deterministic synthetic data, but it must not mount Agent hooks, authenticate, call `/api`, open `/agent`, or contact a model. Abort unexpected requests and assert the blocked-request list again in `afterEach` so interactions cannot bypass the guard.
 - Successful viewport screenshots must be written through `testInfo.outputPath(...)`, attached by path, and retained with `preserveOutput: "always"`. Keep `test-results/` ignored by Git; in-memory attachments alone are not retained by the line reporter for passing tests.
