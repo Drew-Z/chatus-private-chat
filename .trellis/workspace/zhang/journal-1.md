@@ -568,3 +568,37 @@ Implemented capability-aware image attachments across the chat UI, Worker and Ag
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Public guest access and model gate
+
+**Date**: 2026-07-26
+**Task**: Public guest access and model gate
+**Branch**: `main`
+
+### Summary
+
+Implemented isolated anonymous guest sessions with one managed public logical route, guest capability denial, quotas, cleanup, admin UI, decoder and browser coverage, then stabilized the Cloudflare Vitest pool on Windows.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c22a06f` | (see git log) |
+| `44e2fb7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 11
+- **Total Sessions**: 12
 - **Last Active**: 2026-07-26
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~570 | Active |
+| `journal-1.md` | ~604 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 12 | 2026-07-26 | Public guest access and model gate | `c22a06f`, `44e2fb7` | `main` |
 | 11 | 2026-07-26 | Multimodal image input | `6baea3e` | `main` |
 | 10 | 2026-07-25 | Truthful stream telemetry acceptance | `85a9b9c` | `main` |
 | 9 | 2026-07-25 | Workspace visual and interaction pass | `2fa6905` | `main` |
