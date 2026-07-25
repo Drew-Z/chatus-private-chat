@@ -669,3 +669,36 @@ Updated operator documentation for public guest access, managed provider secrets
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Branch origin navigation
+
+**Date**: 2026-07-26
+**Task**: Branch origin navigation
+**Branch**: `main`
+
+### Summary
+
+Added action-specific branch titles, parent-origin header return navigation, missing-parent fallback UI, browser fixture coverage, branch API assertions, and frontend streaming spec contracts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `472d602` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
