@@ -371,6 +371,36 @@ describe("Worker API", () => {
     await expect(restoredConversation.getConversationMessageCount()).resolves.toBe(0);
   });
 
+  it("keeps transcripts isolated between conversations owned by the same member", async () => {
+    const label = `agent-conversation-isolation-${crypto.randomUUID()}`;
+    const first = await getConversationAgent(label, `first-${crypto.randomUUID()}`);
+    const second = await getConversationAgent(label, `second-${crypto.randomUUID()}`);
+
+    await first.importLegacyMessages([{
+      id: "first-user",
+      role: "user",
+      parts: [{ type: "text", text: "first conversation only" }],
+    }]);
+    await second.importLegacyMessages([{
+      id: "second-user",
+      role: "user",
+      parts: [{ type: "text", text: "second conversation only" }],
+    }]);
+
+    const [firstExport, secondExport] = await Promise.all([
+      first.exportMessages(),
+      second.exportMessages(),
+    ]);
+    expect(firstExport.messages).toEqual([
+      expect.objectContaining({ id: "first-user" }),
+    ]);
+    expect(secondExport.messages).toEqual([
+      expect.objectContaining({ id: "second-user" }),
+    ]);
+    expect(JSON.stringify(firstExport.messages)).not.toContain("second conversation only");
+    expect(JSON.stringify(secondExport.messages)).not.toContain("first conversation only");
+  });
+
   it("bootstraps identity for an already-started Agent without initialization props", async () => {
     const label = `agent-bootstrap-${crypto.randomUUID()}`;
     const instance = await getTeamAgentInstanceName(label);

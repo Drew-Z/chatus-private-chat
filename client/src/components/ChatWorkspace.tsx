@@ -18,7 +18,13 @@ import {
   type SessionProjection,
 } from "../lib/api";
 import { friendlyAgentError } from "../lib/agent-errors";
-import { findRetrySourceMessageId, hasVisibleAssistantTextAfterLatestUser, resolvePendingDraftAction, restoreRejectedDraft } from "../lib/state";
+import {
+  conversationAgentClientName,
+  findRetrySourceMessageId,
+  hasVisibleAssistantTextAfterLatestUser,
+  resolvePendingDraftAction,
+  restoreRejectedDraft,
+} from "../lib/state";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MemoryPanel } from "./MemoryPanel";
 import { MessageComposer } from "./MessageComposer";
@@ -368,7 +374,7 @@ function ConversationChat({
   const submissionGeneration = useRef(0);
   const agent = useAgent({
     agent: "TeamAgent",
-    name: session.agent.instance,
+    name: conversationAgentClientName(session.agent.instance, conversation.id),
     basePath: session.agent.basePath,
     query: { chatId: conversation.id },
     queryDeps: [conversation.id],

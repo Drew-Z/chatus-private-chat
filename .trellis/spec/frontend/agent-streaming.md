@@ -9,6 +9,72 @@
 - The root Agent owns the authoritative long-term memory, conversation tombstones, and persisted transcript-cleanup queue. Conversation Agents read root memory before turn preparation.
 - Legacy transcript import is idempotent and prefix-safe. A deleted ID or divergent Agent transcript is never overwritten by a rollback-client snapshot.
 
+## Scenario: Per-conversation Client Isolation
+
+### 1. Scope / Trigger
+
+This contract applies whenever the React workspace connects `useAgent()` and `useAgentChat()` through the authenticated `basePath: "agent"` gateway and allows the member to switch between conversations.
+
+### 2. Signatures
+
+```typescript
+conversationAgentClientName(rootInstance: string, chatId: string): string
+
+useAgent({
+  name: conversationAgentClientName(session.agent.instance, conversation.id),
+  basePath: session.agent.basePath,
+  query: { chatId: conversation.id },
+})
+```
+
+### 3. Contracts
+
+- The gateway still treats the authenticated session plus bounded `chatId` query as the only server-side routing authority; the browser cannot select the Durable Object instance.
+- Every mounted conversation must also receive a stable, collision-free client name derived from the authenticated root instance and exact `chatId`. This name isolates the Agents React `agent.path`, AIChat initial-message cache, `useChat` ID, reconnect state, and local message list.
+- `queryDeps` refreshes connection query data but does not make the query part of the AIChat client cache key. It is not a substitute for a conversation-specific client name.
+- Switching conversations unmounts the old `ConversationChat` and mounts the new one with a distinct SDK identity. Messages, drafts, errors, tool continuations, and resumable-stream state must remain scoped to that conversation.
+
+### 4. Validation & Error Matrix
+
+- Same member and same `chatId` -> produce the same client name so reconnect and resume remain stable.
+- Same member and different `chatId` -> produce different client names even when IDs contain separators or similar prefixes.
+- Different member root instance and same `chatId` -> produce different client names.
+- Missing or invalid `chatId` -> rejected by the existing gateway/API validation before a conversation transport is mounted.
+
+### 5. Good / Base / Bad Cases
+
+- Good: switch from conversation A to B; B hydrates only B's transcript, and sending in B cannot persist A's messages.
+- Base: reconnect the same conversation after a transient disconnect; its stable client identity resumes only that conversation.
+- Bad: pass the member root instance directly as every `useAgent.name`; AIChat gives all conversations one cache/`useChat` identity and stale messages can enter the newly selected conversation.
+
+### 6. Tests Required
+
+- Unit-test deterministic client names for same/different members and conversation IDs, including separator-containing IDs.
+- Keep a structural frontend assertion that `useAgent.name` uses the conversation-specific helper while `query.chatId` remains present for gateway routing.
+- Persist distinct synthetic messages into two conversation Agents owned by one member and assert each export contains only its own transcript.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+useAgent({
+  name: session.agent.instance,
+  basePath: session.agent.basePath,
+  query: { chatId: conversation.id },
+});
+```
+
+#### Correct
+
+```typescript
+useAgent({
+  name: conversationAgentClientName(session.agent.instance, conversation.id),
+  basePath: session.agent.basePath,
+  query: { chatId: conversation.id },
+});
+```
+
 ## Scenario: Agent Identity Across Hibernation
 
 ### 1. Scope / Trigger

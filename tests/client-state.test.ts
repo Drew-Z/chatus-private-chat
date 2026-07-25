@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { friendlyAgentError } from "../client/src/lib/agent-errors";
 import {
+  conversationAgentClientName,
   findRetrySourceMessageId,
   hasVisibleAssistantTextAfterLatestUser,
   restoreRejectedDraft,
@@ -10,6 +11,17 @@ import {
 import { resolveClientSurface } from "../client/src/lib/routing";
 
 describe("React client state recovery", () => {
+  it("gives every conversation an exact SDK client identity", () => {
+    const first = conversationAgentClientName("member-root", "chat-a:b");
+    const second = conversationAgentClientName("member-root", "chat-a");
+    const otherMember = conversationAgentClientName("member-other", "chat-a:b");
+
+    expect(first).toBe('["member-root","chat-a:b"]');
+    expect(second).not.toBe(first);
+    expect(otherMember).not.toBe(first);
+    expect(conversationAgentClientName("member-root", "chat-a:b")).toBe(first);
+  });
+
   it("restores a rejected send without overwriting newer input", () => {
     expect(restoreRejectedDraft("", "  original draft  ")).toBe("  original draft  ");
     expect(restoreRejectedDraft("newer input", "original draft")).toBe("newer input");

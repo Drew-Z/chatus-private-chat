@@ -2,6 +2,10 @@ export function restoreRejectedDraft(currentInput: string, submittedDraft: strin
   return currentInput || submittedDraft;
 }
 
+export function conversationAgentClientName(rootInstance: string, chatId: string): string {
+  return JSON.stringify([rootInstance, chatId]);
+}
+
 export function resolveLoadedMemoryDraft(
   currentDraft: string,
   serverMemory: string,

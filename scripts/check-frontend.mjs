@@ -85,6 +85,7 @@ const reactSourceHtml = await readFile(path.join(root, "client/index.html"), "ut
 const deployWorkflow = await readFile(path.join(root, ".github/workflows/deploy.yml"), "utf8");
 const wranglerConfig = await readFile(path.join(root, "wrangler.jsonc"), "utf8");
 assert(reactClient.includes('basePath: session.agent.basePath'), "React client: Agent base path must come from the authenticated session");
+assert(reactClient.includes('name: conversationAgentClientName(session.agent.instance, conversation.id)'), "React client: each conversation must have an isolated SDK client identity");
 assert(reactClient.includes('resume: true'), "React client: resumable Agent chat must stay enabled");
 assert(reactClient.includes('cancelOnClientAbort: false'), "React client: browser cleanup must not cancel resumable server turns");
 assert(reactClient.includes('query: { chatId: conversation.id }'), "React client: Agent transport must include the authenticated conversation id");
