@@ -602,3 +602,37 @@ Implemented isolated anonymous guest sessions with one managed public logical ro
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Workspace file upload attachments
+
+**Date**: 2026-07-26
+**Task**: Workspace file upload attachments
+**Branch**: `main`
+
+### Summary
+
+Implemented member-only UTF-8 text file attachments as bounded deterministic context, added frontend mixed attachment UI, Worker/Agent validation, tests, specs, and planned product closure cleanup.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cf1a0c5` | (see git log) |
+| `c6e0573` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
