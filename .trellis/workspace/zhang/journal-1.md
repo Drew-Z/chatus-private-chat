@@ -735,3 +735,36 @@ Aligned the parent productization PRD, implementation record, and README with th
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Production workflow serialization
+
+**Date**: 2026-07-26
+**Task**: Production workflow serialization
+**Branch**: `main`
+
+### Summary
+
+Serialized production deploy and member acceptance in a shared non-canceling queue, added a late remote-main SHA guard before Wrangler upload, made production acceptance re-check release SHA before mutation and after cleanup, surfaced admin logout cleanup failures, and aligned workflow tests, docs, and specs.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1dd392e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
