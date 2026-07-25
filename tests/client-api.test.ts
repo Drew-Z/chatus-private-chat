@@ -7,6 +7,7 @@ import {
   isAdminMemberListResponse,
   isAdminMemberRevokeResponse,
   isAdminMemberSessionsResponse,
+  isAdminReliabilitySnapshot,
   isAdminSessionProjection,
   isAgentConversation,
   isAgentConversationBranchResult,
@@ -386,5 +387,56 @@ describe("React client runtime validation", () => {
     expect(isAgentMemory({ memory: "too long", revision: "abc", updatedAt: 10, maxChars: 2 })).toBe(false);
     expect(isAgentMemory({ memory: "ok", revision: "", updatedAt: 10, maxChars: 100 })).toBe(true);
     expect(isAgentMemory({ memory: "ok", revision: "abc", updatedAt: 10, maxChars: 1.5 })).toBe(false);
+  });
+
+  it("validates coherent secret-free stream reliability evidence", () => {
+    const route = {
+      routeId: "writer",
+      model: "writer-v1",
+      enabled: true,
+      attempts: 4,
+      successes: 3,
+      averageLatencyMs: 240,
+      lastOutcome: "success",
+      observedAt: "2026-07-25T12:00:00.000Z",
+      lastFallback: false,
+      fallbackCount: 1,
+      streamSamples: 3,
+      progressiveSamples: 2,
+      averageFirstVisibleLatencyMs: 85,
+      lastFirstVisibleLatencyMs: 60,
+      lastStreamShape: "progressive",
+    };
+    const snapshot = {
+      generatedAt: "2026-07-25T12:00:01.000Z",
+      providers: [{
+        providerId: "shared",
+        label: "Shared provider",
+        enabled: true,
+        credentialStatus: "configured",
+        concurrency: "bounded",
+        maxConcurrent: 2,
+        queueTimeoutMs: 750,
+        routes: [route],
+      }],
+    };
+
+    expect(isAdminReliabilitySnapshot(snapshot)).toBe(true);
+    expect(isAdminReliabilitySnapshot({
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], routes: [{ ...route, progressiveSamples: 4 }] }],
+    })).toBe(false);
+    expect(isAdminReliabilitySnapshot({
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], routes: [{ ...route, streamSamples: 4, progressiveSamples: 2 }] }],
+    })).toBe(false);
+    expect(isAdminReliabilitySnapshot({
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], routes: [{ ...route, lastStreamShape: "buffered" }] }],
+    })).toBe(false);
+    expect(isAdminReliabilitySnapshot({
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], routes: [{ ...route, firstVisibleLatencyMs: 60 }] }],
+    })).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { stepCountIs, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentToolSet } from "../src/services/agent-tools";
+import { loadProviderRouteReliability } from "../src/services/route-reliability";
 import { prepareTeamAgentTurn, type Session } from "../src/worker";
 
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -84,6 +85,80 @@ describe("prepared TeamAgent turn", () => {
       outcome: "success",
       fallback: true,
     });
+    await prepared.closeTools();
+  });
+
+  it("delivers a gated first provider delta before completion and records progressive timing", async () => {
+    const routeId = `progressive-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        [routeId]: {
+          label: "Progressive",
+          type: "openai-chat",
+          baseUrl: "https://progressive.example/v1",
+          model: "progressive-model",
+          apiKey: "progressive-test-key",
+        },
+      },
+      defaults: { defaultRoute: routeId, allowedRoutes: [routeId] },
+    }));
+    const encoder = new TextEncoder();
+    let upstream!: ReadableStreamDefaultController<Uint8Array>;
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        upstream = controller;
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(upstreamBody, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label: `agent-progressive-${crypto.randomUUID()}`,
+      createdAt: now,
+      lastSeen: now,
+    };
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "用两段合成内容回答" }],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    const result = streamText({
+      model: prepared.model,
+      messages: prepared.messages,
+      maxRetries: 0,
+      allowSystemInMessages: true,
+      onError: async () => prepared.recordStreamFailure(),
+    });
+    const response = result.toUIMessageStreamResponse();
+    const reader = response.body!.getReader();
+    const firstVisible = readUntilText(reader, "第一段");
+    upstream.enqueue(encoder.encode(openAiSseChunk({ role: "assistant" })));
+    upstream.enqueue(encoder.encode(openAiSseChunk({ content: "第一段" })));
+
+    await expect(firstVisible).resolves.toContain("第一段");
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    await expect(loadProviderRouteReliability(env, routeId, `legacy:${routeId}`)).resolves.toBeNull();
+
+    upstream.enqueue(encoder.encode(openAiSseChunk({ content: "第二段" })));
+    upstream.enqueue(encoder.encode(openAiSseFinishChunk()));
+    upstream.enqueue(encoder.encode("data: [DONE]\n\n"));
+    upstream.close();
+    const rest = await readRemainingText(reader);
+    expect(rest).toContain("第二段");
+    await vi.waitFor(async () => {
+      await expect(loadProviderRouteReliability(env, routeId, `legacy:${routeId}`)).resolves.toMatchObject({
+        streamSamples: 1,
+        progressiveSamples: 1,
+        lastStreamShape: "progressive",
+      });
+    });
+    const reliability = await loadProviderRouteReliability(env, routeId, `legacy:${routeId}`);
+    expect(reliability?.averageFirstVisibleLatencyMs).toBeTypeOf("number");
+    expect(reliability?.lastFirstVisibleLatencyMs).toBeTypeOf("number");
     await prepared.closeTools();
   });
 
@@ -370,6 +445,48 @@ function openAiStreamResponse(text: string): Response {
     status: 200,
     headers: { "Content-Type": "text/event-stream" },
   });
+}
+
+function openAiSseChunk(delta: Record<string, unknown>): string {
+  return `data: ${JSON.stringify({
+    id: "chatcmpl-progressive-test",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "progressive-model",
+    choices: [{ index: 0, delta, finish_reason: null }],
+  })}\n\n`;
+}
+
+function openAiSseFinishChunk(): string {
+  return `data: ${JSON.stringify({
+    id: "chatcmpl-progressive-test",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "progressive-model",
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+  })}\n\n`;
+}
+
+async function readUntilText(reader: ReadableStreamDefaultReader<Uint8Array>, expected: string): Promise<string> {
+  const decoder = new TextDecoder();
+  let output = "";
+  while (!output.includes(expected)) {
+    const next = await reader.read();
+    if (next.done) throw new Error(`stream ended before ${expected}`);
+    output += decoder.decode(next.value, { stream: true });
+  }
+  return output;
+}
+
+async function readRemainingText(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let output = "";
+  while (true) {
+    const next = await reader.read();
+    if (next.done) return output + decoder.decode();
+    output += decoder.decode(next.value, { stream: true });
+  }
 }
 
 function openAiToolCallStreamResponse(name: string, input: Record<string, unknown>): Response {

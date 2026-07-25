@@ -129,6 +129,28 @@ test("composer grows within its cap and keeps send stop dimensions stable", asyn
   await expect(page.locator(".composer-status")).toHaveText("Agent 正在继续处理");
 });
 
+test("reliability stream evidence stays contained on narrow viewports", async ({ page }, testInfo) => {
+  await page.goto("/?view=reliability");
+  await expect(page.getByText("渐进", { exact: true })).toBeVisible();
+  await expect(page.getByText("单块", { exact: true })).toBeVisible();
+  const geometry = await page.evaluate(() => {
+    const wrap = document.querySelector<HTMLElement>(".admin-reliability-table-wrap");
+    const table = document.querySelector<HTMLElement>(".admin-reliability-table");
+    if (!wrap || !table) throw new Error("missing reliability table");
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      wrapperFits: wrap.getBoundingClientRect().right <= document.documentElement.clientWidth,
+      localOverflow: table.scrollWidth > wrap.clientWidth,
+    };
+  });
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.bodyFits).toBe(true);
+  expect(geometry.wrapperFits).toBe(true);
+  if ((page.viewportSize()?.width || 0) < 1160) expect(geometry.localOverflow).toBe(true);
+  await attachScreenshot(page, testInfo, "reliability");
+});
+
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {
   test.skip((page.viewportSize()?.width || 0) > 780, "drawer behavior applies at the mobile breakpoint");
 

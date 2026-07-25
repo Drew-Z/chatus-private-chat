@@ -178,6 +178,11 @@ export type AdminReliabilityRoute = {
   observedAt?: string;
   lastFallback?: boolean;
   fallbackCount?: number;
+  streamSamples?: number;
+  progressiveSamples?: number;
+  averageFirstVisibleLatencyMs?: number;
+  lastFirstVisibleLatencyMs?: number;
+  lastStreamShape?: "progressive" | "single_chunk";
 };
 
 export type AdminReliabilityProvider = {
@@ -1257,6 +1262,11 @@ function isAdminReliabilityRoute(value: unknown): value is AdminReliabilityRoute
       "observedAt",
       "lastFallback",
       "fallbackCount",
+      "streamSamples",
+      "progressiveSamples",
+      "averageFirstVisibleLatencyMs",
+      "lastFirstVisibleLatencyMs",
+      "lastStreamShape",
     ])
     && isNonEmptyString(value.routeId)
     && isNonEmptyString(value.model)
@@ -1270,7 +1280,30 @@ function isAdminReliabilityRoute(value: unknown): value is AdminReliabilityRoute
     && (value.lastOutcome === undefined || isNonEmptyString(value.lastOutcome))
     && (value.observedAt === undefined || isIsoDate(value.observedAt))
     && (value.lastFallback === undefined || typeof value.lastFallback === "boolean")
-    && (value.fallbackCount === undefined || (isNonNegativeInteger(value.fallbackCount) && value.fallbackCount <= value.attempts));
+    && (value.fallbackCount === undefined || (isNonNegativeInteger(value.fallbackCount) && value.fallbackCount <= value.attempts))
+    && hasValidAdminStreamEvidence(value, value.successes);
+}
+
+function hasValidAdminStreamEvidence(value: Record<string, unknown>, successes: number): boolean {
+  const fields = [
+    value.streamSamples,
+    value.progressiveSamples,
+    value.averageFirstVisibleLatencyMs,
+    value.lastFirstVisibleLatencyMs,
+    value.lastStreamShape,
+  ];
+  if (fields.every((field) => field === undefined)) return true;
+  if (fields.some((field) => field === undefined)) return false;
+  return isPositiveInteger(value.streamSamples)
+    && value.streamSamples <= 1_000
+    && value.streamSamples <= successes
+    && isNonNegativeInteger(value.progressiveSamples)
+    && value.progressiveSamples <= value.streamSamples
+    && isNonNegativeInteger(value.averageFirstVisibleLatencyMs)
+    && value.averageFirstVisibleLatencyMs <= 600_000
+    && isNonNegativeInteger(value.lastFirstVisibleLatencyMs)
+    && value.lastFirstVisibleLatencyMs <= 600_000
+    && (value.lastStreamShape === "progressive" || value.lastStreamShape === "single_chunk");
 }
 
 function isAdminSkillConfig(value: unknown): value is AdminSkillConfig {

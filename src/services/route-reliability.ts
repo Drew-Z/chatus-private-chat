@@ -1,3 +1,5 @@
+import type { ProviderStreamShape } from "../contracts/provider";
+
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
 const PROVIDER_ROUTE_RELIABILITY_PREFIX = "route-provider-reliability:";
 const ROUTE_RELIABILITY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -18,7 +20,7 @@ export type RouteReliabilityOutcome =
   | "network_error";
 
 export type RouteReliabilityRecord = {
-  version: 1;
+  version: 2;
   source: "real_task";
   routeId: string;
   ok: boolean;
@@ -27,6 +29,8 @@ export type RouteReliabilityRecord = {
   latencyMs: number;
   fallback: boolean;
   httpStatusClass?: "4xx" | "5xx";
+  firstVisibleLatencyMs?: number;
+  streamShape?: ProviderStreamShape;
 };
 
 export type RouteReliabilityWrite = {
@@ -39,10 +43,12 @@ export type RouteReliabilityWrite = {
   error?: unknown;
   outcome?: RouteReliabilityOutcome;
   usedUserKey?: boolean;
+  firstVisibleLatencyMs?: number;
+  streamShape?: ProviderStreamShape;
 };
 
 export type ProviderRouteReliabilityRecord = {
-  version: 1;
+  version: 2;
   source: "real_task";
   routeId: string;
   providerId: string;
@@ -53,6 +59,11 @@ export type ProviderRouteReliabilityRecord = {
   observedAt: string;
   lastFallback?: boolean;
   fallbackCount?: number;
+  streamSamples?: number;
+  progressiveSamples?: number;
+  averageFirstVisibleLatencyMs?: number;
+  lastFirstVisibleLatencyMs?: number;
+  lastStreamShape?: ProviderStreamShape;
 };
 
 export async function recordRouteReliability(
@@ -61,8 +72,9 @@ export async function recordRouteReliability(
 ): Promise<void> {
   if (args.usedUserKey && (args.status === 401 || args.status === 403)) return;
   const outcome = args.outcome || classifyRouteReliability(args.ok, args.status, args.error);
+  const streamEvidence = normalizeStreamEvidenceWrite(args);
   const record: RouteReliabilityRecord = {
-    version: 1,
+    version: 2,
     source: "real_task",
     routeId: args.routeId,
     ok: args.ok,
@@ -71,6 +83,7 @@ export async function recordRouteReliability(
     latencyMs: Math.max(0, Math.min(600_000, Date.now() - args.startedAt)),
     fallback: args.fallback,
     httpStatusClass: toHttpStatusClass(args.status),
+    ...streamEvidence,
   };
   try {
     const writes: Promise<void>[] = [
@@ -95,11 +108,15 @@ export async function loadProviderRouteReliability(
   routeId: string,
   providerId: string,
 ): Promise<ProviderRouteReliabilityRecord | null> {
-  const raw = await env.CHAT_STORE.get(providerRouteReliabilityKey(routeId, providerId));
+  const key = providerRouteReliabilityKey(routeId, providerId);
+  const raw = await env.CHAT_STORE.get(key);
   if (!raw) return null;
   try {
-    return normalizeProviderRouteReliability(JSON.parse(raw), routeId, providerId);
+    const record = normalizeProviderRouteReliability(JSON.parse(raw), routeId, providerId);
+    if (!record) await deleteInvalidReliabilityRecord(env, key);
+    return record;
   } catch {
+    await deleteInvalidReliabilityRecord(env, key);
     return null;
   }
 }
@@ -118,11 +135,15 @@ export async function loadRouteReliability(
   env: RouteReliabilityEnv,
   routeId: string,
 ): Promise<RouteReliabilityRecord | null> {
-  const raw = await env.CHAT_STORE.get(routeReliabilityKey(routeId));
+  const key = routeReliabilityKey(routeId);
+  const raw = await env.CHAT_STORE.get(key);
   if (!raw) return null;
   try {
-    return normalizeRouteReliability(JSON.parse(raw), routeId);
+    const record = normalizeRouteReliability(JSON.parse(raw), routeId);
+    if (!record) await deleteInvalidReliabilityRecord(env, key);
+    return record;
   } catch {
+    await deleteInvalidReliabilityRecord(env, key);
     return null;
   }
 }
@@ -156,6 +177,14 @@ function providerRouteReliabilityKey(routeId: string, providerId: string): strin
   return `${PROVIDER_ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
 }
 
+async function deleteInvalidReliabilityRecord(env: RouteReliabilityEnv, key: string): Promise<void> {
+  try {
+    await env.CHAT_STORE.delete(key);
+  } catch {
+    // Passive telemetry cleanup must never affect routing or diagnostics.
+  }
+}
+
 async function recordProviderRouteReliability(
   env: RouteReliabilityEnv,
   args: RouteReliabilityWrite & { providerId?: string },
@@ -175,8 +204,9 @@ async function recordProviderRouteReliability(
   const averageLatencyMs = Math.round(
     (((previous?.averageLatencyMs || 0) * sampleWeight) + latest.latencyMs) / attempts,
   );
+  const streamEvidence = aggregateProviderStreamEvidence(previous, latest, successes);
   const record: ProviderRouteReliabilityRecord = {
-    version: 1,
+    version: 2,
     source: "real_task",
     routeId: args.routeId,
     providerId,
@@ -187,12 +217,13 @@ async function recordProviderRouteReliability(
     observedAt: latest.observedAt,
     lastFallback: latest.fallback,
     fallbackCount: Math.min(MAX_PROVIDER_QUALITY_SAMPLES, (previous?.fallbackCount || 0) + (latest.fallback ? 1 : 0)),
+    ...streamEvidence,
   };
   await env.CHAT_STORE.put(providerRouteReliabilityKey(args.routeId, providerId), JSON.stringify(record));
 }
 
 function normalizeRouteReliability(value: unknown, routeId: string): RouteReliabilityRecord | null {
-  if (!isRecord(value) || value.version !== 1 || value.source !== "real_task" || value.routeId !== routeId) return null;
+  if (!isRecord(value) || value.version !== 2 || value.source !== "real_task" || value.routeId !== routeId) return null;
   const outcome = value.outcome;
   if (
     !isRouteReliabilityOutcome(outcome)
@@ -209,8 +240,10 @@ function normalizeRouteReliability(value: unknown, routeId: string): RouteReliab
     && value.httpStatusClass !== "4xx"
     && value.httpStatusClass !== "5xx"
   ) return null;
+  const streamEvidence = normalizeStoredStreamEvidence(value, value.ok);
+  if (streamEvidence === null) return null;
   return {
-    version: 1,
+    version: 2,
     source: "real_task",
     routeId,
     ok: value.ok,
@@ -219,6 +252,7 @@ function normalizeRouteReliability(value: unknown, routeId: string): RouteReliab
     latencyMs: Math.round(latencyMs),
     fallback: value.fallback,
     httpStatusClass: value.httpStatusClass,
+    ...streamEvidence,
   };
 }
 
@@ -229,7 +263,7 @@ function normalizeProviderRouteReliability(
 ): ProviderRouteReliabilityRecord | null {
   if (
     !isRecord(value)
-    || value.version !== 1
+    || value.version !== 2
     || value.source !== "real_task"
     || value.routeId !== routeId
     || value.providerId !== providerId
@@ -241,6 +275,8 @@ function normalizeProviderRouteReliability(
   const successes = value.successes;
   const averageLatencyMs = value.averageLatencyMs;
   const fallbackCount = typeof value.fallbackCount === "number" ? value.fallbackCount : undefined;
+  const streamEvidence = normalizeStoredProviderStreamEvidence(value);
+  if (streamEvidence === null) return null;
   if (
     typeof attempts !== "number"
     || !Number.isInteger(attempts)
@@ -257,9 +293,10 @@ function normalizeProviderRouteReliability(
     || (value.lastFallback !== undefined && typeof value.lastFallback !== "boolean")
     || (value.fallbackCount !== undefined
       && (fallbackCount === undefined || !Number.isInteger(fallbackCount) || fallbackCount < 0 || fallbackCount > attempts))
+    || (streamEvidence.streamSamples !== undefined && streamEvidence.streamSamples > successes)
   ) return null;
   return {
-    version: 1,
+    version: 2,
     source: "real_task",
     routeId,
     providerId,
@@ -270,7 +307,143 @@ function normalizeProviderRouteReliability(
     observedAt: value.observedAt,
     ...(value.lastFallback === undefined ? {} : { lastFallback: value.lastFallback }),
     ...(fallbackCount === undefined ? {} : { fallbackCount }),
+    ...streamEvidence,
   };
+}
+
+function normalizeStreamEvidenceWrite(
+  value: Pick<RouteReliabilityWrite, "ok" | "firstVisibleLatencyMs" | "streamShape">,
+): Pick<RouteReliabilityRecord, "firstVisibleLatencyMs" | "streamShape"> {
+  if (
+    !value.ok
+    || !isRouteStreamShape(value.streamShape)
+    || typeof value.firstVisibleLatencyMs !== "number"
+    || !Number.isFinite(value.firstVisibleLatencyMs)
+  ) return {};
+  return {
+    firstVisibleLatencyMs: Math.max(0, Math.min(600_000, Math.round(value.firstVisibleLatencyMs))),
+    streamShape: value.streamShape,
+  };
+}
+
+function normalizeStoredStreamEvidence(
+  value: Record<string, unknown>,
+  ok: boolean,
+): Pick<RouteReliabilityRecord, "firstVisibleLatencyMs" | "streamShape"> | null {
+  const hasLatency = value.firstVisibleLatencyMs !== undefined;
+  const hasShape = value.streamShape !== undefined;
+  if (!hasLatency && !hasShape) return {};
+  if (
+    !ok
+    || !hasLatency
+    || !hasShape
+    || typeof value.firstVisibleLatencyMs !== "number"
+    || !Number.isInteger(value.firstVisibleLatencyMs)
+    || value.firstVisibleLatencyMs < 0
+    || value.firstVisibleLatencyMs > 600_000
+    || !isRouteStreamShape(value.streamShape)
+  ) return null;
+  return {
+    firstVisibleLatencyMs: value.firstVisibleLatencyMs,
+    streamShape: value.streamShape,
+  };
+}
+
+function aggregateProviderStreamEvidence(
+  previous: ProviderRouteReliabilityRecord | null,
+  latest: RouteReliabilityRecord,
+  maxStreamSamples: number,
+): Pick<ProviderRouteReliabilityRecord,
+  | "streamSamples"
+  | "progressiveSamples"
+  | "averageFirstVisibleLatencyMs"
+  | "lastFirstVisibleLatencyMs"
+  | "lastStreamShape"
+> {
+  if (latest.firstVisibleLatencyMs === undefined || !latest.streamShape) {
+    const previousSamples = previous?.streamSamples || 0;
+    const streamSamples = Math.min(previousSamples, maxStreamSamples);
+    if (streamSamples === 0) return {};
+    return {
+      streamSamples,
+      progressiveSamples: Math.min(
+        streamSamples,
+        Math.round(((previous?.progressiveSamples || 0) / previousSamples) * streamSamples),
+      ),
+      averageFirstVisibleLatencyMs: previous!.averageFirstVisibleLatencyMs!,
+      lastFirstVisibleLatencyMs: previous!.lastFirstVisibleLatencyMs!,
+      lastStreamShape: previous!.lastStreamShape!,
+    };
+  }
+  const previousSamples = previous?.streamSamples || 0;
+  const sampleWeight = Math.min(previousSamples, MAX_PROVIDER_QUALITY_SAMPLES - 1, maxStreamSamples - 1);
+  const streamSamples = Math.min(MAX_PROVIDER_QUALITY_SAMPLES, maxStreamSamples, sampleWeight + 1);
+  const progressiveSamples = Math.min(
+    streamSamples,
+    Math.round(
+      (previousSamples > 0 ? (previous?.progressiveSamples || 0) / previousSamples : 0) * sampleWeight,
+    ) + (latest.streamShape === "progressive" ? 1 : 0),
+  );
+  return {
+    streamSamples,
+    progressiveSamples,
+    averageFirstVisibleLatencyMs: Math.round(
+      (((previous?.averageFirstVisibleLatencyMs || 0) * sampleWeight) + latest.firstVisibleLatencyMs) / streamSamples,
+    ),
+    lastFirstVisibleLatencyMs: latest.firstVisibleLatencyMs,
+    lastStreamShape: latest.streamShape,
+  };
+}
+
+function normalizeStoredProviderStreamEvidence(
+  value: Record<string, unknown>,
+): Pick<ProviderRouteReliabilityRecord,
+  | "streamSamples"
+  | "progressiveSamples"
+  | "averageFirstVisibleLatencyMs"
+  | "lastFirstVisibleLatencyMs"
+  | "lastStreamShape"
+> | null {
+  const fields = [
+    value.streamSamples,
+    value.progressiveSamples,
+    value.averageFirstVisibleLatencyMs,
+    value.lastFirstVisibleLatencyMs,
+    value.lastStreamShape,
+  ];
+  if (fields.every((field) => field === undefined)) return {};
+  if (fields.some((field) => field === undefined)) return null;
+  if (
+    typeof value.streamSamples !== "number"
+    || !Number.isInteger(value.streamSamples)
+    || value.streamSamples < 1
+    || value.streamSamples > MAX_PROVIDER_QUALITY_SAMPLES
+    || typeof value.progressiveSamples !== "number"
+    || !Number.isInteger(value.progressiveSamples)
+    || value.progressiveSamples < 0
+    || value.progressiveSamples > value.streamSamples
+    || !isBoundedLatency(value.averageFirstVisibleLatencyMs)
+    || !isBoundedLatency(value.lastFirstVisibleLatencyMs)
+    || !isRouteStreamShape(value.lastStreamShape)
+  ) return null;
+  return {
+    streamSamples: value.streamSamples,
+    progressiveSamples: value.progressiveSamples,
+    averageFirstVisibleLatencyMs: value.averageFirstVisibleLatencyMs,
+    lastFirstVisibleLatencyMs: value.lastFirstVisibleLatencyMs,
+    lastStreamShape: value.lastStreamShape,
+  };
+}
+
+function isBoundedLatency(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 600_000;
+}
+
+function isRouteStreamShape(value: unknown): value is ProviderStreamShape {
+  return value === "progressive" || value === "single_chunk";
 }
 
 function isRouteReliabilityOutcome(value: unknown): value is RouteReliabilityOutcome {

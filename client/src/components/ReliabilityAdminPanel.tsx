@@ -60,18 +60,23 @@ export function ReliabilityAdminPanel({ onSessionExpired, onNotice, onDirtyChang
         <span><ShieldCheck size={15} /> 数据源：真实任务被动记录</span>
         <span>{snapshot ? `生成于 ${formatDate(snapshot.generatedAt)}` : "尚未读取"}</span>
       </div>
-      {loading && !snapshot ? <div className="admin-pool-empty-state"><p>正在读取可靠性数据...</p></div> : !providers.length ? <div className="admin-pool-empty-state"><p>没有匹配的服务商或逻辑模型。</p></div> : (
-        <div className="admin-reliability-table-wrap">
-          <table className="admin-reliability-table">
-            <thead><tr><th>服务商</th><th>状态</th><th>容量策略</th><th>凭据</th><th>逻辑模型 / 上游模型</th><th>尝试</th><th>成功</th><th>平均延迟</th><th>最近结果</th><th>最近观察</th><th>Fallback</th></tr></thead>
-            <tbody>{providers.flatMap((provider) => provider.routes.length
-              ? provider.routes.map((route) => <ReliabilityRow key={`${provider.providerId}-${route.routeId}`} provider={provider} route={route} />)
-              : [<ReliabilityRow key={provider.providerId} provider={provider} />]
-            )}</tbody>
-          </table>
-        </div>
-      )}
+      {loading && !snapshot ? <div className="admin-pool-empty-state"><p>正在读取可靠性数据...</p></div> : <ReliabilityTable providers={providers} />}
     </section>
+  );
+}
+
+export function ReliabilityTable({ providers }: { providers: AdminReliabilityProvider[] }) {
+  if (!providers.length) return <div className="admin-pool-empty-state"><p>没有匹配的服务商或逻辑模型。</p></div>;
+  return (
+    <div className="admin-reliability-table-wrap">
+      <table className="admin-reliability-table">
+        <thead><tr><th>服务商</th><th>状态</th><th>容量策略</th><th>凭据</th><th>逻辑模型 / 上游模型</th><th>尝试</th><th>成功</th><th>平均延迟</th><th>首字输出</th><th>输出形态</th><th>最近结果</th><th>最近观察</th><th>Fallback</th></tr></thead>
+        <tbody>{providers.flatMap((provider) => provider.routes.length
+          ? provider.routes.map((route) => <ReliabilityRow key={`${provider.providerId}-${route.routeId}`} provider={provider} route={route} />)
+          : [<ReliabilityRow key={provider.providerId} provider={provider} />]
+        )}</tbody>
+      </table>
+    </div>
   );
 }
 
@@ -87,11 +92,17 @@ function ReliabilityRow({ provider, route }: { provider: AdminReliabilityProvide
       <td>{route ? route.attempts : "未知"}</td>
       <td>{route ? route.successes : "未知"}</td>
       <td>{route?.attempts ? `${route.averageLatencyMs}ms` : "未知"}</td>
+      <td>{route?.streamSamples ? <><strong>{route.averageFirstVisibleLatencyMs}ms</strong><small>最近 {route.lastFirstVisibleLatencyMs}ms</small></> : <span className="muted">未知</span>}</td>
+      <td>{route?.lastStreamShape ? <><span className={`reliability-badge ${route.lastStreamShape}`}>{streamShapeLabel(route.lastStreamShape)}</span><small>渐进 {route.progressiveSamples}/{route.streamSamples}</small></> : <span className="muted">未知</span>}</td>
       <td>{route?.lastOutcome ? <span className={`reliability-outcome ${route.lastOutcome === "success" ? "ok" : "bad"}`}>{outcomeLabel(route.lastOutcome)}</span> : <span className="muted">未知</span>}</td>
       <td>{route?.observedAt ? formatDate(route.observedAt) : <span className="muted">暂无</span>}</td>
       <td>{route?.lastFallback === undefined ? <span className="muted">未知</span> : `${route.fallbackCount || 0} 次${route.lastFallback ? " · 最近发生" : ""}`}</td>
     </tr>
   );
+}
+
+function streamShapeLabel(shape: AdminReliabilityRoute["lastStreamShape"]): string {
+  return shape === "progressive" ? "渐进" : "单块";
 }
 
 function credentialLabel(status: string): string {

@@ -184,7 +184,7 @@ describe("Worker API", () => {
     }));
     const { cookie, label } = await login();
     await env.CHAT_STORE.put("route-reliability:default", JSON.stringify({
-      version: 1,
+      version: 2,
       source: "real_task",
       routeId: "default",
       ok: false,
@@ -3416,7 +3416,7 @@ describe("Worker API", () => {
       expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${managedKey}`);
     }
     await expect(env.CHAT_STORE.get("route-reliability:managed", "json")).resolves.toMatchObject({
-      version: 1,
+      version: 2,
       source: "real_task",
       routeId: "managed",
       ok: true,
@@ -3536,7 +3536,7 @@ describe("Worker API", () => {
       defaults: { defaultRoute: "writer", allowedRoutes: ["writer"] },
     }));
     await env.CHAT_STORE.put(`${PROVIDER_ROUTE_RELIABILITY_PREFIX}writer:shared`, JSON.stringify({
-      version: 1,
+      version: 2,
       source: "real_task",
       routeId: "writer",
       providerId: "shared",
@@ -3547,6 +3547,11 @@ describe("Worker API", () => {
       observedAt: new Date().toISOString(),
       lastFallback: true,
       fallbackCount: 1,
+      streamSamples: 2,
+      progressiveSamples: 1,
+      averageFirstVisibleLatencyMs: 95,
+      lastFirstVisibleLatencyMs: 70,
+      lastStreamShape: "single_chunk",
     }));
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await apiRequest("/api/admin/reliability", cookie);
@@ -3572,6 +3577,11 @@ describe("Worker API", () => {
           lastOutcome: "upstream_server",
           lastFallback: true,
           fallbackCount: 1,
+          streamSamples: 2,
+          progressiveSamples: 1,
+          averageFirstVisibleLatencyMs: 95,
+          lastFirstVisibleLatencyMs: 70,
+          lastStreamShape: "single_chunk",
         }],
       }],
     });
@@ -3598,7 +3608,7 @@ describe("Worker API", () => {
       defaults: { defaultRoute: "oldRoute", allowedRoutes: ["oldRoute"] },
     }));
     await env.CHAT_STORE.put(`${PROVIDER_ROUTE_RELIABILITY_PREFIX}oldRoute:old`, JSON.stringify({
-      version: 1,
+      version: 2,
       source: "real_task",
       routeId: "oldRoute",
       providerId: "old",

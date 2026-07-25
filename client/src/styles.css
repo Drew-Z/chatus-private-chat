@@ -264,7 +264,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .admin-reliability-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 30px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 .admin-reliability-meta span:first-child { display: inline-flex; align-items: center; gap: 6px; }
 .admin-reliability-table-wrap { overflow-x: auto; padding: 0 30px 30px; }
-.admin-reliability-table { width: 100%; min-width: 960px; border-collapse: collapse; font-size: 12px; }
+.admin-reliability-table { width: 100%; min-width: 1160px; border-collapse: collapse; font-size: 12px; }
 .admin-reliability-table th { padding: 13px 9px; border-bottom: 1px solid var(--line-strong); color: var(--muted); font-size: 11px; font-weight: 700; text-align: left; white-space: nowrap; }
 .admin-reliability-table td { padding: 13px 9px; border-bottom: 1px solid #edf1ef; vertical-align: top; white-space: nowrap; }
 .admin-reliability-table td strong, .admin-reliability-table td small { display: block; }
@@ -274,6 +274,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .reliability-badge.missing, .reliability-badge.unavailable, .reliability-outcome.bad { color: var(--danger); background: var(--danger-soft); }
 .reliability-badge.user_key_required { color: #6a55a3; background: #f0ebfb; }
 .reliability-badge.exclusive, .reliability-badge.bounded, .reliability-badge.unlimited { color: #46524c; background: var(--surface-strong); }
+.reliability-badge.progressive { color: var(--accent-hover); background: var(--accent-soft); }
+.reliability-badge.single_chunk { color: var(--warning); background: var(--warning-soft); }
 
 .member-access-dialog {
   width: min(440px, calc(100% - 24px));

@@ -5,6 +5,7 @@ import type {
   LanguageModelV3StreamPart,
   LanguageModelV3StreamResult,
 } from "@ai-sdk/provider";
+import type { ProviderStreamShape } from "../contracts/provider";
 import { isTerminalProviderFailure } from "./provider-router";
 import {
   acquireFirstAvailableLease,
@@ -32,6 +33,8 @@ export type ProviderAttemptEvent = {
   status?: number;
   protocolError: boolean;
   visibleOutputStarted: boolean;
+  firstVisibleLatencyMs?: number;
+  streamShape?: ProviderStreamShape;
 };
 
 export type FallbackLanguageModelCallbacks = {
@@ -109,6 +112,7 @@ export function createFallbackLanguageModel(
               fallback,
               startedAt,
               buffered: primed.buffered,
+              firstTextDeltaAt: primed.firstTextDeltaAt,
               reader: primed.reader,
               callbacks,
               lease,
@@ -133,6 +137,7 @@ async function primeProviderStream(stream: ReadableStream<LanguageModelV3StreamP
   | {
       ok: true;
       buffered: LanguageModelV3StreamPart[];
+      firstTextDeltaAt?: number;
       reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart>;
     }
   | { ok: false; error: unknown }
@@ -156,7 +161,14 @@ async function primeProviderStream(stream: ReadableStream<LanguageModelV3StreamP
         return { ok: false, error: providerProtocolError("Provider returned no visible output.") };
       }
       buffered.push(part);
-      if (isVisibleStreamPart(part)) return { ok: true, buffered, reader };
+      if (isVisibleStreamPart(part)) {
+        return {
+          ok: true,
+          buffered,
+          reader,
+          ...(isVisibleTextDelta(part) ? { firstTextDeltaAt: Date.now() } : {}),
+        };
+      }
     }
   } catch (error) {
     await reader.cancel().catch(() => undefined);
@@ -169,12 +181,15 @@ function monitorCommittedStream(args: {
   fallback: boolean;
   startedAt: number;
   buffered: LanguageModelV3StreamPart[];
+  firstTextDeltaAt?: number;
   reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart>;
   callbacks: FallbackLanguageModelCallbacks;
   lease: ProviderCandidateLease;
 }): ReadableStream<LanguageModelV3StreamPart> {
   let bufferIndex = 0;
   let settled = false;
+  let firstTextDeltaAt = args.firstTextDeltaAt;
+  let visibleTextDeltaCount = 0;
 
   const settleSuccess = async () => {
     if (settled) return;
@@ -184,6 +199,8 @@ function monitorCommittedStream(args: {
       args.fallback,
       args.startedAt,
       true,
+      undefined,
+      streamEvidence(args.startedAt, firstTextDeltaAt, visibleTextDeltaCount),
     ));
     await releaseLease(args.lease);
   };
@@ -218,6 +235,10 @@ function monitorCommittedStream(args: {
         }
         if (next.value.type === "error") await settleFailure(next.value.error);
         if (next.value.type === "finish") await settleSuccess();
+        if (isVisibleTextDelta(next.value)) {
+          firstTextDeltaAt ??= Date.now();
+          visibleTextDeltaCount += 1;
+        }
         controller.enqueue(next.value);
       } catch (error) {
         await settleFailure(error);
@@ -232,7 +253,7 @@ function monitorCommittedStream(args: {
 }
 
 function isVisibleStreamPart(part: LanguageModelV3StreamPart): boolean {
-  if (part.type === "text-delta" || part.type === "reasoning-delta") return Boolean(part.delta);
+  if (isVisibleTextDelta(part)) return true;
   return part.type !== "stream-start"
     && part.type !== "response-metadata"
     && part.type !== "raw"
@@ -242,6 +263,10 @@ function isVisibleStreamPart(part: LanguageModelV3StreamPart): boolean {
     && part.type !== "reasoning-end"
     && part.type !== "finish"
     && part.type !== "error";
+}
+
+function isVisibleTextDelta(part: LanguageModelV3StreamPart): boolean {
+  return (part.type === "text-delta" || part.type === "reasoning-delta") && Boolean(part.delta);
 }
 
 function canFallback(error: unknown, usedUserKey: boolean, options: LanguageModelV3CallOptions): boolean {
@@ -256,6 +281,7 @@ function attemptEvent(
   startedAt: number,
   visibleOutputStarted: boolean,
   error?: unknown,
+  evidence?: Pick<ProviderAttemptEvent, "firstVisibleLatencyMs" | "streamShape">,
 ): ProviderAttemptEvent {
   return {
     routeId: candidate.routeId,
@@ -266,6 +292,19 @@ function attemptEvent(
     status: providerErrorStatus(error),
     protocolError: error instanceof Error && error.name === "ProviderProtocolError",
     visibleOutputStarted,
+    ...evidence,
+  };
+}
+
+function streamEvidence(
+  startedAt: number,
+  firstTextDeltaAt: number | undefined,
+  visibleTextDeltaCount: number,
+): Pick<ProviderAttemptEvent, "firstVisibleLatencyMs" | "streamShape"> {
+  if (firstTextDeltaAt === undefined || visibleTextDeltaCount < 1) return {};
+  return {
+    firstVisibleLatencyMs: Math.max(0, firstTextDeltaAt - startedAt),
+    streamShape: visibleTextDeltaCount > 1 ? "progressive" : "single_chunk",
   };
 }
 

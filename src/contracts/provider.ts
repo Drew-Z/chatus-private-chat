@@ -2,6 +2,8 @@ export type ProviderType = "openai-chat" | "anthropic-messages";
 
 export type ProviderConcurrency = "unlimited" | "exclusive" | "bounded";
 
+export type ProviderStreamShape = "progressive" | "single_chunk";
+
 export type ProviderConfig = {
   enabled?: boolean;
   label: string;

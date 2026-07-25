@@ -257,12 +257,23 @@ messages: await convertToModelMessages(this.messages, { tools })
 - A successful logical-route fallback records the selected route as `fallback: true`; exhausted or post-output failures also record the overall request failure.
 - Telemetry callbacks are best effort and must never alter stream success or failure.
 
+### First-visible Latency And Stream Shape
+
+- Observe provider delivery at the `LanguageModelV3` committed-stream boundary before UI-message transformation. Forward every provider part unchanged; telemetry must not split, merge, delay, or fabricate deltas.
+- First-visible latency is the bounded elapsed time from provider-attempt start to the first non-empty `text-delta` or `reasoning-delta`. Metadata-only, source, file, tool, and approval events still commit fallback selection but do not become text-stream samples.
+- A successfully finished text stream with one visible text/reasoning delta is `single_chunk`; two or more are `progressive`. Cancellation and any failure, including a post-output failure, never increment successful stream-shape samples.
+- Per `(logicalRouteId, providerId)` version-2 records retain at most 1,000 bounded samples plus average/latest first-visible latency, latest shape, and progressive sample count. Stored and projected aggregates must satisfy `progressiveSamples <= streamSamples <= successes <= attempts`; when the bounded success history shrinks after a failure, stream counters shrink proportionally so the writer cannot create a record that its own reader rejects. Version-1 development records are invalidated and deleted on read rather than migrated.
+- The admin API and exact client decoder expose counts, timing, and the two shape literals only. They must never expose prompts, completions, tool payloads, raw chunks, provider response metadata, or credentials.
+- A single-chunk result means the upstream exposed one visible delta; the client must keep the truthful waiting state and render that delta normally instead of simulating token streaming.
+
 ## Required Tests
 
 - Unit-test pre-output fallback, post-output route locking, terminal failure classes, cancellation, and telemetry callback isolation.
 - Assert a retryable failure may advance to a different logical model on the same provider, while one lease-selection round still creates at most one candidate per provider.
 - Test lease/error lifecycle directly in the Worker isolate. Do not pass an intentionally errored response body across the workerd RPC boundary merely to assert rejection; workerd reports that expected stream failure as an uncaught isolate warning even when the host assertion catches it.
 - Integration-test `prepareTeamAgentTurn -> streamText -> UIMessageStream` with local fake provider responses; no test may contact a model channel.
+- For progressive acceptance, gate the fake provider stream: release one visible delta, assert the downstream UI-message reader consumes it, then release the later delta and finish. Reading only the final concatenated body does not prove incremental delivery.
+- Seed an impossible aggregate with `streamSamples > successes` and assert both the storage normalizer and exact client decoder reject it; at the 1,000-sample cap, add a failure and assert stream counters remain within the reduced success count.
 - Seed malformed, expired, and duplicate persisted leases, evict the coordinator, and assert normalized capacity, storage, idempotent request recovery, and the earliest alarm.
 - Pass the Agent request abort signal through to `streamText`.
 - Keep `chatRecovery` configured as a class field, never inside `onStart()`.

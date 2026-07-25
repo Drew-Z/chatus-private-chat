@@ -4,8 +4,9 @@ import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
 import { MessageComposer } from "../../../../client/src/components/MessageComposer";
 import { MessageView, type MessageAction } from "../../../../client/src/components/MessageView";
+import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
-import type { AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
+import type { AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
 import "../../../../client/src/styles.css";
 
 const now = Date.now();
@@ -99,6 +100,49 @@ const messages: UIMessage[] = [
   },
 ];
 
+const reliabilityProviders: AdminReliabilityProvider[] = [{
+  providerId: "synthetic-provider",
+  label: "合成服务商",
+  enabled: true,
+  credentialStatus: "configured",
+  concurrency: "bounded",
+  maxConcurrent: 2,
+  queueTimeoutMs: 750,
+  routes: [{
+    routeId: "reasoning",
+    model: "synthetic-reasoning-model",
+    enabled: true,
+    attempts: 6,
+    successes: 5,
+    averageLatencyMs: 820,
+    lastOutcome: "success",
+    observedAt: new Date(now).toISOString(),
+    lastFallback: false,
+    fallbackCount: 1,
+    streamSamples: 5,
+    progressiveSamples: 4,
+    averageFirstVisibleLatencyMs: 210,
+    lastFirstVisibleLatencyMs: 180,
+    lastStreamShape: "progressive",
+  }, {
+    routeId: "buffered",
+    model: "synthetic-buffered-model",
+    enabled: true,
+    attempts: 2,
+    successes: 2,
+    averageLatencyMs: 1_400,
+    lastOutcome: "success",
+    observedAt: new Date(now - 60_000).toISOString(),
+    lastFallback: false,
+    fallbackCount: 0,
+    streamSamples: 2,
+    progressiveSamples: 0,
+    averageFirstVisibleLatencyMs: 1_350,
+    lastFirstVisibleLatencyMs: 1_300,
+    lastStreamShape: "single_chunk",
+  }],
+}];
+
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
   const [conversations, setConversations] = useState(initialConversations);
@@ -111,6 +155,14 @@ function WorkspaceFixture() {
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
 
   const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
+
+  if (params.get("view") === "reliability") {
+    return (
+      <main data-visual-fixture="true" style={{ minHeight: "100dvh", overflow: "hidden", background: "var(--surface)" }}>
+        <ReliabilityTable providers={reliabilityProviders} />
+      </main>
+    );
+  }
 
   return (
     <main className="workspace-shell" data-visual-fixture="true">

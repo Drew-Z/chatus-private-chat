@@ -20,7 +20,8 @@
   "subtasks": [],
   "children": [
     "07-24-typed-provider-pool-admin",
-    "07-25-workspace-visual-interaction-pass"
+    "07-25-workspace-visual-interaction-pass",
+    "07-25-integrated-stream-telemetry-acceptance"
   ],
   "parent": null,
   "relatedFiles": [],

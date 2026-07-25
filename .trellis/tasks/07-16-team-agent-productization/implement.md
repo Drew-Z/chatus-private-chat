@@ -70,25 +70,25 @@ The remaining experience work should run in the following order. Each stage is i
 - [ ] Add deterministic fake-provider cases for delayed SSE deltas, one visible chunk, provider-busy timeout, pre-output fallback, post-output failure, cancellation, and reconnect. Do not contact a live model.
 - [ ] Define the message-action availability matrix by role, message position, run state, failure state, tool approval state, and online state.
 - [ ] Define the branch API contract, idempotency key, bounded transcript-prefix rules, quota behavior, rollback behavior, and exact secret-free response decoder before changing the React UI.
-- [ ] Capture current passive route/provider telemetry gaps, especially first-visible latency and progressive-versus-single-chunk evidence.
+- [x] Capture current passive route/provider telemetry gaps, especially first-visible latency and progressive-versus-single-chunk evidence.
 
 #### B. Durable Message Actions And Branches
 
-- [ ] Add a server-owned Agent branch operation for branch/edit/resend/regenerate/continue, reusing `parentChatId`, access re-validation, tombstones, and cleanup retries.
-- [ ] Add exact typed-client API decoders and pure action-state helpers with unit tests.
-- [ ] Port the legacy action set into the React `MessageView`: user copy/edit/resend/branch; assistant copy/regenerate/feedback/branch/conditional continue; failed-turn retry.
-- [ ] Use an accessible edit dialog/composer with Cancel and branch-and-send actions; restore focus to the originating message action.
-- [ ] Keep the original conversation unchanged, activate the returned branch, preserve drafts correctly, and prevent duplicate branches on request retry.
+- [x] Add a server-owned Agent branch operation for branch/edit/resend/regenerate/continue, reusing `parentChatId`, access re-validation, tombstones, and cleanup retries.
+- [x] Add exact typed-client API decoders and pure action-state helpers with unit tests.
+- [x] Port the legacy action set into the React `MessageView`: user copy/edit/resend/branch; assistant copy/regenerate/feedback/branch/conditional continue; failed-turn retry.
+- [x] Use an accessible edit dialog/composer with Cancel and branch-and-send actions; restore focus to the originating message action.
+- [x] Keep the original conversation unchanged, activate the returned branch, preserve drafts correctly, and prevent duplicate branches on request retry.
 - [ ] Add parent-origin navigation and branch naming without turning the conversation sidebar into a tree browser in the first release.
 
 #### C. Truthful Streaming And Slow-response Feedback
 
 - [ ] Derive submitted/waiting-first-output/streaming/tool/recovering/completed/stopped/failed UI phases from Agent status and visible message parts.
-- [ ] Render a stable thinking row immediately after submit, show elapsed waiting after a short threshold, keep Stop available, and avoid layout shifts.
-- [ ] Extend passive per-offering telemetry with first-visible latency and bounded stream-shape evidence; never record prompts or completion content.
+- [x] Render a stable thinking row immediately after submit, show elapsed waiting after a short threshold, keep Stop available, and avoid layout shifts.
+- [x] Extend passive per-offering telemetry with first-visible latency and bounded stream-shape evidence; never record prompts or completion content.
 - [ ] Surface actionable failure classes and provider-busy/timeout status to the member without exposing provider IDs or secrets.
-- [ ] Show administrators whether a recent successful response was progressive or single-chunk so upstream buffering can be distinguished from client bugs.
-- [ ] Verify true provider deltas paint incrementally. Do not add fake typewriter animation for buffered output.
+- [x] Show administrators whether a recent successful response was progressive or single-chunk so upstream buffering can be distinguished from client bugs.
+- [x] Verify true provider deltas paint incrementally. Do not add fake typewriter animation for buffered output.
 
 #### D. Typed Provider-pool Administration
 
@@ -102,18 +102,18 @@ The remaining experience work should run in the following order. Each stage is i
 
 #### E. Workspace Visual And Interaction Pass
 
-- [ ] Establish shared spacing, color, focus, icon-button, status, and message-action tokens in `client/src/styles.css`; avoid decorative cards and one-note palette drift.
-- [ ] Refine the conversation rail for denser scanning, active-state clarity, stable rename/delete affordances, and mobile drawer parity.
-- [ ] Refine the chat header into compact title, logical model/status, fallback/health access, and connection state without explanatory text walls.
-- [ ] Refine assistant/user message hierarchy, readable transcript width, code/Markdown/source/tool rendering, action placement, and long-word/mobile overflow.
-- [ ] Refine the sticky composer with stable send/stop dimensions, multiline growth, waiting/error status, and touch targets.
-- [ ] Verify desktop, wide desktop, 780px, 480px, and 390px layouts with Playwright screenshots and overlap/overflow assertions.
+- [x] Establish shared spacing, color, focus, icon-button, status, and message-action tokens in `client/src/styles.css`; avoid decorative cards and one-note palette drift.
+- [x] Refine the conversation rail for denser scanning, active-state clarity, stable rename/delete affordances, and mobile drawer parity.
+- [x] Refine the chat header into compact title, logical model/status, fallback/health access, and connection state without explanatory text walls.
+- [x] Refine assistant/user message hierarchy, readable transcript width, code/Markdown/source/tool rendering, action placement, and long-word/mobile overflow.
+- [x] Refine the sticky composer with stable send/stop dimensions, multiline growth, waiting/error status, and touch targets.
+- [x] Verify desktop, wide desktop, 780px, 480px, and 390px layouts with Playwright screenshots and overlap/overflow assertions.
 
 #### F. Integrated Acceptance And Release
 
-- [ ] Run `trellis-check`, focused client/Worker tests, and the full release gates in the mandated sequence.
+- [x] Run `trellis-check`, focused client/Worker tests, and the full release gates in the mandated sequence.
 - [ ] Perform local Worker browser acceptance for branch persistence, retry idempotency, true delayed streaming, buffered response feedback, provider-pool editing, secret cleanup, keyboard use, and touch use.
-- [ ] Update frontend streaming/provider specs and the operator documentation with the new workflow and rollback boundary.
+- [x] Update frontend streaming/provider specs and the operator documentation with the new workflow and rollback boundary.
 - [ ] Commit each child slice independently. Push and deploy production only after explicit confirmation and only through GitHub Actions.
 
 ### Current Checkpoint (2026-07-24)
@@ -166,6 +166,7 @@ The remaining experience work should run in the following order. Each stage is i
 - 2026-07-23 (free-plan migration correction): GitHub Actions run `30020616414` reached deployment but Cloudflare rejected the unapplied `ProviderCoordinator` `v3` migration because it used `new_classes` (error 10097; Workers Free requires SQLite-backed namespaces). The preceding run had skipped deployment, so the tag was safe to correct in place. `v3` now uses `new_sqlite_classes`, the repository contract rejects `new_classes`, and local full gates passed with 19 test files / 229 tests, strict type-check, default and generated-config Wrangler dry-runs, and `git diff --check`. Production retry is pending this fix commit.
 - 2026-07-24 (message actions and managed browser acceptance): Agent branch/edit/resend/regenerate/continue operations, role-aware React action bars, waiting-first-output elapsed feedback, and safe truncated-output metadata persistence were verified. A local managed-mode Worker created a temporary member through the admin API and passed Playwright acceptance at 1440x900 and 390x844 with no horizontal overflow and visible Continue/action controls. Full gates passed with 19 test files / 232 tests, strict type-check, Wrangler dry-run, and `git diff --check`; no live model call or production deployment was used.
 - 2026-07-25 (typed pool hardening): Provider/logical-model rename collisions are blocked, secret writes stay scoped to the saved provider/ref and clear on transitions, offering capability overrides preserve inherit/true/false semantics, reliability shows enabled/readiness state, failed turns expose resend-branch retry, transcript scrolling respects manual position, and edit cancellation restores focus. Full gates passed with 20 test files / 246 tests, frontend structure checks, strict type-check, Wrangler dry-run, and diff checks; no live model call or production deployment was used.
+- 2026-07-25 (truthful stream telemetry): Provider attempts now record bounded first-visible latency and progressive-versus-single-chunk evidence only after successful text completion; version-1 or malformed development records are removed lazily, and storage/client validation enforces `progressiveSamples <= streamSamples <= successes <= attempts`. Gated fake providers proved the first delta was consumable before the second was released. Final gates passed with 21 test files / 256 tests, 23 browser tests plus 2 expected desktop skips across five viewports, frontend structure checks, strict type-check, Wrangler dry-run, diff checks, and Trellis task validation. No live model, push, or production deployment was used.
 - No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation

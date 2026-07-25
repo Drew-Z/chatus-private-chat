@@ -11,6 +11,8 @@ const CALL_OPTIONS = { prompt: [] } as unknown as LanguageModelV3CallOptions;
 
 function model(args: {
   stream?: LanguageModelV3StreamPart[];
+  streamSource?: ReadableStream<LanguageModelV3StreamPart>;
+  onStream?: () => void;
   streamError?: unknown;
   generate?: LanguageModelV3GenerateResult;
   generateError?: unknown;
@@ -27,7 +29,8 @@ function model(args: {
     },
     async doStream() {
       if (args.streamError) throw args.streamError;
-      return { stream: streamOf(args.stream || []) };
+      args.onStream?.();
+      return { stream: args.streamSource || streamOf(args.stream || []) };
     },
   };
 }
@@ -61,7 +64,94 @@ describe("fallback language model", () => {
     expect(parts.filter((part) => part.type === "stream-start")).toHaveLength(1);
     expect(parts).toContainEqual(expect.objectContaining({ type: "text-delta", delta: "ok" }));
     expect(failure).toEqual([expect.objectContaining({ routeId: "primary", fallback: false, status: 503, visibleOutputStarted: false })]);
-    expect(success).toEqual([expect.objectContaining({ routeId: "backup", fallback: true, visibleOutputStarted: true })]);
+    expect(success).toEqual([expect.objectContaining({
+      routeId: "backup",
+      fallback: true,
+      visibleOutputStarted: true,
+      streamShape: "single_chunk",
+    })]);
+  });
+
+  it("forwards the first delta before a later delta is released and records progressive evidence", async () => {
+    let controller!: ReadableStreamDefaultController<LanguageModelV3StreamPart>;
+    const source = new ReadableStream<LanguageModelV3StreamPart>({
+      start(value) {
+        controller = value;
+      },
+    });
+    const success: ProviderAttemptEvent[] = [];
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    let signalStreamStarted!: () => void;
+    const streamStarted = new Promise<void>((resolve) => {
+      signalStreamStarted = resolve;
+    });
+    const router = createFallbackLanguageModel([{
+      routeId: "progressive",
+      providerId: "provider-progressive",
+      usedUserKey: false,
+      model: model({ streamSource: source, onStream: signalStreamStarted }),
+    }], { onSuccess: (event) => success.push(event) });
+
+    const resultPromise = router.doStream(CALL_OPTIONS);
+    await streamStarted;
+    controller.enqueue({ type: "stream-start", warnings: [] });
+    controller.enqueue({ type: "text-start", id: "text-1" });
+    now.mockReturnValue(1_250);
+    controller.enqueue({ type: "text-delta", id: "text-1", delta: "first" });
+
+    const result = await resultPromise;
+    const reader = result.stream.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ value: { type: "stream-start" } });
+    await expect(reader.read()).resolves.toMatchObject({ value: { type: "text-start" } });
+    await expect(reader.read()).resolves.toMatchObject({ value: { type: "text-delta", delta: "first" } });
+    expect(success).toEqual([]);
+
+    now.mockReturnValue(1_500);
+    controller.enqueue({ type: "text-delta", id: "text-1", delta: " second" });
+    controller.enqueue({ type: "text-end", id: "text-1" });
+    controller.enqueue(finishPart());
+    controller.close();
+    const remaining = await readReader(reader);
+
+    expect(remaining).toContainEqual(expect.objectContaining({ type: "text-delta", delta: " second" }));
+    expect(success).toEqual([expect.objectContaining({
+      firstVisibleLatencyMs: 250,
+      streamShape: "progressive",
+      visibleOutputStarted: true,
+    })]);
+  });
+
+  it("releases a committed stream lease on cancellation without recording shape evidence", async () => {
+    let controller!: ReadableStreamDefaultController<LanguageModelV3StreamPart>;
+    const source = new ReadableStream<LanguageModelV3StreamPart>({
+      start(value) {
+        controller = value;
+      },
+    });
+    const release = vi.fn();
+    const success: ProviderAttemptEvent[] = [];
+    const failure: ProviderAttemptEvent[] = [];
+    const router = createFallbackLanguageModel([{
+      routeId: "cancelled",
+      providerId: "provider-cancelled",
+      usedUserKey: false,
+      model: model({ streamSource: source }),
+      acquireLease: async () => ({ release }),
+    }], {
+      onSuccess: (event) => success.push(event),
+      onFailure: (event) => failure.push(event),
+    });
+
+    const resultPromise = router.doStream(CALL_OPTIONS);
+    controller.enqueue({ type: "text-delta", id: "text-1", delta: "partial" });
+    const result = await resultPromise;
+    const reader = result.stream.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ value: { type: "text-delta", delta: "partial" } });
+    await reader.cancel("test cancellation");
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(success).toEqual([]);
+    expect(failure).toEqual([]);
   });
 
   it("never switches routes after visible output has started", async () => {
@@ -211,15 +301,19 @@ function successfulStream(text: string): LanguageModelV3StreamPart[] {
     { type: "text-start", id: "text-1" },
     { type: "text-delta", id: "text-1", delta: text },
     { type: "text-end", id: "text-1" },
-    {
-      type: "finish",
-      usage: {
-        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
-        outputTokens: { total: 1, text: 1, reasoning: 0 },
-      },
-      finishReason: { unified: "stop", raw: "stop" },
-    },
+    finishPart(),
   ];
+}
+
+function finishPart(): LanguageModelV3StreamPart {
+  return {
+    type: "finish",
+    usage: {
+      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+      outputTokens: { total: 1, text: 1, reasoning: 0 },
+    },
+    finishReason: { unified: "stop", raw: "stop" },
+  };
 }
 
 function generateResult(text: string): LanguageModelV3GenerateResult {
@@ -236,6 +330,10 @@ function generateResult(text: string): LanguageModelV3GenerateResult {
 
 async function readStream(stream: ReadableStream<LanguageModelV3StreamPart>): Promise<LanguageModelV3StreamPart[]> {
   const reader = stream.getReader();
+  return readReader(reader);
+}
+
+async function readReader(reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart>): Promise<LanguageModelV3StreamPart[]> {
   const output: LanguageModelV3StreamPart[] = [];
   while (true) {
     const next = await reader.read();

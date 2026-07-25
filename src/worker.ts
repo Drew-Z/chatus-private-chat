@@ -185,6 +185,11 @@ type AdminReliabilityRouteProjection = {
   observedAt?: string;
   lastFallback?: boolean;
   fallbackCount?: number;
+  streamSamples?: number;
+  progressiveSamples?: number;
+  averageFirstVisibleLatencyMs?: number;
+  lastFirstVisibleLatencyMs?: number;
+  lastStreamShape?: "progressive" | "single_chunk";
 };
 
 type AdminReliabilityProviderProjection = {
@@ -3196,6 +3201,13 @@ async function handleGetAdminReliability(env: Env): Promise<Response> {
         ...(record?.observedAt ? { observedAt: record.observedAt } : {}),
         ...(record?.lastFallback === undefined ? {} : { lastFallback: record.lastFallback }),
         ...(record?.fallbackCount === undefined ? {} : { fallbackCount: record.fallbackCount }),
+        ...(record?.streamSamples === undefined ? {} : {
+          streamSamples: record.streamSamples,
+          progressiveSamples: record.progressiveSamples,
+          averageFirstVisibleLatencyMs: record.averageFirstVisibleLatencyMs,
+          lastFirstVisibleLatencyMs: record.lastFirstVisibleLatencyMs,
+          lastStreamShape: record.lastStreamShape,
+        }),
       });
     }
   }
@@ -4309,6 +4321,8 @@ export async function prepareTeamAgentTurn(
         ok: true,
         fallback: event.fallback,
         startedAt: event.startedAt,
+        firstVisibleLatencyMs: event.firstVisibleLatencyMs,
+        streamShape: event.streamShape,
       });
       await recordChatMetric(env, {
         kind: "success",

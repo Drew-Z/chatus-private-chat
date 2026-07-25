@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isRecentProviderRouteReliability,
   isRecentRouteReliability,
@@ -10,23 +10,26 @@ import {
 } from "../src/services/route-reliability";
 
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
+const PROVIDER_ROUTE_RELIABILITY_PREFIX = "route-provider-reliability:";
 
 function reliabilityKey(routeId: string): string {
   return `${ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}`;
 }
 
 async function clearRouteReliability(): Promise<void> {
-  let cursor: string | undefined;
-  do {
-    const page = await env.CHAT_STORE.list({ prefix: ROUTE_RELIABILITY_PREFIX, cursor, limit: 100 });
-    await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+  for (const prefix of [ROUTE_RELIABILITY_PREFIX, PROVIDER_ROUTE_RELIABILITY_PREFIX]) {
+    let cursor: string | undefined;
+    do {
+      const page = await env.CHAT_STORE.list({ prefix, cursor, limit: 100 });
+      await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  }
 }
 
 function validRecord(routeId: string, overrides: Partial<RouteReliabilityRecord> = {}): RouteReliabilityRecord {
   return {
-    version: 1,
+    version: 2,
     source: "real_task",
     routeId,
     ok: true,
@@ -51,17 +54,36 @@ describe("route reliability service", () => {
       JSON.stringify({ ...validRecord("primary"), latencyMs: "120" }),
       JSON.stringify({ ...validRecord("primary"), latencyMs: 600_001 }),
       JSON.stringify({ ...validRecord("primary"), httpStatusClass: "3xx" }),
+      JSON.stringify({ ...validRecord("primary"), firstVisibleLatencyMs: 20 }),
+      JSON.stringify({ ...validRecord("primary"), streamShape: "progressive" }),
+      JSON.stringify({ ...validRecord("primary"), firstVisibleLatencyMs: 20, streamShape: "buffered" }),
+      JSON.stringify({ ...validRecord("primary", { ok: false, outcome: "network_error" }), firstVisibleLatencyMs: 20, streamShape: "single_chunk" }),
     ];
 
     for (const raw of malformed) {
       await env.CHAT_STORE.put(reliabilityKey("primary"), raw);
       await expect(loadRouteReliability(env, "primary")).resolves.toBeNull();
+      await expect(env.CHAT_STORE.get(reliabilityKey("primary"))).resolves.toBeNull();
     }
 
     const expired = validRecord("primary", { observedAt: "2026-07-01T00:00:00.000Z" });
     const future = validRecord("primary", { observedAt: "2026-07-18T00:00:00.000Z" });
     expect(isRecentRouteReliability(expired, Date.parse("2026-07-17T00:00:00.000Z"))).toBe(false);
     expect(isRecentRouteReliability(future, Date.parse("2026-07-17T00:00:00.000Z"))).toBe(false);
+  });
+
+  it("does not surface invalid-record cleanup failures", async () => {
+    const cleanupError = new Error("KV delete unavailable");
+    const deleteRecord = vi.fn().mockRejectedValue(cleanupError);
+    const cleanupEnv = {
+      CHAT_STORE: {
+        get: vi.fn().mockResolvedValue("not-json"),
+        delete: deleteRecord,
+      } as unknown as KVNamespace,
+    };
+
+    await expect(loadRouteReliability(cleanupEnv, "primary")).resolves.toBeNull();
+    expect(deleteRecord).toHaveBeenCalledWith(reliabilityKey("primary"));
   });
 
   it.each([
@@ -187,9 +209,170 @@ describe("route reliability service", () => {
     });
   });
 
+  it("aggregates bounded first-visible latency and stream shape without losing it on later failures", async () => {
+    const routeId = `stream-${crypto.randomUUID()}`;
+    const providerId = "provider-stream";
+    await recordRouteReliability(env, {
+      routeId,
+      providerId,
+      ok: true,
+      fallback: false,
+      startedAt: Date.now() - 300,
+      firstVisibleLatencyMs: 200,
+      streamShape: "progressive",
+    });
+    await recordRouteReliability(env, {
+      routeId,
+      providerId,
+      ok: true,
+      fallback: false,
+      startedAt: Date.now() - 200,
+      firstVisibleLatencyMs: 100,
+      streamShape: "single_chunk",
+    });
+    await recordRouteReliability(env, {
+      routeId,
+      providerId,
+      ok: true,
+      fallback: false,
+      startedAt: Date.now() - 75,
+    });
+    await recordRouteReliability(env, {
+      routeId,
+      providerId,
+      ok: false,
+      fallback: false,
+      startedAt: Date.now() - 50,
+      status: 503,
+      firstVisibleLatencyMs: 10,
+      streamShape: "progressive",
+    });
+
+    await expect(loadRouteReliability(env, routeId)).resolves.toMatchObject({
+      ok: false,
+      outcome: "upstream_server",
+    });
+    await expect(loadRouteReliability(env, routeId)).resolves.not.toHaveProperty("streamShape");
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toMatchObject({
+      attempts: 4,
+      successes: 3,
+      streamSamples: 2,
+      progressiveSamples: 1,
+      averageFirstVisibleLatencyMs: 150,
+      lastFirstVisibleLatencyMs: 100,
+      lastStreamShape: "single_chunk",
+    });
+  });
+
+  it("deletes legacy provider records and rejects partial stream evidence", async () => {
+    const routeId = `legacy-${crypto.randomUUID()}`;
+    const providerId = "provider-legacy";
+    const key = `${PROVIDER_ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
+    const legacy = {
+      version: 1,
+      source: "real_task",
+      routeId,
+      providerId,
+      attempts: 1,
+      successes: 1,
+      averageLatencyMs: 80,
+      lastOutcome: "success",
+      observedAt: new Date().toISOString(),
+    };
+    await env.CHAT_STORE.put(key, JSON.stringify(legacy));
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(key)).resolves.toBeNull();
+
+    const current = { ...legacy, version: 2 };
+    await env.CHAT_STORE.put(key, JSON.stringify({ ...current, streamSamples: 1 }));
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(key)).resolves.toBeNull();
+    await env.CHAT_STORE.put(key, JSON.stringify({
+      ...current,
+      streamSamples: 1,
+      progressiveSamples: 2,
+      averageFirstVisibleLatencyMs: 30,
+      lastFirstVisibleLatencyMs: 30,
+      lastStreamShape: "progressive",
+    }));
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toBeNull();
+    await env.CHAT_STORE.put(key, JSON.stringify({
+      ...current,
+      attempts: 2,
+      streamSamples: 2,
+      progressiveSamples: 1,
+      averageFirstVisibleLatencyMs: 30,
+      lastFirstVisibleLatencyMs: 30,
+      lastStreamShape: "progressive",
+    }));
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(key)).resolves.toBeNull();
+  });
+
+  it("keeps stream aggregates bounded at one thousand samples", async () => {
+    const routeId = `bounded-${crypto.randomUUID()}`;
+    const providerId = "provider-bounded";
+    const key = `${PROVIDER_ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
+    await env.CHAT_STORE.put(key, JSON.stringify({
+      version: 2,
+      source: "real_task",
+      routeId,
+      providerId,
+      attempts: 1_000,
+      successes: 1_000,
+      averageLatencyMs: 200,
+      lastOutcome: "success",
+      observedAt: new Date().toISOString(),
+      streamSamples: 1_000,
+      progressiveSamples: 0,
+      averageFirstVisibleLatencyMs: 100,
+      lastFirstVisibleLatencyMs: 100,
+      lastStreamShape: "single_chunk",
+    }));
+
+    await recordRouteReliability(env, {
+      routeId,
+      providerId,
+      ok: true,
+      fallback: false,
+      startedAt: Date.now() - 300,
+      firstVisibleLatencyMs: 200,
+      streamShape: "progressive",
+    });
+
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toMatchObject({
+      attempts: 1_000,
+      successes: 1_000,
+      streamSamples: 1_000,
+      progressiveSamples: 1,
+      averageFirstVisibleLatencyMs: 100,
+      lastFirstVisibleLatencyMs: 200,
+      lastStreamShape: "progressive",
+    });
+
+    await recordRouteReliability(env, {
+      routeId,
+      providerId,
+      ok: false,
+      fallback: false,
+      startedAt: Date.now() - 300,
+      status: 503,
+    });
+
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toMatchObject({
+      attempts: 1_000,
+      successes: 999,
+      streamSamples: 999,
+      progressiveSamples: 1,
+      averageFirstVisibleLatencyMs: 100,
+      lastFirstVisibleLatencyMs: 200,
+      lastStreamShape: "progressive",
+    });
+  });
+
   it("treats expired provider-pair quality as unknown", async () => {
     const expired = {
-      version: 1,
+      version: 2,
       source: "real_task",
       routeId: "old-route",
       providerId: "old-provider",
