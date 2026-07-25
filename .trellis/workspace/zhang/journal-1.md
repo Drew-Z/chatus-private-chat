@@ -636,3 +636,36 @@ Implemented member-only UTF-8 text file attachments as bounded deterministic con
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Product closure docs and legacy cleanup
+
+**Date**: 2026-07-26
+**Task**: Product closure docs and legacy cleanup
+**Branch**: `main`
+
+### Summary
+
+Updated operator documentation for public guest access, managed provider secrets, production acceptance, rollback, and secret deletion. Added an evidence-backed legacy cleanup audit and synced the platform production-acceptance spec so public guest acceptance stays separate from member acceptance.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8b2d705` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
