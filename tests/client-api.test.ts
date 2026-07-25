@@ -17,6 +17,7 @@ import {
   isUserDataExport,
   isUserDataMutationResponse,
 } from "../client/src/lib/api";
+import { DEFAULT_FILE_INPUT_POLICY } from "../src/contracts/file";
 
 const validAdminConfig = {
   routes: {
@@ -90,8 +91,10 @@ const validSession = {
     maxImageBytes: 1_300_000,
     maxTotalImageBytes: 1_300_000,
   },
+  fileInput: { ...DEFAULT_FILE_INPUT_POLICY },
   capabilities: {
     imageInput: true,
+    fileInput: true,
     memory: true,
     messageActions: true,
     feedback: true,
@@ -371,6 +374,23 @@ describe("React client runtime validation", () => {
       ...validSession,
       imageInput: { ...validSession.imageInput, acceptedMediaTypes: ["image/png", "image/svg+xml"] },
     })).toBe(false);
+    expect(isSessionProjection({ ...validSession, fileInput: undefined })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      capabilities: { ...validSession.capabilities, fileInput: "yes" },
+    })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      fileInput: { ...validSession.fileInput, maxFiles: 0 },
+    })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      fileInput: { ...validSession.fileInput, acceptedExtensions: [".txt", ".exe"] },
+    })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      fileInput: { ...validSession.fileInput, extra: true },
+    })).toBe(false);
   });
 
   it("accepts an explicit restricted guest projection", () => {
@@ -386,6 +406,7 @@ describe("React client runtime validation", () => {
       tools: [],
       capabilities: {
         imageInput: true,
+        fileInput: false,
         memory: false,
         messageActions: false,
         feedback: false,
@@ -408,6 +429,7 @@ describe("React client runtime validation", () => {
       tools: [],
       capabilities: {
         imageInput: false,
+        fileInput: false,
         memory: false,
         messageActions: false,
         feedback: false,
@@ -426,6 +448,7 @@ describe("React client runtime validation", () => {
     ["tool-capable route", { routes: [{ ...validSession.routes[0], supportsTools: true }] }],
     ["mismatched default route", { defaultRoute: "backup" }],
     ["image policy mismatch", { routes: [{ ...validSession.routes[0], supportsImages: false, supportsTools: false }] }],
+    ["file capability", { capabilities: { ...validSession.capabilities, memory: false, messageActions: false, feedback: false, accountData: false, fileInput: true } }],
   ])("rejects a guest projection with %s", (_label, override) => {
     expect(isSessionProjection({
       ...validSession,
@@ -439,6 +462,7 @@ describe("React client runtime validation", () => {
       tools: [],
       capabilities: {
         imageInput: true,
+        fileInput: false,
         memory: false,
         messageActions: false,
         feedback: false,

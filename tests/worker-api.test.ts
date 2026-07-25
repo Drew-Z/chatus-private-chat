@@ -623,6 +623,58 @@ describe("Worker API", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("sends text file attachments to providers as deterministic text context", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        files: {
+          label: "Files",
+          type: "openai-chat",
+          baseUrl: "https://files.example/v1",
+          model: "file-model",
+          apiKey: "file-key",
+        },
+      },
+      defaults: { defaultRoute: "files", allowedRoutes: ["files"] },
+    }));
+    const { cookie } = await login();
+    let providerBody: any = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      providerBody = JSON.parse(String(init?.body));
+      return openAiTextResponse("local response");
+    });
+
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "files",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "Read this file." },
+            {
+              type: "file",
+              mediaType: "text/markdown",
+              filename: "notes.md",
+              url: "data:text/markdown;base64,IyBOb3Rlcw==",
+            },
+          ],
+        }],
+      }),
+    });
+
+    expect(response.status, await response.clone().text()).toBe(200);
+    await response.text();
+    expect(providerBody?.messages.at(-1)).toMatchObject({ role: "user" });
+    const content = providerBody?.messages.at(-1)?.content;
+    expect(content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "text", text: "Read this file." }),
+      expect.objectContaining({ type: "text", text: expect.stringContaining("<attached_file name=\"notes.md\" mediaType=\"text/markdown\" bytes=\"7\">") }),
+    ]));
+    expect(content[1].text).toContain("# Notes");
+    expect(JSON.stringify(providerBody)).not.toContain("data:text/markdown;base64");
+  });
+
   it("isolates TeamAgent instances by authenticated member identity", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {

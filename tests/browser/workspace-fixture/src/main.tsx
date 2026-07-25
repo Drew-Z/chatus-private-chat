@@ -8,11 +8,12 @@ import { ReliabilityTable } from "../../../../client/src/components/ReliabilityA
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import type { AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
 import {
-  addDraftImageFiles,
-  readDraftImage,
-  releaseImagePreviews,
-  type DraftImageAttachment,
+  addDraftAttachmentFiles,
+  readDraftAttachment,
+  releaseAttachmentPreviews,
+  type DraftAttachment,
 } from "../../../../client/src/lib/image-input";
+import { DEFAULT_FILE_INPUT_POLICY } from "../../../../src/contracts/file";
 import "../../../../client/src/styles.css";
 
 const now = Date.now();
@@ -75,8 +76,10 @@ const memberSession: SessionProjection = {
     maxImageBytes: 1_300_000,
     maxTotalImageBytes: 1_300_000,
   },
+  fileInput: { ...DEFAULT_FILE_INPUT_POLICY },
   capabilities: {
     imageInput: true,
+    fileInput: true,
     memory: true,
     messageActions: true,
     feedback: true,
@@ -105,6 +108,7 @@ const guestSession: SessionProjection = {
   hasUserSystemPrompt: false,
   capabilities: {
     imageInput: true,
+    fileInput: false,
     memory: false,
     messageActions: false,
     feedback: false,
@@ -194,10 +198,11 @@ const reliabilityProviders: AdminReliabilityProvider[] = [{
 
 const fixturePixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
-function fixtureAttachments(mode: string | null): DraftImageAttachment[] {
+function fixtureAttachments(mode: string | null): DraftAttachment[] {
   if (mode !== "states") return [];
   return [{
     id: "ready-image",
+    kind: "image",
     file: new File([new Uint8Array([65])], "ready-preview.png", { type: "image/png" }),
     filename: "ready-preview.png",
     mediaType: "image/png",
@@ -206,7 +211,19 @@ function fixtureAttachments(mode: string | null): DraftImageAttachment[] {
     dataUrl: "data:image/png;base64,QQ==",
     status: "ready",
   }, {
+    id: "ready-file",
+    kind: "file",
+    file: new File(["synthetic fixture text"], "notes.md", { type: "text/markdown" }),
+    filename: "notes.md",
+    mediaType: "text/markdown",
+    size: 22,
+    previewUrl: "",
+    dataUrl: "data:text/markdown;base64,c3ludGhldGljIGZpeHR1cmUgdGV4dA==",
+    text: "synthetic fixture text",
+    status: "ready",
+  }, {
     id: "reading-image",
+    kind: "image",
     file: new File([new Uint8Array([66])], "reading-preview.png", { type: "image/png" }),
     filename: "reading-preview.png",
     mediaType: "image/png",
@@ -215,6 +232,7 @@ function fixtureAttachments(mode: string | null): DraftImageAttachment[] {
     status: "reading",
   }, {
     id: "error-image",
+    kind: "image",
     file: new File([new Uint8Array([67])], "unsupported.svg", { type: "image/svg+xml" }),
     filename: "unsupported.svg",
     mediaType: "",
@@ -242,13 +260,19 @@ function WorkspaceFixture() {
 
   const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
 
-  const addImages = (files: File[]) => {
+  const addAttachments = (files: File[]) => {
     const currentIds = new Set(attachments.map((attachment) => attachment.id));
-    const next = addDraftImageFiles(attachments, files, session.imageInput);
+    const next = addDraftAttachmentFiles(
+      attachments,
+      files,
+      session.imageInput,
+      session.fileInput,
+      { imagesSupported: session.capabilities.imageInput, filesSupported: session.capabilities.fileInput },
+    );
     setAttachments(next);
     for (const attachment of next) {
       if (currentIds.has(attachment.id) || attachment.status !== "reading") continue;
-      void readDraftImage(attachment).then((updated) => {
+      void readDraftAttachment(attachment, session.fileInput).then((updated) => {
         setAttachments((current) => current.map((item) => item.id === updated.id ? updated : item));
       });
     }
@@ -322,15 +346,17 @@ function WorkspaceFixture() {
               value={input}
               attachments={attachments}
               imagePolicy={session.imageInput}
+              filePolicy={session.fileInput}
               imagesSupported={session.capabilities.imageInput && params.get("images") !== "0"}
+              filesSupported={session.capabilities.fileInput}
               onChange={setInput}
-              onAddImages={addImages}
-              onRemoveImage={(id) => setAttachments((current) => {
+              onAddAttachments={addAttachments}
+              onRemoveAttachment={(id: string) => setAttachments((current) => {
                 const removed = current.filter((attachment) => attachment.id === id);
-                releaseImagePreviews(removed);
+                releaseAttachmentPreviews(removed);
                 return current.filter((attachment) => attachment.id !== id);
               })}
-              onRetryImage={(id) => setAttachments((current) => current.map((attachment) => (
+              onRetryAttachment={(id: string) => setAttachments((current) => current.map((attachment) => (
                 attachment.id === id ? { ...attachment, status: "reading", error: undefined } : attachment
               )))}
               onSubmit={() => setBusy(true)}

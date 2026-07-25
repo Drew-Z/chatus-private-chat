@@ -48,10 +48,17 @@ import {
   type ImageInputPolicy,
   type ImageValidationErrorCode,
 } from "../contracts/image";
+import {
+  emptyTextFileValidationState,
+  parseDataTextFile,
+  type FileInputPolicy,
+  type FileValidationErrorCode,
+} from "../contracts/file";
 import type { Session } from "../contracts/session";
 import { createAgentToolSet } from "../services/agent-tools";
 import {
   prepareTeamAgentTurn,
+  fileInputPolicy,
   imageInputPolicy,
   type Env,
 } from "../worker";
@@ -140,7 +147,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private sessionExpiresAt = Number.MAX_SAFE_INTEGER;
   private sourceKey = "";
   private pendingActivity?: PendingConversationActivity;
-  private pendingImageValidationErrors = new Map<string, ImageValidationErrorCode>();
+  private pendingAttachmentValidationErrors = new Map<string, AttachmentValidationErrorCode>();
 
   async onStart(props?: TeamAgentProps): Promise<void> {
     await super.onStart(props);
@@ -799,18 +806,18 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       return chatErrorResponse("agent_identity_unavailable", "Agent identity is unavailable.", 401);
     }
 
-    const imageRejection = this.takePendingImageValidationError();
-    if (imageRejection) {
-      const rejectedIds = new Set(imageRejection.messageIds);
+    const attachmentRejection = this.takePendingAttachmentValidationError();
+    if (attachmentRejection) {
+      const rejectedIds = new Set(attachmentRejection.messageIds);
       await this.persistMessages(
         this.messages.filter((message) => !rejectedIds.has(message.id)),
         [],
         { _deleteStaleRows: true },
       );
       return chatErrorResponse(
-        imageRejection.error,
-        imageValidationMessage(imageRejection.error),
-        imageValidationStatus(imageRejection.error),
+        attachmentRejection.error,
+        attachmentValidationMessage(attachmentRejection.error),
+        attachmentValidationStatus(attachmentRejection.error),
       );
     }
 
@@ -1174,9 +1181,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   protected sanitizeMessageForPersistence(message: UIMessage): UIMessage {
     const imageResult: SanitizedUserImageParts = message.role === "user"
-      ? sanitizeUserImageParts(message.parts, imageInputPolicy(this.env))
+      ? sanitizeUserImageParts(
+          message.parts,
+          imageInputPolicy(this.env),
+          fileInputPolicy(this.env),
+          this.accessKind === "member",
+        )
       : { parts: message.parts };
-    if (imageResult.error) this.pendingImageValidationErrors.set(message.id, imageResult.error);
+    if (imageResult.error) this.pendingAttachmentValidationErrors.set(message.id, imageResult.error);
     return {
       ...message,
       metadata: normalizeAgentMessageMetadata(message.metadata),
@@ -1199,65 +1211,81 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       .map((message) => this.sanitizeMessageForPersistence(message));
     const rejectedIds = new Set(normalized
       .map((message) => message.id)
-      .filter((id) => this.pendingImageValidationErrors.has(id)));
-    for (const id of rejectedIds) this.pendingImageValidationErrors.delete(id);
+      .filter((id) => this.pendingAttachmentValidationErrors.has(id)));
+    for (const id of rejectedIds) this.pendingAttachmentValidationErrors.delete(id);
     return normalized.filter((message) => !rejectedIds.has(message.id));
   }
 
-  private takePendingImageValidationError(): {
+  private takePendingAttachmentValidationError(): {
     messageIds: string[];
-    error: ImageValidationErrorCode;
+    error: AttachmentValidationErrorCode;
   } | null {
     const messageIds: string[] = [];
-    let firstError: ImageValidationErrorCode | undefined;
+    let firstError: AttachmentValidationErrorCode | undefined;
     for (let index = this.messages.length - 1; index >= 0; index -= 1) {
       const message = this.messages[index];
-      const error = this.pendingImageValidationErrors.get(message.id);
+      const error = this.pendingAttachmentValidationErrors.get(message.id);
       if (!error) continue;
       firstError ||= error;
       messageIds.push(message.id);
     }
-    this.pendingImageValidationErrors.clear();
+    this.pendingAttachmentValidationErrors.clear();
     return firstError ? { messageIds, error: firstError } : null;
   }
 }
 
 type SanitizedUserImageParts = {
   parts: UIMessage["parts"];
-  error?: ImageValidationErrorCode;
+  error?: AttachmentValidationErrorCode;
 };
+
+type AttachmentValidationErrorCode = ImageValidationErrorCode | FileValidationErrorCode;
 
 export function sanitizeUserImageParts(
   parts: UIMessage["parts"],
   policy: ImageInputPolicy,
+  filePolicy?: FileInputPolicy,
+  fileInputEnabled = false,
 ): SanitizedUserImageParts {
   const fileParts = parts.filter((part) => part.type === "file");
-  const reject = (error: ImageValidationErrorCode): SanitizedUserImageParts => ({
+  const reject = (error: AttachmentValidationErrorCode): SanitizedUserImageParts => ({
     parts: parts.filter((part) => part.type !== "file"),
     error,
   });
-  if (fileParts.length > policy.maxImages) return reject("too_many_images");
 
   const normalizedFiles: UIMessage["parts"] = [];
-  let totalBytes = 0;
+  let imageCount = 0;
+  let totalImageBytes = 0;
+  let textFileState = emptyTextFileValidationState();
   for (const part of fileParts) {
-    const parsed = parseDataImage(part.url, part.mediaType);
-    if (!parsed.ok) return reject(parsed.error);
-    if (!policy.acceptedMediaTypes.includes(parsed.image.mediaType)) {
-      return reject("invalid_image_type");
+    const imageLike = isImageFilePart(part);
+    if (imageLike) {
+      if (imageCount >= policy.maxImages) return reject("too_many_images");
+      const parsed = parseDataImage(part.url, part.mediaType);
+      if (!parsed.ok) return reject(parsed.error);
+      if (!policy.acceptedMediaTypes.includes(parsed.image.mediaType)) {
+        return reject("invalid_image_type");
+      }
+      if (parsed.image.decodedBytes > policy.maxImageBytes) return reject("image_too_large");
+      if (totalImageBytes + parsed.image.decodedBytes > policy.maxTotalImageBytes) {
+        return reject("images_too_large");
+      }
+      imageCount += 1;
+      totalImageBytes += parsed.image.decodedBytes;
+      const filename = typeof part.filename === "string" ? boundedString(part.filename, 200) : "";
+      normalizedFiles.push({
+        ...part,
+        mediaType: parsed.image.mediaType,
+        url: `data:${parsed.image.mediaType};base64,${parsed.image.data}`,
+        ...(filename ? { filename } : {}),
+      });
+      continue;
     }
-    if (parsed.image.decodedBytes > policy.maxImageBytes) return reject("image_too_large");
-    if (totalBytes + parsed.image.decodedBytes > policy.maxTotalImageBytes) {
-      return reject("images_too_large");
-    }
-    totalBytes += parsed.image.decodedBytes;
-    const filename = typeof part.filename === "string" ? boundedString(part.filename, 200) : "";
-    normalizedFiles.push({
-      ...part,
-      mediaType: parsed.image.mediaType,
-      url: `data:${parsed.image.mediaType};base64,${parsed.image.data}`,
-      ...(filename ? { filename } : {}),
-    });
+    if (!filePolicy || !fileInputEnabled) return reject("file_not_supported");
+    const parsedFile = parseDataTextFile(part.url, part.mediaType, part.filename, filePolicy, textFileState);
+    if (!parsedFile.ok) return reject(parsedFile.error);
+    textFileState = parsedFile.state;
+    normalizedFiles.push({ type: "text", text: parsedFile.file.contextText });
   }
 
   let fileIndex = 0;
@@ -1266,16 +1294,35 @@ export function sanitizeUserImageParts(
   };
 }
 
-function imageValidationMessage(error: ImageValidationErrorCode): string {
+function isImageFilePart(part: UIMessage["parts"][number]): boolean {
+  if (part.type !== "file") return false;
+  return (typeof part.mediaType === "string" && part.mediaType.trim().toLowerCase().startsWith("image/"))
+    || (typeof part.url === "string" && /^data:image\//i.test(part.url));
+}
+
+function attachmentValidationMessage(error: AttachmentValidationErrorCode): string {
   if (error === "invalid_image_type") return "图片格式不受支持。";
   if (error === "invalid_image_data") return "图片数据无效。";
   if (error === "image_too_large") return "单张图片超过大小限制。";
   if (error === "too_many_images") return "图片数量超过限制。";
-  return "图片总大小超过限制。";
+  if (error === "images_too_large") return "图片总大小超过限制。";
+  if (error === "file_not_supported") return "当前会话不支持文件上传。";
+  if (error === "invalid_file_type") return "文件格式不受支持。";
+  if (error === "invalid_file_data") return "文件内容无法按 UTF-8 文本读取。";
+  if (error === "file_too_large") return "单个文件超过大小限制。";
+  if (error === "too_many_files") return "文件数量超过限制。";
+  if (error === "files_too_large") return "文件总大小超过限制。";
+  return "文件文本内容超过限制。";
 }
 
-function imageValidationStatus(error: ImageValidationErrorCode): 400 | 413 {
-  return error === "image_too_large" || error === "images_too_large" ? 413 : 400;
+function attachmentValidationStatus(error: AttachmentValidationErrorCode): 400 | 413 {
+  return error === "image_too_large"
+    || error === "images_too_large"
+    || error === "file_too_large"
+    || error === "files_too_large"
+    || error === "file_text_too_large"
+    ? 413
+    : 400;
 }
 
 function normalizeConversationInput(input: AgentConversationInput): AgentConversationInput | null {

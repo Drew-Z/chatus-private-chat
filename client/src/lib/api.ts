@@ -1,4 +1,10 @@
 import { IMAGE_MEDIA_TYPES, type ImageInputPolicy } from "../../../src/contracts/image";
+import {
+  DEFAULT_FILE_INPUT_POLICY,
+  TEXT_FILE_BASENAMES,
+  TEXT_FILE_EXTENSIONS,
+  type FileInputPolicy,
+} from "../../../src/contracts/file";
 
 export type RouteProjection = {
   id: string;
@@ -36,8 +42,10 @@ export type SessionProjection = {
   allowBringYourOwnKey: boolean;
   hasUserSystemPrompt: boolean;
   imageInput: ImageInputPolicy;
+  fileInput: FileInputPolicy;
   capabilities: {
     imageInput: boolean;
+    fileInput: boolean;
     memory: boolean;
     messageActions: boolean;
     feedback: boolean;
@@ -772,6 +780,7 @@ export async function putAgentMemory(memory: AgentMemory, value: string): Promis
 export function isSessionProjection(value: unknown): value is SessionProjection {
   if (!isRecord(value) || !isRecord(value.usage) || !isRecord(value.agent) || !isSessionCapabilities(value.capabilities)) return false;
   if (!isImageInputPolicy(value.imageInput)) return false;
+  if (!isFileInputPolicy(value.fileInput)) return false;
   if (!Array.isArray(value.routes) || !value.routes.every(isRouteProjection)) return false;
   if (!Array.isArray(value.skills) || !value.skills.every(isSkillProjection)) return false;
   if (!Array.isArray(value.tools) || !value.tools.every(isToolProjection)) return false;
@@ -809,7 +818,8 @@ function isGuestSessionProjection(value: SessionProjection, routeIds: string[]):
   const restrictedCapabilities = value.capabilities.memory === false
     && value.capabilities.messageActions === false
     && value.capabilities.feedback === false
-    && value.capabilities.accountData === false;
+    && value.capabilities.accountData === false
+    && value.capabilities.fileInput === false;
   const imageInputAllowed = value.routes.some((route) => route.supportsImages);
   return value.allowBringYourOwnKey === false
     && value.hasUserSystemPrompt === false
@@ -1062,10 +1072,48 @@ function isImageInputPolicy(value: unknown): value is ImageInputPolicy {
     && isPositiveInteger(value.maxTotalImageBytes);
 }
 
+function isFileInputPolicy(value: unknown): value is FileInputPolicy {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "acceptedMediaTypes",
+    "acceptedExtensions",
+    "maxFiles",
+    "maxFileBytes",
+    "maxTotalBytes",
+    "maxExtractedChars",
+  ])) return false;
+  if (!Array.isArray(value.acceptedMediaTypes) || !Array.isArray(value.acceptedExtensions)) return false;
+  const mediaTypes = value.acceptedMediaTypes;
+  const extensions = value.acceptedExtensions;
+  return mediaTypes.length > 0
+    && mediaTypes.length <= 80
+    && extensions.length > 0
+    && extensions.length <= 120
+    && new Set(mediaTypes).size === mediaTypes.length
+    && new Set(extensions).size === extensions.length
+    && mediaTypes.every((mediaType) => typeof mediaType === "string" && mediaType.length > 0 && mediaType.length <= 120)
+    && extensions.every((extension) => (
+      typeof extension === "string"
+      && extension.length > 0
+      && extension.length <= 40
+      && (TEXT_FILE_EXTENSIONS.includes(extension as (typeof TEXT_FILE_EXTENSIONS)[number])
+        || TEXT_FILE_BASENAMES.includes(extension as (typeof TEXT_FILE_BASENAMES)[number]))
+    ))
+    && DEFAULT_FILE_INPUT_POLICY.acceptedMediaTypes.every((mediaType) => mediaTypes.includes(mediaType))
+    && isPositiveInteger(value.maxFiles)
+    && isPositiveInteger(value.maxFileBytes)
+    && isPositiveInteger(value.maxTotalBytes)
+    && isPositiveInteger(value.maxExtractedChars)
+    && value.maxFiles <= DEFAULT_FILE_INPUT_POLICY.maxFiles
+    && value.maxFileBytes <= DEFAULT_FILE_INPUT_POLICY.maxFileBytes
+    && value.maxTotalBytes <= DEFAULT_FILE_INPUT_POLICY.maxTotalBytes
+    && value.maxExtractedChars <= DEFAULT_FILE_INPUT_POLICY.maxExtractedChars;
+}
+
 function isSessionCapabilities(value: unknown): value is SessionProjection["capabilities"] {
   return isRecord(value)
-    && hasExactKeys(value, ["imageInput", "memory", "messageActions", "feedback", "accountData"])
+    && hasExactKeys(value, ["imageInput", "fileInput", "memory", "messageActions", "feedback", "accountData"])
     && typeof value.imageInput === "boolean"
+    && typeof value.fileInput === "boolean"
     && typeof value.memory === "boolean"
     && typeof value.messageActions === "boolean"
     && typeof value.feedback === "boolean"

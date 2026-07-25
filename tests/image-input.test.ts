@@ -5,17 +5,30 @@ import {
 } from "../src/contracts/image";
 import {
   addDraftImageFiles,
+  addDraftAttachmentFiles,
+  readDraftAttachment,
   readDraftImage,
   releaseImagePreviews,
   restoreRejectedImages,
+  toAttachmentFileParts,
   toImageFileParts,
 } from "../client/src/lib/image-input";
-import { imageInputPolicy, normalizeMessages, type Env } from "../src/worker";
+import {
+  DEFAULT_FILE_INPUT_POLICY,
+  formatAttachedFileContext,
+} from "../src/contracts/file";
+import { fileInputPolicy, imageInputPolicy, normalizeMessages, type Env } from "../src/worker";
 import { sanitizeUserImageParts } from "../src/agent/team-agent";
 
 const policy = {
   ...DEFAULT_IMAGE_INPUT_POLICY,
   acceptedMediaTypes: [...DEFAULT_IMAGE_INPUT_POLICY.acceptedMediaTypes],
+};
+
+const filePolicy = {
+  ...DEFAULT_FILE_INPUT_POLICY,
+  acceptedMediaTypes: [...DEFAULT_FILE_INPUT_POLICY.acceptedMediaTypes],
+  acceptedExtensions: [...DEFAULT_FILE_INPUT_POLICY.acceptedExtensions],
 };
 
 describe("image input contract", () => {
@@ -33,6 +46,26 @@ describe("image input contract", () => {
       maxImages: 2,
       maxImageBytes: 1000,
       maxTotalImageBytes: 1500,
+    });
+  });
+
+  it("projects text file limits and never raises inline ceilings", () => {
+    expect(fileInputPolicy({
+      MAX_FILES_PER_REQUEST: "99",
+      MAX_FILE_BYTES: "9999999",
+      MAX_TOTAL_FILE_BYTES: "9999999",
+      MAX_FILE_CHARS: "9999999",
+    } as Env)).toEqual(filePolicy);
+    expect(fileInputPolicy({
+      MAX_FILES_PER_REQUEST: "2",
+      MAX_FILE_BYTES: "1000",
+      MAX_TOTAL_FILE_BYTES: "1500",
+      MAX_FILE_CHARS: "1200",
+    } as Env)).toMatchObject({
+      maxFiles: 2,
+      maxFileBytes: 1000,
+      maxTotalBytes: 1500,
+      maxExtractedChars: 1200,
     });
   });
 
@@ -101,6 +134,49 @@ describe("image input contract", () => {
     });
   });
 
+  it("normalizes text file parts into deterministic text context", () => {
+    const result = normalizeMessages([{
+      role: "user",
+      content: [{
+        type: "file",
+        mediaType: "text/markdown",
+        filename: "notes.md",
+        url: "data:text/markdown;base64,IyBOb3Rlcw==",
+      }],
+    }], {} as Env, { fileInput: true });
+
+    expect(result).toEqual({
+      ok: true,
+      messages: [{
+        role: "user",
+        content: [{
+          type: "text",
+          text: formatAttachedFileContext({
+            filename: "notes.md",
+            mediaType: "text/markdown",
+            bytes: 7,
+            text: "# Notes",
+          }),
+        }],
+      }],
+    });
+  });
+
+  it("rejects forged or oversized text file parts before provider execution", () => {
+    const content = (part: Record<string, unknown>) => [{ role: "user", content: [part] }];
+    const filePart = {
+      type: "file",
+      mediaType: "text/plain",
+      filename: "notes.txt",
+      url: "data:text/plain;base64,QUJD",
+    };
+    expect(normalizeMessages(content(filePart), {} as Env)).toMatchObject({ ok: false, error: "file_not_supported" });
+    expect(normalizeMessages(content({ ...filePart, mediaType: "application/octet-stream", filename: "notes.bin" }), {} as Env, { fileInput: true }))
+      .toMatchObject({ ok: false, error: "invalid_file_type" });
+    expect(normalizeMessages(content(filePart), { MAX_FILE_BYTES: "2" } as Env, { fileInput: true }))
+      .toMatchObject({ ok: false, error: "file_too_large", status: 413 });
+  });
+
   it("strips every user file part when a forged attachment fails persistence validation", () => {
     const result = sanitizeUserImageParts([
       { type: "text", text: "keep the bounded text" },
@@ -109,6 +185,41 @@ describe("image input contract", () => {
     ], policy);
     expect(result.error).toBe("invalid_image_data");
     expect(result.parts).toEqual([{ type: "text", text: "keep the bounded text" }]);
+  });
+
+  it("converts valid text file parts before persistence and rejects guest-only forgeries", () => {
+    const valid = sanitizeUserImageParts([
+      { type: "text", text: "keep" },
+      {
+        type: "file",
+        mediaType: "application/json",
+        filename: "data.json",
+        url: "data:application/json;base64,eyJvayI6dHJ1ZX0=",
+      },
+    ], policy, filePolicy, true);
+    expect(valid.error).toBeUndefined();
+    expect(valid.parts).toEqual([
+      { type: "text", text: "keep" },
+      {
+        type: "text",
+        text: formatAttachedFileContext({
+          filename: "data.json",
+          mediaType: "application/json",
+          bytes: 11,
+          text: "{\"ok\":true}",
+        }),
+      },
+    ]);
+
+    const forgedGuest = sanitizeUserImageParts([
+      {
+        type: "file",
+        mediaType: "text/plain",
+        filename: "guest.txt",
+        url: "data:text/plain;base64,QQ==",
+      },
+    ], policy, filePolicy, false);
+    expect(forgedGuest).toMatchObject({ error: "file_not_supported", parts: [] });
   });
 });
 
@@ -149,6 +260,35 @@ describe("image draft lifecycle", () => {
     }]);
     expect(restoreRejectedImages([], [ready])).toEqual([ready]);
     expect(restoreRejectedImages([reading], [ready])).toEqual([reading]);
+  });
+
+  it("reads text file attachments without object URLs and creates AI SDK file parts", async () => {
+    const [reading] = addDraftAttachmentFiles(
+      [],
+      [new File(["hello"], "notes.md", { type: "text/markdown" })],
+      policy,
+      filePolicy,
+      { imagesSupported: true, filesSupported: true },
+      { createId: () => "file-one", createObjectURL: (file) => `blob:${file.name}` },
+    );
+    expect(reading).toMatchObject({
+      id: "file-one",
+      kind: "file",
+      status: "reading",
+      previewUrl: "",
+      mediaType: "text/markdown",
+    });
+
+    const ready = await readDraftAttachment(reading, filePolicy, {
+      readBuffer: async () => new TextEncoder().encode("hello").buffer,
+    });
+    expect(ready).toMatchObject({ status: "ready", text: "hello" });
+    expect(toAttachmentFileParts([ready])).toEqual([{
+      type: "file",
+      mediaType: "text/markdown",
+      filename: "notes.md",
+      url: "data:text/markdown;base64,aGVsbG8=",
+    }]);
   });
 
   it("marks corrupt reads and releases each preview once", async () => {

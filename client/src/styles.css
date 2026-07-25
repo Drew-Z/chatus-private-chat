@@ -489,6 +489,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .message-file, .source-link { min-width: 0; display: flex; align-items: center; gap: 7px; width: fit-content; max-width: 100%; margin: 8px 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; color: #435049; background: #f8faf9; font-size: 12px; text-decoration: none; }
 .message-file svg, .source-link svg { flex: 0 0 auto; }
 .message-file span, .source-link span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-file small { flex: 0 1 auto; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-sources { min-width: 0; display: grid; gap: 6px; margin: 10px 0; padding-top: 9px; border-top: 1px solid var(--line); }
 .message-sources-label { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .message-sources .source-link { width: min(100%, 520px); margin: 0; }

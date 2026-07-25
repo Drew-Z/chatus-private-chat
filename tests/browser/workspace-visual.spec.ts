@@ -154,10 +154,11 @@ test("composer grows within its cap and keeps send stop dimensions stable", asyn
   await expect(page.locator(".composer-status")).toHaveText("Agent 正在继续处理");
 });
 
-test("image previews expose stable ready reading error and capability states", async ({ page }, testInfo) => {
+test("attachment previews expose stable ready reading error and capability states", async ({ page }, testInfo) => {
   await page.goto("/?attachments=states");
-  await expect(page.locator(".attachment-preview")).toHaveCount(3);
-  await expect(page.locator(".attachment-preview.ready")).toContainText("ready-preview.png");
+  await expect(page.locator(".attachment-preview")).toHaveCount(4);
+  await expect(page.locator(".attachment-preview.ready").filter({ hasText: "ready-preview.png" })).toHaveCount(1);
+  await expect(page.locator(".attachment-preview.ready").filter({ hasText: "notes.md" })).toHaveCount(1);
   await expect(page.locator(".attachment-preview.reading .attachment-spinner")).toBeVisible();
   await expect(page.locator(".attachment-preview.error")).toContainText("不支持此格式");
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
@@ -177,7 +178,7 @@ test("image previews expose stable ready reading error and capability states", a
   expect(geometry.stripScrollsLocally).toBe(true);
 
   if (testInfo.project.name === "touch-390") {
-    const size = await page.getByRole("button", { name: "添加图片" }).evaluate((element) => {
+    const size = await page.getByRole("button", { name: "添加附件" }).evaluate((element) => {
       const rect = element.getBoundingClientRect();
       return { width: rect.width, height: rect.height };
     });
@@ -186,7 +187,8 @@ test("image previews expose stable ready reading error and capability states", a
   }
 
   await page.goto("/?attachments=states&images=0");
-  await expect(page.getByRole("button", { name: "当前模型不支持图片" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "添加附件" })).toBeEnabled();
+  await expect(page.locator(".attachment-strip")).toContainText("notes.md");
   await expect(page.locator(".attachment-error")).toHaveText([
     "当前模型不支持图片",
     "当前模型不支持图片",

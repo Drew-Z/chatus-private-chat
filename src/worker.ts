@@ -41,6 +41,14 @@ import {
   type ImageInputPolicy,
   type ImageValidationErrorCode,
 } from "./contracts/image";
+import {
+  DEFAULT_FILE_INPUT_POLICY,
+  MAX_INLINE_FILE_BYTES_PER_MESSAGE,
+  emptyTextFileValidationState,
+  parseDataTextFile,
+  type FileInputPolicy,
+  type FileValidationErrorCode,
+} from "./contracts/file";
 import type {
   ProviderConfig,
   ProviderCredential,
@@ -162,6 +170,7 @@ type PublicAccessConfig = {
 
 type SessionCapabilities = {
   imageInput: boolean;
+  fileInput: boolean;
   memory: boolean;
   messageActions: boolean;
   feedback: boolean;
@@ -291,6 +300,10 @@ export type Env = {
   MAX_IMAGE_BYTES?: string;
   MAX_IMAGES_PER_REQUEST?: string;
   MAX_TOTAL_IMAGE_BYTES?: string;
+  MAX_FILES_PER_REQUEST?: string;
+  MAX_FILE_BYTES?: string;
+  MAX_TOTAL_FILE_BYTES?: string;
+  MAX_FILE_CHARS?: string;
   MAX_MEMORY_CHARS?: string;
   MAX_SUMMARY_CHARS?: string;
   MAX_CONTEXT_CHARS?: string;
@@ -1533,6 +1546,7 @@ async function buildSessionProjection(env: Env, session: Session): Promise<Recor
     allowBringYourOwnKey: session.kind === "member" && Boolean(access.user.allowBringYourOwnKey),
     hasUserSystemPrompt: session.kind === "member" && Boolean(access.user.systemPrompt?.trim()),
     imageInput: imageInputPolicy(env),
+    fileInput: fileInputPolicy(env),
     capabilities: policy,
     skills: session.kind === "member" ? capabilities.skills : [],
     tools: session.kind === "member" ? capabilities.tools : [],
@@ -2609,7 +2623,7 @@ async function handleMemorySuggest(request: Request, env: Env, session: Session)
     return jsonResponse({ error: "forbidden" }, 403);
   }
   const body = await readJson<{ messages?: unknown; routeId?: unknown; userApiKey?: unknown }>(request);
-  const normalization = normalizeMessages(body.messages, env);
+  const normalization = normalizeMessages(body.messages, env, { fileInput: session.kind === "member" });
   if (!normalization.ok) {
     return jsonResponse({ error: normalization.error, message: normalization.message }, normalization.status);
   }
@@ -2662,7 +2676,7 @@ async function handleSessionSummary(request: Request, env: Env, session: Session
     routeId?: unknown;
     userApiKey?: unknown;
   }>(request);
-  const normalization = normalizeMessages(body.messages, env);
+  const normalization = normalizeMessages(body.messages, env, { fileInput: session.kind === "member" });
   if (!normalization.ok) {
     return jsonResponse({ error: normalization.error, message: normalization.message }, normalization.status);
   }
@@ -4155,7 +4169,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
   if (session.kind === "guest" && selectedRoute !== config.publicAccess.routeId) {
     return jsonResponse({ error: "route_not_allowed", message: "访客只能使用公开模型" }, 403);
   }
-  const normalization = normalizeMessages(body.messages, env);
+  const normalization = normalizeMessages(body.messages, env, { fileInput: session.kind === "member" });
   if (!normalization.ok) {
     return jsonResponse({ error: normalization.error, message: normalization.message }, normalization.status);
   }
@@ -4417,7 +4431,7 @@ export async function prepareTeamAgentTurn(
     return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
   }
 
-  const normalization = normalizeMessages(input.messages, env);
+  const normalization = normalizeMessages(input.messages, env, { fileInput: session.kind === "member" });
   if (!normalization.ok) return normalization;
   const normalized = trimMessagesForContext(normalization.messages, env);
   if (!normalized.length) {
@@ -7407,10 +7421,11 @@ function guestCleanupLabel(raw: string | null): string | null {
 
 function sessionCapabilities(session: Session, access: RouteAccess): SessionCapabilities {
   if (session.kind === "member") {
-    return { imageInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
+    return { imageInput: true, fileInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
   }
   return {
     imageInput: access.routes.some((route) => route.supportsImages),
+    fileInput: false,
     memory: false,
     messageActions: false,
     feedback: false,
@@ -7555,7 +7570,7 @@ async function countActiveSessionsByLabel(env: Env): Promise<Map<string, number>
 
 type MessageNormalizationError = {
   ok: false;
-  error: ImageValidationErrorCode;
+  error: ImageValidationErrorCode | FileValidationErrorCode;
   message: string;
   status: 400 | 413;
 };
@@ -7563,6 +7578,10 @@ type MessageNormalizationError = {
 type MessageNormalizationResult =
   | { ok: true; messages: ChatMessage[] }
   | MessageNormalizationError;
+
+type MessageNormalizationOptions = {
+  fileInput?: boolean;
+};
 
 export function imageInputPolicy(env: Env): ImageInputPolicy {
   return {
@@ -7582,11 +7601,39 @@ export function imageInputPolicy(env: Env): ImageInputPolicy {
   };
 }
 
-export function normalizeMessages(input: unknown, env: Env): MessageNormalizationResult {
+export function fileInputPolicy(env: Env): FileInputPolicy {
+  return {
+    acceptedMediaTypes: [...DEFAULT_FILE_INPUT_POLICY.acceptedMediaTypes],
+    acceptedExtensions: [...DEFAULT_FILE_INPUT_POLICY.acceptedExtensions],
+    maxFiles: Math.min(
+      numberEnv(env.MAX_FILES_PER_REQUEST, DEFAULT_FILE_INPUT_POLICY.maxFiles),
+      DEFAULT_FILE_INPUT_POLICY.maxFiles,
+    ),
+    maxFileBytes: Math.min(
+      numberEnv(env.MAX_FILE_BYTES, DEFAULT_FILE_INPUT_POLICY.maxFileBytes),
+      DEFAULT_FILE_INPUT_POLICY.maxFileBytes,
+    ),
+    maxTotalBytes: Math.min(
+      numberEnv(env.MAX_TOTAL_FILE_BYTES, DEFAULT_FILE_INPUT_POLICY.maxTotalBytes),
+      MAX_INLINE_FILE_BYTES_PER_MESSAGE,
+    ),
+    maxExtractedChars: Math.min(
+      numberEnv(env.MAX_FILE_CHARS, DEFAULT_FILE_INPUT_POLICY.maxExtractedChars),
+      DEFAULT_FILE_INPUT_POLICY.maxExtractedChars,
+    ),
+  };
+}
+
+export function normalizeMessages(
+  input: unknown,
+  env: Env,
+  options: MessageNormalizationOptions = {},
+): MessageNormalizationResult {
   if (!Array.isArray(input)) return { ok: true, messages: [] };
 
   const maxTextChars = numberEnv(env.MAX_TEXT_CHARS, 12_000);
-  const policy = imageInputPolicy(env);
+  const imagePolicy = imageInputPolicy(env);
+  const textFilePolicy = fileInputPolicy(env);
   const messages: ChatMessage[] = [];
 
   for (const item of input.slice(-MAX_MESSAGES)) {
@@ -7604,21 +7651,50 @@ export function normalizeMessages(input: unknown, env: Env): MessageNormalizatio
     const parts: ChatPart[] = [];
     let imageCount = 0;
     let totalImageBytes = 0;
+    let textFileState = emptyTextFileValidationState();
     for (const part of item.content) {
       if (!isRecord(part)) continue;
       if (part.type === "text" && typeof part.text === "string") {
         parts.push({ type: "text", text: part.text.slice(0, maxTextChars) });
         continue;
       }
+      if (part.type === "file") {
+        const parsedImage = parseDataImage(part.url, part.mediaType);
+        if (parsedImage.ok) {
+          if (imageCount >= imagePolicy.maxImages) return imageNormalizationError("too_many_images");
+          if (!imagePolicy.acceptedMediaTypes.includes(parsedImage.image.mediaType)) {
+            return imageNormalizationError("invalid_image_type");
+          }
+          if (parsedImage.image.decodedBytes > imagePolicy.maxImageBytes) {
+            return imageNormalizationError("image_too_large");
+          }
+          if (totalImageBytes + parsedImage.image.decodedBytes > imagePolicy.maxTotalImageBytes) {
+            return imageNormalizationError("images_too_large");
+          }
+          imageCount += 1;
+          totalImageBytes += parsedImage.image.decodedBytes;
+          parts.push({
+            type: "image_url",
+            image_url: { url: `data:${parsedImage.image.mediaType};base64,${parsedImage.image.data}` },
+          });
+          continue;
+        }
+        if (!options.fileInput || role !== "user") return fileNormalizationError("file_not_supported");
+        const parsedFile = parseDataTextFile(part.url, part.mediaType, part.filename, textFilePolicy, textFileState);
+        if (!parsedFile.ok) return fileNormalizationError(parsedFile.error);
+        textFileState = parsedFile.state;
+        parts.push({ type: "text", text: parsedFile.file.contextText });
+        continue;
+      }
       if (part.type !== "image_url") continue;
-      if (imageCount >= policy.maxImages) return imageNormalizationError("too_many_images");
+      if (imageCount >= imagePolicy.maxImages) return imageNormalizationError("too_many_images");
       if (!isRecord(part.image_url)) return imageNormalizationError("invalid_image_data");
       const parsed = parseDataImage(part.image_url.url);
       if (!parsed.ok) return imageNormalizationError(parsed.error);
-      if (parsed.image.decodedBytes > policy.maxImageBytes) {
+      if (parsed.image.decodedBytes > imagePolicy.maxImageBytes) {
         return imageNormalizationError("image_too_large");
       }
-      if (totalImageBytes + parsed.image.decodedBytes > policy.maxTotalImageBytes) {
+      if (totalImageBytes + parsed.image.decodedBytes > imagePolicy.maxTotalImageBytes) {
         return imageNormalizationError("images_too_large");
       }
       imageCount += 1;
@@ -7647,6 +7723,24 @@ function imageNormalizationError(error: ImageValidationErrorCode): MessageNormal
     error,
     message: messages[error],
     status: error === "image_too_large" || error === "images_too_large" ? 413 : 400,
+  };
+}
+
+function fileNormalizationError(error: FileValidationErrorCode): MessageNormalizationError {
+  const messages: Record<FileValidationErrorCode, string> = {
+    file_not_supported: "当前会话不支持文件上传。",
+    invalid_file_type: "文件格式不受支持。",
+    invalid_file_data: "文件内容无法按 UTF-8 文本读取。",
+    file_too_large: "单个文件超过大小限制。",
+    too_many_files: "文件数量超过限制。",
+    files_too_large: "文件总大小超过限制。",
+    file_text_too_large: "文件文本内容超过限制。",
+  };
+  return {
+    ok: false,
+    error,
+    message: messages[error],
+    status: error === "file_too_large" || error === "files_too_large" || error === "file_text_too_large" ? 413 : 400,
   };
 }
 

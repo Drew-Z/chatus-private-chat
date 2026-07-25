@@ -106,7 +106,19 @@ export function MessageView({
       <div className="message-body">
         {message.parts.map((part, index) => {
           const key = `${message.id}-${index}`;
-          if (part.type === "text") return <MarkdownContent key={key} text={part.text} />;
+          if (part.type === "text") {
+            const attachedFile = parseAttachedFileContext(part.text);
+            if (attachedFile) {
+              return (
+                <div className="message-file" key={key} title={attachedFile.filename}>
+                  <FileText size={16} />
+                  <span>{attachedFile.filename}</span>
+                  <small>{formatBytes(attachedFile.bytes)} · {attachedFile.mediaType}</small>
+                </div>
+              );
+            }
+            return <MarkdownContent key={key} text={part.text} />;
+          }
           if (part.type === "file") {
             return part.mediaType.startsWith("image/")
               ? <img className="message-image" src={part.url} alt={part.filename || "对话图片"} key={key} />
@@ -188,6 +200,30 @@ export function MessageView({
       )}
     </article>
   );
+}
+
+function parseAttachedFileContext(text: string): { filename: string; mediaType: string; bytes: number } | null {
+  const match = /^<attached_file name="([^"]*)" mediaType="([^"]*)" bytes="(\d+)">\n[\s\S]*\n<\/attached_file>$/.exec(text.trim());
+  if (!match) return null;
+  return {
+    filename: decodeXmlAttribute(match[1]) || "附件",
+    mediaType: decodeXmlAttribute(match[2]) || "text/plain",
+    bytes: Number(match[3]) || 0,
+  };
+}
+
+function decodeXmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/g, "\"")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function ToolTrace({

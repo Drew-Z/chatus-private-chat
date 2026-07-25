@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
-import { Image as ImageIcon, LoaderCircle, Paperclip, RefreshCw, SendHorizontal, Square, X } from "lucide-react";
+import { FileText, Image as ImageIcon, LoaderCircle, Paperclip, RefreshCw, SendHorizontal, Square, X } from "lucide-react";
+import type { FileInputPolicy } from "../../../src/contracts/file";
 import type { ImageInputPolicy } from "../../../src/contracts/image";
 import {
-  imageAttachmentErrorLabel,
-  type DraftImageAttachment,
+  attachmentErrorLabel,
+  type DraftAttachment,
 } from "../lib/image-input";
 
 export const COMPOSER_MAX_HEIGHT = 180;
@@ -20,11 +21,13 @@ export function MessageComposer({
   value,
   attachments,
   imagePolicy,
+  filePolicy,
   imagesSupported,
+  filesSupported,
   onChange,
-  onAddImages,
-  onRemoveImage,
-  onRetryImage,
+  onAddAttachments,
+  onRemoveAttachment,
+  onRetryAttachment,
   onSubmit,
   onStop,
   busy,
@@ -36,13 +39,15 @@ export function MessageComposer({
   statusText,
 }: {
   value: string;
-  attachments: DraftImageAttachment[];
+  attachments: DraftAttachment[];
   imagePolicy: ImageInputPolicy;
+  filePolicy: FileInputPolicy;
   imagesSupported: boolean;
+  filesSupported: boolean;
   onChange: (value: string) => void;
-  onAddImages: (files: File[]) => void;
-  onRemoveImage: (id: string) => void;
-  onRetryImage: (id: string) => void;
+  onAddAttachments: (files: File[]) => void;
+  onRemoveAttachment: (id: string) => void;
+  onRetryAttachment: (id: string) => void;
   onSubmit: () => void;
   onStop: () => void;
   busy: boolean;
@@ -57,16 +62,20 @@ export function MessageComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
-  const attachDisabled = busy || blocked || !online || !routeAvailable || !agentReady || !imagesSupported;
+  const attachDisabled = busy || blocked || !online || !routeAvailable || !agentReady || (!imagesSupported && !filesSupported);
   const attachmentsSettled = attachments.every((attachment) => attachment.status === "ready");
-  const hasReadyImage = attachments.some((attachment) => attachment.status === "ready");
+  const hasReadyAttachment = attachments.some((attachment) => attachment.status === "ready");
+  const hasUnsupportedAttachment = attachments.some((attachment) => (
+    (attachment.kind === "image" && !imagesSupported) ||
+    (attachment.kind === "file" && !filesSupported)
+  ));
   const sendDisabled = blocked
-    || (!value.trim() && !hasReadyImage)
+    || (!value.trim() && !hasReadyAttachment)
     || !attachmentsSettled
     || !online
     || !agentReady
     || !routeAvailable
-    || (attachments.length > 0 && !imagesSupported);
+    || hasUnsupportedAttachment;
 
   useEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
@@ -78,7 +87,7 @@ export function MessageComposer({
       .filter((item) => item.kind === "file")
       .map((item) => item.getAsFile())
       .filter((file): file is File => Boolean(file));
-    if (files.length) onAddImages(files);
+    if (files.length) onAddAttachments(files);
   };
 
   const handleDragEnter = (event: DragEvent<HTMLFormElement>) => {
@@ -101,7 +110,7 @@ export function MessageComposer({
     if (attachDisabled || !event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     const files = Array.from(event.dataTransfer.files);
-    if (files.length) onAddImages(files);
+    if (files.length) onAddAttachments(files);
   };
 
   return (
@@ -117,45 +126,48 @@ export function MessageComposer({
     >
       <div className="composer-box">
         {attachments.length > 0 && (
-          <div className="attachment-strip" aria-label="待发送图片">
+          <div className="attachment-strip" aria-label="待发送附件">
             {attachments.map((attachment) => {
-              const error = !imagesSupported
-                ? "当前模型不支持图片"
-                : attachment.error ? imageAttachmentErrorLabel(attachment.error) : "";
+              const unsupported = attachment.kind === "image" ? !imagesSupported : !filesSupported;
+              const error = unsupported
+                ? attachmentErrorLabel("capability_disabled", attachment.kind)
+                : attachment.error ? attachmentErrorLabel(attachment.error, attachment.kind) : "";
               return (
                 <figure className={`attachment-preview ${attachment.status}`} key={attachment.id}>
                   <div className="attachment-thumbnail">
                     {attachment.previewUrl
                       ? <img src={attachment.previewUrl} alt="" />
-                      : <ImageIcon size={22} aria-hidden="true" />}
+                      : attachment.kind === "image"
+                        ? <ImageIcon size={22} aria-hidden="true" />
+                        : <FileText size={22} aria-hidden="true" />}
                     {attachment.status === "reading" && <LoaderCircle className="attachment-spinner" size={18} aria-hidden="true" />}
                   </div>
                   <figcaption>
                     <strong title={attachment.filename}>{attachment.filename}</strong>
                     <span className={error ? "attachment-error" : ""}>{error || formatFileSize(attachment.size)}</span>
                   </figcaption>
-                  {attachment.error === "read_failed" && imagesSupported && (
-                    <button className="attachment-icon" type="button" onClick={() => onRetryImage(attachment.id)} title="重新读取" aria-label={`重新读取 ${attachment.filename}`}><RefreshCw size={14} /></button>
+                  {attachment.error === "read_failed" && !unsupported && (
+                    <button className="attachment-icon" type="button" onClick={() => onRetryAttachment(attachment.id)} title="重新读取" aria-label={`重新读取 ${attachment.filename}`}><RefreshCw size={14} /></button>
                   )}
-                  <button className="attachment-icon remove" type="button" onClick={() => onRemoveImage(attachment.id)} title="移除图片" aria-label={`移除 ${attachment.filename}`}><X size={15} /></button>
+                  <button className="attachment-icon remove" type="button" onClick={() => onRemoveAttachment(attachment.id)} title="移除附件" aria-label={`移除 ${attachment.filename}`}><X size={15} /></button>
                 </figure>
               );
             })}
           </div>
         )}
-        {dragging && <div className="composer-drop-hint" role="status">松开以添加图片</div>}
+        {dragging && <div className="composer-drop-hint" role="status">松开以添加附件</div>}
         <div className="composer-input-row">
           <input
             ref={fileInputRef}
             className="sr-only"
             type="file"
-            accept={imagePolicy.acceptedMediaTypes.join(",")}
+            accept={[...imagePolicy.acceptedMediaTypes, ...filePolicy.acceptedMediaTypes, ...filePolicy.acceptedExtensions].join(",")}
             multiple
             tabIndex={-1}
             onChange={(event) => {
               const files = Array.from(event.currentTarget.files || []);
               event.currentTarget.value = "";
-              if (files.length) onAddImages(files);
+              if (files.length) onAddAttachments(files);
             }}
           />
           <button
@@ -163,8 +175,8 @@ export function MessageComposer({
             type="button"
             disabled={attachDisabled}
             onClick={() => fileInputRef.current?.click()}
-            title={imagesSupported ? "添加图片" : "当前模型不支持图片"}
-            aria-label={imagesSupported ? "添加图片" : "当前模型不支持图片"}
+            title={!attachDisabled ? "添加附件" : "当前会话不支持附件"}
+            aria-label={!attachDisabled ? "添加附件" : "当前会话不支持附件"}
           ><Paperclip size={18} /></button>
           <textarea
             ref={textareaRef}

@@ -26,12 +26,12 @@ import {
   restoreRejectedDraft,
 } from "../lib/state";
 import {
-  addDraftImageFiles,
-  readDraftImage,
-  releaseImagePreviews,
-  restoreRejectedImages,
-  toImageFileParts,
-  type DraftImageAttachment,
+  addDraftAttachmentFiles,
+  readDraftAttachment,
+  releaseAttachmentPreviews,
+  restoreRejectedAttachments,
+  toAttachmentFileParts,
+  type DraftAttachment,
 } from "../lib/image-input";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MemoryPanel } from "./MemoryPanel";
@@ -373,10 +373,10 @@ function ConversationChat({
 }) {
   const online = useOnlineStatus();
   const [input, setInput] = useState(() => localStorage.getItem(conversationDraftKey(session.user, conversation.id)) || "");
-  const [attachments, setAttachments] = useState<DraftImageAttachment[]>([]);
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [pendingSubmission, setPendingSubmission] = useState<{
     text: string;
-    attachments: DraftImageAttachment[];
+    attachments: DraftAttachment[];
     draftGeneration: number;
   } | null>(null);
   const [settledSubmission, setSettledSubmission] = useState(0);
@@ -384,7 +384,7 @@ function ConversationChat({
   const [messageActionError, setMessageActionError] = useState("");
   const [retryBusy, setRetryBusy] = useState(false);
   const [lastSubmittedText, setLastSubmittedText] = useState("");
-  const [lastSubmittedImages, setLastSubmittedImages] = useState<DraftImageAttachment[]>([]);
+  const [lastSubmittedAttachments, setLastSubmittedAttachments] = useState<DraftAttachment[]>([]);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const wasBusy = useRef(false);
@@ -392,10 +392,10 @@ function ConversationChat({
   const draftGeneration = useRef(0);
   const attachmentsRef = useRef(attachments);
   const pendingSubmissionRef = useRef(pendingSubmission);
-  const lastSubmittedImagesRef = useRef(lastSubmittedImages);
+  const lastSubmittedAttachmentsRef = useRef(lastSubmittedAttachments);
   attachmentsRef.current = attachments;
   pendingSubmissionRef.current = pendingSubmission;
-  lastSubmittedImagesRef.current = lastSubmittedImages;
+  lastSubmittedAttachmentsRef.current = lastSubmittedAttachments;
   const agent = useAgent({
     agent: "TeamAgent",
     name: conversationAgentClientName(session.agent.instance, conversation.id),
@@ -417,6 +417,7 @@ function ConversationChat({
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
   const imagesSupported = session.capabilities.imageInput && selectedRoute?.supportsImages === true;
+  const filesSupported = session.capabilities.fileInput;
   const connectionState: ConnectionState = agent.connectionError ? "error" : agent.identified ? "ready" : "connecting";
 
   useEffect(() => {
@@ -462,28 +463,28 @@ function ConversationChat({
         setInput(pendingSubmission.text);
         setAttachments(pendingSubmission.attachments);
         setLastSubmittedText(pendingSubmission.text);
-        setLastSubmittedImages(pendingSubmission.attachments);
+        setLastSubmittedAttachments(pendingSubmission.attachments);
       } else {
-        releaseImagePreviews(pendingSubmission.attachments);
+        releaseAttachmentPreviews(pendingSubmission.attachments);
         setLastSubmittedText("");
-        setLastSubmittedImages([]);
+        setLastSubmittedAttachments([]);
       }
       setPendingSubmission(null);
       return;
     }
     if (action === "clear") {
-      releaseImagePreviews(pendingSubmission.attachments);
+      releaseAttachmentPreviews(pendingSubmission.attachments);
       setLastSubmittedText("");
-      setLastSubmittedImages([]);
+      setLastSubmittedAttachments([]);
       setPendingSubmission(null);
     }
   }, [chat.error, chat.status, pendingSubmission, settledSubmission]);
 
   useEffect(() => () => {
-    releaseImagePreviews([
+    releaseAttachmentPreviews([
       ...attachmentsRef.current,
       ...(pendingSubmissionRef.current?.attachments || []),
-      ...lastSubmittedImagesRef.current,
+      ...lastSubmittedAttachmentsRef.current,
     ]);
   }, []);
 
@@ -496,49 +497,59 @@ function ConversationChat({
     window.requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end", behavior }));
   }, [chat.messages, chat.isRecovering]);
 
-  const finishImageRead = (attachment: DraftImageAttachment) => {
-    void readDraftImage(attachment).then((updated) => {
+  const finishAttachmentRead = (attachment: DraftAttachment) => {
+    void readDraftAttachment(attachment, session.fileInput).then((updated) => {
       setAttachments((current) => current.map((item) => item.id === updated.id ? updated : item));
     });
   };
 
-  const addImages = (files: File[]) => {
-    if (!imagesSupported || interactionBlocked || !online || !routeAvailable || !agent.identified) return;
+  const addAttachments = (files: File[]) => {
+    if ((!imagesSupported && !filesSupported) || interactionBlocked || !online || !routeAvailable || !agent.identified) return;
     draftGeneration.current += 1;
     const existingIds = new Set(attachmentsRef.current.map((attachment) => attachment.id));
-    const next = addDraftImageFiles(attachmentsRef.current, files, session.imageInput);
+    const next = addDraftAttachmentFiles(
+      attachmentsRef.current,
+      files,
+      session.imageInput,
+      session.fileInput,
+      { imagesSupported, filesSupported },
+    );
     setAttachments(next);
     for (const attachment of next) {
-      if (!existingIds.has(attachment.id) && attachment.status === "reading") finishImageRead(attachment);
+      if (!existingIds.has(attachment.id) && attachment.status === "reading") finishAttachmentRead(attachment);
     }
   };
 
-  const removeImage = (id: string) => {
+  const removeAttachment = (id: string) => {
     if (!attachmentsRef.current.some((attachment) => attachment.id === id)) return;
     draftGeneration.current += 1;
     setAttachments((current) => {
       const removed = current.find((attachment) => attachment.id === id);
-      if (removed) releaseImagePreviews([removed]);
+      if (removed) releaseAttachmentPreviews([removed]);
       return current.filter((attachment) => attachment.id !== id);
     });
   };
 
-  const retryImage = (id: string) => {
+  const retryAttachment = (id: string) => {
     const attachment = attachmentsRef.current.find((item) => item.id === id);
     if (!attachment || attachment.error !== "read_failed") return;
     draftGeneration.current += 1;
-    const reading = { ...attachment, status: "reading" as const, error: undefined, dataUrl: undefined };
+    const reading = { ...attachment, status: "reading" as const, error: undefined, dataUrl: undefined, text: undefined };
     setAttachments((current) => current.map((item) => item.id === id ? reading : item));
-    finishImageRead(reading);
+    finishAttachmentRead(reading);
   };
 
   const send = async () => {
     const text = input.trim();
-    const imageParts = toImageFileParts(attachments);
+    const fileParts = toAttachmentFileParts(attachments);
+    const unsupportedAttachments = attachments.some((attachment) => (
+      (attachment.kind === "image" && !imagesSupported) ||
+      (attachment.kind === "file" && !filesSupported)
+    ));
     if (
-      (!text && !imageParts.length)
+      (!text && !fileParts.length)
       || attachments.some((attachment) => attachment.status !== "ready")
-      || (attachments.length > 0 && !imagesSupported)
+      || unsupportedAttachments
       || interactionBlocked
       || !online
       || !routeAvailable
@@ -550,7 +561,7 @@ function ConversationChat({
     submissionGeneration.current = submissionId;
     chat.clearError();
     setLastSubmittedText("");
-    setLastSubmittedImages([]);
+    setLastSubmittedAttachments([]);
     setPendingSubmission({
       text: submittedDraft,
       attachments: submittedAttachments,
@@ -559,17 +570,17 @@ function ConversationChat({
     setInput("");
     setAttachments([]);
     try {
-      await chat.sendMessage(text ? { text, files: imageParts } : { files: imageParts });
+      await chat.sendMessage(text ? { text, files: fileParts } : { files: fileParts });
     } catch {
       if (draftGeneration.current === submittedDraftGeneration) {
         setLastSubmittedText(submittedDraft);
-        setLastSubmittedImages(submittedAttachments);
+        setLastSubmittedAttachments(submittedAttachments);
         setInput(submittedDraft);
         setAttachments(submittedAttachments);
       } else {
-        releaseImagePreviews(submittedAttachments);
+        releaseAttachmentPreviews(submittedAttachments);
         setLastSubmittedText("");
-        setLastSubmittedImages([]);
+        setLastSubmittedAttachments([]);
       }
       setPendingSubmission(null);
     } finally {
@@ -581,12 +592,12 @@ function ConversationChat({
     if (!session.capabilities.messageActions || !chat.error || retryBusy || busy || blocked || !online) return;
     const sourceMessageId = findRetrySourceMessageId(chat.messages);
     if (!sourceMessageId) {
-      if (lastSubmittedText || lastSubmittedImages.length) {
+      if (lastSubmittedText || lastSubmittedAttachments.length) {
         chat.clearError();
         setInput((current) => restoreRejectedDraft(current, lastSubmittedText));
-        setAttachments((current) => restoreRejectedImages(current, lastSubmittedImages));
+        setAttachments((current) => restoreRejectedAttachments(current, lastSubmittedAttachments));
         setLastSubmittedText("");
-        setLastSubmittedImages([]);
+        setLastSubmittedAttachments([]);
       }
       return;
     }
@@ -682,14 +693,16 @@ function ConversationChat({
         value={input}
         attachments={attachments}
         imagePolicy={session.imageInput}
+        filePolicy={session.fileInput}
         imagesSupported={imagesSupported}
+        filesSupported={filesSupported}
         onChange={(value) => {
           draftGeneration.current += 1;
           setInput(value);
         }}
-        onAddImages={addImages}
-        onRemoveImage={removeImage}
-        onRetryImage={retryImage}
+        onAddAttachments={addAttachments}
+        onRemoveAttachment={removeAttachment}
+        onRetryAttachment={retryAttachment}
         onSubmit={() => void send()}
         onStop={() => chat.stop()}
         busy={busy}
