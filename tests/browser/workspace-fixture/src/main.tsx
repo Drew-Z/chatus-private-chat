@@ -51,6 +51,30 @@ const initialConversations: AgentConversation[] = [
     skillIds: [],
     messageCount: 12,
   },
+  {
+    id: "visual-branch",
+    title: "第二个会话 · 编辑分支",
+    createdAt: now - 86_000_000,
+    updatedAt: now - 1_000_000,
+    summary: "Synthetic branch fixture",
+    pinned: false,
+    routeId: "reasoning",
+    parentChatId: "visual-second",
+    skillIds: ["project"],
+    messageCount: 2,
+  },
+  {
+    id: "visual-orphan",
+    title: "缺失来源分支",
+    createdAt: now - 85_000_000,
+    updatedAt: now - 500_000,
+    summary: "Synthetic missing-parent branch fixture",
+    pinned: false,
+    routeId: "reasoning",
+    parentChatId: "deleted-parent",
+    skillIds: ["project"],
+    messageCount: 2,
+  },
 ];
 
 const memberSession: SessionProjection = {
@@ -245,8 +269,13 @@ function fixtureAttachments(mode: string | null): DraftAttachment[] {
 
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
+  const initialActiveId = params.get("branch") === "present"
+    ? "visual-branch"
+    : params.get("branch") === "missing"
+      ? "visual-orphan"
+      : initialConversations[0].id;
   const [conversations, setConversations] = useState(initialConversations);
-  const [activeId, setActiveId] = useState(initialConversations[0].id);
+  const [activeId, setActiveId] = useState(initialActiveId);
   const [sidebarOpen, setSidebarOpen] = useState(params.get("drawer") === "open");
   const [sidebarView, setSidebarView] = useState<SidebarView>("history");
   const [input, setInput] = useState(params.get("draft") === "long" ? "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行" : "准备发送的合成消息");
@@ -257,6 +286,10 @@ function WorkspaceFixture() {
   const routeId = session.defaultRoute || "reasoning";
   const skillIds = session.access === "member" ? ["project"] : [];
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
+  const parentConversation = activeConversation?.parentChatId
+    ? conversations.find((conversation) => conversation.id === activeConversation.parentChatId) || null
+    : null;
+  const parentMissing = Boolean(activeConversation?.parentChatId && !parentConversation);
 
   const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
 
@@ -295,9 +328,14 @@ function WorkspaceFixture() {
         connectionState={connectionState}
         busy={busy}
         accountBusy={false}
+        parentConversation={parentConversation}
+        parentMissing={parentMissing}
         onOpenSidebar={() => setSidebarOpen(true)}
         onOpenRouteSettings={() => { setSidebarView("settings"); setSidebarOpen(true); }}
         onOpenMemory={() => undefined}
+        onReturnToParent={() => {
+          if (parentConversation) setActiveId(parentConversation.id);
+        }}
         onMemberLogin={() => undefined}
         onLogout={async () => undefined}
       />

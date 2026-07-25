@@ -2800,7 +2800,7 @@ async function handleCreateAgentConversationBranch(
     action,
     expectedUpdatedAt,
     destinationId: crypto.randomUUID(),
-    title: branchConversationTitle(source.title),
+    title: branchConversationTitle(source.title, action),
     routeId: settings.routeId,
     skillIds: settings.skillIds,
     launch,
@@ -3097,9 +3097,25 @@ function branchLaunchForAction(action: AgentConversationBranchAction): AgentConv
   return "respond";
 }
 
-function branchConversationTitle(title: string): string {
-  const base = title.trim().slice(0, 68) || "新对话";
-  return `${base} · 分支`;
+function branchConversationTitle(title: string, action: AgentConversationBranchAction): string {
+  const suffix = branchConversationTitleSuffix(action);
+  const cleaned = stripGeneratedBranchTitleSuffix(title.trim()) || "新对话";
+  const base = cleaned.slice(0, Math.max(1, 76 - suffix.length));
+  return `${base} · ${suffix}`;
+}
+
+function branchConversationTitleSuffix(action: AgentConversationBranchAction): string {
+  if (action === "edit") return "编辑分支";
+  if (action === "resend") return "重发分支";
+  if (action === "regenerate") return "重生成分支";
+  if (action === "continue") return "续写分支";
+  return "分支";
+}
+
+function stripGeneratedBranchTitleSuffix(title: string): string {
+  return title
+    .replace(/(?:\s*·\s*(?:分支|编辑分支|重发分支|重生成分支|续写分支))+$/u, "")
+    .trim();
 }
 
 function agentConversationBranchResponse(operation: AgentConversationBranchOperation): Response {

@@ -25,7 +25,8 @@
     "07-25-public-guest-model-access",
     "07-25-multimodal-image-input",
     "07-26-product-closure-docs-legacy-cleanup",
-    "07-26-workspace-file-upload-attachments"
+    "07-26-workspace-file-upload-attachments",
+    "07-26-branch-origin-navigation"
   ],
   "parent": null,
   "relatedFiles": [],

@@ -43,7 +43,7 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
       bodyFits: document.body.scrollWidth <= document.body.clientWidth,
       header: rect(".workspace-header"),
       headerLeading: rect(".header-leading"),
-      headerTitle: rect(".header-conversation-title"),
+      headerTitle: rect(".header-title-stack"),
       headerRoute: rect(".header-route-button"),
       headerActions: rect(".header-actions"),
       layout: rect(".workspace-layout"),
@@ -87,6 +87,42 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   }
 
   await attachScreenshot(page, testInfo, "workspace");
+});
+
+test("branch origin hint returns to parent and handles missing parents", async ({ page }, testInfo) => {
+  await page.goto("/?branch=present");
+  const origin = page.getByRole("button", { name: "返回父会话：第二个会话" });
+  await expect(origin).toBeVisible();
+  await expect(origin).toContainText("来自 第二个会话");
+
+  const geometry = await page.evaluate(() => {
+    const header = document.querySelector<HTMLElement>(".workspace-header");
+    const stack = document.querySelector<HTMLElement>(".header-title-stack");
+    const chip = document.querySelector<HTMLElement>(".origin-chip");
+    const route = document.querySelector<HTMLElement>(".header-route-button");
+    if (!header || !stack || !chip || !route) throw new Error("missing branch origin header regions");
+    const headerRect = header.getBoundingClientRect();
+    const stackRect = stack.getBoundingClientRect();
+    const chipRect = chip.getBoundingClientRect();
+    const routeRect = route.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      headerHeight: headerRect.height,
+      chipInsideStack: chipRect.left >= stackRect.left - 1 && chipRect.right <= stackRect.right + 1,
+      stackBeforeRoute: stackRect.right <= routeRect.left + 1,
+    };
+  });
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.headerHeight).toBeLessThanOrEqual(60);
+  expect(geometry.chipInsideStack).toBe(true);
+  expect(geometry.stackBeforeRoute).toBe(true);
+  await origin.click();
+  await expect(page.locator(".header-conversation-title")).toHaveText("第二个会话");
+
+  await page.goto("/?branch=missing");
+  await expect(page.locator(".origin-chip.static")).toContainText("父会话不可用");
+  await expect(page.getByRole("button", { name: /返回父会话/ })).toHaveCount(0);
+  await attachScreenshot(page, testInfo, "branch-origin");
 });
 
 test("guest workspace keeps the public model fixed and member controls hidden", async ({ page }, testInfo) => {

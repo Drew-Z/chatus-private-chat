@@ -212,6 +212,15 @@ export function ChatWorkspace({
     setSidebarView("settings");
     setSidebarOpen(true);
   };
+  const parentConversation = activeConversation?.parentChatId
+    ? conversations.find((conversation) => conversation.id === activeConversation.parentChatId) || null
+    : null;
+  const parentMissing = Boolean(activeConversation?.parentChatId && !parentConversation);
+  const returnToParentConversation = () => {
+    if (!parentConversation || busy || accountBusy) return;
+    setActiveId(parentConversation.id);
+    setSidebarOpen(false);
+  };
 
   const handleRevokeAllSessions = async () => {
     if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
@@ -278,9 +287,12 @@ export function ChatWorkspace({
         connectionState={connectionState}
         busy={busy}
         accountBusy={accountBusy}
+        parentConversation={parentConversation}
+        parentMissing={parentMissing}
         onOpenSidebar={() => setSidebarOpen(true)}
         onOpenRouteSettings={openRouteSettings}
         onOpenMemory={() => setMemoryOpen(true)}
+        onReturnToParent={returnToParentConversation}
         onMemberLogin={onMemberLogin}
         onLogout={handleLogout}
       />

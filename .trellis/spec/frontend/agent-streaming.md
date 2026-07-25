@@ -374,6 +374,8 @@ TeamAgent.startConversationBranch(input): Promise<AgentConversationBranchStartRe
 - `requestId` is idempotent for the same request fingerprint. A different payload using an existing request ID returns `branch_request_conflict`; the source transcript is never overwritten.
 - The destination re-validates the current route and Skill assignment. Revoked settings are repaired to the member's allowed default rather than copied blindly.
 - `branch` completes without a model call. `edit`, `resend`, `regenerate`, and `continue` launch a new branch turn and cannot fall back after visible output.
+- The Worker generates action-specific branch titles, strips any existing generated suffix from the source title, and keeps the result bounded. The first-release suffixes are `分支`, `编辑分支`, `重发分支`, `重生成分支`, and `续写分支`.
+- The React workspace header shows a compact parent-origin hint when `parentChatId` is present. If the parent conversation is loaded, the hint is an accessible return action; if it is missing or deleted, the hint is static and must not fetch or resurrect the parent. The conversation sidebar remains a flat list in this release.
 - Agent message persistence has an explicit metadata allow-list: only `{ finishReason: "length" }` may be stored. Provider metadata, credentials, trace objects, and all other finish reasons are removed before SQLite persistence.
 - Legacy assistant `finishReason: "max_tokens"` is normalized to the same safe `finishReason: "length"` marker so a refreshed client can offer Continue without retaining upstream metadata.
 
@@ -395,6 +397,8 @@ TeamAgent.startConversationBranch(input): Promise<AgentConversationBranchStartRe
 ### 6. Tests Required
 
 - Assert branch/edit/resend/regenerate/continue preserve the source, set `parentChatId`, revalidate settings, and are idempotent by request fingerprint.
+- Assert action-specific branch titles are bounded, strip existing generated suffixes, and remain stable across idempotent retries.
+- Assert parent-origin header states for parent-present and parent-missing conversations on desktop and touch layouts without horizontal overflow.
 - Assert stale versions, deleted tombstones, incompatible roles, busy sources, and divergent destinations return stable errors without cleanup leaks.
 - Inspect persisted `cf_ai_chat_agent_messages` rows and assert only `{ finishReason: "length" }` survives; assert legacy `max_tokens` maps to that marker and no other metadata or secret-like field survives.
 - Run browser acceptance at desktop and 390px widths with visible action bars and a conditional Continue control; use local fake/placeholder providers only.

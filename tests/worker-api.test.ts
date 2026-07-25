@@ -1192,6 +1192,7 @@ describe("Worker API", () => {
       requestId,
       conversation: expect.objectContaining({
         id: expect.any(String),
+        title: expect.stringMatching(/ · 分支$/u),
         parentChatId: sourceId,
         messageCount: 2,
       }),
@@ -1228,6 +1229,52 @@ describe("Worker API", () => {
     });
     expect(await root.listConversations()).toHaveLength(2);
 
+    const renamed = await root.updateConversation({
+      id: sourceId,
+      expectedUpdatedAt: (await root.listConversations()).find((conversation) => conversation.id === sourceId)!.updatedAt,
+      title: "Release notes · 分支",
+    });
+    expect(renamed.ok).toBe(true);
+    const titleCases: Array<{
+      action: "branch" | "edit" | "resend" | "regenerate" | "continue";
+      sourceMessageId: string;
+      expectedSuffix: string;
+      launch: "none" | "respond" | "continue";
+    }> = [
+      { action: "branch", sourceMessageId: "branch-assistant-1", expectedSuffix: " · 分支", launch: "none" },
+      { action: "edit", sourceMessageId: "branch-user-1", expectedSuffix: " · 编辑分支", launch: "respond" },
+      { action: "resend", sourceMessageId: "branch-user-1", expectedSuffix: " · 重发分支", launch: "respond" },
+      { action: "regenerate", sourceMessageId: "branch-assistant-1", expectedSuffix: " · 重生成分支", launch: "respond" },
+      { action: "continue", sourceMessageId: "branch-assistant-1", expectedSuffix: " · 续写分支", launch: "continue" },
+    ];
+    for (const titleCase of titleCases) {
+      const titleRequestId = `branch-title-${titleCase.action}-${crypto.randomUUID()}`;
+      const response = await apiRequest(`/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`, cookie, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestId: titleRequestId,
+          action: titleCase.action,
+          sourceMessageId: titleCase.sourceMessageId,
+          expectedUpdatedAt: renamed.conversation!.updatedAt,
+          ...(titleCase.action === "edit" ? { editedText: "edited synthetic turn" } : {}),
+        }),
+      });
+      expect(response.status).toBe(200);
+      const payload = await response.json() as any;
+      expect(payload).toMatchObject({
+        requestId: titleRequestId,
+        launch: titleCase.launch,
+        conversation: {
+          parentChatId: sourceId,
+          title: `Release notes${titleCase.expectedSuffix}`,
+        },
+      });
+      expect(payload.conversation.title).not.toContain("分支 ·");
+    }
+    const expectedConversationCount = 2 + titleCases.length;
+    expect(await root.listConversations()).toHaveLength(expectedConversationCount);
+
     const conflictingRequest = await apiRequest(`/api/agent/conversations/${encodeURIComponent(sourceId)}/branches`, cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1243,7 +1290,7 @@ describe("Worker API", () => {
     });
     expect(staleRequest.status).toBe(409);
     await expect(staleRequest.json()).resolves.toMatchObject({ error: "conversation_conflict" });
-    expect(await root.listConversations()).toHaveLength(2);
+    expect(await root.listConversations()).toHaveLength(expectedConversationCount);
   });
 
   it("preserves Agent conversation tombstones and retries persisted transcript cleanup", async () => {

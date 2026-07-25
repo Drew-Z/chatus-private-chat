@@ -344,7 +344,13 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .header-leading { gap: 8px; }
 .header-actions .quiet-button { min-height: 36px; }
 .header-conversation { gap: 10px; overflow: hidden; }
-.header-conversation-title { min-width: 0; max-width: min(32vw, 300px); overflow: hidden; color: var(--ink); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.header-title-stack { min-width: 0; max-width: min(32vw, 300px); display: grid; gap: 2px; }
+.header-conversation-title { min-width: 0; overflow: hidden; color: var(--ink); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.origin-chip { min-width: 0; max-width: 100%; height: 17px; display: inline-flex; align-items: center; gap: 3px; border: 0; border-radius: 6px; padding: 0 4px; color: var(--muted); background: var(--surface-muted); font-size: 10px; line-height: 1; text-align: left; }
+.origin-chip svg { flex: 0 0 auto; }
+.origin-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.origin-chip:hover:not(:disabled) { color: var(--ink); background: #e3ece7; }
+.origin-chip.static, .origin-chip:disabled { color: var(--muted); opacity: .72; }
 .header-route-button { min-width: 0; max-width: min(42vw, 430px); display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: var(--control-radius); padding: 5px 8px; color: var(--muted); background: transparent; text-align: left; }
 .header-route-button:hover:not(:disabled) { color: var(--ink); background: var(--surface-muted); }
 .header-route-button.static:hover { color: var(--muted); background: transparent; }
@@ -597,7 +603,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .brand-lockup.compact span { display: none; }
   .brand-lockup.compact strong { font-size: 13px; }
   .header-conversation { gap: 6px; }
-  .header-conversation-title { max-width: 30vw; font-size: 13px; }
+  .header-title-stack { max-width: 30vw; gap: 1px; }
+  .header-conversation-title { font-size: 13px; }
+  .origin-chip { height: 16px; max-width: 100%; font-size: 9px; }
   .header-route-button { max-width: 36vw; padding-inline: 6px; }
   .header-route-copy > small { display: none; }
   .header-actions { gap: 2px; }
@@ -664,7 +672,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 @media (max-width: 520px) {
   .brand-lockup.compact .brand-mark { width: 28px; height: 28px; display: grid; font-size: 11px; }
   .brand-lockup.compact > div:last-child { display: none; }
-  .header-conversation-title { min-width: 64px; max-width: none; flex: 1 1 0; }
+  .header-title-stack { min-width: 64px; max-width: none; flex: 1 1 0; }
+  .header-conversation-title { min-width: 64px; max-width: none; }
   .header-route-button { max-width: 45%; flex: 0 1 45%; }
 }
 

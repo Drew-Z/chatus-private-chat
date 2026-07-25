@@ -1,4 +1,4 @@
-import { Brain, Download, LogIn, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, Brain, Download, LogIn, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
 
 export type ConnectionState = "connecting" | "ready" | "error";
@@ -10,9 +10,12 @@ export function WorkspaceHeader({
   connectionState,
   busy,
   accountBusy,
+  parentConversation,
+  parentMissing,
   onOpenSidebar,
   onOpenRouteSettings,
   onOpenMemory,
+  onReturnToParent,
   onMemberLogin,
   onLogout,
 }: {
@@ -22,9 +25,12 @@ export function WorkspaceHeader({
   connectionState: ConnectionState;
   busy: boolean;
   accountBusy: boolean;
+  parentConversation: Pick<AgentConversation, "id" | "title"> | null;
+  parentMissing: boolean;
   onOpenSidebar: () => void;
   onOpenRouteSettings: () => void;
   onOpenMemory: () => void;
+  onReturnToParent: () => void;
   onMemberLogin: () => void;
   onLogout: () => Promise<void>;
 }) {
@@ -43,7 +49,27 @@ export function WorkspaceHeader({
       </div>
 
       <div className="header-conversation">
-        <strong className="header-conversation-title" title={conversation?.title || "对话"}>{conversation?.title || "对话"}</strong>
+        <div className="header-title-stack">
+          <strong className="header-conversation-title" title={conversation?.title || "对话"}>{conversation?.title || "对话"}</strong>
+          {parentConversation ? (
+            <button
+              className="origin-chip"
+              type="button"
+              onClick={onReturnToParent}
+              disabled={busy || accountBusy}
+              title={`返回父会话：${parentConversation.title}`}
+              aria-label={`返回父会话：${parentConversation.title}`}
+            >
+              <ArrowLeft size={12} aria-hidden="true" />
+              <span>来自 {parentConversation.title}</span>
+            </button>
+          ) : parentMissing ? (
+            <span className="origin-chip static" title="父会话不可用">
+              <ArrowLeft size={12} aria-hidden="true" />
+              <span>父会话不可用</span>
+            </span>
+          ) : null}
+        </div>
         {session.access === "guest" ? (
           <div className="header-route-button static" title={route ? `${route.label} · ${route.model}` : "未选择线路"}>
             <Route size={14} aria-hidden="true" />
