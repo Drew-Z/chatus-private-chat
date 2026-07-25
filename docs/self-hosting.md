@@ -136,15 +136,15 @@ Wrangler 的 `--secrets-file` 是增量上传：从 GitHub 删除一个可选 Se
 2. 校验三项实例 Variables、Cloudflare 凭据、管理员凭据和模型线路配置。
 3. 生成忽略提交的 `.wrangler.deploy.jsonc` 与权限受限的 `.prod.secrets.json`。
 4. 使用生成配置执行 Wrangler dry-run，再通过相同配置发布。
-5. 对 `CHATUS_PRODUCTION_URL` 执行精确 Git SHA 的无模型 smoke。
-6. 无论成功失败都删除准备出的 Secret 文件。
+5. 在真实 Wrangler 上传前再次确认当前提交仍是远端 `main` tip，然后对 `CHATUS_PRODUCTION_URL` 执行精确 Git SHA 的无模型 smoke。
+6. 在普通成功或失败路径中删除准备出的 Secret 文件。GitHub 托管 runner 是临时环境，但不要把生成文件复制到日志、issue 或仓库。
 
 Preflight 错误只指出缺失或无效的变量名，不输出 Secret 值。部署成功后先在同一 origin 的 `/react-chat/admin` 使用 `ADMIN_TOKEN` 登录并创建成员，再用生成的访问码进入聊天。旧的 GitHub/Cloudflare `ACCESS_CODES` Secret 在托管模式下不会被读取；确认迁移完成后可在 Cloudflare Dashboard 中显式删除旧 Secret。
 
 ## 5. 更新、验收与恢复
 
-- 常规更新：把上游改动合并到 fork 的 `main`，由同一工作流发布。不要改三项实例 Variables。
-- 成员数据验收：部署后手动运行 **Production member acceptance**。它读取 `CHATUS_PRODUCTION_URL` 与 `ADMIN_TOKEN`，创建并清理随机临时成员，不调用模型。该工作流不覆盖公开访客体验。
+- 常规更新：把上游改动合并到 fork 的 `main`，由同一工作流发布。不要改三项实例 Variables。部署和生产成员验收共用生产变更队列，新的运行会等待当前上传、smoke 或清理完成，不会取消已经开始的生产变更。
+- 成员数据验收：部署后手动运行 **Production member acceptance**。它读取 `CHATUS_PRODUCTION_URL` 与 `ADMIN_TOKEN`，创建并清理随机临时成员，不调用模型，并在清理后再次确认 release SHA 仍匹配触发提交。该工作流不覆盖公开访客体验。
 - 公开访客验收：在新的隐私窗口打开生产 origin，确认可取得隔离访客会话、只看到固定访客模型和成员登录入口；禁用公开访问后确认访客入口关闭。不要用合成 prompt 或后台 completion 探测替代这一步。
 - 代码回滚：对错误提交执行 `git revert` 并推送 `main`，让完整 Actions 门禁重新发布。不要 force-push，也不要本地覆盖 Worker。
 - 配置恢复：GitHub Secrets 定义每次部署要上传的基线值，但不会自动清理远端旧 Worker Secret；后台 KV 配置是生产成员访问码的唯一来源。旧 `ACCESS_CODES` Secret 在托管模式下被忽略，确认 KV 成员正常后可在 Cloudflare Dashboard 中显式删除。托管 provider key 删除后可能回退同名 Worker Secret；撤销前先停止引用并确认当前来源。托管 provider key 依赖原 `ROUTE_KEYS_MASTER_KEY`，更换主密钥后需重新录入。

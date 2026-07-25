@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: chatus-production-deploy
-  cancel-in-progress: true
+  group: chatus-production-mutation
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -95,6 +95,15 @@ jobs:
           }
           fs.writeFileSync(appFile, appSource.replaceAll("?v=development", `?v=${process.env.GITHUB_SHA}`));
           NODE
+
+      - name: Refuse a stale main revision before deploy
+        shell: bash
+        run: |
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ -z "$remote_sha" ] || [ "$remote_sha" != "$GITHUB_SHA" ]; then
+            echo "Refusing to deploy a revision that is no longer the main branch tip"
+            exit 1
+          fi
 
       - name: Deploy Worker
         env:

@@ -29,7 +29,7 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - The typed member client must never read the legacy raw access-code endpoint. One-time credential screenshots, notices, diagnostics, audit records, and persistent browser state must remain secret-free.
 - When rewriting the typed admin shell through Cloudflare Assets, fetch `/react-chat/` rather than `/react-chat/index.html`; the latter may canonicalize with a redirect that loses `/react-chat/admin`.
 - A conversation cleanup must remove the pinned AIChat SDK message, resumable-stream, request-context, tool-run, and capability-trust persistence; `persistMessages([])` is not a destructive clear operation.
-- GitHub Actions must run `npx wrangler deploy --dry-run` after tests and before preparing production secrets or starting the real deploy.
+- GitHub Actions must run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc` after tests and before the real deploy. Generated deployment config and secret files must stay ignored, use the same config for dry-run and upload, and be removed in ordinary success/failure cleanup.
 - `/healthz` and route status endpoints may inspect bindings, SQLite, KV configuration, and passive real-task telemetry only. They must never send a completion prompt.
 
 ## Testing Requirements

@@ -14,7 +14,7 @@ npx wrangler deploy --dry-run
 git diff --check
 ```
 
-推送后确认 `Deploy to Cloudflare` 工作流成功。工作流会检查精确提交 SHA、`/healthz`、登录页、管理后台、PWA、静态图标、安全响应头和未登录 API 行为。
+推送后确认 `Deploy to Cloudflare` 工作流成功。部署与 `Production member acceptance` 共用同一个生产变更队列，新的生产变更会等待当前上传、smoke 或临时成员清理结束，不会取消正在运行的生产变更。工作流会在真实 Wrangler 上传前再次确认当前提交仍是远端 `main` tip，并在上传后检查精确提交 SHA、`/healthz`、登录页、管理后台、PWA、静态图标、安全响应头和未登录 API 行为。
 
 工作流只从 GitHub Repository Variables 读取实例定位信息：`CHATUS_WORKER_NAME`、`CHATUS_KV_NAMESPACE_ID`、`CHATUS_PRODUCTION_URL`。它会先运行 `scripts/prepare-deployment.mjs`，在上传前校验这些变量、Cloudflare 凭据、`ADMIN_TOKEN` 以及 `ROUTES_CONFIG` / `UPSTREAM_API_KEY`，再生成忽略提交的 Wrangler 配置与 Secret 文件。生产配置启用 KV 托管访问码模式，不读取 GitHub `ACCESS_CODES`。Preflight 失败时只记录变量名，不记录值。
 
@@ -22,7 +22,7 @@ git diff --check
 
 ## 登录态生产验收
 
-需要验证成员隔离、Agent WebSocket、版本冲突或永久删除时，在 GitHub Actions 手动运行 `Production member acceptance`。该工作流会先确认生产版本与触发提交一致，再使用 `ADMIN_TOKEN` 在生产访问码覆盖中追加两名随机临时成员，验证登录、会话投影、对话/记忆隔离、乐观并发冲突、Agent WebSocket、会话墓碑和 `DELETE /api/user-data`。
+需要验证成员隔离、Agent WebSocket、版本冲突或永久删除时，在 GitHub Actions 手动运行 `Production member acceptance`。该工作流会先确认生产版本与触发提交一致，再使用 `ADMIN_TOKEN` 在生产访问码覆盖中追加两名随机临时成员，验证登录、会话投影、对话/记忆隔离、乐观并发冲突、Agent WebSocket、会话墓碑和 `DELETE /api/user-data`。脚本清理后会再次确认 `/release.json` 仍是同一个提交，并检查后台登出成功；不满足时工作流失败，不报告该提交已通过验收。
 
 验收脚本不会调用模型、不会输出访问码或 Cookie，并在成功或失败时清理临时成员数据、恢复访问码配置。验收期间不要同时在后台编辑访问码；脚本使用 revision 检查，检测到并发修改会重试，无法安全恢复时会让工作流失败以便人工处理。
 
@@ -73,7 +73,7 @@ $CHATUS_PRODUCTION_URL/release.json
 2. 查看 `/release.json`，确认 `commit` 是预期的完整 Git SHA。
 3. 查看 GitHub Actions 中失败的具体步骤。
 4. 用户错误中的 8 位“请求编号”对应响应头 `X-Request-ID` 的前 8 位；在 Cloudflare Observability 中按完整 ID 检索结构化日志。
-5. 若 Wrangler 日志出现 Cloudflare API `521`、`522` 或 `malformed response`，而测试已经通过，通常是控制面故障。重跑失败的工作流，不要修改业务代码或改用本机账号部署。
+5. Wrangler 上传失败会由工作流最多重试 3 次，然后失败。若日志出现 Cloudflare API `521`、`522` 或 `malformed response`，而测试已经通过，通常是控制面故障；重跑失败的工作流即可。若是认证、配置、migration 或权限错误，先修复对应配置，不要改用本机账号部署。
 
 ## 常见恢复
 

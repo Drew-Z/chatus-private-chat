@@ -27,7 +27,8 @@
     "07-26-product-closure-docs-legacy-cleanup",
     "07-26-workspace-file-upload-attachments",
     "07-26-branch-origin-navigation",
-    "07-26-product-boundary-reconciliation"
+    "07-26-product-boundary-reconciliation",
+    "07-26-production-workflow-serialization-hardening"
   ],
   "parent": null,
   "relatedFiles": [],

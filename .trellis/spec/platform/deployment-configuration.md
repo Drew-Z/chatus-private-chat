@@ -47,7 +47,7 @@ Wrangler `--secrets-file` is additive. Omitting a previously uploaded name does 
 
 New Durable Object namespaces must use `new_sqlite_classes`; `new_classes` selects the key-value storage backend, which Workers Free cannot create. Never edit a migration tag that reached a successful deployment. If Cloudflare rejects a new tag before applying it, correct that unapplied tag before retrying rather than inventing a follow-up migration for a namespace that does not exist.
 
-Deploy workflow runs are mutually exclusive, newer runs cancel older runs, and a run must verify `GITHUB_SHA` is still the remote `main` tip before deployment.
+Production deploy and production member acceptance share the `chatus-production-mutation` concurrency group with `cancel-in-progress: false`. New production mutations wait instead of canceling an upload, smoke, generated-file cleanup, or temporary-member cleanup. Deploy checks that `GITHUB_SHA` is still the remote `main` tip early for fast failure and again immediately before the real Wrangler upload.
 
 ## 4. Validation & Error Matrix
 
@@ -61,7 +61,7 @@ Deploy workflow runs are mutually exclusive, newer runs cancel older runs, and a
 | Default/user/fallback references an unknown route | Fail preflight |
 | Legacy-mode access code or admin token is below the minimum length | Fail preflight |
 | Extra Secret tries to replace a reserved name | Fail preflight |
-| Checked-out SHA is no longer the `main` tip | Fail before deployment |
+| Checked-out SHA is no longer the `main` tip | Fail before deployment, including the late pre-upload guard |
 | Generated Wrangler config fails current Wrangler validation | Fail dry-run before deployment |
 | Post-deploy SHA smoke fails | Fail the workflow; do not report release success |
 
@@ -76,7 +76,7 @@ Deploy workflow runs are mutually exclusive, newer runs cancel older runs, and a
 - Unit-test custom-domain and workers.dev projections, input immutability, KV binding injection, and removal of stale routes.
 - Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
 - Assert every newly introduced Durable Object uses a SQLite-backed migration and reject `new_classes` in the checked-in Wrangler contract.
-- Import workflow/config files as raw fixtures and assert Repository Variables, generated `--config`, concurrency, stale-SHA check, parameterized production URL, generic Wrangler baseline, and absence of a local `deploy` script.
+- Import workflow/config files as raw fixtures and assert Repository Variables, generated `--config`, shared non-canceling production concurrency, early and late stale-SHA checks, parameterized production URL, generic Wrangler baseline, and absence of a local `deploy` script.
 - Run `node --check` for both deployment scripts.
 - Execute the generator with dummy values and run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, default `npx wrangler deploy --dry-run`, and `git diff --check`.

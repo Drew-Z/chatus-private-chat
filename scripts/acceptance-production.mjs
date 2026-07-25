@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 const productionUrl = process.env.PRODUCTION_URL?.trim() || process.argv[2] || "";
 const adminToken = process.env.ADMIN_TOKEN?.trim() || "";
+const expectedReleaseSha = process.env.EXPECTED_RELEASE_SHA?.trim() || process.env.GITHUB_SHA?.trim() || process.argv[3] || "";
 const requestTimeoutMs = 15_000;
 const loginAttempts = 3;
 const loginRetryDelayMs = 8_000;
@@ -59,6 +60,17 @@ async function expectStatus(response, expected, operation) {
   if (response.status !== expected) {
     throw new Error(`${operation}: expected HTTP ${expected}, got ${response.status}`);
   }
+}
+
+async function verifyReleaseRevision(operation) {
+  if (!expectedReleaseSha) return;
+  const response = await request(`/release.json?acceptance=${Date.now()}`);
+  await expectStatus(response, 200, operation);
+  const payload = await json(response, operation);
+  assert(
+    payload.commit === expectedReleaseSha,
+    `${operation}: expected deployed commit ${expectedReleaseSha}, got ${payload.commit || "missing"}`,
+  );
 }
 
 async function adminLogin() {
@@ -363,6 +375,7 @@ async function cleanupTemporaryMembers(adminCookie, original, members, augmented
   throw new Error("restore access-code configuration failed");
 }
 
+await verifyReleaseRevision("pre-acceptance release verification");
 const adminCookie = await adminLogin();
 const originalAccess = await getAccessCodes(adminCookie);
 const members = [makeMember("a"), makeMember("b")];
@@ -423,7 +436,9 @@ try {
       if (response.status !== 200 && response.status !== 401) throw new Error(`member cleanup: unexpected HTTP ${response.status}`);
     }));
     await cleanupTemporaryMembers(adminCookie, originalAccess, members, augmentedAccessCodes);
-    await request("/api/admin/logout", { cookie: adminCookie, method: "POST" });
+    const logout = await request("/api/admin/logout", { cookie: adminCookie, method: "POST" });
+    await expectStatus(logout, 200, "admin logout");
+    await verifyReleaseRevision("post-cleanup release verification");
     console.log("Temporary members and access-code configuration restored");
   } catch (cleanupError) {
     const message = cleanupError instanceof Error ? cleanupError.message : "unknown cleanup error";

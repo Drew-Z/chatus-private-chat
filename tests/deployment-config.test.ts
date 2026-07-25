@@ -7,6 +7,7 @@ import {
 } from "../scripts/deployment-config.mjs";
 import deployWorkflow from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflow from "../.github/workflows/production-acceptance.yml?raw";
+import acceptanceProductionSource from "../scripts/acceptance-production.mjs?raw";
 import packageSource from "../package.json?raw";
 import wranglerSource from "../wrangler.jsonc?raw";
 import selfHostingGuide from "../docs/self-hosting.md?raw";
@@ -266,15 +267,35 @@ describe("repository deployment contract", () => {
     expect(deployWorkflow).toContain("vars.CHATUS_WORKER_NAME");
     expect(deployWorkflow).toContain("vars.CHATUS_KV_NAMESPACE_ID");
     expect(deployWorkflow).toContain("vars.CHATUS_PRODUCTION_URL");
+    expect(deployWorkflow).toContain("group: chatus-production-mutation");
+    expect(acceptanceWorkflow).toContain("group: chatus-production-mutation");
+    expect(deployWorkflow).toContain("cancel-in-progress: false");
+    expect(acceptanceWorkflow).toContain("cancel-in-progress: false");
+    expect(deployWorkflow).not.toContain("cancel-in-progress: true");
+    expect(acceptanceWorkflow).not.toContain("cancel-in-progress: true");
     expect(deployWorkflow).toContain("npm run prepare:deployment");
     expect(deployWorkflow).toContain("--config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json");
-    expect(deployWorkflow).toContain("cancel-in-progress: true");
     expect(deployWorkflow).toContain("git ls-remote origin refs/heads/main");
+    expect(deployWorkflow.match(/git ls-remote origin refs\/heads\/main/g)).toHaveLength(2);
+    expect(deployWorkflow.indexOf("Refuse a stale main revision before deploy")).toBeGreaterThan(
+      deployWorkflow.indexOf("Prepare release metadata"),
+    );
+    expect(deployWorkflow.indexOf("Refuse a stale main revision before deploy")).toBeLessThan(
+      deployWorkflow.indexOf("npx wrangler deploy --config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json"),
+    );
     expect(deployWorkflow).toContain("ACCESS_CODES_MODE: managed");
     expect(deployWorkflow).not.toContain("secrets.ACCESS_CODES");
     expect(deployWorkflow).not.toMatch(/PRODUCTION_URL:\s*https:/);
     expect(acceptanceWorkflow).toContain("vars.CHATUS_PRODUCTION_URL");
+    expect(acceptanceWorkflow).toContain("Verify deployed revision before acceptance");
     expect(acceptanceWorkflow).not.toMatch(/PRODUCTION_URL:\s*https:/);
+  });
+
+  it("checks release revision and logout cleanup during production acceptance", () => {
+    expect(acceptanceProductionSource).toContain("expectedReleaseSha");
+    expect(acceptanceProductionSource).toContain("pre-acceptance release verification");
+    expect(acceptanceProductionSource).toContain("post-cleanup release verification");
+    expect(acceptanceProductionSource).toContain("await expectStatus(logout, 200, \"admin logout\")");
   });
 
   it("does not expose a local production deploy script", () => {

@@ -328,7 +328,7 @@ install -> typecheck/frontend/test -> instance + secret preflight
         -> generated Wrangler dry-run -> GitHub Actions deploy -> exact-SHA smoke
 ```
 
-工作流从 Repository Variables 生成忽略提交的 `.wrangler.deploy.jsonc`，从 GitHub Secrets 生成权限受限的 `.prod.secrets.json`。缺少实例参数、Cloudflare 凭据、管理员凭据或模型线路时，会在上传前按变量名失败，错误不会输出值。Wrangler 上传遇到 Cloudflare 控制面临时 `5xx` 时会自动重试 3 次；代码检查和生产 smoke 失败不会重试或被忽略。
+工作流从 Repository Variables 生成忽略提交的 `.wrangler.deploy.jsonc`，从 GitHub Secrets 生成权限受限的 `.prod.secrets.json`。缺少实例参数、Cloudflare 凭据、管理员凭据或模型线路时，会在上传前按变量名失败，错误不会输出值。部署和生产成员验收共用同一个生产变更队列，不会取消已经开始的上传、smoke 或清理。真实 Wrangler 上传前会再次确认当前提交仍是远端 `main` tip；上传失败最多重试 3 次，然后失败。代码检查和生产 smoke 失败不会重试或被忽略。
 
 生产运行、故障判断、密钥轮换、回滚和数据恢复流程见 [`docs/operations.md`](docs/operations.md)。
 

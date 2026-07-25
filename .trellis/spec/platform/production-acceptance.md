@@ -10,6 +10,7 @@ Use this contract when authentication, session projection, Agent identity, conve
 - Required environment: `PRODUCTION_URL`, `ADMIN_TOKEN`
 - Manual GitHub workflow: `.github/workflows/production-acceptance.yml`
 - Production workflow ref: `refs/heads/main` only
+- Production concurrency group: `chatus-production-mutation` with `cancel-in-progress: false`, shared with deployment
 
 The script may use `http://localhost` or `http://127.0.0.1` for local verification. Every non-local target must use HTTPS.
 
@@ -21,6 +22,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Verify member login, `/api/session`, opaque per-member Agent identities, conversation and memory isolation, `409` stale writes, cookie-authenticated `/agent` WebSockets, tombstones, and `DELETE /api/user-data`.
 - Do not send a chat turn, completion request, route probe, or any other model request.
 - Always purge temporary member data and remove both access-code entries in `finally`.
+- When `GITHUB_SHA` or `EXPECTED_RELEASE_SHA` is present, verify `/release.json` before mutating temporary members and again after cleanup. A mismatch fails the run instead of reporting acceptance for a different deployed revision.
 - When no concurrent edit occurred, restore the exact original access-code text and its `kv`, `secret`, or `managed` source. If a concurrent edit occurred, remove only the temporary labels, preserve other entries, and fail the run for operator review.
 - Logs may contain milestone names and HTTP status codes only. Never print tokens, access codes, cookies, raw access-code payloads, memory, or conversation content.
 - Public guest acceptance is manual and model-probe-free: use a fresh private window, verify an isolated guest session, verify only the configured public route is visible, verify member-only controls are absent, verify the member login path remains available, then disable public access and verify new anonymous entry is closed.
@@ -39,10 +41,11 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 | WebSocket does not emit `cf_agent_identity` | Fail on timeout and enter cleanup |
 | Access codes change concurrently during cleanup | Remove temporary labels, preserve remaining entries, then fail for review |
 | Cleanup cannot prove temporary labels are gone | Fail the workflow; do not report acceptance success |
+| Release SHA changes before or after acceptance cleanup | Fail the workflow; do not report acceptance success for the original SHA |
 
 ## 5. Good / Base / Bad Cases
 
-- Good: the exact deployed `main` SHA passes anonymous smoke, two temporary members pass every authenticated check, data is purged, and the original access-code value/source is restored.
+- Good: the exact deployed `main` SHA passes anonymous smoke, two temporary members pass every authenticated check, data is purged, the original access-code value/source is restored, admin logout succeeds, and the release SHA still matches after cleanup.
 - Good: public access is enabled only after a manual guest check proves a constrained anonymous session and disabled again to prove rollback of the guest entry.
 - Base: local Wrangler verification passes with dummy credentials and a local KV/DO state before the workflow is shipped.
 - Bad: a shell script writes random access codes directly to KV, loses the original source, logs generated credentials, or exits on the first assertion without a cleanup path.
@@ -51,7 +54,8 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 ## 6. Tests Required
 
 - Run the acceptance script against local Wrangler with dummy `ADMIN_TOKEN`, both a legacy access-code fixture and an empty managed bootstrap fixture; assert every milestone completes and the original source is restored afterward.
-- Parse the workflow YAML and assert the job is restricted to `refs/heads/main`.
+- Parse the workflow YAML and assert the job is restricted to `refs/heads/main`, shares the production mutation concurrency group with deployment, and does not cancel in-progress cleanup.
+- Statically assert the acceptance script checks release SHA before mutation and after cleanup and checks admin logout status.
 - Run `node --check scripts/acceptance-production.mjs`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 - After deployment through GitHub Actions, manually run `Production member acceptance` and retain only the run URL/result, never generated credentials or response bodies.
