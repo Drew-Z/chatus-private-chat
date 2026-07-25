@@ -535,3 +535,36 @@ Completed integrated stream telemetry: bounded first-visible latency and progres
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Multimodal image input
+
+**Date**: 2026-07-26
+**Task**: Multimodal image input
+**Branch**: `main`
+
+### Summary
+
+Implemented capability-aware image attachments across the chat UI, Worker and Agent persistence, provider adapters, validation, tests, and frontend specifications.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6baea3e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
