@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-07-16
+- **Total Sessions**: 8
+- **Last Active**: 2026-07-25
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~239 | Active |
+| `journal-1.md` | ~471 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-07-25 | Typed provider pool administration | `000f409` | `main` |
 | 7 | 2026-07-16 | Configurable AI capabilities | `22bbff4`, `a5520a9` | `main` |
 | 6 | 2026-07-15 | Productize chat workspace | `47d8ca3` | `main` |
 | 5 | 2026-07-13 | Clarify filtered model suggestions | `1b7e597` | `main` |

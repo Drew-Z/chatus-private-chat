@@ -436,3 +436,36 @@ Moved assigned tool execution onto the formal AI SDK `streamText` path. The Agen
 
 - Add the typed Agent client and render approval/tool trace states over the AIChat transport.
 - Move MCP execution and provider preparation out of `src/worker.ts` after the client contract is stable.
+
+
+## Session 8: Typed provider pool administration
+
+**Date**: 2026-07-25
+**Task**: Typed provider pool administration
+**Branch**: `main`
+
+### Summary
+
+Completed typed provider and logical-model administration, passive reliability, secret-safe discovery, and chat recovery refinements; all required quality gates passed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `000f409` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
