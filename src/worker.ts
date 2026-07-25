@@ -48,7 +48,7 @@ import type {
   ResolvedProviderRoute,
   RouteConfig,
 } from "./contracts/provider";
-import type { Session } from "./contracts/session";
+import type { GuestSession, Session } from "./contracts/session";
 import {
   buildResolvedProviderPlan,
   buildProviderRoutePlan,
@@ -144,9 +144,28 @@ type AppConfig = {
   providers: Record<string, ProviderConfig>;
   users?: Record<string, UserConfig>;
   defaults?: UserConfig;
+  publicAccess: PublicAccessConfig;
   skills?: Record<string, SkillConfig>;
   tools?: Record<string, ToolConfig>;
   mcpServers?: Record<string, McpServerConfig>;
+};
+
+type PublicAccessConfig = {
+  enabled: boolean;
+  routeId: string;
+  sessionTtlSeconds: number;
+  dailyMessageLimit: number;
+  minuteMessageLimit: number;
+  sourceDailyMessageLimit: number;
+  sourceMinuteMessageLimit: number;
+};
+
+type SessionCapabilities = {
+  imageInput: boolean;
+  memory: boolean;
+  messageActions: boolean;
+  feedback: boolean;
+  accountData: boolean;
 };
 
 type PublicRoute = {
@@ -214,6 +233,7 @@ type RouteAccess = {
   routes: PublicRoute[];
   defaultRoute: string;
   user: UserConfig;
+  publicAccess?: PublicAccessConfig;
 };
 
 type EncryptedSecret = {
@@ -327,6 +347,22 @@ const MAX_TOOL_RESULT_PREVIEW_CHARS = 2_000;
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
 const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const MEMBER_LABEL_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
+const GUEST_LABEL_PREFIX = "guest-";
+const GUEST_SOURCE_PREFIX = "guest-source:";
+const GUEST_CLEANUP_PREFIX = "guest-cleanup:";
+const DEFAULT_PUBLIC_SESSION_TTL_SECONDS = 86_400;
+const DEFAULT_GUEST_DAILY_LIMIT = 20;
+const DEFAULT_GUEST_MINUTE_LIMIT = 6;
+const DEFAULT_GUEST_SOURCE_DAILY_LIMIT = 200;
+const DEFAULT_GUEST_SOURCE_MINUTE_LIMIT = 30;
+const MAX_PUBLIC_SESSION_TTL_SECONDS = 7 * 86_400;
+const GUEST_CLEANUP_RETENTION_SECONDS = 7 * 86_400;
+const GUEST_CLEANUP_BATCH_SIZE = 10;
+const MAX_GUEST_DAILY_LIMIT = 1_000;
+const MAX_GUEST_MINUTE_LIMIT = 60;
+const MAX_GUEST_SOURCE_DAILY_LIMIT = 10_000;
+const MAX_GUEST_SOURCE_MINUTE_LIMIT = 600;
+const GUEST_TURN_LEASE_MS = 10 * 60_000;
 const MCP_REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_TOOL_ROUNDS = 4;
 const MAX_TOOL_CALLS = 8;
@@ -369,7 +405,17 @@ class UpstreamRequestError extends Error {
 
 type UsageResult =
   | { ok: true; remaining: number }
-  | { ok: false; retryAfter: number; reset: "daily" | "minute" };
+  | { ok: false; retryAfter: number; reset: "daily" | "minute"; scope?: "session" | "source" };
+
+type TurnAdmission =
+  | { ok: true; remaining: number; release: () => Promise<void> }
+  | {
+      ok: false;
+      error: "rate_limited" | "concurrent_turn";
+      retryAfter: number;
+      reset?: "daily" | "minute";
+      scope?: "session" | "source";
+    };
 
 type ChatMetric = {
   kind: "success" | "failure" | "route_error" | "rate_limited";
@@ -431,6 +477,11 @@ export class UserState extends DurableObject<Env> {
           key TEXT PRIMARY KEY,
           value INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS guest_turn_lease (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          token TEXT NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS chats_updated_at ON chats(updated_at DESC);
       `);
     });
@@ -478,6 +529,39 @@ export class UserState extends DurableObject<Env> {
       Math.max(0, legacyDayCount),
     );
     return this.ctx.storage.sql.exec<{ count: number }>("SELECT count FROM usage WHERE day = ?", day).one().count;
+  }
+
+  async refundLimits(nowMs: number): Promise<void> {
+    const day = new Date(nowMs).toISOString().slice(0, 10);
+    const minute = Math.floor(nowMs / 60_000);
+    this.ctx.storage.sql.exec("UPDATE usage SET count = MAX(0, count - 1) WHERE day = ?", day);
+    this.ctx.storage.sql.exec("UPDATE bursts SET count = MAX(0, count - 1) WHERE minute = ?", minute);
+    this.ctx.storage.sql.exec("DELETE FROM usage WHERE day = ? AND count = 0", day);
+    this.ctx.storage.sql.exec("DELETE FROM bursts WHERE minute = ? AND count = 0", minute);
+  }
+
+  async acquireGuestTurn(
+    token: string,
+    nowMs: number,
+    leaseMs: number,
+  ): Promise<{ ok: true } | { ok: false; retryAfter: number }> {
+    this.ctx.storage.sql.exec("DELETE FROM guest_turn_lease WHERE expires_at <= ?", nowMs);
+    const active = this.ctx.storage.sql
+      .exec<{ expires_at: number }>("SELECT expires_at FROM guest_turn_lease WHERE singleton = 1")
+      .toArray()[0];
+    if (active) {
+      return { ok: false, retryAfter: Math.max(1, Math.ceil((active.expires_at - nowMs) / 1_000)) };
+    }
+    this.ctx.storage.sql.exec(
+      "INSERT INTO guest_turn_lease(singleton, token, expires_at) VALUES (1, ?, ?)",
+      token,
+      nowMs + leaseMs,
+    );
+    return { ok: true };
+  }
+
+  async releaseGuestTurn(token: string): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM guest_turn_lease WHERE singleton = 1 AND token = ?", token);
   }
 
   async getLoginThrottle(nowMs: number, limit: number, windowMs: number): Promise<{ ok: boolean; retryAfter: number }> {
@@ -703,6 +787,7 @@ export class UserState extends DurableObject<Env> {
     this.ctx.storage.sql.exec("DELETE FROM usage");
     this.ctx.storage.sql.exec("DELETE FROM bursts");
     this.ctx.storage.sql.exec("DELETE FROM metrics");
+    this.ctx.storage.sql.exec("DELETE FROM guest_turn_lease");
     this.ctx.storage.sql.exec(
       "INSERT INTO user_state(key, value) VALUES ('chats_purged_at', ?) ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
       nowMs,
@@ -775,11 +860,11 @@ export class UserState extends DurableObject<Env> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const requestId = crypto.randomUUID();
     try {
-      const response = await handleRequest(request, env, url);
+      const response = await handleRequest(request, env, url, ctx, requestId);
       return response.webSocket ? response : withRequestId(response, requestId);
     } catch (error) {
       console.error(JSON.stringify({
@@ -798,7 +883,13 @@ export default {
   },
 };
 
-async function handleRequest(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleRequest(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext | undefined,
+  requestId: string,
+): Promise<Response> {
   if (url.pathname === "/robots.txt") {
     return textResponse("User-agent: *\nDisallow: /\n", 200, "text/plain");
   }
@@ -806,10 +897,10 @@ async function handleRequest(request: Request, env: Env, url: URL): Promise<Resp
     return handleHealthCheck(env);
   }
   if (url.pathname === "/agent" || url.pathname.startsWith("/agent/")) {
-    return handleTeamAgentRequest(request, env, url);
+    return handleTeamAgentRequest(request, env, url, ctx, requestId);
   }
   if (url.pathname.startsWith("/api/")) {
-    return handleApi(request, env, url);
+    return handleApi(request, env, url, ctx, requestId);
   }
   if (request.method === "GET" && url.pathname === "/react-chat") {
     return Response.redirect(new URL("/react-chat/", url).toString(), 308);
@@ -904,13 +995,20 @@ async function handleHealthCheck(env: Env): Promise<Response> {
   }
 }
 
-async function handleTeamAgentRequest(request: Request, env: Env, url: URL): Promise<Response> {
-  const session = await getSession(request, env);
-  if (!session) return jsonResponse({ error: "unauthorized" }, 401);
-
+async function handleTeamAgentRequest(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext | undefined,
+  requestId: string,
+): Promise<Response> {
   if (hasInvalidOrigin(request, url)) {
     return jsonResponse({ error: "invalid_origin" }, 403);
   }
+  await scheduleGuestCleanupDrain(env, ctx, requestId);
+
+  const session = await getSession(request, env);
+  if (!session) return jsonResponse({ error: "unauthorized" }, 401);
 
   const chatId = normalizeAgentConversationId(url.searchParams.get("chatId"));
   if (!chatId) {
@@ -918,7 +1016,7 @@ async function handleTeamAgentRequest(request: Request, env: Env, url: URL): Pro
   }
   await ensureAgentLegacyImport(env, session.label);
   await drainAgentConversationCleanup(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  const root = await getTeamAgent(env, session.label, session);
   const now = Date.now();
   const created = await root.createConversation({
     id: chatId,
@@ -930,17 +1028,24 @@ async function handleTeamAgentRequest(request: Request, env: Env, url: URL): Pro
     skillIds: [],
   });
   if (!created.ok) return agentConversationMutationError(created);
-  const agent = await getTeamAgentConversation(env, session.label, chatId);
+  const agent = await getTeamAgentConversation(env, session.label, chatId, session);
   return agent.fetch(request);
 }
 
-async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleApi(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext | undefined,
+  requestId: string,
+): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: sensitiveResponseHeaders() });
   }
   if (request.method !== "GET" && request.method !== "HEAD" && hasInvalidOrigin(request, url)) {
     return jsonResponse({ error: "invalid_origin" }, 403);
   }
+  await scheduleGuestCleanupDrain(env, ctx, requestId);
 
   if (url.pathname === "/api/admin/login" && request.method === "POST") {
     return handleAdminLogin(request, env, url);
@@ -966,38 +1071,20 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return handleLogout(request, env, url);
   }
 
+  if (url.pathname === "/api/guest-session" && request.method === "POST") {
+    return handleGuestSession(request, env, url);
+  }
+
   const session = await getSession(request, env);
   if (!session) {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
+  if (session.kind === "guest" && !isGuestApiAllowed(url.pathname, request.method)) {
+    return jsonResponse({ error: "capability_not_allowed", message: "访客账号不支持这项操作" }, 403);
+  }
 
   if (url.pathname === "/api/session" && request.method === "GET") {
-    const config = await loadAppConfig(env);
-    const access = await getRouteAccess(config, session.label, env);
-    const capabilities = getPublicCapabilities(config, access.user);
-    const [usage, routes] = await Promise.all([
-      getUsage(env, session, access.user),
-      Promise.all(access.routes.map((route) => withPublicRouteHealth(env, route))),
-    ]);
-    return jsonResponse({
-      authenticated: true,
-      user: session.label,
-      displayName: access.user.displayName || session.label,
-      usage,
-      routes,
-      defaultRoute: access.defaultRoute,
-      allowBringYourOwnKey: Boolean(access.user.allowBringYourOwnKey),
-      hasUserSystemPrompt: Boolean(access.user.systemPrompt?.trim()),
-      imageInput: imageInputPolicy(env),
-      skills: capabilities.skills,
-      tools: capabilities.tools,
-      agent: {
-        transport: "cloudflare-ai-chat",
-        className: "team-agent",
-        basePath: "agent",
-        instance: await getTeamAgentInstanceName(session.label),
-      },
-    });
+    return jsonResponse(await buildSessionProjection(env, session));
   }
 
   if (url.pathname === "/api/chat" && request.method === "POST") {
@@ -1100,6 +1187,16 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   return jsonResponse({ error: "not_found" }, 404);
 }
 
+function isGuestApiAllowed(pathname: string, method: string): boolean {
+  if (pathname === "/api/session" && method === "GET") return true;
+  if (pathname === "/api/chat" && method === "POST") return true;
+  if (pathname === "/api/agent/conversations" && (method === "GET" || method === "POST")) return true;
+  if (pathname.startsWith("/api/agent/conversations/") && !pathname.endsWith("/branches")) {
+    return method === "PATCH" || method === "DELETE";
+  }
+  return false;
+}
+
 function hasInvalidOrigin(request: Request, url: URL): boolean {
   const origin = request.headers.get("Origin");
   return Boolean(origin && origin !== url.origin);
@@ -1131,14 +1228,23 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
   await loginState.clearLoginFailures();
 
   const now = Date.now();
+  const ttl = numberEnv(env.SESSION_TTL_SECONDS, 2_592_000);
   const session: Session = {
     id: crypto.randomUUID(),
     label,
+    kind: "member",
     createdAt: now,
     lastSeen: now,
+    expiresAt: now + ttl * 1_000,
   };
   const token = randomToken();
-  const ttl = numberEnv(env.SESSION_TTL_SECONDS, 2_592_000);
+
+  const previousToken = getCookie(request, SESSION_COOKIE);
+  if (previousToken) {
+    const previous = await getStoredSession(env, previousToken);
+    await env.CHAT_STORE.delete(`session:${previousToken}`);
+    if (previous?.kind === "guest") await cleanupGuestSessionData(env, previous);
+  }
 
   await env.CHAT_STORE.put(`session:${token}`, JSON.stringify(session), {
     expirationTtl: ttl,
@@ -1156,7 +1262,9 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
 async function handleLogout(request: Request, env: Env, url: URL): Promise<Response> {
   const token = getCookie(request, SESSION_COOKIE);
   if (token) {
+    const session = await getStoredSession(env, token);
     await env.CHAT_STORE.delete(`session:${token}`);
+    if (session?.kind === "guest") await cleanupGuestSessionData(env, session);
   }
 
   return jsonResponse(
@@ -1374,6 +1482,69 @@ async function handleGetAdminConfig(env: Env): Promise<Response> {
   return jsonResponse({ config: sanitizeAdminConfig(config), source, revision: await configRevision(config) });
 }
 
+async function handleGuestSession(request: Request, env: Env, url: URL): Promise<Response> {
+  const existing = await getSession(request, env);
+  if (existing?.kind === "guest") return jsonResponse(await buildSessionProjection(env, existing));
+  if (existing?.kind === "member") return jsonResponse(await buildSessionProjection(env, existing));
+
+  const config = await loadAppConfig(env);
+  if (!config.publicAccess.enabled) {
+    return jsonResponse({ error: "public_access_disabled" }, 404);
+  }
+
+  const now = Date.now();
+  const ttl = config.publicAccess.sessionTtlSeconds;
+  const session: GuestSession = {
+    id: crypto.randomUUID(),
+    label: `${GUEST_LABEL_PREFIX}${randomToken().slice(0, 48)}`,
+    kind: "guest",
+    createdAt: now,
+    lastSeen: now,
+    expiresAt: now + ttl * 1_000,
+    sourceKey: `${GUEST_SOURCE_PREFIX}${await sourceIdentityDigest(request)}`,
+  };
+  const token = randomToken();
+  await Promise.all([
+    env.CHAT_STORE.put(`session:${token}`, JSON.stringify(session), { expirationTtl: ttl }),
+    scheduleGuestCleanup(env, session),
+  ]);
+  return jsonResponse(await buildSessionProjection(env, session), 200, {
+    "Set-Cookie": buildSessionCookie(token, ttl, url.protocol === "https:"),
+  });
+}
+
+async function buildSessionProjection(env: Env, session: Session): Promise<Record<string, unknown>> {
+  const config = await loadAppConfig(env);
+  const access = await getRouteAccess(config, session, env);
+  const capabilities = getPublicCapabilities(config, access.user);
+  const policy = sessionCapabilities(session, access);
+  const [usage, routes] = await Promise.all([
+    getUsage(env, session, access.user),
+    Promise.all(access.routes.map((route) => withPublicRouteHealth(env, route))),
+  ]);
+  return {
+    authenticated: true,
+    access: session.kind,
+    user: session.label,
+    displayName: session.kind === "guest" ? "访客" : access.user.displayName || session.label,
+    usage,
+    routes,
+    defaultRoute: access.defaultRoute,
+    allowBringYourOwnKey: session.kind === "member" && Boolean(access.user.allowBringYourOwnKey),
+    hasUserSystemPrompt: session.kind === "member" && Boolean(access.user.systemPrompt?.trim()),
+    imageInput: imageInputPolicy(env),
+    capabilities: policy,
+    skills: session.kind === "member" ? capabilities.skills : [],
+    tools: session.kind === "member" ? capabilities.tools : [],
+    agent: {
+      transport: "cloudflare-ai-chat",
+      className: "team-agent",
+      basePath: "agent",
+      instance: await getTeamAgentInstanceName(session.label),
+    },
+  };
+}
+
 async function handleGetAdminMembers(env: Env): Promise<Response> {
   const [{ config }, accessSnapshot] = await Promise.all([
     loadEditableConfig(env),
@@ -1551,18 +1722,22 @@ function memberLabelFromAdminPath(pathname: string, suffix: string): string | nu
 
 function normalizeMemberLabel(value: unknown): string {
   const label = typeof value === "string" ? value.trim() : "";
-  return MEMBER_LABEL_PATTERN.test(label) ? label : "";
+  return isValidMemberLabel(label) ? label : "";
 }
 
 function normalizeExistingMemberLabel(value: unknown): string {
   const label = typeof value === "string" ? value.trim() : "";
-  return label.length > 0 && label.length <= 160 ? label : "";
+  return label.length > 0 && label.length <= 160 && !label.startsWith(GUEST_LABEL_PREFIX) ? label : "";
+}
+
+function isValidMemberLabel(label: string): boolean {
+  return MEMBER_LABEL_PATTERN.test(label) && !label.startsWith(GUEST_LABEL_PREFIX);
 }
 
 function invalidMemberLabelResponse(): Response {
   return jsonResponse({
     error: "invalid_label",
-    message: "label 需为 1 至 80 个字母、数字、点、下划线或短横线",
+    message: "label 需为 1 至 80 个字母、数字、点、下划线或短横线，且不能使用访客保留前缀",
   }, 400);
 }
 
@@ -1628,6 +1803,10 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   const body = await readJson<{ config?: unknown; expectedRevision?: unknown }>(request);
   const conflict = await configRevisionConflict(env, body.expectedRevision);
   if (conflict) return conflict;
+  const publicAccessValidation = validateRawPublicAccessConfiguration(body.config);
+  if (!publicAccessValidation.ok) {
+    return jsonResponse({ error: "invalid_config", message: publicAccessValidation.message }, 400);
+  }
   const rawProviderPoolValidation = validateRawProviderPoolConfiguration(body.config);
   if (!rawProviderPoolValidation.ok) {
     return jsonResponse({ error: "invalid_config", message: rawProviderPoolValidation.message }, 400);
@@ -2366,8 +2545,8 @@ async function handleAdminResetUsage(request: Request, env: Env): Promise<Respon
 async function handleCreateAdminUser(request: Request, env: Env): Promise<Response> {
   const body = await readJson<{ label?: unknown; user?: unknown }>(request);
   const label = typeof body.label === "string" ? body.label.trim() : "";
-  if (!MEMBER_LABEL_PATTERN.test(label)) {
-    return jsonResponse({ error: "invalid_label", message: "label 只能包含字母、数字、点、下划线和短横线" }, 400);
+  if (!isValidMemberLabel(label)) {
+    return invalidMemberLabelResponse();
   }
   const [{ config }, { accessCodes }] = await Promise.all([loadEditableConfig(env), loadEditableAccessCodes(env)]);
   if (config.users?.[label] || parseAccessCodes(accessCodes).some((entry) => entry.label === label)) {
@@ -2537,7 +2716,7 @@ async function handleListAgentConversations(env: Env, session: Session): Promise
 
 async function handleCreateAgentConversation(request: Request, env: Env, session: Session): Promise<Response> {
   const body = await readJson<{ id?: unknown; title?: unknown; routeId?: unknown; skillIds?: unknown }>(request);
-  const settings = await validateAgentConversationSettings(env, session.label, body.routeId, body.skillIds, true);
+  const settings = await validateAgentConversationSettings(env, session, body.routeId, body.skillIds, true);
   if (!settings.ok) return settings.response;
   await ensureAgentLegacyImport(env, session.label);
   const now = Date.now();
@@ -2589,7 +2768,7 @@ async function handleCreateAgentConversationBranch(
   const root = await getTeamAgent(env, session.label);
   const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId);
   if (!source) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
-  const settings = await repairAgentConversationSettings(env, session.label, source.routeId, source.skillIds);
+  const settings = await repairAgentConversationSettings(env, session, source.routeId, source.skillIds);
   const launch = branchLaunchForAction(action);
   const fingerprint = await secretFingerprint(JSON.stringify({
     sourceId,
@@ -2669,7 +2848,7 @@ async function handleUpdateAgentConversation(
   if (!expectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
-  const settings = await validateAgentConversationSettings(env, session.label, body.routeId, body.skillIds, false);
+  const settings = await validateAgentConversationSettings(env, session, body.routeId, body.skillIds, false);
   if (!settings.ok) return settings.response;
   await ensureAgentLegacyImport(env, session.label);
   const root = await getTeamAgent(env, session.label);
@@ -2812,7 +2991,7 @@ async function handleExportUserData(env: Env, session: Session): Promise<Respons
 
 async function validateAgentConversationSettings(
   env: Env,
-  label: string,
+  session: Session,
   routeValue: unknown,
   skillValue: unknown,
   useDefaults: boolean,
@@ -2821,7 +3000,7 @@ async function validateAgentConversationSettings(
   | { ok: false; response: Response }
 > {
   const config = await loadAppConfig(env);
-  const access = await getRouteAccess(config, label, env);
+  const access = await getRouteAccess(config, session, env);
   const requestedRoute = typeof routeValue === "string" ? routeValue.trim() : "";
   if (requestedRoute && !access.routes.some((route) => route.id === requestedRoute)) {
     return { ok: false, response: jsonResponse({ error: "route_not_allowed", message: "该线路不可用" }, 403) };
@@ -2846,12 +3025,12 @@ async function validateAgentConversationSettings(
 
 async function repairAgentConversationSettings(
   env: Env,
-  label: string,
+  session: Session,
   routeValue: unknown,
   skillValue: unknown,
 ): Promise<{ routeId?: string; skillIds: string[] }> {
   const config = await loadAppConfig(env);
-  const access = await getRouteAccess(config, label, env);
+  const access = await getRouteAccess(config, session, env);
   const requestedRoute = typeof routeValue === "string" ? routeValue.trim() : "";
   const routeId = requestedRoute && access.routes.some((route) => route.id === requestedRoute)
     ? requestedRoute
@@ -3958,7 +4137,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
   }
 
   const config = await loadAppConfig(env);
-  const access = await getRouteAccess(config, session.label, env);
+  const access = await getRouteAccess(config, session, env);
   if (!access.routes.length) {
     return jsonResponse({ error: "no_routes_available" }, 403);
   }
@@ -3973,6 +4152,9 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     sessionSummary?: unknown;
   }>(request);
   const selectedRoute = typeof body.routeId === "string" ? body.routeId : access.defaultRoute;
+  if (session.kind === "guest" && selectedRoute !== config.publicAccess.routeId) {
+    return jsonResponse({ error: "route_not_allowed", message: "访客只能使用公开模型" }, 403);
+  }
   const normalization = normalizeMessages(body.messages, env);
   if (!normalization.ok) {
     return jsonResponse({ error: normalization.error, message: normalization.message }, normalization.status);
@@ -4011,17 +4193,20 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     return jsonResponse({ error: hasImages ? "image_not_supported" : "route_not_allowed" }, hasImages ? 400 : 403);
   }
 
-  const limitResult = await consumeLimits(env, session, access.user);
-  if (!limitResult.ok) {
-    await recordChatMetric(env, {
-      kind: "rate_limited",
-      label: session.label,
-    });
+  const admission = await admitTurn(env, session, access);
+  if (!admission.ok) {
+    if (admission.error === "rate_limited") {
+      await recordChatMetric(env, { kind: "rate_limited", label: session.label });
+    }
     return jsonResponse(
-      { error: "rate_limited", reset: limitResult.reset },
+      {
+        error: admission.error,
+        ...(admission.reset ? { reset: admission.reset } : {}),
+        ...(admission.scope ? { scope: admission.scope } : {}),
+      },
       429,
       {
-        "Retry-After": String(limitResult.retryAfter),
+        "Retry-After": String(admission.retryAfter),
         "X-RateLimit-Remaining": "0",
       },
     );
@@ -4051,7 +4236,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
       tools: toolDefinitions,
       userApiKey,
       temperature: body.temperature,
-      remaining: limitResult.remaining,
+      remaining: admission.remaining,
       chatId,
     });
   }
@@ -4093,10 +4278,11 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
       });
 
       if (result.response) {
-        result.response.headers.set("X-RateLimit-Remaining", String(limitResult.remaining));
+        result.response.headers.set("X-RateLimit-Remaining", String(admission.remaining));
         result.response.headers.set("X-Chatus-Route", routeId);
         const response = responseWithProviderLease(result.response, lease, {
           onComplete: async () => {
+            await admission.release();
             await recordRouteReliability(env, {
               routeId,
               providerId: route.providerId,
@@ -4107,6 +4293,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
             await recordChatMetric(env, { kind: "success", label: session.label, routeId, fallback });
           },
           onError: async (error) => {
+            await admission.release();
             await recordRouteReliability(env, {
               routeId,
               providerId: route.providerId,
@@ -4139,7 +4326,10 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
       await recordChatMetric(env, { kind: "route_error", label: session.label, routeId });
       if (result.terminal) break;
     } catch (error) {
-      if (request.signal.aborted) throw error;
+      if (request.signal.aborted) {
+        await admission.release();
+        throw error;
+      }
       const status = providerErrorStatus(error);
       lastError = {
         routeId,
@@ -4163,6 +4353,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     }
   }
 
+  await admission.release();
   await recordChatMetric(env, {
     kind: "failure",
     label: session.label,
@@ -4205,6 +4396,7 @@ export type PreparedTeamAgentTurn =
       routeId: string;
       skillIds: string[];
       recordStreamFailure: () => Promise<void>;
+      releaseTurn: () => Promise<void>;
     }
   | { ok: false; error: string; message: string; status: number; routeId?: string };
 
@@ -4214,7 +4406,13 @@ export async function prepareTeamAgentTurn(
   input: TeamAgentTurnInput,
 ): Promise<PreparedTeamAgentTurn> {
   const config = await loadAppConfig(env);
-  const access = await getRouteAccess(config, session.label, env);
+  if (session.expiresAt <= Date.now()) {
+    return { ok: false, error: "session_expired", message: "登录会话已过期，请重新连接", status: 401 };
+  }
+  if (session.kind === "guest" && !config.publicAccess.enabled) {
+    return { ok: false, error: "public_access_disabled", message: "公开访问已关闭", status: 403 };
+  }
+  const access = await getRouteAccess(config, session, env);
   if (!access.routes.length) {
     return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
   }
@@ -4236,6 +4434,9 @@ export async function prepareTeamAgentTurn(
   }
 
   const selectedRoute = input.routeId || access.defaultRoute;
+  if (session.kind === "guest" && selectedRoute !== config.publicAccess.routeId) {
+    return { ok: false, error: "route_not_allowed", message: "访客只能使用公开模型", status: 403 };
+  }
   const selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
     || access.routes.find((route) => route.id === access.defaultRoute);
   if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
@@ -4246,14 +4447,6 @@ export async function prepareTeamAgentTurn(
       status: 400,
       routeId: selectedPublicRoute.id,
     };
-  }
-
-  const limitResult = input.continuation
-    ? { ok: true as const, remaining: (await getUsage(env, session, access.user)).remaining }
-    : await consumeLimits(env, session, access.user);
-  if (!limitResult.ok) {
-    await recordChatMetric(env, { kind: "rate_limited", label: session.label });
-    return { ok: false, error: "rate_limited", message: "额度已用完", status: 429 };
   }
 
   const selectedSkills = getSelectedSkills(config, input.skillIds, access.user);
@@ -4329,6 +4522,19 @@ export async function prepareTeamAgentTurn(
     };
   }
 
+  const admission = await admitTurn(env, session, access, input.continuation !== true);
+  if (!admission.ok) {
+    if (admission.error === "rate_limited") {
+      await recordChatMetric(env, { kind: "rate_limited", label: session.label });
+    }
+    return {
+      ok: false,
+      error: admission.error,
+      message: admission.error === "concurrent_turn" ? "当前访客会话已有任务正在运行" : "额度已用完",
+      status: 429,
+    };
+  }
+
   let streamFailureRecorded = false;
   const recordStreamFailure = async () => {
     if (streamFailureRecorded) return;
@@ -4381,10 +4587,11 @@ export async function prepareTeamAgentTurn(
     runTool: toolRuntime.runTool,
     closeTools: toolRuntime.close,
     maxToolSteps: MAX_TOOL_ROUNDS,
-    remaining: limitResult.remaining,
+    remaining: admission.remaining,
     routeId: selectedPublicRoute?.id || selectedRoute,
     skillIds: selectedSkills.map(({ id }) => id),
     recordStreamFailure,
+    releaseTurn: admission.release,
   };
 }
 
@@ -4467,6 +4674,12 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   if (!enabledRouteIds.length) {
     return { ok: false, message: "至少需要启用一条线路" };
   }
+  if (config.publicAccess.enabled) {
+    const guestRoute = config.routes[config.publicAccess.routeId];
+    if (!guestRoute || guestRoute.enabled === false) {
+      return { ok: false, message: "公开访问必须选择一条已启用的逻辑模型" };
+    }
+  }
 
   const invalidFallback = routeIds.find((id) => config.routes[id].fallbacks?.some((fallback) => !config.routes[fallback]));
   if (invalidFallback) {
@@ -4493,6 +4706,9 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
 
   const users = Object.entries(config.users || {});
   for (const [label, user] of users) {
+    if (!isValidMemberLabel(label)) {
+      return { ok: false, message: `用户 ${label} 的 label 无效或使用了访客保留前缀` };
+    }
     if (user.defaultRoute && !config.routes[user.defaultRoute]) {
       return { ok: false, message: `用户 ${label} 的默认线路不存在` };
     }
@@ -4628,6 +4844,42 @@ function validateRawProviderPoolConfiguration(value: unknown): { ok: true } | { 
   return { ok: true };
 }
 
+function validateRawPublicAccessConfiguration(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isRecord(value) || value.publicAccess === undefined) return { ok: true };
+  if (!isRecord(value.publicAccess)) return { ok: false, message: "公开访问配置必须是对象" };
+  const input = value.publicAccess;
+  const allowed = new Set([
+    "enabled",
+    "routeId",
+    "sessionTtlSeconds",
+    "dailyMessageLimit",
+    "minuteMessageLimit",
+    "sourceDailyMessageLimit",
+    "sourceMinuteMessageLimit",
+  ]);
+  if (Object.keys(input).some((key) => !allowed.has(key))) {
+    return { ok: false, message: "公开访问配置包含未知字段" };
+  }
+  if (typeof input.enabled !== "boolean") return { ok: false, message: "公开访问开关无效" };
+  if (typeof input.routeId !== "string" || (input.enabled && !input.routeId.trim())) {
+    return { ok: false, message: "公开访问必须选择逻辑模型" };
+  }
+  const limits: Array<[string, number, number, string]> = [
+    ["sessionTtlSeconds", 900, MAX_PUBLIC_SESSION_TTL_SECONDS, "访客会话有效期"],
+    ["dailyMessageLimit", 1, MAX_GUEST_DAILY_LIMIT, "访客每日消息额度"],
+    ["minuteMessageLimit", 1, MAX_GUEST_MINUTE_LIMIT, "访客每分钟消息额度"],
+    ["sourceDailyMessageLimit", 1, MAX_GUEST_SOURCE_DAILY_LIMIT, "来源每日消息额度"],
+    ["sourceMinuteMessageLimit", 1, MAX_GUEST_SOURCE_MINUTE_LIMIT, "来源每分钟消息额度"],
+  ];
+  for (const [key, minimum, maximum, label] of limits) {
+    const item = input[key];
+    if (typeof item !== "number" || !Number.isInteger(item) || item < minimum || item > maximum) {
+      return { ok: false, message: `${label}必须是 ${minimum} 至 ${maximum} 的整数` };
+    }
+  }
+  return { ok: true };
+}
+
 function isProviderCapacity(value: unknown): boolean {
   return typeof value === "number"
     && Number.isInteger(value)
@@ -4687,6 +4939,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
   }
 
   const defaults = normalizeUserConfig(input.defaults);
+  const publicAccess = normalizePublicAccessConfig(input.publicAccess);
   const users: Record<string, UserConfig> = {};
   if (isRecord(input.users)) {
     for (const [label, rawUser] of Object.entries(input.users)) {
@@ -4707,9 +4960,38 @@ function normalizeAppConfig(value: unknown): AppConfig {
     providers,
     users,
     defaults,
+    publicAccess,
     skills,
     tools,
     mcpServers,
+  };
+}
+
+function normalizePublicAccessConfig(value: unknown): PublicAccessConfig {
+  const input = isRecord(value) ? value : {};
+  return {
+    enabled: input.enabled === true,
+    routeId: typeof input.routeId === "string" ? input.routeId.trim().slice(0, 160) : "",
+    sessionTtlSeconds: boundedInteger(
+      input.sessionTtlSeconds,
+      900,
+      MAX_PUBLIC_SESSION_TTL_SECONDS,
+      DEFAULT_PUBLIC_SESSION_TTL_SECONDS,
+    ),
+    dailyMessageLimit: boundedInteger(input.dailyMessageLimit, 1, MAX_GUEST_DAILY_LIMIT, DEFAULT_GUEST_DAILY_LIMIT),
+    minuteMessageLimit: boundedInteger(input.minuteMessageLimit, 1, MAX_GUEST_MINUTE_LIMIT, DEFAULT_GUEST_MINUTE_LIMIT),
+    sourceDailyMessageLimit: boundedInteger(
+      input.sourceDailyMessageLimit,
+      1,
+      MAX_GUEST_SOURCE_DAILY_LIMIT,
+      DEFAULT_GUEST_SOURCE_DAILY_LIMIT,
+    ),
+    sourceMinuteMessageLimit: boundedInteger(
+      input.sourceMinuteMessageLimit,
+      1,
+      MAX_GUEST_SOURCE_MINUTE_LIMIT,
+      DEFAULT_GUEST_SOURCE_MINUTE_LIMIT,
+    ),
   };
 }
 
@@ -4824,9 +5106,23 @@ function normalizeUserConfig(value: unknown): UserConfig {
   return output;
 }
 
-async function getRouteAccess(config: AppConfig, label: string, env: Env): Promise<RouteAccess> {
-  const user = getEffectiveUserConfig(config, label);
-  const allowedIds = user.allowedRoutes?.length ? user.allowedRoutes : Object.keys(config.routes);
+async function getRouteAccess(config: AppConfig, session: Session, env: Env): Promise<RouteAccess> {
+  const guest = session.kind === "guest";
+  const user: UserConfig = guest
+    ? {
+        enabled: true,
+        defaultRoute: config.publicAccess.routeId,
+        allowedRoutes: config.publicAccess.routeId ? [config.publicAccess.routeId] : [],
+        allowedSkills: [],
+        allowedTools: [],
+        allowBringYourOwnKey: false,
+        dailyMessageLimit: config.publicAccess.dailyMessageLimit,
+        minuteMessageLimit: config.publicAccess.minuteMessageLimit,
+      }
+    : getEffectiveUserConfig(config, session.label);
+  const allowedIds = guest
+    ? (config.publicAccess.routeId ? [config.publicAccess.routeId] : [])
+    : user.allowedRoutes?.length ? user.allowedRoutes : Object.keys(config.routes);
   const routes = (await Promise.all(
     allowedIds.map(async (id): Promise<PublicRoute | null> => {
       const route = config.routes[id];
@@ -4837,7 +5133,8 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
       for (const candidate of candidates) {
         if (candidate.requiresUserKey) continue;
         try {
-          if (await resolveRouteKey(candidate, env, "")) {
+          const credential = await resolveRouteCredential(candidate, env, "");
+          if (credential.apiKey && (!guest || credential.source === "managed")) {
             hasServerKey = true;
             break;
           }
@@ -4845,7 +5142,7 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
           // Another offering may still be usable.
         }
       }
-      const allowUserKey = Boolean(user.allowBringYourOwnKey && route.allowUserKey !== false);
+      const allowUserKey = Boolean(!guest && user.allowBringYourOwnKey && route.allowUserKey !== false);
       if (!hasServerKey && !allowUserKey) return null;
       const representative = candidates[0];
 
@@ -4857,7 +5154,7 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
         allowUserKey,
         requiresUserKey: Boolean(!hasServerKey),
         supportsImages: candidates.some((candidate) => candidate.supportsImages),
-        supportsTools: candidates.some((candidate) => candidate.supportsTools),
+        supportsTools: !guest && candidates.some((candidate) => candidate.supportsTools),
       };
     }),
   )).filter((route): route is PublicRoute => Boolean(route));
@@ -4867,7 +5164,7 @@ async function getRouteAccess(config: AppConfig, label: string, env: Env): Promi
       ? user.defaultRoute
       : routes[0]?.id || "";
 
-  return { routes, defaultRoute, user };
+  return { routes, defaultRoute, user, ...(guest ? { publicAccess: config.publicAccess } : {}) };
 }
 
 function isValidMcpEndpoint(value: string): boolean {
@@ -5117,7 +5414,7 @@ async function buildMessagesWithSystem(
     systemMessages.push({ role: "system", content: globalPrompt });
   }
 
-  const userPrompt = userConfig?.systemPrompt?.trim();
+  const userPrompt = session.kind === "member" ? userConfig?.systemPrompt?.trim() : "";
   if (userPrompt) {
     systemMessages.push({
       role: "system",
@@ -5132,19 +5429,21 @@ async function buildMessagesWithSystem(
     });
   }
 
-  let memory = longTermMemory?.trim() || "";
-  if (longTermMemory === undefined) {
-    await ensureAgentLegacyImport(env, session.label);
-    memory = (await (await getTeamAgent(env, session.label)).getMemory()).memory.trim();
-  }
-  if (memory) {
-    systemMessages.push({
-      role: "system",
-      content: `以下是关于当前用户的长期记忆。它可能包含用户偏好、常用背景和需要长期保持的一般信息。除非用户要求修改或遗忘，否则请在相关时参考：\n${memory}`,
-    });
+  if (session.kind === "member") {
+    let memory = longTermMemory?.trim() || "";
+    if (longTermMemory === undefined) {
+      await ensureAgentLegacyImport(env, session.label);
+      memory = (await (await getTeamAgent(env, session.label)).getMemory()).memory.trim();
+    }
+    if (memory) {
+      systemMessages.push({
+        role: "system",
+        content: `以下是关于当前用户的长期记忆。它可能包含用户偏好、常用背景和需要长期保持的一般信息。除非用户要求修改或遗忘，否则请在相关时参考：\n${memory}`,
+      });
+    }
   }
 
-  if (sessionSummary.trim()) {
+  if (session.kind === "member" && sessionSummary.trim()) {
     systemMessages.push({
       role: "system",
       content: `以下是当前会话的滚动摘要，用于弥补较早消息被裁剪的上下文。请优先参考摘要中的目标、约束和未完成事项：\n${sessionSummary.trim()}`,
@@ -5215,7 +5514,7 @@ async function completeWithUserRoute(
   | { ok: false; error: string; message: string; status: number; routeId?: string }
 > {
   const config = await loadAppConfig(env);
-  const access = await getRouteAccess(config, session.label, env);
+  const access = await getRouteAccess(config, session, env);
   if (!access.routes.length) {
     return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
   }
@@ -6966,23 +7265,157 @@ function openAiFinishChunk(finishReason: string): string {
 async function getSession(request: Request, env: Env): Promise<Session | null> {
   const token = getCookie(request, SESSION_COOKIE);
   if (!token) return null;
-
-  const raw = await env.CHAT_STORE.get(`session:${token}`);
-  if (!raw) return null;
-
-  try {
-    const session = JSON.parse(raw) as Session;
-    if (!session.id || !session.label) return null;
-    const config = await loadAppConfig(env);
-    if (getEffectiveUserConfig(config, session.label).enabled === false) {
-      await env.CHAT_STORE.delete(`session:${token}`);
-      return null;
-    }
-    return session;
-  } catch {
+  const session = await getStoredSession(env, token);
+  if (!session) {
     await env.CHAT_STORE.delete(`session:${token}`);
     return null;
   }
+  if (session.expiresAt <= Date.now()) {
+    await env.CHAT_STORE.delete(`session:${token}`);
+    if (session.kind === "guest") await cleanupGuestSessionData(env, session);
+    return null;
+  }
+  const config = await loadAppConfig(env);
+  if (
+    (session.kind === "guest" && !config.publicAccess.enabled)
+    || (session.kind === "member" && getEffectiveUserConfig(config, session.label).enabled === false)
+  ) {
+    await env.CHAT_STORE.delete(`session:${token}`);
+    if (session.kind === "guest") await cleanupGuestSessionData(env, session);
+    return null;
+  }
+  return session;
+}
+
+async function getStoredSession(env: Env, token: string): Promise<Session | null> {
+  const raw = await env.CHAT_STORE.get(`session:${token}`);
+  if (!raw) return null;
+  try {
+    return normalizeStoredSession(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStoredSession(value: unknown): Session | null {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  const label = typeof value.label === "string" ? value.label.trim() : "";
+  const createdAt = value.createdAt;
+  const lastSeen = value.lastSeen;
+  const expiresAt = value.expiresAt;
+  if (
+    !id
+    || !label
+    || (value.kind !== "guest" && value.kind !== "member")
+    || typeof createdAt !== "number"
+    || !Number.isFinite(createdAt)
+    || typeof lastSeen !== "number"
+    || !Number.isFinite(lastSeen)
+    || typeof expiresAt !== "number"
+    || !Number.isFinite(expiresAt)
+    || expiresAt <= createdAt
+  ) return null;
+  if (value.kind === "guest") {
+    const sourceKey = typeof value.sourceKey === "string" ? value.sourceKey : "";
+    if (!label.startsWith(GUEST_LABEL_PREFIX) || !/^guest-source:[0-9a-f]{64}$/.test(sourceKey)) return null;
+    return { id, label, kind: "guest", createdAt, lastSeen, expiresAt, sourceKey };
+  }
+  if (!isValidMemberLabel(label)) return null;
+  return { id, label, kind: "member", createdAt, lastSeen, expiresAt };
+}
+
+async function cleanupGuestData(env: Env, label: string): Promise<void> {
+  await Promise.allSettled([
+    getUserState(env, label).purgeUserData(),
+    purgeAgentUserData(env, label),
+  ]);
+}
+
+async function cleanupGuestSessionData(env: Env, session: GuestSession): Promise<void> {
+  await Promise.allSettled([
+    cleanupGuestData(env, session.label),
+    env.CHAT_STORE.delete(guestCleanupKey(session)),
+  ]);
+}
+
+async function scheduleGuestCleanup(env: Env, session: GuestSession): Promise<void> {
+  const ttl = Math.max(
+    60,
+    Math.ceil((session.expiresAt - Date.now()) / 1_000) + GUEST_CLEANUP_RETENTION_SECONDS,
+  );
+  await env.CHAT_STORE.put(
+    guestCleanupKey(session),
+    JSON.stringify({ label: session.label, expiresAt: session.expiresAt }),
+    { expirationTtl: ttl },
+  );
+}
+
+async function scheduleGuestCleanupDrain(
+  env: Env,
+  ctx: ExecutionContext | undefined,
+  requestId: string,
+): Promise<void> {
+  const cleanup = drainExpiredGuestCleanups(env).catch((error) => {
+    console.error(JSON.stringify({
+      level: "warn",
+      event: "guest_cleanup_failed",
+      requestId,
+      error: error instanceof Error ? error.name : "UnknownError",
+    }));
+  });
+  if (ctx) {
+    ctx.waitUntil(cleanup);
+    return;
+  }
+  await cleanup;
+}
+
+async function drainExpiredGuestCleanups(env: Env, now = Date.now()): Promise<void> {
+  const page = await env.CHAT_STORE.list({ prefix: GUEST_CLEANUP_PREFIX, limit: GUEST_CLEANUP_BATCH_SIZE });
+  for (const key of page.keys) {
+    const expiresAt = guestCleanupExpiresAt(key.name);
+    if (expiresAt !== null && expiresAt > now) break;
+    const raw = await env.CHAT_STORE.get(key.name);
+    const label = guestCleanupLabel(raw);
+    if (label) await cleanupGuestData(env, label);
+    await env.CHAT_STORE.delete(key.name);
+  }
+}
+
+function guestCleanupKey(session: Pick<GuestSession, "label" | "expiresAt">): string {
+  return `${GUEST_CLEANUP_PREFIX}${String(Math.floor(session.expiresAt)).padStart(13, "0")}:${encodeURIComponent(session.label)}`;
+}
+
+function guestCleanupExpiresAt(key: string): number | null {
+  const value = key.slice(GUEST_CLEANUP_PREFIX.length, GUEST_CLEANUP_PREFIX.length + 13);
+  if (!/^\d{13}$/.test(value)) return null;
+  const expiresAt = Number(value);
+  return Number.isFinite(expiresAt) ? expiresAt : null;
+}
+
+function guestCleanupLabel(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const label = isRecord(parsed) && typeof parsed.label === "string" ? parsed.label.trim() : "";
+    return label.startsWith(GUEST_LABEL_PREFIX) ? label : null;
+  } catch {
+    return null;
+  }
+}
+
+function sessionCapabilities(session: Session, access: RouteAccess): SessionCapabilities {
+  if (session.kind === "member") {
+    return { imageInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
+  }
+  return {
+    imageInput: access.routes.some((route) => route.supportsImages),
+    memory: false,
+    messageActions: false,
+    feedback: false,
+    accountData: false,
+  };
 }
 
 async function getAdminSession(request: Request, env: Env): Promise<AdminSession | null> {
@@ -7014,13 +7447,78 @@ async function consumeLimits(
   env: Env,
   session: Session,
   user: UserConfig,
-): Promise<{ ok: true; remaining: number } | { ok: false; retryAfter: number; reset: string }> {
+  publicAccess?: PublicAccessConfig,
+): Promise<UsageResult> {
   const now = Date.now();
   const day = new Date(now).toISOString().slice(0, 10);
   const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
   const minuteLimit = user.minuteMessageLimit || numberEnv(env.MINUTE_MESSAGE_LIMIT, 12);
   const legacyDayCount = positiveCount(await env.CHAT_STORE.get(usageKey(session.label, day)));
-  return getUserState(env, session.label).consumeLimits(dailyLimit, minuteLimit, now, legacyDayCount);
+  const personalState = getUserState(env, session.label);
+  const personal = await personalState.consumeLimits(dailyLimit, minuteLimit, now, legacyDayCount);
+  if (!personal.ok || session.kind === "member") {
+    return personal.ok ? personal : { ...personal, scope: "session" };
+  }
+
+  const policy = publicAccess || normalizePublicAccessConfig(undefined);
+  const sourceState = getUserState(env, session.sourceKey);
+  const source = await sourceState.consumeLimits(
+    policy.sourceDailyMessageLimit,
+    policy.sourceMinuteMessageLimit,
+    now,
+  );
+  if (!source.ok) {
+    await personalState.refundLimits(now);
+    return { ...source, scope: "source" };
+  }
+  return personal;
+}
+
+async function admitTurn(
+  env: Env,
+  session: Session,
+  access: RouteAccess,
+  consumeQuota = true,
+): Promise<TurnAdmission> {
+  const now = Date.now();
+  const limits = consumeQuota
+    ? await consumeLimits(env, session, access.user, access.publicAccess)
+    : { ok: true as const, remaining: (await getUsage(env, session, access.user)).remaining };
+  if (!limits.ok) {
+    return {
+      ok: false,
+      error: "rate_limited",
+      retryAfter: limits.retryAfter,
+      reset: limits.reset === "daily" ? "daily" : "minute",
+      scope: limits.scope,
+    };
+  }
+  if (session.kind === "member") return { ok: true, remaining: limits.remaining, release: async () => undefined };
+
+  const token = randomToken();
+  const state = getUserState(env, session.label);
+  const lease = await state.acquireGuestTurn(token, now, GUEST_TURN_LEASE_MS);
+  if (!lease.ok) {
+    if (consumeQuota) await refundGuestLimits(env, session, now);
+    return { ok: false, error: "concurrent_turn", retryAfter: lease.retryAfter };
+  }
+  let released = false;
+  return {
+    ok: true,
+    remaining: limits.remaining,
+    release: async () => {
+      if (released) return;
+      released = true;
+      await state.releaseGuestTurn(token);
+    },
+  };
+}
+
+async function refundGuestLimits(env: Env, session: GuestSession, nowMs: number): Promise<void> {
+  await Promise.all([
+    getUserState(env, session.label).refundLimits(nowMs),
+    getUserState(env, session.sourceKey).refundLimits(nowMs),
+  ]);
 }
 
 async function getUsage(env: Env, session: Session, user: UserConfig) {
@@ -7043,8 +7541,8 @@ async function countActiveSessionsByLabel(env: Env): Promise<Map<string, number>
     for (const raw of sessions) {
       if (!raw) continue;
       try {
-        const session = JSON.parse(raw) as Session;
-        if (!session.label) continue;
+        const session = normalizeStoredSession(JSON.parse(raw));
+        if (!session || session.expiresAt <= Date.now()) continue;
         output.set(session.label, (output.get(session.label) || 0) + 1);
       } catch {
         // Ignore malformed session records; getSession will clean them when encountered.
@@ -7248,7 +7746,7 @@ function parseAccessCodes(accessCodes: string): AccessEntry[] {
 
 async function findAccessLabel(accessCodes: string, code: string): Promise<string | null> {
   for (const entry of parseAccessCodes(accessCodes)) {
-    if (await secureCompare(code, entry.code)) return entry.label;
+    if (isValidMemberLabel(entry.label) && await secureCompare(code, entry.code)) return entry.label;
   }
 
   return null;
@@ -7303,6 +7801,12 @@ function normalizeNonNegativeNumber(value: unknown): number | undefined {
 function normalizeNumber(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function boundedInteger(value: unknown, minimum: number, maximum: number, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum
+    ? value
+    : fallback;
 }
 
 function extractText(content: string | ChatPart[]): string {
@@ -7586,7 +8090,7 @@ async function revokeSessionsByLabel(env: Env, label: string): Promise<number> {
     const matches = records.filter(({ raw }) => {
       if (!raw) return false;
       try {
-        return (JSON.parse(raw) as Session).label === label;
+        return normalizeStoredSession(JSON.parse(raw))?.label === label;
       } catch {
         return false;
       }
@@ -7667,9 +8171,13 @@ export async function getTeamAgentConversationInstanceName(label: string, chatId
   return `chat-${digest.slice(0, 48)}`;
 }
 
-async function getTeamAgent(env: Env, label: string): Promise<DurableObjectStub<TeamAgent>> {
+async function getTeamAgent(
+  env: Env,
+  label: string,
+  session?: Session,
+): Promise<DurableObjectStub<TeamAgent>> {
   const instance = await getTeamAgentInstanceName(label);
-  const props: TeamAgentProps = { userLabel: label, scope: "root" };
+  const props: TeamAgentProps = { userLabel: label, scope: "root", ...teamAgentAccessProps(session) };
   const agent = await getAgentByName(env.TEAM_AGENT, instance, { props });
   const identity = await agent.ensureIdentity(props);
   if (!identity.ok) throw new Error(identity.error);
@@ -7680,6 +8188,7 @@ async function getTeamAgentConversation(
   env: Env,
   label: string,
   chatId: string,
+  session?: Session,
 ): Promise<DurableObjectStub<TeamAgent>> {
   const [instance, rootInstance] = await Promise.all([
     getTeamAgentConversationInstanceName(label, chatId),
@@ -7690,6 +8199,7 @@ async function getTeamAgentConversation(
     scope: "conversation",
     chatId,
     rootInstance,
+    ...teamAgentAccessProps(session),
   };
   const agent = await getAgentByName(env.TEAM_AGENT, instance, { props });
   const identity = await agent.ensureIdentity(props);
@@ -7697,12 +8207,25 @@ async function getTeamAgentConversation(
   return agent;
 }
 
+function teamAgentAccessProps(session?: Session): Pick<TeamAgentProps, "accessKind" | "sessionExpiresAt" | "sourceKey"> {
+  if (session?.kind === "guest") {
+    return { accessKind: "guest", sessionExpiresAt: session.expiresAt, sourceKey: session.sourceKey };
+  }
+  return { accessKind: "member", sessionExpiresAt: session?.expiresAt ?? Number.MAX_SAFE_INTEGER };
+}
+
 
 async function getLoginState(env: Env, request: Request, scope: "user" | "admin"): Promise<DurableObjectStub<UserState>> {
-  const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For")?.split(",", 1)[0]?.trim() || "unknown";
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ip));
-  const key = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const key = await sourceIdentityDigest(request);
   return env.USER_STATE.get(env.USER_STATE.idFromName(`login:${scope}:${key}`));
+}
+
+async function sourceIdentityDigest(request: Request): Promise<string> {
+  const source = request.headers.get("CF-Connecting-IP")
+    || request.headers.get("X-Forwarded-For")?.split(",", 1)[0]?.trim()
+    || "unknown";
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {

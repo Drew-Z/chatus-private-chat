@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { stepCountIs, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentToolSet } from "../src/services/agent-tools";
@@ -7,11 +7,15 @@ import { prepareTeamAgentTurn, type Session } from "../src/worker";
 
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
+const ROUTE_SECRET_PREFIX = "route-secret:";
+const PUBLIC_ROUTE_ID = "public-agent-route";
+const PRIVATE_ROUTE_ID = "private-agent-route";
 
 describe("prepared TeamAgent turn", () => {
   beforeEach(async () => {
     await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
     await clearRouteReliability();
+    await clearRouteSecrets();
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -52,8 +56,10 @@ describe("prepared TeamAgent turn", () => {
     const session: Session = {
       id: crypto.randomUUID(),
       label: `agent-stream-${crypto.randomUUID()}`,
+      kind: "member",
       createdAt: now,
       lastSeen: now,
+      expiresAt: now + 60_000,
     };
 
     const prepared = await prepareTeamAgentTurn(env, session, {
@@ -117,8 +123,10 @@ describe("prepared TeamAgent turn", () => {
     const session: Session = {
       id: crypto.randomUUID(),
       label: `agent-progressive-${crypto.randomUUID()}`,
+      kind: "member",
       createdAt: now,
       lastSeen: now,
+      expiresAt: now + 60_000,
     };
     const prepared = await prepareTeamAgentTurn(env, session, {
       messages: [{ role: "user", content: "用两段合成内容回答" }],
@@ -206,8 +214,10 @@ describe("prepared TeamAgent turn", () => {
     const session: Session = {
       id: crypto.randomUUID(),
       label: `agent-tools-${crypto.randomUUID()}`,
+      kind: "member",
       createdAt: now,
       lastSeen: now,
+      expiresAt: now + 60_000,
     };
 
     const prepared = await prepareTeamAgentTurn(env, session, {
@@ -263,7 +273,14 @@ describe("prepared TeamAgent turn", () => {
       },
     }));
     const now = Date.now();
-    const session: Session = { id: crypto.randomUUID(), label, createdAt: now, lastSeen: now };
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
 
     const prepared = await prepareTeamAgentTurn(env, session, {
       messages: [{ role: "user", content: "继续旧会话" }],
@@ -276,6 +293,41 @@ describe("prepared TeamAgent turn", () => {
     expect(prepared.toolDefinitions).toEqual([]);
     expect(JSON.stringify(prepared.messages)).not.toContain("Revoked instructions");
     await prepared.closeTools();
+  });
+
+  it("enforces the guest route boundary and ignores guest-provided summaries in Agent turns", async () => {
+    await configurePublicAgentAccess();
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label: `guest-${crypto.randomUUID()}`,
+      kind: "guest",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+      sourceKey: `guest-source:${"b".repeat(64)}`,
+    };
+
+    const forged = await prepareTeamAgentTurn(env, session, {
+      routeId: PRIVATE_ROUTE_ID,
+      messages: [{ role: "user", content: "try private route" }],
+    });
+    expect(forged).toMatchObject({ ok: false, error: "route_not_allowed", status: 403 });
+
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      routeId: PUBLIC_ROUTE_ID,
+      sessionSummary: "GUEST SUMMARY MUST NOT REACH PROVIDER",
+      skillIds: ["private"],
+      userApiKey: "guest-byok-must-be-ignored",
+      messages: [{ role: "user", content: "use public route" }],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    expect(prepared.skillIds).toEqual([]);
+    expect(prepared.toolDefinitions).toEqual([]);
+    expect(JSON.stringify(prepared.messages)).not.toContain("GUEST SUMMARY MUST NOT REACH PROVIDER");
+    await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
   });
 
   it("does not consume message quota again for an Agent continuation", async () => {
@@ -300,8 +352,10 @@ describe("prepared TeamAgent turn", () => {
     const session: Session = {
       id: crypto.randomUUID(),
       label: `agent-continuation-${crypto.randomUUID()}`,
+      kind: "member",
       createdAt: now,
       lastSeen: now,
+      expiresAt: now + 60_000,
     };
     const input = { messages: [{ role: "user" as const, content: "继续完成这个任务" }] };
 
@@ -360,8 +414,10 @@ describe("prepared TeamAgent turn", () => {
     const session: Session = {
       id: crypto.randomUUID(),
       label: `agent-tool-stream-${crypto.randomUUID()}`,
+      kind: "member",
       createdAt: now,
       lastSeen: now,
+      expiresAt: now + 60_000,
     };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const payload = JSON.parse(String(init?.body || "{}")) as { tools?: Array<{ function?: { name?: string } }> };
@@ -413,6 +469,78 @@ async function clearRouteReliability(): Promise<void> {
     await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
+}
+
+async function clearRouteSecrets(): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const page = await env.CHAT_STORE.list({ prefix: ROUTE_SECRET_PREFIX, cursor, limit: 100 });
+    await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+}
+
+async function configurePublicAgentAccess(): Promise<void> {
+  const admin = await exports.default.fetch(new Request("https://example.test/api/admin/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: "test-admin-token" }),
+  }));
+  expect(admin.status).toBe(200);
+  const adminCookie = admin.headers.get("Set-Cookie")?.split(";", 1)[0] || "";
+  expect(adminCookie).toMatch(/^chatus_admin=/);
+
+  const savedSecret = await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PUBLIC_AGENT_TEST_KEY", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Cookie: adminCookie },
+    body: JSON.stringify({ apiKey: "public-agent-managed-test-key" }),
+  }));
+  expect(savedSecret.status).toBe(200);
+
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+    providers: {
+      public: {
+        label: "Public",
+        type: "openai-chat",
+        baseUrl: "https://public-agent.example/v1",
+        apiKeyRef: "PUBLIC_AGENT_TEST_KEY",
+        supportsTools: true,
+      },
+    },
+    routes: {
+      [PUBLIC_ROUTE_ID]: {
+        label: "Public",
+        offerings: [{ providerId: "public", model: "public-agent-model" }],
+        supportsTools: true,
+      },
+      [PRIVATE_ROUTE_ID]: {
+        label: "Private",
+        type: "openai-chat",
+        baseUrl: "https://private-agent.example/v1",
+        model: "private-agent-model",
+        apiKey: "private-agent-test-key",
+      },
+    },
+    defaults: { defaultRoute: PRIVATE_ROUTE_ID, allowedRoutes: [PRIVATE_ROUTE_ID, PUBLIC_ROUTE_ID] },
+    publicAccess: {
+      enabled: true,
+      routeId: PUBLIC_ROUTE_ID,
+      sessionTtlSeconds: 86_400,
+      dailyMessageLimit: 20,
+      minuteMessageLimit: 6,
+      sourceDailyMessageLimit: 200,
+      sourceMinuteMessageLimit: 30,
+    },
+    skills: {
+      private: {
+        enabled: true,
+        label: "Private",
+        instructions: "Private instructions must not reach a guest.",
+        toolIds: [],
+      },
+    },
+    tools: {},
+  }));
 }
 
 function openAiStreamResponse(text: string): Response {

@@ -60,6 +60,15 @@ function fixture(): AdminConfig {
       bill: { defaultRoute: "writer", allowedRoutes: ["writer"] },
     },
     defaults: { defaultRoute: "writer", allowedRoutes: ["writer", "backup"] },
+    publicAccess: {
+      enabled: true,
+      routeId: "writer",
+      sessionTtlSeconds: 86_400,
+      dailyMessageLimit: 20,
+      minuteMessageLimit: 6,
+      sourceDailyMessageLimit: 200,
+      sourceMinuteMessageLimit: 30,
+    },
     skills: {},
     tools: {},
     mcpServers: {},
@@ -85,7 +94,7 @@ describe("typed provider administration helpers", () => {
 
     const models = projectAdminLogicalModels(config);
     expect(models.map((model) => model.id)).toEqual(["backup", "writer"]);
-    expect(models.find((model) => model.id === "writer")).toMatchObject({ referencedBy: ["bill", "defaults"], supportsTools: true });
+    expect(models.find((model) => model.id === "writer")).toMatchObject({ referencedBy: ["公开访问", "bill", "defaults"], supportsTools: true });
   });
 
   it("guards provider deletion and validates duplicate or missing offerings", () => {
@@ -219,6 +228,17 @@ describe("typed provider administration helpers", () => {
     expect(draft.offerings?.[0]).toMatchObject({ supportsImages: false, supportsTools: true });
     const roundTrip = applyLogicalModelDraft(config, "writer", draft);
     expect(roundTrip.routes.writer.offerings?.[0]).toMatchObject({ supportsImages: false, supportsTools: true });
+  });
+
+  it("rewrites the public guest route when a logical model is renamed", () => {
+    const config = fixture();
+    const draft = { ...createLogicalModelDraft(config.routes.writer, "writer"), id: "author" };
+    const renamed = applyLogicalModelDraft(config, "writer", draft);
+    expect(renamed.publicAccess.routeId).toBe("author");
+    expect(renamed.routes).not.toHaveProperty("writer");
+    expect(renamed.routes.author).toBeDefined();
+    expect(renamed.users.bill.defaultRoute).toBe("author");
+    expect(renamed.defaults.allowedRoutes).toEqual(["author", "backup"]);
   });
 });
 

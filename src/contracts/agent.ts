@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { SessionKind } from "./session";
 
 export const MAX_AGENT_CONVERSATIONS = 50;
 
@@ -9,6 +10,9 @@ export type TeamAgentProps = {
   scope: TeamAgentScope;
   chatId?: string;
   rootInstance?: string;
+  accessKind?: SessionKind;
+  sessionExpiresAt?: number;
+  sourceKey?: string;
 };
 
 export type TeamAgentIdentityError =

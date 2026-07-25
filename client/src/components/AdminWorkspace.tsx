@@ -50,6 +50,7 @@ import {
 import { mergeAdminMemberProjection } from "../lib/admin-members";
 import { LogicalModelAdminPanel } from "./LogicalModelAdminPanel";
 import { ProviderAdminPanel } from "./ProviderAdminPanel";
+import { PublicAccessAdminPanel } from "./PublicAccessAdminPanel";
 import { ReliabilityAdminPanel } from "./ReliabilityAdminPanel";
 
 type AdminData = {
@@ -61,7 +62,7 @@ type AdminData = {
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
 
-type AdminView = "members" | "providers" | "models" | "reliability";
+type AdminView = "members" | "providers" | "models" | "public" | "reliability";
 
 type MemberAccessDialogState =
   | { kind: "create"; label: string; existingMember: boolean }
@@ -243,9 +244,9 @@ export function AdminWorkspace({
 
   function selectView(view: AdminView) {
     if (view === activeView) return;
-    const leavingPoolEditor = activeView === "providers" || activeView === "models";
+    const leavingPoolEditor = activeView === "providers" || activeView === "models" || activeView === "public";
     if (leavingPoolEditor && poolDirty) {
-      if (!window.confirm("当前服务商或逻辑模型有未保存修改，切换视图会放弃这些修改，继续吗？")) return;
+      if (!window.confirm("当前配置有未保存修改，切换视图会放弃这些修改，继续吗？")) return;
       setPoolDirty(false);
     }
     if (activeView === "members" && dirty && !window.confirm("当前成员分配草稿会保留，切换视图后仍可继续编辑，继续吗？")) return;
@@ -501,13 +502,14 @@ export function AdminWorkspace({
           <div className="brand-mark small">C</div>
           <div>
             <strong>Chatus</strong>
-            <span>{activeView === "members" ? "成员分配" : activeView === "providers" ? "服务商池" : activeView === "models" ? "逻辑模型" : "可靠性"}</span>
+            <span>{activeView === "members" ? "成员分配" : activeView === "providers" ? "服务商池" : activeView === "models" ? "逻辑模型" : activeView === "public" ? "公开访问" : "可靠性"}</span>
           </div>
         </div>
         <nav className="typed-admin-nav" aria-label="管理视图">
           <button className={activeView === "members" ? "active" : ""} type="button" onClick={() => selectView("members")} aria-pressed={activeView === "members"}>成员访问</button>
           <button className={activeView === "providers" ? "active" : ""} type="button" onClick={() => selectView("providers")} aria-pressed={activeView === "providers"}>服务商</button>
           <button className={activeView === "models" ? "active" : ""} type="button" onClick={() => selectView("models")} aria-pressed={activeView === "models"}>逻辑模型</button>
+          <button className={activeView === "public" ? "active" : ""} type="button" onClick={() => selectView("public")} aria-pressed={activeView === "public"}>公开访问</button>
           <button className={activeView === "reliability" ? "active" : ""} type="button" onClick={() => selectView("reliability")} aria-pressed={activeView === "reliability"}>可靠性</button>
         </nav>
         <div className="typed-admin-actions">
@@ -792,6 +794,15 @@ export function AdminWorkspace({
           />
         ) : activeView === "models" ? (
           <LogicalModelAdminPanel
+            snapshot={data.snapshot}
+            onSnapshot={applyPoolSnapshot}
+            onSessionExpired={onSessionExpired}
+            onDirtyChange={setPoolDirty}
+            onNotice={setPanelNotice}
+            resetKey={panelResetKey}
+          />
+        ) : activeView === "public" ? (
+          <PublicAccessAdminPanel
             snapshot={data.snapshot}
             onSnapshot={applyPoolSnapshot}
             onSessionExpired={onSessionExpired}

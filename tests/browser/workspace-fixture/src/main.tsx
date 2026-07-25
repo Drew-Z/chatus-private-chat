@@ -52,7 +52,8 @@ const initialConversations: AgentConversation[] = [
   },
 ];
 
-const session: SessionProjection = {
+const memberSession: SessionProjection = {
+  access: "member",
   user: "visual-fixture-member",
   displayName: "测试成员",
   usage: { used: 12, limit: 100, remaining: 88 },
@@ -74,9 +75,44 @@ const session: SessionProjection = {
     maxImageBytes: 1_300_000,
     maxTotalImageBytes: 1_300_000,
   },
+  capabilities: {
+    imageInput: true,
+    memory: true,
+    messageActions: true,
+    feedback: true,
+    accountData: true,
+  },
   skills: [{ id: "project", label: "项目协作", description: "合成测试能力", toolIds: ["search"] }],
   tools: [{ id: "search", label: "项目资料检索", description: "合成测试工具", source: "builtin", confirmation: "always" }],
   agent: { transport: "websocket", basePath: "agent", instance: "visual-fixture" },
+};
+
+const guestSession: SessionProjection = {
+  ...memberSession,
+  access: "guest",
+  user: "guest-visual-fixture",
+  displayName: "访客",
+  routes: [{
+    id: "public",
+    label: "公开模型",
+    model: "synthetic-public-model",
+    type: "openai-chat",
+    supportsImages: true,
+    supportsTools: false,
+    healthStatus: "unknown",
+  }],
+  defaultRoute: "public",
+  hasUserSystemPrompt: false,
+  capabilities: {
+    imageInput: true,
+    memory: false,
+    messageActions: false,
+    feedback: false,
+    accountData: false,
+  },
+  skills: [],
+  tools: [],
+  agent: { transport: "websocket", basePath: "agent", instance: "visual-guest-fixture" },
 };
 
 const messages: UIMessage[] = [
@@ -199,6 +235,9 @@ function WorkspaceFixture() {
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const connectionState = (params.get("connection") || "ready") as ConnectionState;
+  const session = params.get("access") === "guest" ? guestSession : memberSession;
+  const routeId = session.defaultRoute || "reasoning";
+  const skillIds = session.access === "member" ? ["project"] : [];
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
 
   const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
@@ -228,13 +267,14 @@ function WorkspaceFixture() {
       <WorkspaceHeader
         session={session}
         conversation={activeConversation}
-        routeId="reasoning"
+        routeId={routeId}
         connectionState={connectionState}
         busy={busy}
         accountBusy={false}
         onOpenSidebar={() => setSidebarOpen(true)}
         onOpenRouteSettings={() => { setSidebarView("settings"); setSidebarOpen(true); }}
         onOpenMemory={() => undefined}
+        onMemberLogin={() => undefined}
         onLogout={async () => undefined}
       />
       <div className="workspace-layout">
@@ -243,8 +283,8 @@ function WorkspaceFixture() {
           session={session}
           conversations={conversations}
           activeId={activeId}
-          routeId="reasoning"
-          skillIds={["project"]}
+          routeId={routeId}
+          skillIds={skillIds}
           view={sidebarView}
           busy={busy}
           loading={false}
@@ -282,7 +322,7 @@ function WorkspaceFixture() {
               value={input}
               attachments={attachments}
               imagePolicy={session.imageInput}
-              imagesSupported={params.get("images") !== "0"}
+              imagesSupported={session.capabilities.imageInput && params.get("images") !== "0"}
               onChange={setInput}
               onAddImages={addImages}
               onRemoveImage={(id) => setAttachments((current) => {

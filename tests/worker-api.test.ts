@@ -17,6 +17,7 @@ const ADMIN_AUDIT_KEY = "config:admin_audit";
 const FEEDBACK_KEY = "feedback:recent";
 const ROUTE_SECRET_PREFIX = "route-secret:";
 const MCP_SECRET_PREFIX = "mcp-secret:";
+const GUEST_CLEANUP_PREFIX = "guest-cleanup:";
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
 const PROVIDER_ROUTE_RELIABILITY_PREFIX = "route-provider-reliability:";
 
@@ -33,6 +34,15 @@ async function clearMcpSecrets() {
   let cursor: string | undefined;
   do {
     const page = await env.CHAT_STORE.list({ prefix: MCP_SECRET_PREFIX, cursor, limit: 100 });
+    await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+}
+
+async function clearGuestCleanups() {
+  let cursor: string | undefined;
+  do {
+    const page = await env.CHAT_STORE.list({ prefix: GUEST_CLEANUP_PREFIX, cursor, limit: 100 });
     await Promise.all(page.keys.map((key) => env.CHAT_STORE.delete(key.name)));
     cursor = page.list_complete ? undefined : page.cursor;
   } while (cursor);
@@ -130,6 +140,99 @@ async function putRouteSecret(cookie: string, apiKeyRef: string, apiKey: string,
   });
 }
 
+const PUBLIC_ROUTE_ID = "public-model";
+const MEMBER_ROUTE_ID = "member-model";
+
+async function configurePublicAccess(options: {
+  managed?: boolean;
+  apiKeyRef?: string;
+  legacyApiKey?: string;
+  dailyMessageLimit?: number;
+  minuteMessageLimit?: number;
+  sourceDailyMessageLimit?: number;
+  sourceMinuteMessageLimit?: number;
+} = {}) {
+  const apiKeyRef = options.apiKeyRef || "PUBLIC_GUEST_TEST_KEY";
+  if (options.managed !== false) {
+    const cookie = await adminLogin();
+    const saved = await putRouteSecret(cookie, apiKeyRef, "public-guest-managed-test-key");
+    expect(saved.status).toBe(200);
+  }
+  const config = {
+    providers: {
+      public: {
+        label: "Public provider",
+        type: "openai-chat",
+        baseUrl: "https://public-provider.example/v1",
+        apiKeyRef,
+        ...(options.legacyApiKey ? { apiKey: options.legacyApiKey } : {}),
+        supportsImages: true,
+      },
+    },
+    routes: {
+      [PUBLIC_ROUTE_ID]: {
+        label: "Public model",
+        offerings: [{ providerId: "public", model: "public-upstream-model" }],
+        fallbacks: [MEMBER_ROUTE_ID],
+        supportsImages: true,
+      },
+      [MEMBER_ROUTE_ID]: {
+        label: "Member model",
+        type: "openai-chat",
+        baseUrl: "https://member-provider.example/v1",
+        model: "member-upstream-model",
+        apiKey: "member-test-key",
+      },
+    },
+    defaults: { defaultRoute: MEMBER_ROUTE_ID, allowedRoutes: [MEMBER_ROUTE_ID, PUBLIC_ROUTE_ID] },
+    publicAccess: {
+      enabled: true,
+      routeId: PUBLIC_ROUTE_ID,
+      sessionTtlSeconds: 86_400,
+      dailyMessageLimit: options.dailyMessageLimit || 20,
+      minuteMessageLimit: options.minuteMessageLimit || 6,
+      sourceDailyMessageLimit: options.sourceDailyMessageLimit || 200,
+      sourceMinuteMessageLimit: options.sourceMinuteMessageLimit || 30,
+    },
+    skills: {
+      private: {
+        enabled: true,
+        label: "Private Skill",
+        instructions: "Member-only instructions",
+        toolIds: [],
+      },
+    },
+    tools: {},
+    mcpServers: {},
+  };
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(config));
+  return config;
+}
+
+async function createGuestSession(source: string, cookie?: string) {
+  const headers = new Headers({ "CF-Connecting-IP": source });
+  if (cookie) headers.set("Cookie", cookie);
+  const response = await exports.default.fetch(new Request("https://example.test/api/guest-session", {
+    method: "POST",
+    headers,
+  }));
+  const payload = await response.clone().json() as any;
+  const issuedCookie = response.headers.get("Set-Cookie")?.split(";", 1)[0] || cookie || "";
+  return { response, payload, cookie: issuedCookie };
+}
+
+function sessionToken(cookie: string): string {
+  return cookie.slice(cookie.indexOf("=") + 1);
+}
+
+function guestChat(cookie: string, routeId = PUBLIC_ROUTE_ID, body: Record<string, unknown> = {}) {
+  return apiRequest("/api/chat", cookie, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+    body: JSON.stringify({ routeId, messages: [{ role: "user", content: "local guest test" }], ...body }),
+  });
+}
+
 async function getRootAgent(label: string) {
   const instance = await getTeamAgentInstanceName(label);
   return getAgentByName(env.TEAM_AGENT, instance, { props: { userLabel: label, scope: "root" } }) as DurableObjectStub<TeamAgent>;
@@ -165,6 +268,7 @@ describe("Worker API", () => {
       env.CHAT_STORE.delete(FEEDBACK_KEY),
       clearRouteSecrets(),
       clearMcpSecrets(),
+      clearGuestCleanups(),
       clearRouteReliability(),
     ]);
   });
@@ -195,7 +299,7 @@ describe("Worker API", () => {
       httpStatusClass: "5xx",
     }));
     const response = await apiRequest("/api/session", cookie);
-    expect(response.status).toBe(200);
+    expect(response.status, await response.clone().text()).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       authenticated: true,
       user: label,
@@ -208,6 +312,261 @@ describe("Worker API", () => {
       },
       agent: { transport: "cloudflare-ai-chat", className: "team-agent", basePath: "agent" },
     });
+  });
+
+  it("issues isolated guest identities with one secret-free logical model", async () => {
+    await configurePublicAccess();
+    const source = `guest-source-${crypto.randomUUID()}`;
+    const first = await createGuestSession(source);
+    const second = await createGuestSession(source);
+
+    expect(first.response.status).toBe(200);
+    expect(second.response.status).toBe(200);
+    expect(first.cookie).toMatch(/^chatus_session=/);
+    expect(second.cookie).toMatch(/^chatus_session=/);
+    expect(second.cookie).not.toBe(first.cookie);
+    expect(first.payload).toMatchObject({
+      authenticated: true,
+      access: "guest",
+      displayName: "访客",
+      routes: [{ id: PUBLIC_ROUTE_ID, supportsImages: true, supportsTools: false }],
+      defaultRoute: PUBLIC_ROUTE_ID,
+      allowBringYourOwnKey: false,
+      hasUserSystemPrompt: false,
+      skills: [],
+      tools: [],
+      capabilities: {
+        imageInput: true,
+        memory: false,
+        messageActions: false,
+        feedback: false,
+        accountData: false,
+      },
+    });
+    expect(second.payload.user).not.toBe(first.payload.user);
+    expect(second.payload.agent.instance).not.toBe(first.payload.agent.instance);
+    const projection = JSON.stringify(first.payload);
+    expect(projection).not.toContain("public-provider");
+    expect(projection).not.toContain("public-upstream-model");
+    expect(projection).not.toContain("PUBLIC_GUEST_TEST_KEY");
+
+    const firstStored = await env.CHAT_STORE.get<any>(`session:${sessionToken(first.cookie)}`, "json");
+    const secondStored = await env.CHAT_STORE.get<any>(`session:${sessionToken(second.cookie)}`, "json");
+    expect(firstStored).toMatchObject({ kind: "guest", label: first.payload.user });
+    expect(firstStored.sourceKey).toMatch(/^guest-source:[0-9a-f]{64}$/);
+    expect(secondStored.sourceKey).toBe(firstStored.sourceKey);
+    expect(secondStored.label).not.toBe(firstStored.label);
+
+    const firstCreated = await apiRequest("/api/agent/conversations", first.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "same-chat-id", title: "First guest" }),
+    });
+    const secondCreated = await apiRequest("/api/agent/conversations", second.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "same-chat-id", title: "Second guest" }),
+    });
+    expect(firstCreated.status).toBe(201);
+    expect(secondCreated.status).toBe(201);
+    await expect(apiRequest("/api/agent/conversations", first.cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: [expect.objectContaining({ title: "First guest" })] });
+    await expect(apiRequest("/api/agent/conversations", second.cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: [expect.objectContaining({ title: "Second guest" })] });
+  });
+
+  it("requires a managed credential before exposing the guest route", async () => {
+    await configurePublicAccess({ managed: false, apiKeyRef: "LEGACY_ONLY_GUEST_KEY", legacyApiKey: "legacy-test-key" });
+    const legacy = await createGuestSession(`legacy-source-${crypto.randomUUID()}`);
+    expect(legacy.response.status).toBe(200);
+    expect(legacy.payload).toMatchObject({ routes: [], defaultRoute: "", capabilities: { imageInput: false } });
+
+    await configurePublicAccess({ managed: false, apiKeyRef: "TEST_ROUTE_KEY" });
+    const workerSecret = await createGuestSession(`worker-secret-source-${crypto.randomUUID()}`);
+    expect(workerSecret.payload).toMatchObject({ routes: [], defaultRoute: "" });
+
+    const adminCookie = await adminLogin();
+    expect((await putRouteSecret(adminCookie, "TEST_ROUTE_KEY", "managed-public-test-key")).status).toBe(200);
+    const refreshed = await apiRequest("/api/session", workerSecret.cookie).then((response) => response.json()) as any;
+    expect(refreshed.routes).toEqual([expect.objectContaining({ id: PUBLIC_ROUTE_ID })]);
+  });
+
+  it("rejects forged guest routes and member-only APIs before provider execution", async () => {
+    await configurePublicAccess();
+    const guest = await createGuestSession(`guest-policy-${crypto.randomUUID()}`);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const forged = await guestChat(guest.cookie, MEMBER_ROUTE_ID);
+    expect(forged.status).toBe(403);
+    await expect(forged.json()).resolves.toMatchObject({ error: "route_not_allowed" });
+
+    const denied = [
+      ["/api/agent/memory", "GET"],
+      ["/api/feedback", "POST"],
+      ["/api/agent/conversations/chat-1/branches", "POST"],
+      ["/api/user-data/export", "GET"],
+      ["/api/sessions/revoke-all", "POST"],
+      ["/api/chats", "GET"],
+    ] as const;
+    for (const [path, method] of denied) {
+      const response = await apiRequest(path, guest.cookie, { method });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ error: "capability_not_allowed" });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not let guest chat inject a session summary into provider messages", async () => {
+    await configurePublicAccess();
+    const guest = await createGuestSession(`guest-summary-${crypto.randomUUID()}`);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => openAiTextResponse("local response"));
+
+    const response = await guestChat(guest.cookie, PUBLIC_ROUTE_ID, {
+      sessionSummary: "GUEST SUMMARY MUST NOT REACH PROVIDER",
+      skillIds: ["private"],
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    await response.text();
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const providerPayload = String(fetchSpy.mock.calls[0]?.[1]?.body || "");
+    expect(providerPayload).not.toContain("GUEST SUMMARY MUST NOT REACH PROVIDER");
+    expect(providerPayload).not.toContain("Member-only instructions");
+  });
+
+  it("invalidates old and expired guest sessions and cleans expired guest state", async () => {
+    const oldToken = `old-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(`session:${oldToken}`, JSON.stringify({
+      id: crypto.randomUUID(),
+      label: "old-member",
+      createdAt: Date.now(),
+      lastSeen: Date.now(),
+    }));
+    const oldResponse = await apiRequest("/api/session", `chatus_session=${oldToken}`);
+    expect(oldResponse.status).toBe(401);
+    await expect(env.CHAT_STORE.get(`session:${oldToken}`)).resolves.toBeNull();
+
+    const now = Date.now();
+    const expiredToken = `expired-${crypto.randomUUID()}`;
+    const expiredLabel = `guest-${crypto.randomUUID()}`;
+    const expiredState = env.USER_STATE.getByName(expiredLabel);
+    await expiredState.upsertChat({
+      id: "expired-chat",
+      title: "Expired",
+      createdAt: now - 4_000,
+      updatedAt: now - 3_000,
+      summary: "",
+      summaryUntil: 0,
+      routeId: PUBLIC_ROUTE_ID,
+      messages: [],
+      serializedBytes: 20,
+    });
+    await env.CHAT_STORE.put(`session:${expiredToken}`, JSON.stringify({
+      id: crypto.randomUUID(),
+      label: expiredLabel,
+      kind: "guest",
+      createdAt: now - 3_000,
+      lastSeen: now - 2_000,
+      expiresAt: now - 1_000,
+      sourceKey: `guest-source:${"a".repeat(64)}`,
+    }));
+    const expiredResponse = await apiRequest("/api/session", `chatus_session=${expiredToken}`);
+    expect(expiredResponse.status).toBe(401);
+    await expect(env.CHAT_STORE.get(`session:${expiredToken}`)).resolves.toBeNull();
+    await expect(expiredState.listChats()).resolves.toEqual([]);
+
+    const ttlExpiredLabel = `guest-${crypto.randomUUID()}`;
+    const ttlExpiredState = env.USER_STATE.getByName(ttlExpiredLabel);
+    await ttlExpiredState.upsertChat({
+      id: "ttl-expired-chat",
+      title: "TTL expired",
+      createdAt: now - 4_000,
+      updatedAt: now - 3_000,
+      summary: "",
+      summaryUntil: 0,
+      routeId: PUBLIC_ROUTE_ID,
+      messages: [],
+      serializedBytes: 20,
+    });
+    const cleanupKey = `${GUEST_CLEANUP_PREFIX}${String(now - 1_000).padStart(13, "0")}:${encodeURIComponent(ttlExpiredLabel)}`;
+    await env.CHAT_STORE.put(cleanupKey, JSON.stringify({ label: ttlExpiredLabel, expiresAt: now - 1_000 }));
+    const crossOriginCleanup = await exports.default.fetch(new Request("https://example.test/api/guest-session", {
+      method: "POST",
+      headers: { Origin: "https://other.example" },
+    }));
+    expect(crossOriginCleanup.status).toBe(403);
+    await expect(ttlExpiredState.listChats()).resolves.toHaveLength(1);
+    await expect(env.CHAT_STORE.get(cleanupKey)).resolves.not.toBeNull();
+
+    const cleanupTrigger = await exports.default.fetch(new Request("https://example.test/api/session"));
+    expect(cleanupTrigger.status).toBe(401);
+    await vi.waitFor(async () => {
+      await expect(ttlExpiredState.listChats()).resolves.toEqual([]);
+      await expect(env.CHAT_STORE.get(cleanupKey)).resolves.toBeNull();
+    });
+  });
+
+  it("rotates a guest identity into a member session without migrating guest history", async () => {
+    await configurePublicAccess();
+    const guest = await createGuestSession(`guest-login-${crypto.randomUUID()}`);
+    const created = await apiRequest("/api/agent/conversations", guest.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Guest-only conversation" }),
+    });
+    expect(created.status).toBe(201);
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "bill:test-access-code");
+
+    const loginResponse = await exports.default.fetch(new Request("https://example.test/api/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Cookie": guest.cookie,
+        "CF-Connecting-IP": `member-login-${crypto.randomUUID()}`,
+      },
+      body: JSON.stringify({ code: "test-access-code" }),
+    }));
+    expect(loginResponse.status).toBe(200);
+    const memberCookie = loginResponse.headers.get("Set-Cookie")?.split(";", 1)[0] || "";
+    expect(memberCookie).toMatch(/^chatus_session=/);
+    expect(memberCookie).not.toBe(guest.cookie);
+    await expect(env.CHAT_STORE.get(`session:${sessionToken(guest.cookie)}`)).resolves.toBeNull();
+    expect((await apiRequest("/api/session", guest.cookie)).status).toBe(401);
+    await expect(apiRequest("/api/session", memberCookie).then((response) => response.json()))
+      .resolves.toMatchObject({ access: "member", user: "bill" });
+    await expect(apiRequest("/api/agent/conversations", memberCookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: [] });
+  });
+
+  it("enforces per-guest and source quotas without exposing source identity", async () => {
+    const source = `quota-source-${crypto.randomUUID()}`;
+    await configurePublicAccess({ dailyMessageLimit: 1, minuteMessageLimit: 6, sourceDailyMessageLimit: 10, sourceMinuteMessageLimit: 10 });
+    const guest = await createGuestSession(source);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => openAiTextResponse("local response"));
+    const first = await guestChat(guest.cookie);
+    expect(first.status, await first.clone().text()).toBe(200);
+    await first.text();
+    const personal = await guestChat(guest.cookie);
+    expect(personal.status).toBe(429);
+    await expect(personal.json()).resolves.toMatchObject({ error: "rate_limited", scope: "session" });
+
+    await configurePublicAccess({ dailyMessageLimit: 10, minuteMessageLimit: 10, sourceDailyMessageLimit: 1, sourceMinuteMessageLimit: 10 });
+    const sourceOne = await createGuestSession(`${source}-shared`);
+    const sourceTwo = await createGuestSession(`${source}-shared`);
+    const sourceFirst = await guestChat(sourceOne.cookie);
+    expect(sourceFirst.status).toBe(200);
+    await sourceFirst.text();
+    const sourceLimited = await guestChat(sourceTwo.cookie);
+    expect(sourceLimited.status).toBe(429);
+    const limitedPayload = await sourceLimited.json() as any;
+    expect(limitedPayload).toMatchObject({ error: "rate_limited", scope: "source" });
+    expect(JSON.stringify(limitedPayload)).not.toContain(source);
+
+    const otherSource = await createGuestSession(`${source}-other`);
+    const allowed = await guestChat(otherSource.cookie);
+    expect(allowed.status).toBe(200);
+    await allowed.text();
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it("rejects invalid or unsupported images before any provider request", async () => {

@@ -27,6 +27,7 @@ export type ToolProjection = {
 };
 
 export type SessionProjection = {
+  access: "guest" | "member";
   user: string;
   displayName: string;
   usage: { used: number; limit: number; remaining: number };
@@ -35,9 +36,26 @@ export type SessionProjection = {
   allowBringYourOwnKey: boolean;
   hasUserSystemPrompt: boolean;
   imageInput: ImageInputPolicy;
+  capabilities: {
+    imageInput: boolean;
+    memory: boolean;
+    messageActions: boolean;
+    feedback: boolean;
+    accountData: boolean;
+  };
   skills: SkillProjection[];
   tools: ToolProjection[];
   agent: { transport: string; basePath: string; instance: string };
+};
+
+export type AdminPublicAccessConfig = {
+  enabled: boolean;
+  routeId: string;
+  sessionTtlSeconds: number;
+  dailyMessageLimit: number;
+  minuteMessageLimit: number;
+  sourceDailyMessageLimit: number;
+  sourceMinuteMessageLimit: number;
 };
 
 export type AdminUserConfig = {
@@ -229,6 +247,7 @@ export type AdminConfig = {
   providers: Record<string, AdminProviderConfig>;
   users: Record<string, AdminUserConfig>;
   defaults: AdminUserConfig;
+  publicAccess: AdminPublicAccessConfig;
   skills: Record<string, AdminSkillConfig>;
   tools: Record<string, AdminToolConfig>;
   mcpServers: Record<string, Record<string, unknown>>;
@@ -610,6 +629,24 @@ export async function fetchSession(): Promise<SessionProjection | null> {
   return data;
 }
 
+export async function createGuestSession(): Promise<SessionProjection | null> {
+  let response: Response;
+  try {
+    response = await fetch("/api/guest-session", {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-Chatus-Client": "web" },
+    });
+  } catch {
+    throw new ApiError("network_unavailable", "暂时无法连接服务器。", 0);
+  }
+  const data = await readResponseData(response);
+  if (response.status === 404 && isRecord(data) && data.error === "public_access_disabled") return null;
+  if (!response.ok) throw apiErrorFromResponse(response, data, "暂时无法创建访客会话。");
+  if (!isSessionProjection(data)) throw new ApiError("invalid_session_response", "服务器返回了无法识别的访客状态。", 502);
+  return data;
+}
+
 export async function login(accessCode: string): Promise<{ ok: true } | { ok: false; message: string }> {
   try {
     const response = await fetch("/api/login", {
@@ -733,7 +770,7 @@ export async function putAgentMemory(memory: AgentMemory, value: string): Promis
 }
 
 export function isSessionProjection(value: unknown): value is SessionProjection {
-  if (!isRecord(value) || !isRecord(value.usage) || !isRecord(value.agent)) return false;
+  if (!isRecord(value) || !isRecord(value.usage) || !isRecord(value.agent) || !isSessionCapabilities(value.capabilities)) return false;
   if (!isImageInputPolicy(value.imageInput)) return false;
   if (!Array.isArray(value.routes) || !value.routes.every(isRouteProjection)) return false;
   if (!Array.isArray(value.skills) || !value.skills.every(isSkillProjection)) return false;
@@ -741,7 +778,8 @@ export function isSessionProjection(value: unknown): value is SessionProjection 
   const routeIds = value.routes.map((route) => route.id);
   const skillIds = value.skills.map((skill) => skill.id);
   const toolIds = value.tools.map((tool) => tool.id);
-  return isNonEmptyString(value.user)
+  if (!((value.access === "guest" || value.access === "member")
+    && isNonEmptyString(value.user)
     && isNonEmptyString(value.displayName)
     && typeof value.defaultRoute === "string"
     && typeof value.allowBringYourOwnKey === "boolean"
@@ -757,7 +795,31 @@ export function isSessionProjection(value: unknown): value is SessionProjection 
     && value.usage.remaining <= value.usage.limit
     && isNonEmptyString(value.agent.transport)
     && isNonEmptyString(value.agent.basePath)
-    && isNonEmptyString(value.agent.instance);
+    && isNonEmptyString(value.agent.instance))) {
+    return false;
+  }
+
+  if (value.access === "guest") {
+    return isGuestSessionProjection(value as SessionProjection, routeIds);
+  }
+  return true;
+}
+
+function isGuestSessionProjection(value: SessionProjection, routeIds: string[]): boolean {
+  const restrictedCapabilities = value.capabilities.memory === false
+    && value.capabilities.messageActions === false
+    && value.capabilities.feedback === false
+    && value.capabilities.accountData === false;
+  const imageInputAllowed = value.routes.some((route) => route.supportsImages);
+  return value.allowBringYourOwnKey === false
+    && value.hasUserSystemPrompt === false
+    && value.skills.length === 0
+    && value.tools.length === 0
+    && value.routes.length <= 1
+    && value.routes.every((route) => route.supportsTools === false)
+    && restrictedCapabilities
+    && value.capabilities.imageInput === imageInputAllowed
+    && ((routeIds.length === 0 && value.defaultRoute === "") || (routeIds.length === 1 && value.defaultRoute === routeIds[0]));
 }
 
 export function isAdminSessionProjection(value: unknown): value is { authenticated: true } {
@@ -905,6 +967,7 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
   const providers = value.providers;
   const users = value.users;
   const defaults = value.defaults;
+  const publicAccess = value.publicAccess;
   const skills = value.skills;
   const tools = value.tools;
   const mcpServers = value.mcpServers;
@@ -912,9 +975,13 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
   const routeIds = new Set(Object.keys(routes));
   if (!Object.values(routes).some((route) => route.enabled !== false)) return false;
   if (!isRegistry(providers, isSanitizedAdminProviderConfig)) return false;
-  if (!isRegistry(users, isAdminUserConfig) || !isAdminUserConfig(defaults)) return false;
+  if (!isRegistry(users, isAdminUserConfig) || !isAdminUserConfig(defaults) || !isAdminPublicAccessConfig(publicAccess)) return false;
   if (!isRegistry(skills, isAdminSkillConfig) || !isRegistry(tools, isAdminToolConfig)) return false;
   if (!isRegistry(mcpServers, isAdminMcpServerConfig)) return false;
+  if (publicAccess.enabled) {
+    const publicRoute = routes[publicAccess.routeId];
+    if (!publicRoute || publicRoute.enabled === false) return false;
+  }
 
   for (const route of Object.values(routes)) {
     const providerIds = route.offerings?.map((offering) => offering.providerId) || [];
@@ -993,6 +1060,16 @@ function isImageInputPolicy(value: unknown): value is ImageInputPolicy {
     && isPositiveInteger(value.maxImages)
     && isPositiveInteger(value.maxImageBytes)
     && isPositiveInteger(value.maxTotalImageBytes);
+}
+
+function isSessionCapabilities(value: unknown): value is SessionProjection["capabilities"] {
+  return isRecord(value)
+    && hasExactKeys(value, ["imageInput", "memory", "messageActions", "feedback", "accountData"])
+    && typeof value.imageInput === "boolean"
+    && typeof value.memory === "boolean"
+    && typeof value.messageActions === "boolean"
+    && typeof value.feedback === "boolean"
+    && typeof value.accountData === "boolean";
 }
 
 function isSkillProjection(value: unknown): value is SkillProjection {
@@ -1100,6 +1177,26 @@ function isAdminUserConfig(value: unknown): value is AdminUserConfig {
       Array.isArray(value.blockedPrompts) && value.blockedPrompts.every((item) => typeof item === "string")
     ))
     && (value.systemPrompt === undefined || typeof value.systemPrompt === "string");
+}
+
+function isAdminPublicAccessConfig(value: unknown): value is AdminPublicAccessConfig {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      "enabled",
+      "routeId",
+      "sessionTtlSeconds",
+      "dailyMessageLimit",
+      "minuteMessageLimit",
+      "sourceDailyMessageLimit",
+      "sourceMinuteMessageLimit",
+    ])
+    && typeof value.enabled === "boolean"
+    && typeof value.routeId === "string"
+    && isBoundedInteger(value.sessionTtlSeconds, 900, 7 * 86_400)
+    && isBoundedInteger(value.dailyMessageLimit, 1, 1_000)
+    && isBoundedInteger(value.minuteMessageLimit, 1, 60)
+    && isBoundedInteger(value.sourceDailyMessageLimit, 1, 10_000)
+    && isBoundedInteger(value.sourceMinuteMessageLimit, 1, 600);
 }
 
 function isAdminRouteConfig(value: unknown): value is AdminRouteConfig {
@@ -1478,6 +1575,10 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isPositiveInteger(value: unknown): value is number {
   return isNonNegativeInteger(value) && value > 0;
+}
+
+function isBoundedInteger(value: unknown, minimum: number, maximum: number): value is number {
+  return isNonNegativeInteger(value) && value >= minimum && value <= maximum;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

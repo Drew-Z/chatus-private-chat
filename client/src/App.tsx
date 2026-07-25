@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { LoginView } from "./components/LoginView";
+import { MemberLoginDialog } from "./components/MemberLoginDialog";
 import { ChatWorkspace } from "./components/ChatWorkspace";
 import { AdminApp } from "./components/AdminApp";
 import { PageState } from "./components/PageState";
-import { fetchSession, login, logout, type SessionProjection } from "./lib/api";
+import { createGuestSession, fetchSession, login, logout, type SessionProjection } from "./lib/api";
 import type { ClientSurface } from "./lib/routing";
 
 type AppState =
@@ -19,10 +20,11 @@ export function App({ surface = "chat" }: { surface?: ClientSurface }) {
 
 function ChatApp() {
   const [state, setState] = useState<AppState>({ status: "loading" });
+  const [memberLoginOpen, setMemberLoginOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const session = await fetchSession();
+      const session = await fetchSession() || await createGuestSession();
       setState(session ? { status: "authenticated", session } : { status: "login" });
     } catch (error) {
       setState({ status: "error", message: error instanceof Error ? error.message : "暂时无法连接服务器。" });
@@ -58,12 +60,39 @@ function ChatApp() {
   }
 
   return (
-    <ChatWorkspace
-      session={state.session}
-      onLogout={async () => {
-        await logout();
-        setState({ status: "login" });
-      }}
-    />
+    <>
+      <ChatWorkspace
+        key={state.session.user}
+        session={state.session}
+        onMemberLogin={() => setMemberLoginOpen(true)}
+        onLogout={async () => {
+          await logout();
+          setState({ status: "loading" });
+          await refresh();
+        }}
+      />
+      {state.session.access === "guest" && memberLoginOpen && (
+        <MemberLoginDialog
+          onClose={() => setMemberLoginOpen(false)}
+          onSubmit={async (accessCode) => {
+            const result = await login(accessCode);
+            if (!result.ok) return result.message;
+            clearSessionStorage(state.session.user);
+            setMemberLoginOpen(false);
+            setState({ status: "loading" });
+            await refresh();
+            return null;
+          }}
+        />
+      )}
+    </>
   );
+}
+
+function clearSessionStorage(user: string): void {
+  const prefix = `chatus:react:${user}:`;
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index);
+    if (key?.startsWith(prefix)) localStorage.removeItem(key);
+  }
 }

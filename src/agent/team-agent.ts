@@ -72,6 +72,12 @@ type TeamAgentIdentity = {
   rootInstance: string;
 };
 
+type TeamAgentAccessContext = {
+  kind: Session["kind"];
+  expiresAt: number;
+  sourceKey: string;
+};
+
 type ConversationRow = {
   id: string;
   title: string;
@@ -130,6 +136,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private scope: TeamAgentScope = "root";
   private chatId = "";
   private rootInstance = "";
+  private accessKind: Session["kind"] = "member";
+  private sessionExpiresAt = Number.MAX_SAFE_INTEGER;
+  private sourceKey = "";
   private pendingActivity?: PendingConversationActivity;
   private pendingImageValidationErrors = new Map<string, ImageValidationErrorCode>();
 
@@ -210,12 +219,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   async ensureIdentity(props: TeamAgentProps): Promise<TeamAgentIdentityResult> {
     const provided = normalizeTeamAgentIdentity(props);
-    if (!provided) return { ok: false, error: "agent_identity_unavailable" };
+    const access = normalizeTeamAgentAccess(props);
+    if (!provided || !access) return { ok: false, error: "agent_identity_unavailable" };
     const active = this.currentIdentity();
     if (active) {
-      return sameTeamAgentIdentity(provided, active)
-        ? { ok: true }
-        : { ok: false, error: "agent_identity_conflict" };
+      if (!sameTeamAgentIdentity(provided, active)) return { ok: false, error: "agent_identity_conflict" };
+      this.applyAccessContext(access);
+      return { ok: true };
     }
     try {
       await this.initializeIdentity(props);
@@ -614,6 +624,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       scope: "conversation",
       chatId: destinationId,
       rootInstance: this.rootInstance,
+      accessKind: this.accessKind,
+      sessionExpiresAt: this.sessionExpiresAt,
+      ...(this.accessKind === "guest" ? { sourceKey: this.sourceKey } : {}),
     };
     const destination = await getAgentByName(this.env.TEAM_AGENT, destinationInstance, { props });
     const identity = await destination.ensureIdentity(props);
@@ -804,18 +817,32 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const requestedBody = isRecord(options?.body) ? options.body : {};
     const body = Object.keys(requestedBody).length ? requestedBody : this.getPendingBranchBody();
     const now = Date.now();
-    const session: Session = {
-      id: this.name,
-      label: this.userLabel,
-      createdAt: now,
-      lastSeen: now,
-    };
+    const session: Session = this.accessKind === "guest"
+      ? {
+          id: this.name,
+          label: this.userLabel,
+          kind: "guest",
+          createdAt: now,
+          lastSeen: now,
+          expiresAt: this.sessionExpiresAt,
+          sourceKey: this.sourceKey,
+        }
+      : {
+          id: this.name,
+          label: this.userLabel,
+          kind: "member",
+          createdAt: now,
+          lastSeen: now,
+          expiresAt: this.sessionExpiresAt,
+        };
     let longTermMemory = "";
-    try {
-      const root = await this.getRootAgent();
-      longTermMemory = (await root.getMemory()).memory;
-    } catch {
-      // Conversation execution remains available if the optional memory read is temporarily unavailable.
+    if (this.accessKind === "member") {
+      try {
+        const root = await this.getRootAgent();
+        longTermMemory = (await root.getMemory()).memory;
+      } catch {
+        // Conversation execution remains available if the optional memory read is temporarily unavailable.
+      }
     }
     const prepared = await prepareTeamAgentTurn(this.env, session, {
       messages: toLegacyMessages(this.messages),
@@ -850,7 +877,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           ...(await convertToModelMessages(this.messages, { tools })),
         ];
       } catch {
-        await prepared.closeTools();
+        await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
         return chatErrorResponse("agent_context_invalid", "工具续接上下文无法恢复。", 409);
       }
     }
@@ -859,39 +886,44 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const finalize = async () => {
       if (finalized) return;
       finalized = true;
-      await prepared.closeTools();
+      await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
     };
 
-    const result = streamText({
-      model: prepared.model,
-      messages,
-      tools,
-      stopWhen: stepCountIs(prepared.maxToolSteps),
-      maxRetries: 0,
-      allowSystemInMessages: true,
-      abortSignal: options?.abortSignal,
-      onFinish: async (event) => {
-        await finalize();
-        await onFinish(event);
-      },
-      onAbort: finalize,
-      onError: async () => {
-        await finalize();
-        await prepared.recordStreamFailure();
-      },
-    });
+    try {
+      const result = streamText({
+        model: prepared.model,
+        messages,
+        tools,
+        stopWhen: stepCountIs(prepared.maxToolSteps),
+        maxRetries: 0,
+        allowSystemInMessages: true,
+        abortSignal: options?.abortSignal,
+        onFinish: async (event) => {
+          await finalize();
+          await onFinish(event);
+        },
+        onAbort: finalize,
+        onError: async () => {
+          await finalize();
+          await prepared.recordStreamFailure();
+        },
+      });
 
-    return result.toUIMessageStreamResponse({
-      originalMessages: this.messages,
-      messageMetadata: ({ part }) => part.type === "finish" && part.finishReason === "length"
-        ? { finishReason: "length" as const }
-        : undefined,
-      headers: {
-        "Cache-Control": "no-store",
-        "X-RateLimit-Remaining": String(prepared.remaining),
-      },
-      onError: () => "模型线路暂时不可用，请稍后重试。",
-    });
+      return result.toUIMessageStreamResponse({
+        originalMessages: this.messages,
+        messageMetadata: ({ part }) => part.type === "finish" && part.finishReason === "length"
+          ? { finishReason: "length" as const }
+          : undefined,
+        headers: {
+          "Cache-Control": "no-store",
+          "X-RateLimit-Remaining": String(prepared.remaining),
+        },
+        onError: () => "模型线路暂时不可用，请稍后重试。",
+      });
+    } catch (error) {
+      await finalize();
+      throw error;
+    }
   }
 
   protected async onChatResponse(_result: ChatResponseResult): Promise<void> {
@@ -913,7 +945,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   }
 
   private async getRootAgent() {
-    const props: TeamAgentProps = { userLabel: this.userLabel, scope: "root" };
+    const props: TeamAgentProps = {
+      userLabel: this.userLabel,
+      scope: "root",
+      accessKind: this.accessKind,
+      sessionExpiresAt: this.sessionExpiresAt,
+      ...(this.accessKind === "guest" ? { sourceKey: this.sourceKey } : {}),
+    };
     const root = await getAgentByName(this.env.TEAM_AGENT, this.rootInstance, { props });
     const identity = await root.ensureIdentity(props);
     if (!identity.ok) throw new Error(identity.error);
@@ -1074,7 +1112,8 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (storedValue !== undefined && !stored) throw new Error("agent_identity_corrupt");
 
     const provided = props === undefined ? undefined : normalizeTeamAgentIdentity(props);
-    if (props !== undefined && !provided) throw new Error("agent_identity_unavailable");
+    const access = props === undefined ? undefined : normalizeTeamAgentAccess(props);
+    if (props !== undefined && (!provided || !access)) throw new Error("agent_identity_unavailable");
 
     const active = this.currentIdentity();
     const existing = stored || active;
@@ -1095,6 +1134,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.scope = identity.scope;
     this.chatId = identity.chatId;
     this.rootInstance = identity.rootInstance;
+    if (access) this.applyAccessContext(access);
+    else if (identity.userLabel.startsWith("guest-")) this.applyAccessContext({ kind: "guest", expiresAt: 0, sourceKey: "" });
+  }
+
+  private applyAccessContext(access: TeamAgentAccessContext): void {
+    this.accessKind = access.kind;
+    this.sessionExpiresAt = access.expiresAt;
+    this.sourceKey = access.sourceKey;
   }
 
   private currentIdentity(): TeamAgentIdentity | undefined {
@@ -1513,6 +1560,20 @@ function normalizeConversationId(value: unknown): string {
   const normalized = value.trim();
   if (!normalized || normalized.length > 80 || /[\u0000-\u001f\u007f]/.test(normalized)) return "";
   return normalized;
+}
+
+function normalizeTeamAgentAccess(value: unknown): TeamAgentAccessContext | undefined {
+  if (!isRecord(value)) return undefined;
+  const kind = value.accessKind === undefined || value.accessKind === "member"
+    ? "member"
+    : value.accessKind === "guest" ? "guest" : undefined;
+  if (!kind) return undefined;
+  const expiresAt = typeof value.sessionExpiresAt === "number" && Number.isFinite(value.sessionExpiresAt)
+    ? value.sessionExpiresAt
+    : kind === "member" ? Number.MAX_SAFE_INTEGER : 0;
+  const sourceKey = typeof value.sourceKey === "string" ? value.sourceKey : "";
+  if (kind === "guest" && (expiresAt <= 0 || !/^guest-source:[0-9a-f]{64}$/.test(sourceKey))) return undefined;
+  return { kind, expiresAt, sourceKey: kind === "guest" ? sourceKey : "" };
 }
 
 function normalizeTeamAgentIdentity(value: unknown): TeamAgentIdentity | undefined {

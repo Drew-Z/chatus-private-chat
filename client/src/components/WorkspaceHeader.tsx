@@ -1,4 +1,4 @@
-import { Brain, Download, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
+import { Brain, Download, LogIn, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
 
 export type ConnectionState = "connecting" | "ready" | "error";
@@ -13,6 +13,7 @@ export function WorkspaceHeader({
   onOpenSidebar,
   onOpenRouteSettings,
   onOpenMemory,
+  onMemberLogin,
   onLogout,
 }: {
   session: SessionProjection;
@@ -24,6 +25,7 @@ export function WorkspaceHeader({
   onOpenSidebar: () => void;
   onOpenRouteSettings: () => void;
   onOpenMemory: () => void;
+  onMemberLogin: () => void;
   onLogout: () => Promise<void>;
 }) {
   const route = session.routes.find((candidate) => candidate.id === routeId);
@@ -42,13 +44,23 @@ export function WorkspaceHeader({
 
       <div className="header-conversation">
         <strong className="header-conversation-title" title={conversation?.title || "对话"}>{conversation?.title || "对话"}</strong>
-        <button className="header-route-button" type="button" onClick={onOpenRouteSettings} disabled={busy || accountBusy} title="查看线路与状态" aria-label="查看线路与状态">
-          <Route size={14} aria-hidden="true" />
-          <span className="header-route-copy">
-            <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
-            <small>{health}</small>
-          </span>
-        </button>
+        {session.access === "guest" ? (
+          <div className="header-route-button static" title={route ? `${route.label} · ${route.model}` : "未选择线路"}>
+            <Route size={14} aria-hidden="true" />
+            <span className="header-route-copy">
+              <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
+              <small>{health}</small>
+            </span>
+          </div>
+        ) : (
+          <button className="header-route-button" type="button" onClick={onOpenRouteSettings} disabled={busy || accountBusy} title="查看线路与状态" aria-label="查看线路与状态">
+            <Route size={14} aria-hidden="true" />
+            <span className="header-route-copy">
+              <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
+              <small>{health}</small>
+            </span>
+          </button>
+        )}
       </div>
 
       <div className="header-actions">
@@ -57,15 +69,21 @@ export function WorkspaceHeader({
           <span>{connection}</span>
         </div>
         <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
-        <button className="icon-text-button quiet-button" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
-        <button
-          className="icon-button"
-          type="button"
-          onClick={() => void onLogout()}
-          disabled={busy || accountBusy}
-          title={busy ? "请先停止当前任务" : accountBusy ? "账号操作正在处理" : "退出登录"}
-          aria-label="退出登录"
-        ><LogOut size={18} /></button>
+        {session.capabilities.memory && (
+          <button className="icon-text-button quiet-button" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
+        )}
+        {session.access === "guest" ? (
+          <button className="icon-text-button quiet-button" type="button" onClick={onMemberLogin} disabled={busy || accountBusy} title="成员登录" aria-label="成员登录"><LogIn size={17} /><span>成员登录</span></button>
+        ) : (
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => void onLogout()}
+            disabled={busy || accountBusy}
+            title={busy ? "请先停止当前任务" : accountBusy ? "账号操作正在处理" : "退出登录"}
+            aria-label="退出登录"
+          ><LogOut size={18} /></button>
+        )}
       </div>
     </header>
   );

@@ -42,9 +42,11 @@ import type { UIMessage } from "ai";
 
 export function ChatWorkspace({
   session,
+  onMemberLogin,
   onLogout,
 }: {
   session: SessionProjection;
+  onMemberLogin: () => void;
   onLogout: () => Promise<void>;
 }) {
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
@@ -279,6 +281,7 @@ export function ChatWorkspace({
         onOpenSidebar={() => setSidebarOpen(true)}
         onOpenRouteSettings={openRouteSettings}
         onOpenMemory={() => setMemoryOpen(true)}
+        onMemberLogin={onMemberLogin}
         onLogout={handleLogout}
       />
 
@@ -337,7 +340,7 @@ export function ChatWorkspace({
           )}
         </section>
       </div>
-      <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />
+      {session.capabilities.memory && <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />}
     </main>
   );
 }
@@ -413,7 +416,7 @@ function ConversationChat({
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
-  const imagesSupported = selectedRoute?.supportsImages === true;
+  const imagesSupported = session.capabilities.imageInput && selectedRoute?.supportsImages === true;
   const connectionState: ConnectionState = agent.connectionError ? "error" : agent.identified ? "ready" : "connecting";
 
   useEffect(() => {
@@ -575,7 +578,7 @@ function ConversationChat({
   };
 
   const retryFailedTurn = async () => {
-    if (!chat.error || retryBusy || busy || blocked || !online) return;
+    if (!session.capabilities.messageActions || !chat.error || retryBusy || busy || blocked || !online) return;
     const sourceMessageId = findRetrySourceMessageId(chat.messages);
     if (!sourceMessageId) {
       if (lastSubmittedText || lastSubmittedImages.length) {
@@ -622,6 +625,7 @@ function ConversationChat({
       });
     } catch (error) {
       setMessageActionError(error instanceof ApiError ? error.message : "反馈提交失败，请稍后重试。");
+      throw error;
     }
   };
 
@@ -643,9 +647,13 @@ function ConversationChat({
               key={message.id}
               message={message}
               onApprove={chat.addToolApprovalResponse}
-              onAction={(action, editedText) => handleMessageAction(message, action, editedText)}
-              onFeedback={routeAvailable ? (rating) => handleFeedback(message, rating) : undefined}
-              canContinue={message.role === "assistant" && isTruncatedMessage(message)}
+              onAction={session.capabilities.messageActions
+                ? (action, editedText) => handleMessageAction(message, action, editedText)
+                : undefined}
+              onFeedback={session.capabilities.feedback && routeAvailable
+                ? (rating) => handleFeedback(message, rating)
+                : undefined}
+              canContinue={session.capabilities.messageActions && message.role === "assistant" && isTruncatedMessage(message)}
               disabled={interactionBlocked || !online}
               generationDisabled={!routeAvailable}
             />
@@ -664,7 +672,10 @@ function ConversationChat({
       {chat.error && (
         <div className="error-banner" role="alert">
           <span>{friendlyAgentError(chat.error.message, online)}</span>
-          <div className="error-actions"><button className="quiet-button icon-text-button" type="button" onClick={() => void retryFailedTurn()} disabled={retryBusy || busy || !online} title="重试这一轮" aria-label="重试这一轮"><RotateCw size={15} /><span>{retryBusy ? "重试中..." : "重试"}</span></button><button className="icon-button" type="button" onClick={() => window.location.reload()} title="重新连接" aria-label="重新连接"><RefreshCw size={16} /></button></div>
+          <div className="error-actions">
+            {session.capabilities.messageActions && <button className="quiet-button icon-text-button" type="button" onClick={() => void retryFailedTurn()} disabled={retryBusy || busy || !online} title="重试这一轮" aria-label="重试这一轮"><RotateCw size={15} /><span>{retryBusy ? "重试中..." : "重试"}</span></button>}
+            <button className="icon-button" type="button" onClick={() => window.location.reload()} title="重新连接" aria-label="重新连接"><RefreshCw size={16} /></button>
+          </div>
         </div>
       )}
       <MessageComposer

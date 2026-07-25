@@ -89,6 +89,31 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   await attachScreenshot(page, testInfo, "workspace");
 });
 
+test("guest workspace keeps the public model fixed and member controls hidden", async ({ page }, testInfo) => {
+  await page.goto("/?access=guest");
+  await expect(page.locator(".header-route-button.static")).toContainText("公开模型");
+  await expect(page.getByRole("button", { name: "成员登录" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看线路与状态" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "记忆" })).toHaveCount(0);
+
+  const geometry = await page.evaluate(() => {
+    const headerRoute = document.querySelector<HTMLElement>(".header-route-button.static");
+    const headerActions = document.querySelector<HTMLElement>(".header-actions");
+    if (!headerRoute || !headerActions) throw new Error("missing guest header regions");
+    const route = headerRoute.getBoundingClientRect();
+    const actions = headerActions.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      routeHasWidth: route.width >= 48,
+      routeBeforeActions: route.right <= actions.left + 1,
+    };
+  });
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.routeHasWidth).toBe(true);
+  expect(geometry.routeBeforeActions).toBe(true);
+  await attachScreenshot(page, testInfo, "guest-workspace");
+});
+
 test("message edit restores focus and rich content remains visible", async ({ page }) => {
   const edit = page.getByRole("button", { name: "编辑并分支发送" });
   await edit.click();

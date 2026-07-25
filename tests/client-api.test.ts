@@ -38,6 +38,15 @@ const validAdminConfig = {
     bill: { allowedSkills: ["coding"], allowedTools: ["builtin:text_stats"] },
   },
   defaults: { allowedSkills: ["coding"], allowedTools: ["builtin:text_stats"] },
+  publicAccess: {
+    enabled: true,
+    routeId: "primary",
+    sessionTtlSeconds: 86_400,
+    dailyMessageLimit: 20,
+    minuteMessageLimit: 6,
+    sourceDailyMessageLimit: 200,
+    sourceMinuteMessageLimit: 30,
+  },
   skills: {
     coding: {
       enabled: true,
@@ -59,6 +68,7 @@ const validAdminConfig = {
 };
 
 const validSession = {
+  access: "member",
   user: "bill",
   displayName: "Bill",
   usage: { used: 2, limit: 20, remaining: 18 },
@@ -79,6 +89,13 @@ const validSession = {
     maxImages: 4,
     maxImageBytes: 1_300_000,
     maxTotalImageBytes: 1_300_000,
+  },
+  capabilities: {
+    imageInput: true,
+    memory: true,
+    messageActions: true,
+    feedback: true,
+    accountData: true,
   },
   skills: [{ id: "coding", label: "Coding", toolIds: ["builtin:text_stats"] }],
   tools: [{
@@ -104,6 +121,30 @@ describe("React client runtime validation", () => {
       source: "kv",
       revision: "a",
     })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        publicAccess: { ...validAdminConfig.publicAccess, routeId: "missing" },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        publicAccess: { ...validAdminConfig.publicAccess, sessionTtlSeconds: 899 },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        publicAccess: { ...validAdminConfig.publicAccess, enabled: false, routeId: "" },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(true);
     expect(isAdminConfigSnapshot({
       config: {
         ...validAdminConfig,
@@ -312,6 +353,11 @@ describe("React client runtime validation", () => {
   });
 
   it("requires the complete session policy projection", () => {
+    expect(isSessionProjection({ ...validSession, access: undefined })).toBe(false);
+    expect(isSessionProjection({ ...validSession, access: "anonymous" })).toBe(false);
+    expect(isSessionProjection({ ...validSession, capabilities: undefined })).toBe(false);
+    expect(isSessionProjection({ ...validSession, capabilities: { ...validSession.capabilities, memory: "yes" } })).toBe(false);
+    expect(isSessionProjection({ ...validSession, capabilities: { ...validSession.capabilities, extra: true } })).toBe(false);
     expect(isSessionProjection({ ...validSession, allowBringYourOwnKey: undefined })).toBe(false);
     expect(isSessionProjection({ ...validSession, hasUserSystemPrompt: undefined })).toBe(false);
     expect(isSessionProjection({ ...validSession, allowBringYourOwnKey: "no" })).toBe(false);
@@ -324,6 +370,81 @@ describe("React client runtime validation", () => {
     expect(isSessionProjection({
       ...validSession,
       imageInput: { ...validSession.imageInput, acceptedMediaTypes: ["image/png", "image/svg+xml"] },
+    })).toBe(false);
+  });
+
+  it("accepts an explicit restricted guest projection", () => {
+    expect(isSessionProjection({
+      ...validSession,
+      access: "guest",
+      user: "guest-public",
+      displayName: "访客",
+      routes: [{ ...validSession.routes[0], supportsTools: false }],
+      allowBringYourOwnKey: false,
+      hasUserSystemPrompt: false,
+      skills: [],
+      tools: [],
+      capabilities: {
+        imageInput: true,
+        memory: false,
+        messageActions: false,
+        feedback: false,
+        accountData: false,
+      },
+    })).toBe(true);
+  });
+
+  it("accepts a controlled unavailable guest projection", () => {
+    expect(isSessionProjection({
+      ...validSession,
+      access: "guest",
+      user: "guest-public",
+      displayName: "访客",
+      routes: [],
+      defaultRoute: "",
+      allowBringYourOwnKey: false,
+      hasUserSystemPrompt: false,
+      skills: [],
+      tools: [],
+      capabilities: {
+        imageInput: false,
+        memory: false,
+        messageActions: false,
+        feedback: false,
+        accountData: false,
+      },
+    })).toBe(true);
+  });
+
+  it.each([
+    ["multiple routes", { routes: [{ ...validSession.routes[0], supportsTools: false }, { ...validSession.routes[0], id: "backup", supportsTools: false }] }],
+    ["BYOK", { allowBringYourOwnKey: true }],
+    ["custom system prompt", { hasUserSystemPrompt: true }],
+    ["member capability", { capabilities: { ...validSession.capabilities, memory: true } }],
+    ["Skill projection", { skills: validSession.skills }],
+    ["tool projection", { tools: validSession.tools }],
+    ["tool-capable route", { routes: [{ ...validSession.routes[0], supportsTools: true }] }],
+    ["mismatched default route", { defaultRoute: "backup" }],
+    ["image policy mismatch", { routes: [{ ...validSession.routes[0], supportsImages: false, supportsTools: false }] }],
+  ])("rejects a guest projection with %s", (_label, override) => {
+    expect(isSessionProjection({
+      ...validSession,
+      access: "guest",
+      user: "guest-public",
+      displayName: "访客",
+      routes: [{ ...validSession.routes[0], supportsTools: false }],
+      allowBringYourOwnKey: false,
+      hasUserSystemPrompt: false,
+      skills: [],
+      tools: [],
+      capabilities: {
+        imageInput: true,
+        memory: false,
+        messageActions: false,
+        feedback: false,
+        accountData: false,
+      },
+      ...override,
     })).toBe(false);
   });
 

@@ -268,63 +268,73 @@ export function ConversationSidebar({
         <div className="settings-view">
           <section className="settings-section">
             <div className="settings-heading"><Settings2 size={16} /><strong>模型线路</strong></div>
-            <select value={routeId} onChange={(event) => onRouteChange(event.target.value)} disabled={busy || session.routes.length === 0}>
-              {session.routes.length === 0
-                ? <option value="">尚未配置可用线路</option>
-                : session.routes.map((route) => <option value={route.id} key={route.id}>{route.label} · {route.model}</option>)}
-            </select>
+            {session.access === "guest" ? (
+              <div className="fixed-route-label">
+                {session.routes[0] ? `${session.routes[0].label} · ${session.routes[0].model}` : "尚未配置可用线路"}
+              </div>
+            ) : (
+              <select value={routeId} onChange={(event) => onRouteChange(event.target.value)} disabled={busy || session.routes.length === 0}>
+                {session.routes.length === 0
+                  ? <option value="">尚未配置可用线路</option>
+                  : session.routes.map((route) => <option value={route.id} key={route.id}>{route.label} · {route.model}</option>)}
+              </select>
+            )}
             <small>{session.routes.length === 0
               ? "请联系管理员配置模型线路"
               : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}</small>
           </section>
-          <section className="settings-section">
-            <div className="settings-heading"><strong>Skills</strong><span>{skillIds.length}/3</span></div>
-            <div className="skill-list">
-              {session.skills.length === 0 && <div className="sidebar-empty">未分配 Skill</div>}
-              {session.skills.map((skill) => (
-                <label className="skill-option" key={skill.id}>
-                  <input
-                    type="checkbox"
-                    checked={skillIds.includes(skill.id)}
-                    disabled={busy || (!skillIds.includes(skill.id) && skillIds.length >= 3)}
-                    onChange={() => onSkillChange(
-                      skillIds.includes(skill.id)
-                        ? skillIds.filter((id) => id !== skill.id)
-                        : [...skillIds, skill.id],
-                    )}
-                  />
-                  <span><strong>{skill.label}</strong><small>{skill.description || "已分配能力"}</small></span>
-                </label>
-              ))}
-            </div>
-          </section>
-          <section className="settings-section">
-            <div className="settings-heading"><strong>工具</strong><span>{session.tools.length}</span></div>
-            <div className="tool-list">
-              {session.tools.length === 0 && <div className="sidebar-empty">未分配工具</div>}
-              {session.tools.map((tool) => {
-                const active = selectedToolIds.has(tool.id);
-                return (
-                  <div className={`tool-row ${active ? "active" : ""}`} key={tool.id}>
-                    <span className="tool-source" title={tool.source === "mcp" ? "MCP 工具" : "内置工具"}>
-                      {tool.source === "mcp" ? <Plug size={15} aria-hidden="true" /> : <Wrench size={15} aria-hidden="true" />}
-                    </span>
-                    <span className="tool-copy">
-                      <strong>{tool.label}</strong>
-                      <small>{tool.description || toolSourceText(tool.source)} · {confirmationText(tool.confirmation)}</small>
-                    </span>
-                    <span className="tool-state">{active ? "已启用" : routeSupportsTools ? "未启用" : "线路不支持"}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
+          {session.access === "member" && (
+            <>
+              <section className="settings-section">
+                <div className="settings-heading"><strong>Skills</strong><span>{skillIds.length}/3</span></div>
+                <div className="skill-list">
+                  {session.skills.length === 0 && <div className="sidebar-empty">未分配 Skill</div>}
+                  {session.skills.map((skill) => (
+                    <label className="skill-option" key={skill.id}>
+                      <input
+                        type="checkbox"
+                        checked={skillIds.includes(skill.id)}
+                        disabled={busy || (!skillIds.includes(skill.id) && skillIds.length >= 3)}
+                        onChange={() => onSkillChange(
+                          skillIds.includes(skill.id)
+                            ? skillIds.filter((id) => id !== skill.id)
+                            : [...skillIds, skill.id],
+                        )}
+                      />
+                      <span><strong>{skill.label}</strong><small>{skill.description || "已分配能力"}</small></span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+              <section className="settings-section">
+                <div className="settings-heading"><strong>工具</strong><span>{session.tools.length}</span></div>
+                <div className="tool-list">
+                  {session.tools.length === 0 && <div className="sidebar-empty">未分配工具</div>}
+                  {session.tools.map((tool) => {
+                    const active = selectedToolIds.has(tool.id);
+                    return (
+                      <div className={`tool-row ${active ? "active" : ""}`} key={tool.id}>
+                        <span className="tool-source" title={tool.source === "mcp" ? "MCP 工具" : "内置工具"}>
+                          {tool.source === "mcp" ? <Plug size={15} aria-hidden="true" /> : <Wrench size={15} aria-hidden="true" />}
+                        </span>
+                        <span className="tool-copy">
+                          <strong>{tool.label}</strong>
+                          <small>{tool.description || toolSourceText(tool.source)} · {confirmationText(tool.confirmation)}</small>
+                        </span>
+                        <span className="tool-state">{active ? "已启用" : routeSupportsTools ? "未启用" : "线路不支持"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            </>
+          )}
           <section className="usage-summary">
             <span>今日剩余</span>
             <strong>{session.usage.remaining}</strong>
             <small>已使用 {session.usage.used} / {session.usage.limit}</small>
           </section>
-          <section className="settings-section account-section" aria-labelledby="account-data-title">
+          {session.capabilities.accountData && <section className="settings-section account-section" aria-labelledby="account-data-title">
             <div className="settings-heading" id="account-data-title"><strong>账号与数据</strong></div>
             <p className="account-description">导出个人数据，或管理其他设备的登录状态。数据清理不会撤销访问权限。</p>
             <div className="account-actions">
@@ -343,7 +353,7 @@ export function ConversationSidebar({
             </div>
             {accountMessage && <p className="account-status" role="status">{accountMessage}</p>}
             {accountError && <p className="account-status error" role="alert">{accountError}</p>}
-          </section>
+          </section>}
         </div>
       )}
       {accountDialog && (

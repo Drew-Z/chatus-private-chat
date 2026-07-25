@@ -120,6 +120,7 @@ export function projectAdminLogicalModels(config: AdminConfig): AdminLogicalMode
   }
   if (config.defaults.defaultRoute) recordReference(config.defaults.defaultRoute, "defaults");
   for (const routeId of config.defaults.allowedRoutes || []) recordReference(routeId, "defaults");
+  if (config.publicAccess.routeId) recordReference(config.publicAccess.routeId, "公开访问");
   for (const [routeId, route] of Object.entries(config.routes)) {
     for (const fallbackId of route.fallbacks || []) recordReference(fallbackId, `fallback:${routeId}`);
   }
@@ -340,7 +341,11 @@ export function applyLogicalModelDraft(
     ...(config.defaults.defaultRoute === undefined ? {} : { defaultRoute: replace(config.defaults.defaultRoute) }),
     ...(config.defaults.allowedRoutes === undefined ? {} : { allowedRoutes: replaceMany(config.defaults.allowedRoutes) }),
   };
-  return { ...config, routes, users, defaults };
+  const publicAccess = {
+    ...config.publicAccess,
+    routeId: replace(config.publicAccess.routeId) || "",
+  };
+  return { ...config, routes, users, defaults, publicAccess };
 }
 
 export function migrateLegacyLogicalModel(config: AdminConfig, routeId: string): { config: AdminConfig; providerId?: string } {
