@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -46,6 +46,7 @@ export function MessageView({
   const [actionBusy, setActionBusy] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down">();
   const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const editOpenerRef = useRef<HTMLButtonElement | null>(null);
   const text = message.parts
     .filter((part) => part.type === "text")
     .map((part) => part.text)
@@ -63,6 +64,7 @@ export function MessageView({
     try {
       await onAction(action, value);
       setEditing(false);
+      restoreEditFocus();
     } catch {
       // The owning workspace renders the actionable error; keep this toolbar usable.
     } finally {
@@ -85,6 +87,16 @@ export function MessageView({
     if (disabled || generationDisabled || actionBusy) return;
     setEditText(text);
     setEditing(true);
+  };
+
+  const cancelEditing = () => {
+    if (actionBusy) return;
+    setEditing(false);
+    restoreEditFocus();
+  };
+
+  const restoreEditFocus = () => {
+    window.requestAnimationFrame(() => editOpenerRef.current?.focus());
   };
 
   return (
@@ -142,7 +154,7 @@ export function MessageView({
             aria-label="编辑消息"
           />
           <div className="message-edit-actions">
-            <button className="quiet-button" type="button" onClick={() => setEditing(false)} disabled={actionBusy}>取消</button>
+            <button className="quiet-button" type="button" onClick={cancelEditing} disabled={actionBusy}>取消</button>
             <button className="primary-button" type="submit" disabled={actionBusy || !editText.trim()}><Send size={14} />分支发送</button>
           </div>
         </form>
@@ -154,7 +166,7 @@ export function MessageView({
           </button>
           {onAction && message.role === "user" && !editing && (
             <>
-              <button className="icon-button" type="button" onClick={startEditing} disabled={disabled || generationDisabled || actionBusy} title="编辑并分支发送" aria-label="编辑并分支发送"><Pencil size={15} /></button>
+              <button ref={editOpenerRef} className="icon-button" type="button" onClick={startEditing} disabled={disabled || generationDisabled || actionBusy} title="编辑并分支发送" aria-label="编辑并分支发送"><Pencil size={15} /></button>
               <button className="icon-button" type="button" onClick={() => void runAction("resend")} disabled={disabled || generationDisabled || actionBusy} title="重新发送并创建分支" aria-label="重新发送并创建分支"><RotateCw size={15} /></button>
               <button className="icon-button" type="button" onClick={() => void runAction("branch")} disabled={disabled || actionBusy} title="创建对话分支" aria-label="创建对话分支"><GitBranch size={15} /></button>
             </>

@@ -174,6 +174,30 @@ type RouteStatusProjection = {
   latencyMs?: number;
 };
 
+type AdminReliabilityRouteProjection = {
+  routeId: string;
+  model: string;
+  enabled: boolean;
+  attempts: number;
+  successes: number;
+  averageLatencyMs: number;
+  lastOutcome?: RouteReliabilityOutcome;
+  observedAt?: string;
+  lastFallback?: boolean;
+  fallbackCount?: number;
+};
+
+type AdminReliabilityProviderProjection = {
+  providerId: string;
+  label: string;
+  enabled: boolean;
+  credentialStatus: "configured" | "missing" | "unavailable" | "user_key_required";
+  concurrency: "unlimited" | "exclusive" | "bounded";
+  maxConcurrent?: number;
+  queueTimeoutMs: number;
+  routes: AdminReliabilityRouteProjection[];
+};
+
 type RouteAccess = {
   routes: PublicRoute[];
   defaultRoute: string;
@@ -1314,6 +1338,10 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
   if (url.pathname === "/api/admin/route-health" && request.method === "GET") {
     return handleGetAdminRouteHealth(env);
+  }
+
+  if (url.pathname === "/api/admin/reliability" && request.method === "GET") {
+    return handleGetAdminReliability(env);
   }
 
   if (url.pathname === "/api/admin/route-models" && request.method === "POST") {
@@ -3104,6 +3132,131 @@ async function handleGetAdminRouteHealth(env: Env): Promise<Response> {
     [routeId, await inspectRouteStatus(env, routeId, route)] as const
   )));
   return jsonResponse({ routes: Object.fromEntries(entries) });
+}
+
+async function handleGetAdminReliability(env: Env): Promise<Response> {
+  const config = await loadAppConfig(env);
+  const providers = new Map<string, {
+    provider: ProviderConfig;
+    label: string;
+    enabled: boolean;
+    routes: AdminReliabilityRouteProjection[];
+  }>();
+
+  for (const [providerId, provider] of Object.entries(config.providers)) {
+    providers.set(providerId, {
+      provider,
+      label: provider.label,
+      enabled: provider.enabled !== false,
+      routes: [],
+    });
+  }
+
+  for (const [routeId, route] of Object.entries(config.routes)) {
+    const offerings = route.offerings?.length
+      ? route.offerings
+      : route.type && route.baseUrl && route.model
+        ? [{ providerId: `legacy:${routeId}`, model: route.model, enabled: route.enabled !== false }]
+        : [];
+    for (const offering of offerings) {
+      const providerId = offering.providerId;
+      let entry = providers.get(providerId);
+      if (!entry && providerId === `legacy:${routeId}` && route.type && route.baseUrl && route.model) {
+        const legacyProvider: ProviderConfig = {
+          label: route.label,
+          type: route.type,
+          baseUrl: route.baseUrl,
+          apiKey: route.apiKey,
+          apiKeyRef: route.apiKeyRef,
+          authHeader: route.authHeader,
+          authPrefix: route.authPrefix,
+          directEndpoint: route.directEndpoint,
+          allowUserKey: route.allowUserKey,
+          requiresUserKey: route.requiresUserKey,
+          supportsImages: route.supportsImages,
+          supportsTools: route.supportsTools,
+          concurrency: "unlimited",
+          queueTimeoutMs: 0,
+          priority: 0,
+        };
+        entry = { provider: legacyProvider, label: route.label, enabled: route.enabled !== false, routes: [] };
+        providers.set(providerId, entry);
+      }
+      if (!entry || entry.routes.some((item) => item.routeId === routeId)) continue;
+      const loadedRecord = await loadProviderRouteReliability(env, routeId, providerId);
+      const record = isRecentProviderRouteReliability(loadedRecord) ? loadedRecord : null;
+      entry.routes.push({
+        routeId,
+        model: offering.model,
+        enabled: route.enabled !== false && offering.enabled !== false,
+        attempts: record?.attempts || 0,
+        successes: record?.successes || 0,
+        averageLatencyMs: record?.averageLatencyMs || 0,
+        ...(record?.lastOutcome ? { lastOutcome: record.lastOutcome } : {}),
+        ...(record?.observedAt ? { observedAt: record.observedAt } : {}),
+        ...(record?.lastFallback === undefined ? {} : { lastFallback: record.lastFallback }),
+        ...(record?.fallbackCount === undefined ? {} : { fallbackCount: record.fallbackCount }),
+      });
+    }
+  }
+
+  const projected = await Promise.all([...providers.entries()].map(async ([providerId, entry]) => {
+    const credentialStatus = await inspectAdminProviderCredential(env, providerId, entry.provider);
+    const concurrency = entry.provider.concurrency || "unlimited";
+    return {
+      providerId,
+      label: entry.label,
+      enabled: entry.enabled,
+      credentialStatus,
+      concurrency,
+      ...(entry.provider.maxConcurrent === undefined ? {} : { maxConcurrent: entry.provider.maxConcurrent }),
+      queueTimeoutMs: entry.provider.queueTimeoutMs || 0,
+      routes: entry.routes.sort((left, right) => left.routeId.localeCompare(right.routeId)),
+    } satisfies AdminReliabilityProviderProjection;
+  }));
+
+  projected.sort((left, right) => left.label.localeCompare(right.label) || left.providerId.localeCompare(right.providerId));
+  return jsonResponse({ generatedAt: new Date().toISOString(), providers: projected });
+}
+
+async function inspectAdminProviderCredential(
+  env: Env,
+  providerId: string,
+  provider: ProviderConfig,
+): Promise<AdminReliabilityProviderProjection["credentialStatus"]> {
+  if (provider.requiresUserKey === true) return "user_key_required";
+  if (provider.apiKey || provider.apiKeyRef) {
+    const candidate: ResolvedProviderRoute = {
+      routeId: `__admin__${providerId}`,
+      providerId,
+      label: provider.label,
+      type: provider.type,
+      baseUrl: provider.baseUrl,
+      model: "__admin__",
+      apiKey: provider.apiKey,
+      apiKeyRef: provider.apiKeyRef,
+      authHeader: provider.authHeader,
+      authPrefix: provider.authPrefix,
+      directEndpoint: provider.directEndpoint,
+      headers: provider.headers,
+      allowUserKey: provider.allowUserKey !== false,
+      requiresUserKey: false,
+      supportsImages: provider.supportsImages !== false,
+      supportsTools: provider.supportsTools === true,
+      concurrency: provider.concurrency || "unlimited",
+      maxConcurrent: provider.concurrency === "exclusive"
+        ? 1
+        : provider.concurrency === "bounded" ? provider.maxConcurrent || 1 : MAX_PROVIDER_CONCURRENCY,
+      queueTimeoutMs: provider.queueTimeoutMs || 0,
+      priority: provider.priority || 0,
+    };
+    try {
+      if (await resolveRouteKey(candidate, env, "")) return "configured";
+    } catch {
+      return "unavailable";
+    }
+  }
+  return "missing";
 }
 
 async function inspectRouteStatus(env: Env, routeId: string, route: RouteConfig): Promise<RouteStatusProjection> {

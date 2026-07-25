@@ -2493,6 +2493,7 @@ describe("Worker API", () => {
 
   it("requires an admin session for managed route-secret APIs", async () => {
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets"))).status).toBe(401);
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/reliability"))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -3508,6 +3509,116 @@ describe("Worker API", () => {
         },
       },
     });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("projects configured provider-route reliability without model calls or secret fields", async () => {
+    const cookie = await adminLogin();
+    const providerSecret = `reliability-secret-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        shared: {
+          label: "Shared provider",
+          type: "openai-chat",
+          baseUrl: "https://reliability.example/v1",
+          apiKey: providerSecret,
+          concurrency: "bounded",
+          maxConcurrent: 2,
+          queueTimeoutMs: 750,
+        },
+      },
+      routes: {
+        writer: {
+          label: "Writer",
+          offerings: [{ providerId: "shared", model: "writer-v1" }],
+        },
+      },
+      defaults: { defaultRoute: "writer", allowedRoutes: ["writer"] },
+    }));
+    await env.CHAT_STORE.put(`${PROVIDER_ROUTE_RELIABILITY_PREFIX}writer:shared`, JSON.stringify({
+      version: 1,
+      source: "real_task",
+      routeId: "writer",
+      providerId: "shared",
+      attempts: 3,
+      successes: 2,
+      averageLatencyMs: 240,
+      lastOutcome: "upstream_server",
+      observedAt: new Date().toISOString(),
+      lastFallback: true,
+      fallbackCount: 1,
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await apiRequest("/api/admin/reliability", cookie);
+    const text = await response.text();
+    expect(response.status, text).toBe(200);
+    expect(text).not.toContain(providerSecret);
+    expect(text).not.toContain("apiKey");
+    expect(JSON.parse(text)).toMatchObject({
+      providers: [{
+        providerId: "shared",
+        label: "Shared provider",
+        enabled: true,
+        credentialStatus: "configured",
+        concurrency: "bounded",
+        maxConcurrent: 2,
+        queueTimeoutMs: 750,
+        routes: [{
+          routeId: "writer",
+          model: "writer-v1",
+          attempts: 3,
+          successes: 2,
+          averageLatencyMs: 240,
+          lastOutcome: "upstream_server",
+          lastFallback: true,
+          fallbackCount: 1,
+        }],
+      }],
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders expired provider-route reliability as unknown", async () => {
+    const cookie = await adminLogin();
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        old: {
+          label: "Old provider",
+          type: "openai-chat",
+          baseUrl: "https://old.example/v1",
+          apiKey: "old-provider-secret",
+        },
+      },
+      routes: {
+        oldRoute: {
+          label: "Old route",
+          offerings: [{ providerId: "old", model: "old-v1" }],
+        },
+      },
+      defaults: { defaultRoute: "oldRoute", allowedRoutes: ["oldRoute"] },
+    }));
+    await env.CHAT_STORE.put(`${PROVIDER_ROUTE_RELIABILITY_PREFIX}oldRoute:old`, JSON.stringify({
+      version: 1,
+      source: "real_task",
+      routeId: "oldRoute",
+      providerId: "old",
+      attempts: 9,
+      successes: 8,
+      averageLatencyMs: 90,
+      lastOutcome: "success",
+      observedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString(),
+      lastFallback: false,
+      fallbackCount: 0,
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await apiRequest("/api/admin/reliability", cookie);
+    const payload = await response.json() as {
+      providers: Array<{ routes: Array<Record<string, unknown>> }>;
+    };
+    expect(response.status).toBe(200);
+    expect(payload.providers[0].routes[0]).toMatchObject({ attempts: 0, successes: 0, averageLatencyMs: 0 });
+    expect(payload.providers[0].routes[0]).not.toHaveProperty("lastOutcome");
+    expect(payload.providers[0].routes[0]).not.toHaveProperty("observedAt");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

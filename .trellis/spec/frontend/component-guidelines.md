@@ -31,6 +31,16 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - The signed-in model picker exposes logical routes, not physical provider offerings. Keep every selectable button discoverable through the shared `.model-option` query so Arrow, Home, End, Escape, and Tab behavior continues to work across groups.
 - Legacy routes with `type`, `baseUrl`, and `model` remain readable and require an explicit migration action before their endpoint fields are removed; migration must preserve fallback and permission references.
 
+### Typed Admin Draft Preservation And Conflict Recovery
+
+- Build provider and logical-model drafts through shared helpers that spread the sanitized server projection before applying visible defaults. This preserves safe fields that are intentionally not rendered as controls, such as provider auth metadata and legacy route limits or user-key policy.
+- A pool editor is local component state. Switching away from the provider or logical-model view unmounts that editor, so the navigation guard must say that the unsaved pool draft will be discarded and clear the shared pool-dirty flag after confirmation. Do not claim that an unmounted pool draft is retained.
+- On `config_conflict`, refresh the authoritative snapshot, keep the local entity draft dirty for retry, and expose an explicit "use server version" action that resets the selected draft and clears the conflict state.
+- A passive reliability projection must pass each stored provider-route record through the shared recent-record predicate. Expired or future observations render as unknown/no-data rather than as a current unhealthy or healthy result.
+- Provider secret inputs are scoped to the saved provider and its current `apiKeyRef`. Changing provider, changing the ref, opening a new provider, refreshing, or leaving the editor clears the password value; a ref cannot be written before its provider projection is saved.
+- Provider and logical-model renames must check the current registry for an existing target ID before applying the draft. A collision is an inline validation error, not a delete-and-overwrite operation.
+- Offering capability overrides are three-state controls: unset inherits the provider/logical-model capability, while explicit true/false values are persisted on the offering.
+
 ## Scenario: Logical Model And Provider Pool Administration
 
 ### 1. Scope / Trigger
@@ -161,7 +171,9 @@ type ModelOffering = {
 - Pass `disabled` for an active run, offline state, or account mutation. Pass `generationDisabled` when the selected logical route is unavailable. Copy and branch remain usable when generation is unavailable, while edit/resend/regenerate/continue and feedback are disabled.
 - Action buttons must remain visible and keyboard reachable on touch layouts; opacity or hover must never be the only discoverability mechanism. Use `aria-label` and `title` on every icon button.
 - The edit form is an accessible native form with an auto-focused textarea, Cancel, and branch-and-send submit. Its async result belongs to the source message and the workspace owns the actionable error banner.
+- Edit Cancel and successful edit completion restore focus to the originating edit action. Failed turns expose a focused retry action that creates a resend branch from the latest user message; a full reload remains a separate reconnect fallback.
 - Keep action busy state local to the owning message so two message rows cannot block or mutate one another. Disable the row while its branch request is in flight, then activate the server-returned conversation.
+- Streaming transcript scroll follows new output only while the reader is near the bottom; manual upward scrolling is preserved.
 
 ### Tests Required
 

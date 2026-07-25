@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required release commands, privacy checks, accessibility, and regression expectations."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Review typed admin navigation, responsive controls, conflict handling, and provider/logical-model contracts."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Review dirty-state ownership, server conflicts, and draft preservation semantics."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Review exact response decoders and secret non-disclosure across Worker and client."}
+{"file":".trellis/spec/platform/production-acceptance.md","reason":"Confirm dry-run and local acceptance remain model-free and production deployment stays GitHub Actions controlled."}

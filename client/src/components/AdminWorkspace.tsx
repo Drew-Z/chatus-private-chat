@@ -48,6 +48,9 @@ import {
   type CapabilityAssignmentDraft,
 } from "../lib/admin-config";
 import { mergeAdminMemberProjection } from "../lib/admin-members";
+import { LogicalModelAdminPanel } from "./LogicalModelAdminPanel";
+import { ProviderAdminPanel } from "./ProviderAdminPanel";
+import { ReliabilityAdminPanel } from "./ReliabilityAdminPanel";
 
 type AdminData = {
   snapshot: AdminConfigSnapshot;
@@ -57,6 +60,8 @@ type AdminData = {
 };
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
+
+type AdminView = "members" | "providers" | "models" | "reliability";
 
 type MemberAccessDialogState =
   | { kind: "create"; label: string; existingMember: boolean }
@@ -91,6 +96,9 @@ export function AdminWorkspace({
   const [memberDialog, setMemberDialog] = useState<MemberAccessDialogState | null>(null);
   const [memberDialogError, setMemberDialogError] = useState("");
   const [memberActionBusy, setMemberActionBusy] = useState(false);
+  const [activeView, setActiveView] = useState<AdminView>("members");
+  const [poolDirty, setPoolDirty] = useState(false);
+  const [panelResetKey, setPanelResetKey] = useState(0);
 
   useEffect(() => {
     void loadAdminData(false);
@@ -98,13 +106,13 @@ export function AdminWorkspace({
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dirty && memberDialog?.kind !== "credential") return;
+      if (!dirty && !poolDirty && memberDialog?.kind !== "credential") return;
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [dirty, memberDialog?.kind]);
+  }, [dirty, memberDialog?.kind, poolDirty]);
 
   const allMemberOptions = useMemo(() => {
     const options: AdminMemberProjection[] = [
@@ -217,13 +225,44 @@ export function AdminWorkspace({
     setNotice({ kind: "success", text: "已恢复服务器版本。" });
   }
 
+  function applyPoolSnapshot(snapshot: AdminConfigSnapshot) {
+    setData((current) => current ? { ...current, snapshot } : current);
+    if (dirty && draft) {
+      setDraft((current) => current ? rebaseCapabilityAssignmentDraft(snapshot.config, current) : current);
+      setConflict(true);
+    } else {
+      setDraft(createCapabilityAssignmentDraft(snapshot.config, selectedMember));
+      setConflict(false);
+    }
+    setPanelResetKey((value) => value + 1);
+  }
+
+  function setPanelNotice(panelNotice: Notice | null) {
+    setNotice(panelNotice);
+  }
+
+  function selectView(view: AdminView) {
+    if (view === activeView) return;
+    const leavingPoolEditor = activeView === "providers" || activeView === "models";
+    if (leavingPoolEditor && poolDirty) {
+      if (!window.confirm("当前服务商或逻辑模型有未保存修改，切换视图会放弃这些修改，继续吗？")) return;
+      setPoolDirty(false);
+    }
+    if (activeView === "members" && dirty && !window.confirm("当前成员分配草稿会保留，切换视图后仍可继续编辑，继续吗？")) return;
+    setActiveView(view);
+    setNotice(null);
+  }
+
   async function refresh() {
-    if (dirty && !window.confirm("刷新会丢弃当前未保存分配，继续吗？")) return;
-    if (await loadAdminData(false)) setNotice({ kind: "success", text: "配置已刷新。" });
+    if ((dirty || poolDirty) && !window.confirm("刷新会丢弃当前未保存修改，继续吗？")) return;
+    if (await loadAdminData(false)) {
+      setPanelResetKey((value) => value + 1);
+      setNotice({ kind: "success", text: "配置已刷新。" });
+    }
   }
 
   async function logout() {
-    if (dirty && !window.confirm("当前有未保存分配，仍要退出吗？")) return;
+    if ((dirty || poolDirty) && !window.confirm("当前有未保存修改，仍要退出吗？")) return;
     setMemberDialog(null);
     setMemberDialogError("");
     await adminLogout();
@@ -462,9 +501,15 @@ export function AdminWorkspace({
           <div className="brand-mark small">C</div>
           <div>
             <strong>Chatus</strong>
-            <span>成员分配</span>
+            <span>{activeView === "members" ? "成员分配" : activeView === "providers" ? "服务商池" : activeView === "models" ? "逻辑模型" : "可靠性"}</span>
           </div>
         </div>
+        <nav className="typed-admin-nav" aria-label="管理视图">
+          <button className={activeView === "members" ? "active" : ""} type="button" onClick={() => selectView("members")} aria-pressed={activeView === "members"}>成员访问</button>
+          <button className={activeView === "providers" ? "active" : ""} type="button" onClick={() => selectView("providers")} aria-pressed={activeView === "providers"}>服务商</button>
+          <button className={activeView === "models" ? "active" : ""} type="button" onClick={() => selectView("models")} aria-pressed={activeView === "models"}>逻辑模型</button>
+          <button className={activeView === "reliability" ? "active" : ""} type="button" onClick={() => selectView("reliability")} aria-pressed={activeView === "reliability"}>可靠性</button>
+        </nav>
         <div className="typed-admin-actions">
           <button
             className="quiet-button icon-text-button"
@@ -502,6 +547,7 @@ export function AdminWorkspace({
         </div>
       )}
 
+      {activeView === "members" ? (
       <div className="typed-admin-layout">
         <aside className="typed-admin-members" aria-label="成员列表">
           <label className="typed-admin-search">
@@ -734,6 +780,36 @@ export function AdminWorkspace({
           )}
         </section>
       </div>
+      ) : data ? (
+        activeView === "providers" ? (
+          <ProviderAdminPanel
+            snapshot={data.snapshot}
+            onSnapshot={applyPoolSnapshot}
+            onSessionExpired={onSessionExpired}
+            onDirtyChange={setPoolDirty}
+            onNotice={setPanelNotice}
+            resetKey={panelResetKey}
+          />
+        ) : activeView === "models" ? (
+          <LogicalModelAdminPanel
+            snapshot={data.snapshot}
+            onSnapshot={applyPoolSnapshot}
+            onSessionExpired={onSessionExpired}
+            onDirtyChange={setPoolDirty}
+            onNotice={setPanelNotice}
+            resetKey={panelResetKey}
+          />
+        ) : (
+          <ReliabilityAdminPanel
+            onSessionExpired={onSessionExpired}
+            onNotice={setPanelNotice}
+            onDirtyChange={setPoolDirty}
+            refreshKey={panelResetKey}
+          />
+        )
+      ) : (
+        <div className="typed-admin-panel-state" aria-live="polite">正在读取配置...</div>
+      )}
 
       {memberDialog && (
         <MemberAccessDialog

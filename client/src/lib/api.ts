@@ -54,9 +54,146 @@ export type AdminUserConfig = {
 export type AdminRouteConfig = {
   label: string;
   enabled?: boolean;
+  offerings?: AdminModelOffering[];
+  fallbacks?: string[];
+  maxTokens?: number;
+  temperature?: number;
+  allowUserKey?: boolean;
+  requiresUserKey?: boolean;
+  supportsImages?: boolean;
+  supportsTools?: boolean;
+  type?: "openai-chat" | "anthropic-messages";
+  baseUrl?: string;
+  model?: string;
+  apiKeyRef?: string;
+  authHeader?: string;
+  authPrefix?: string;
+  directEndpoint?: boolean;
   hasLegacyKey?: boolean;
   hasCustomHeaders?: boolean;
   [key: string]: unknown;
+};
+
+export type AdminModelOffering = {
+  providerId: string;
+  model: string;
+  enabled?: boolean;
+  priority?: number;
+  supportsImages?: boolean;
+  supportsTools?: boolean;
+};
+
+export type AdminProviderConfig = {
+  label: string;
+  type: "openai-chat" | "anthropic-messages";
+  baseUrl: string;
+  enabled?: boolean;
+  apiKeyRef?: string;
+  authHeader?: string;
+  authPrefix?: string;
+  directEndpoint?: boolean;
+  allowUserKey?: boolean;
+  requiresUserKey?: boolean;
+  supportsImages?: boolean;
+  supportsTools?: boolean;
+  concurrency?: "unlimited" | "exclusive" | "bounded";
+  maxConcurrent?: number;
+  queueTimeoutMs?: number;
+  priority?: number;
+  hasLegacyKey?: boolean;
+  hasCustomHeaders?: boolean;
+  headerSourceRouteId?: string;
+  [key: string]: unknown;
+};
+
+export type AdminProvider = {
+  id: string;
+  label: string;
+  type: "openai-chat" | "anthropic-messages";
+  baseUrl: string;
+  enabled: boolean;
+  apiKeyRef?: string;
+  credentialStatus: "configured" | "missing" | "unavailable" | "user_key_required";
+  hasLegacyKey: boolean;
+  hasCustomHeaders: boolean;
+  directEndpoint: boolean;
+  allowUserKey: boolean;
+  requiresUserKey: boolean;
+  supportsImages: boolean;
+  supportsTools: boolean;
+  concurrency: "unlimited" | "exclusive" | "bounded";
+  maxConcurrent?: number;
+  queueTimeoutMs: number;
+  priority: number;
+  referencedBy: string[];
+};
+
+export type AdminLogicalModel = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  fallbacks: string[];
+  supportsImages: boolean;
+  supportsTools: boolean;
+  offerings: AdminModelOffering[];
+  referencedBy: string[];
+};
+
+export type AdminRouteSecretMetadata = {
+  apiKeyRef: string;
+  source: "managed" | "worker" | "legacy" | "missing";
+  status: "configured" | "unavailable" | "missing";
+  managed: boolean;
+  environmentFallback: boolean;
+  updatedAt?: string;
+  revision?: string;
+  message?: string;
+};
+
+export type AdminRouteSecretsSnapshot = {
+  masterKeyReady: boolean;
+  masterKeyMessage?: string;
+  items: AdminRouteSecretMetadata[];
+};
+
+export type AdminSecretMutationResponse = {
+  ok: true;
+  item: AdminRouteSecretMetadata;
+};
+
+export type AdminModelDiscoveryResponse = {
+  models: string[];
+  count: number;
+  endpoint: string;
+};
+
+export type AdminReliabilityRoute = {
+  routeId: string;
+  model: string;
+  enabled: boolean;
+  attempts: number;
+  successes: number;
+  averageLatencyMs: number;
+  lastOutcome?: string;
+  observedAt?: string;
+  lastFallback?: boolean;
+  fallbackCount?: number;
+};
+
+export type AdminReliabilityProvider = {
+  providerId: string;
+  label: string;
+  enabled: boolean;
+  credentialStatus: "configured" | "missing" | "unavailable" | "user_key_required";
+  concurrency: "unlimited" | "exclusive" | "bounded";
+  maxConcurrent?: number;
+  queueTimeoutMs: number;
+  routes: AdminReliabilityRoute[];
+};
+
+export type AdminReliabilitySnapshot = {
+  generatedAt: string;
+  providers: AdminReliabilityProvider[];
 };
 
 export type AdminSkillConfig = {
@@ -80,7 +217,7 @@ export type AdminToolConfig = {
 
 export type AdminConfig = {
   routes: Record<string, AdminRouteConfig>;
-  providers: Record<string, Record<string, unknown>>;
+  providers: Record<string, AdminProviderConfig>;
   users: Record<string, AdminUserConfig>;
   defaults: AdminUserConfig;
   skills: Record<string, AdminSkillConfig>;
@@ -268,6 +405,62 @@ export async function putAdminConfig(config: AdminConfig, expectedRevision: stri
   });
   if (!isAdminConfigSnapshot(data)) {
     throw new ApiError("invalid_admin_config_response", "配置保存结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function fetchAdminRouteSecrets(): Promise<AdminRouteSecretsSnapshot> {
+  const data = await requestJson("/api/admin/route-secrets");
+  if (!isAdminRouteSecretsSnapshot(data)) {
+    throw new ApiError("invalid_admin_route_secrets_response", "线路密钥状态格式无效。", 502);
+  }
+  return data;
+}
+
+export async function putAdminRouteSecret(
+  apiKeyRef: string,
+  apiKey: string,
+  expectedRevision?: string,
+): Promise<AdminSecretMutationResponse> {
+  const data = await requestJson(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, {
+    method: "PUT",
+    body: JSON.stringify({ apiKey, ...(expectedRevision === undefined ? {} : { expectedRevision }) }),
+  });
+  if (!isAdminSecretMutationResponse(data)) {
+    throw new ApiError("invalid_admin_route_secret_response", "线路密钥保存结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function deleteAdminRouteSecret(
+  apiKeyRef: string,
+  expectedRevision?: string,
+): Promise<AdminSecretMutationResponse> {
+  const data = await requestJson(`/api/admin/route-secrets/${encodeURIComponent(apiKeyRef)}`, {
+    method: "DELETE",
+    body: JSON.stringify(expectedRevision === undefined ? {} : { expectedRevision }),
+  });
+  if (!isAdminSecretMutationResponse(data)) {
+    throw new ApiError("invalid_admin_route_secret_response", "线路密钥删除结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function discoverAdminProviderModels(providerId: string): Promise<AdminModelDiscoveryResponse> {
+  const data = await requestJson("/api/admin/route-models", {
+    method: "POST",
+    body: JSON.stringify({ providerId }),
+  });
+  if (!isAdminModelDiscoveryResponse(data)) {
+    throw new ApiError("invalid_admin_model_discovery_response", "模型列表格式无效。", 502);
+  }
+  return data;
+}
+
+export async function fetchAdminReliability(): Promise<AdminReliabilitySnapshot> {
+  const data = await requestJson("/api/admin/reliability");
+  if (!isAdminReliabilitySnapshot(data)) {
+    throw new ApiError("invalid_admin_reliability_response", "可靠性数据格式无效。", 502);
   }
   return data;
 }
@@ -568,6 +761,45 @@ export function isAdminConfigSnapshot(value: unknown): value is AdminConfigSnaps
     && isNonEmptyString(value.revision);
 }
 
+export function isAdminRouteSecretsSnapshot(value: unknown): value is AdminRouteSecretsSnapshot {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["masterKeyReady", "masterKeyMessage", "items"])
+    && typeof value.masterKeyReady === "boolean"
+    && (value.masterKeyMessage === undefined || isNonEmptyString(value.masterKeyMessage))
+    && Array.isArray(value.items)
+    && value.items.every(isAdminRouteSecretMetadata)
+    && new Set(value.items.map((item) => item.apiKeyRef)).size === value.items.length;
+}
+
+export function isAdminSecretMutationResponse(value: unknown): value is AdminSecretMutationResponse {
+  return isRecord(value)
+    && hasExactKeys(value, ["ok", "item"])
+    && value.ok === true
+    && isAdminRouteSecretMetadata(value.item);
+}
+
+export function isAdminModelDiscoveryResponse(value: unknown): value is AdminModelDiscoveryResponse {
+  return isRecord(value)
+    && hasExactKeys(value, ["models", "count", "endpoint"])
+    && isUniqueStringIdArray(value.models)
+    && value.models.length <= 500
+    && value.models.every((model) => model.length <= 200)
+    && value.count === value.models.length
+    && isSafeHttpUrl(value.endpoint);
+}
+
+export function isAdminReliabilitySnapshot(value: unknown): value is AdminReliabilitySnapshot {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["generatedAt", "providers"])
+    || !isIsoDate(value.generatedAt)
+    || !Array.isArray(value.providers)
+    || !value.providers.every(isAdminReliabilityProvider)) {
+    return false;
+  }
+  const providerIds = value.providers.map((provider) => provider.providerId);
+  return new Set(providerIds).size === providerIds.length;
+}
+
 export function isAdminMemberListResponse(
   value: unknown,
 ): value is AdminMembersSnapshot {
@@ -673,6 +905,12 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
   if (!isRegistry(users, isAdminUserConfig) || !isAdminUserConfig(defaults)) return false;
   if (!isRegistry(skills, isAdminSkillConfig) || !isRegistry(tools, isAdminToolConfig)) return false;
   if (!isRegistry(mcpServers, isAdminMcpServerConfig)) return false;
+
+  for (const route of Object.values(routes)) {
+    const providerIds = route.offerings?.map((offering) => offering.providerId) || [];
+    if (new Set(providerIds).size !== providerIds.length || providerIds.some((id) => !hasOwn(providers, id))) return false;
+    if (route.fallbacks?.some((id) => !routeIds.has(id))) return false;
+  }
 
   const skillIds = new Set(Object.keys(skills));
   const toolIds = new Set(Object.keys(tools));
@@ -837,25 +1075,202 @@ function isAdminUserConfig(value: unknown): value is AdminUserConfig {
 }
 
 function isAdminRouteConfig(value: unknown): value is AdminRouteConfig {
-  return isRecord(value)
-    && typeof value.label === "string"
-    && (value.enabled === undefined || typeof value.enabled === "boolean")
-    && (value.hasLegacyKey === undefined || typeof value.hasLegacyKey === "boolean")
-    && (value.hasCustomHeaders === undefined || typeof value.hasCustomHeaders === "boolean")
-    && !hasOwn(value, "apiKey")
-    && !hasOwn(value, "headers");
+  if (!isRecord(value)
+    || hasForbiddenSecretField(value)
+    || !hasOnlyKeys(value, [
+      "label",
+      "enabled",
+      "offerings",
+      "fallbacks",
+      "maxTokens",
+      "temperature",
+      "allowUserKey",
+      "requiresUserKey",
+      "supportsImages",
+      "supportsTools",
+      "type",
+      "baseUrl",
+      "model",
+      "apiKeyRef",
+      "authHeader",
+      "authPrefix",
+      "directEndpoint",
+      "hasLegacyKey",
+      "hasCustomHeaders",
+    ])
+    || typeof value.label !== "string"
+    || (value.enabled !== undefined && typeof value.enabled !== "boolean")
+    || (value.offerings !== undefined && (!Array.isArray(value.offerings) || !value.offerings.every(isAdminModelOffering)))
+    || (value.fallbacks !== undefined && !isUniqueStringIdArray(value.fallbacks))
+    || (value.maxTokens !== undefined && !isPositiveInteger(value.maxTokens))
+    || (value.temperature !== undefined && !isFiniteNumber(value.temperature))
+    || (value.allowUserKey !== undefined && typeof value.allowUserKey !== "boolean")
+    || (value.requiresUserKey !== undefined && typeof value.requiresUserKey !== "boolean")
+    || (value.supportsImages !== undefined && typeof value.supportsImages !== "boolean")
+    || (value.supportsTools !== undefined && typeof value.supportsTools !== "boolean")
+    || (value.hasLegacyKey !== undefined && typeof value.hasLegacyKey !== "boolean")
+    || (value.hasCustomHeaders !== undefined && typeof value.hasCustomHeaders !== "boolean")) {
+    return false;
+  }
+  const hasLegacyRoute = value.type !== undefined || value.baseUrl !== undefined || value.model !== undefined;
+  if (hasLegacyRoute) {
+    if ((value.type !== "openai-chat" && value.type !== "anthropic-messages")
+      || !isSafeHttpUrl(value.baseUrl)
+      || !isNonEmptyString(value.model)) return false;
+  }
+  return (value.apiKeyRef === undefined || isRouteSecretRef(value.apiKeyRef))
+    && (value.authHeader === undefined || isNonEmptyString(value.authHeader))
+    && (value.authPrefix === undefined || typeof value.authPrefix === "string")
+    && (value.directEndpoint === undefined || typeof value.directEndpoint === "boolean");
 }
 
-function isSanitizedAdminProviderConfig(value: unknown): value is Record<string, unknown> {
+function isSanitizedAdminProviderConfig(value: unknown): value is AdminProviderConfig {
   return isRecord(value)
+    && !hasForbiddenSecretField(value)
+    && hasOnlyKeys(value, [
+      "label",
+      "type",
+      "baseUrl",
+      "enabled",
+      "apiKeyRef",
+      "authHeader",
+      "authPrefix",
+      "directEndpoint",
+      "allowUserKey",
+      "requiresUserKey",
+      "supportsImages",
+      "supportsTools",
+      "concurrency",
+      "maxConcurrent",
+      "queueTimeoutMs",
+      "priority",
+      "hasLegacyKey",
+      "hasCustomHeaders",
+      "headerSourceRouteId",
+    ])
     && typeof value.label === "string"
     && (value.type === "openai-chat" || value.type === "anthropic-messages")
-    && isNonEmptyString(value.baseUrl)
+    && isSafeHttpUrl(value.baseUrl)
     && (value.enabled === undefined || typeof value.enabled === "boolean")
+    && (value.apiKeyRef === undefined || isRouteSecretRef(value.apiKeyRef))
+    && (value.authHeader === undefined || isNonEmptyString(value.authHeader))
+    && (value.authPrefix === undefined || typeof value.authPrefix === "string")
+    && (value.directEndpoint === undefined || typeof value.directEndpoint === "boolean")
+    && (value.allowUserKey === undefined || typeof value.allowUserKey === "boolean")
+    && (value.requiresUserKey === undefined || typeof value.requiresUserKey === "boolean")
+    && (value.supportsImages === undefined || typeof value.supportsImages === "boolean")
+    && (value.supportsTools === undefined || typeof value.supportsTools === "boolean")
+    && (
+      value.concurrency === undefined
+      || value.concurrency === "unlimited"
+      || value.concurrency === "exclusive"
+      || value.concurrency === "bounded"
+    )
+    && (value.maxConcurrent === undefined || (isPositiveInteger(value.maxConcurrent) && value.maxConcurrent <= 100))
+    && (value.concurrency !== "bounded" || value.maxConcurrent !== undefined)
+    && (value.queueTimeoutMs === undefined || (isNonNegativeInteger(value.queueTimeoutMs) && value.queueTimeoutMs <= 10_000))
+    && (value.priority === undefined || isFiniteNumber(value.priority))
     && (value.hasLegacyKey === undefined || typeof value.hasLegacyKey === "boolean")
     && (value.hasCustomHeaders === undefined || typeof value.hasCustomHeaders === "boolean")
-    && !hasOwn(value, "apiKey")
-    && !hasOwn(value, "headers");
+    && (value.headerSourceRouteId === undefined || isNonEmptyString(value.headerSourceRouteId));
+}
+
+function isAdminModelOffering(value: unknown): value is AdminModelOffering {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["providerId", "model", "enabled", "priority", "supportsImages", "supportsTools"])
+    && isProviderId(value.providerId)
+    && isNonEmptyString(value.model)
+    && value.model.length <= 200
+    && (value.enabled === undefined || typeof value.enabled === "boolean")
+    && (value.priority === undefined || isFiniteNumber(value.priority))
+    && (value.supportsImages === undefined || typeof value.supportsImages === "boolean")
+    && (value.supportsTools === undefined || typeof value.supportsTools === "boolean");
+}
+
+function isAdminRouteSecretMetadata(value: unknown): value is AdminRouteSecretMetadata {
+  return isRecord(value)
+    && !hasForbiddenSecretField(value)
+    && hasOnlyKeys(value, [
+      "apiKeyRef",
+      "source",
+      "status",
+      "managed",
+      "environmentFallback",
+      "updatedAt",
+      "revision",
+      "message",
+    ])
+    && isRouteSecretRef(value.apiKeyRef)
+    && (value.source === "managed" || value.source === "worker" || value.source === "legacy" || value.source === "missing")
+    && (value.status === "configured" || value.status === "unavailable" || value.status === "missing")
+    && typeof value.managed === "boolean"
+    && typeof value.environmentFallback === "boolean"
+    && (value.updatedAt === undefined || isIsoDate(value.updatedAt))
+    && (value.revision === undefined || isNonEmptyString(value.revision))
+    && (value.message === undefined || isNonEmptyString(value.message));
+}
+
+function isAdminReliabilityProvider(value: unknown): value is AdminReliabilityProvider {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      "providerId",
+      "label",
+      "enabled",
+      "credentialStatus",
+      "concurrency",
+      "maxConcurrent",
+      "queueTimeoutMs",
+      "routes",
+    ])
+    || !isProviderId(value.providerId)
+    || !isNonEmptyString(value.label)
+    || typeof value.enabled !== "boolean"
+    || (
+      value.credentialStatus !== "configured"
+      && value.credentialStatus !== "missing"
+      && value.credentialStatus !== "unavailable"
+      && value.credentialStatus !== "user_key_required"
+    )
+    || (value.concurrency !== "unlimited" && value.concurrency !== "exclusive" && value.concurrency !== "bounded")
+    || (value.maxConcurrent !== undefined && (!isPositiveInteger(value.maxConcurrent) || value.maxConcurrent > 100))
+    || (value.concurrency === "bounded" && value.maxConcurrent === undefined)
+    || !isNonNegativeInteger(value.queueTimeoutMs)
+    || value.queueTimeoutMs > 10_000
+    || !Array.isArray(value.routes)
+    || !value.routes.every(isAdminReliabilityRoute)) {
+    return false;
+  }
+  const routeIds = value.routes.map((route) => route.routeId);
+  return new Set(routeIds).size === routeIds.length;
+}
+
+function isAdminReliabilityRoute(value: unknown): value is AdminReliabilityRoute {
+  return isRecord(value)
+    && hasOnlyKeys(value, [
+      "routeId",
+      "model",
+      "enabled",
+      "attempts",
+      "successes",
+      "averageLatencyMs",
+      "lastOutcome",
+      "observedAt",
+      "lastFallback",
+      "fallbackCount",
+    ])
+    && isNonEmptyString(value.routeId)
+    && isNonEmptyString(value.model)
+    && typeof value.enabled === "boolean"
+    && isNonNegativeInteger(value.attempts)
+    && value.attempts <= 1_000
+    && isNonNegativeInteger(value.successes)
+    && value.successes <= value.attempts
+    && isNonNegativeInteger(value.averageLatencyMs)
+    && value.averageLatencyMs <= 600_000
+    && (value.lastOutcome === undefined || isNonEmptyString(value.lastOutcome))
+    && (value.observedAt === undefined || isIsoDate(value.observedAt))
+    && (value.lastFallback === undefined || typeof value.lastFallback === "boolean")
+    && (value.fallbackCount === undefined || (isNonNegativeInteger(value.fallbackCount) && value.fallbackCount <= value.attempts));
 }
 
 function isAdminSkillConfig(value: unknown): value is AdminSkillConfig {
@@ -953,6 +1368,42 @@ function hasOwn(value: Record<string, unknown>, key: string): boolean {
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === keys.length && keys.every((key) => hasOwn(value, key));
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function hasForbiddenSecretField(value: Record<string, unknown>): boolean {
+  return ["apiKey", "headers", "secret", "ciphertext", "iv", "token", "credential", "credentials"]
+    .some((key) => hasOwn(value, key));
+}
+
+function isProviderId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(value);
+}
+
+function isRouteSecretRef(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(value);
+}
+
+function isSafeHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2_048) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isIsoDate(value: unknown): value is string {
+  return typeof value === "string" && Boolean(value.trim()) && Number.isFinite(Date.parse(value));
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isUniqueStringIdArray(value: unknown): value is string[] {

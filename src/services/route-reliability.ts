@@ -51,6 +51,8 @@ export type ProviderRouteReliabilityRecord = {
   averageLatencyMs: number;
   lastOutcome: RouteReliabilityOutcome;
   observedAt: string;
+  lastFallback?: boolean;
+  fallbackCount?: number;
 };
 
 export async function recordRouteReliability(
@@ -183,6 +185,8 @@ async function recordProviderRouteReliability(
     averageLatencyMs,
     lastOutcome: latest.outcome,
     observedAt: latest.observedAt,
+    lastFallback: latest.fallback,
+    fallbackCount: Math.min(MAX_PROVIDER_QUALITY_SAMPLES, (previous?.fallbackCount || 0) + (latest.fallback ? 1 : 0)),
   };
   await env.CHAT_STORE.put(providerRouteReliabilityKey(args.routeId, providerId), JSON.stringify(record));
 }
@@ -236,6 +240,7 @@ function normalizeProviderRouteReliability(
   const attempts = value.attempts;
   const successes = value.successes;
   const averageLatencyMs = value.averageLatencyMs;
+  const fallbackCount = typeof value.fallbackCount === "number" ? value.fallbackCount : undefined;
   if (
     typeof attempts !== "number"
     || !Number.isInteger(attempts)
@@ -249,6 +254,9 @@ function normalizeProviderRouteReliability(
     || !Number.isFinite(averageLatencyMs)
     || averageLatencyMs < 0
     || averageLatencyMs > 600_000
+    || (value.lastFallback !== undefined && typeof value.lastFallback !== "boolean")
+    || (value.fallbackCount !== undefined
+      && (fallbackCount === undefined || !Number.isInteger(fallbackCount) || fallbackCount < 0 || fallbackCount > attempts))
   ) return null;
   return {
     version: 1,
@@ -260,6 +268,8 @@ function normalizeProviderRouteReliability(
     averageLatencyMs: Math.round(averageLatencyMs),
     lastOutcome: value.lastOutcome,
     observedAt: value.observedAt,
+    ...(value.lastFallback === undefined ? {} : { lastFallback: value.lastFallback }),
+    ...(fallbackCount === undefined ? {} : { fallbackCount }),
   };
 }
 

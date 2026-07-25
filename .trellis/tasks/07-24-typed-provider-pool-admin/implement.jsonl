@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend pre-development checklist and quality gate for typed React administration."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Provider registry, logical offerings, discovery, secret-free projections, and conflict-reset behavior."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Ownership and lifecycle rules for member drafts versus unmounted provider-pool drafts."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Exact client decoders and write-only provider secret boundary."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Storage to Worker API to React projection data-flow review."}

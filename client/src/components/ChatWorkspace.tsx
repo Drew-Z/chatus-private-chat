@@ -7,6 +7,7 @@ import {
   LogOut,
   Menu,
   RefreshCw,
+  RotateCw,
   SendHorizontal,
   Square,
   WifiOff,
@@ -27,7 +28,7 @@ import {
   type SessionProjection,
 } from "../lib/api";
 import { friendlyAgentError } from "../lib/agent-errors";
-import { resolvePendingDraftAction, restoreRejectedDraft } from "../lib/state";
+import { findRetrySourceMessageId, hasVisibleAssistantTextAfterLatestUser, resolvePendingDraftAction, restoreRejectedDraft } from "../lib/state";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MemoryPanel } from "./MemoryPanel";
 import { MessageView, type MessageAction } from "./MessageView";
@@ -124,7 +125,8 @@ export function ChatWorkspace({
   ) => {
     if (busy || accountBusy) throw new Error("请先停止当前任务。");
     setWorkspaceError("");
-    const result = await createAgentConversationBranch(source, {
+    const currentSource = conversationSnapshots.current.get(source.id) || source;
+    const result = await createAgentConversationBranch(currentSource, {
       requestId: `branch-${crypto.randomUUID()}`,
       action,
       sourceMessageId,
@@ -363,6 +365,9 @@ function ConversationChat({
   const [settledSubmission, setSettledSubmission] = useState(0);
   const [waitingElapsed, setWaitingElapsed] = useState(0);
   const [messageActionError, setMessageActionError] = useState("");
+  const [retryBusy, setRetryBusy] = useState(false);
+  const [lastSubmittedText, setLastSubmittedText] = useState("");
+  const messageListRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const wasBusy = useRef(false);
   const submissionGeneration = useRef(0);
@@ -382,7 +387,7 @@ function ConversationChat({
     body: () => ({ routeId, skillIds, chatId: conversation.id }),
   });
   const busy = chat.status === "submitted" || chat.status === "streaming" || chat.isStreaming || chat.isRecovering;
-  const waitingFirstOutput = chat.status === "submitted" && busy;
+  const waitingFirstOutput = busy && !chat.isRecovering && !hasVisibleAssistantTextAfterLatestUser(chat.messages);
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
@@ -429,6 +434,10 @@ function ConversationChat({
   }, [chat.error, chat.status, pendingDraft, settledSubmission]);
 
   useEffect(() => {
+    const container = messageListRef.current;
+    const nearBottom = !container
+      || container.scrollHeight - container.scrollTop - container.clientHeight < 140;
+    if (!nearBottom && !chat.isRecovering) return;
     const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
     window.requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end", behavior }));
   }, [chat.messages, chat.isRecovering]);
@@ -441,15 +450,40 @@ function ConversationChat({
     const submissionId = submissionGeneration.current + 1;
     submissionGeneration.current = submissionId;
     chat.clearError();
+    setLastSubmittedText("");
     setPendingDraft(submittedDraft);
     setInput("");
     try {
       await chat.sendMessage({ text });
     } catch {
+      setLastSubmittedText(submittedDraft);
       setInput((current) => restoreRejectedDraft(current, submittedDraft));
       setPendingDraft(null);
     } finally {
       setSettledSubmission(submissionId);
+    }
+  };
+
+  const retryFailedTurn = async () => {
+    if (!chat.error || retryBusy || busy || blocked || !online) return;
+    const sourceMessageId = findRetrySourceMessageId(chat.messages);
+    if (!sourceMessageId) {
+      if (lastSubmittedText) {
+        chat.clearError();
+        setInput((current) => restoreRejectedDraft(current, lastSubmittedText));
+        setLastSubmittedText("");
+      }
+      return;
+    }
+    setRetryBusy(true);
+    setMessageActionError("");
+    chat.clearError();
+    try {
+      await onBranch(conversation, "resend", sourceMessageId);
+    } catch (error) {
+      setMessageActionError(error instanceof ApiError ? error.message : "重试失败，请稍后再试。");
+    } finally {
+      setRetryBusy(false);
     }
   };
 
@@ -495,7 +529,7 @@ function ConversationChat({
       {!online && <div className="offline-banner" role="status"><WifiOff size={16} /><span>当前离线。已保留草稿，恢复网络后可以继续发送。</span></div>}
       {!routeAvailable && <div className="configuration-banner" role="status">当前没有可用模型线路，请联系管理员完成配置。</div>}
       {messageActionError && <div className="workspace-error" role="alert"><span>{messageActionError}</span><button className="icon-button" type="button" onClick={() => setMessageActionError("")} title="关闭提示" aria-label="关闭提示">×</button></div>}
-      <div className="message-list" aria-live="polite">
+      <div ref={messageListRef} className="message-list" aria-live="polite">
         <div className="message-column">
           {chat.messages.length === 0 && (
             <div className="empty-state">
@@ -529,7 +563,7 @@ function ConversationChat({
       {chat.error && (
         <div className="error-banner" role="alert">
           <span>{friendlyAgentError(chat.error.message, online)}</span>
-          <button className="icon-button" type="button" onClick={() => window.location.reload()} title="重新连接" aria-label="重新连接"><RefreshCw size={16} /></button>
+          <div className="error-actions"><button className="quiet-button icon-text-button" type="button" onClick={() => void retryFailedTurn()} disabled={retryBusy || busy || !online} title="重试这一轮" aria-label="重试这一轮"><RotateCw size={15} /><span>{retryBusy ? "重试中..." : "重试"}</span></button><button className="icon-button" type="button" onClick={() => window.location.reload()} title="重新连接" aria-label="重新连接"><RefreshCw size={16} /></button></div>
         </div>
       )}
       <form className="composer" onSubmit={send}>

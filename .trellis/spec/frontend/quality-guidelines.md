@@ -62,3 +62,5 @@ git diff --check
 - For Agent runtime work, prove the Wrangler binding/export package, per-member instance isolation, unauthenticated/cross-origin denial, and zero provider calls from infrastructure or route diagnostics.
 - For Agent persistence work, prove legacy/Agent memory API consistency, post-migration legacy import, tombstone rejection, and persisted transcript-cleanup retry.
 - For Agent streaming work, prove fallback happens only before visible output, cancellation is forwarded, AI SDK retries are disabled, and integration tests use local fake provider responses only.
+- For typed provider-pool administration, verify provider/model drafts preserve sanitized non-UI fields, conflict reset is visible, reliability data is passive and recent-only, secret inputs are empty write-only password fields, and the admin root has no horizontal overflow at 390px, 480px, 780px, and desktop widths.
+- For chat recovery, verify the failed-turn retry creates a resend branch, edit cancellation returns focus to its opener, and incremental output does not override manual transcript scrolling.

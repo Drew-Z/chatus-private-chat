@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "07-24-typed-provider-pool-admin"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",

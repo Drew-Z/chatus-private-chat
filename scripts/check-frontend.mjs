@@ -68,6 +68,10 @@ const reactMemoryPanel = await readFile(path.join(root, "client/src/components/M
 const reactMessageView = await readFile(path.join(root, "client/src/components/MessageView.tsx"), "utf8");
 const reactAdminApp = await readFile(path.join(root, "client/src/components/AdminApp.tsx"), "utf8");
 const reactAdminWorkspace = await readFile(path.join(root, "client/src/components/AdminWorkspace.tsx"), "utf8");
+const reactProviderAdmin = await readFile(path.join(root, "client/src/components/ProviderAdminPanel.tsx"), "utf8");
+const reactLogicalModelAdmin = await readFile(path.join(root, "client/src/components/LogicalModelAdminPanel.tsx"), "utf8");
+const reactReliabilityAdmin = await readFile(path.join(root, "client/src/components/ReliabilityAdminPanel.tsx"), "utf8");
+const reactAdminProvider = await readFile(path.join(root, "client/src/lib/admin-provider.ts"), "utf8");
 const reactAdminConfig = await readFile(path.join(root, "client/src/lib/admin-config.ts"), "utf8");
 const reactApi = await readFile(path.join(root, "client/src/lib/api.ts"), "utf8");
 const reactApp = await readFile(path.join(root, "client/src/App.tsx"), "utf8");
@@ -89,6 +93,8 @@ assert(reactClient.includes("await chat.sendMessage({ text })"), "React client: 
 assert(reactClient.includes("resolvePendingDraftAction("), "React client: SDK resolve-with-error status must resolve pending drafts explicitly");
 assert(reactClient.includes("const value = input || pendingDraft || \"\""), "React client: a submitted draft must remain device-persisted until the request settles");
 assert(reactClient.includes("restoreRejectedDraft(current, submittedDraft)"), "React client: rejected sends must restore the draft without overwriting newer input");
+assert(reactClient.includes("retryFailedTurn") && reactClient.includes('onBranch(conversation, "resend"'), "React client: failed turns need an in-place retry branch action");
+assert(reactClient.includes("messageListRef") && reactClient.includes("nearBottom"), "React client: streaming scroll must respect manual transcript scrolling");
 assert(reactSidebar.includes("session.tools.map") && reactSidebar.includes("selectedToolIds"), "React sidebar: assigned tools and current Skill activation must remain visible");
 assert(reactSidebar.includes('tool.source === "mcp"'), "React sidebar: MCP tools must remain distinguishable without exposing server details");
 assert(reactSidebar.includes("onRevokeAllSessions") && reactSidebar.includes("onDeleteUserData") && reactSidebar.includes("onExportUserData"), "React sidebar: account data actions are missing");
@@ -99,6 +105,7 @@ assert(reactMemoryPanel.includes("preserveDraft: true"), "React memory: conflict
 assert(reactMemoryPanel.includes("previousFocusRef") && reactMemoryPanel.includes("closeButtonRef.current?.focus()"), "React memory: modal focus must enter and return from the drawer");
 assert(reactMemoryPanel.includes('event.key !== "Tab"') && reactMemoryPanel.includes("panel.querySelectorAll<HTMLElement>"), "React memory: keyboard focus must remain inside the modal drawer");
 assert(reactMessageView.includes("sanitizeMarkdownUrl(part.url)"), "React messages: source URLs must use the Markdown protocol sanitizer");
+assert(reactMessageView.includes("editOpenerRef") && reactMessageView.includes("restoreEditFocus"), "React messages: edit cancellation must restore focus to its originating action");
 assert(reactApp.includes("status: \"authenticated\""), "React client: authenticated session gate is missing");
 assert(reactApp.includes('surface === "admin"'), "React admin: typed route gate is missing");
 assert(reactMain.includes("resolveClientSurface(window.location.pathname)"), "React admin: pathname routing must stay at the composition root");
@@ -117,9 +124,19 @@ assert(reactAdminWorkspace.includes("恢复默认配置") && reactAdminWorkspace
 assert(reactAdminWorkspace.includes("<dialog") && reactAdminWorkspace.includes("dialog.showModal()") && reactAdminWorkspace.includes("previousFocusRef.current?.focus()"), "React admin: member lifecycle dialog must be modal and restore focus");
 assert(reactAdminWorkspace.includes('readOnly\n                autoComplete="off"') && reactAdminWorkspace.includes('aria-label="复制访问码"'), "React admin: the one-time access code needs a selectable copy fallback");
 assert(!reactAdminWorkspace.includes("/api/admin/access-codes") && !reactAdminWorkspace.includes("generateAccessCode") && !reactAdminWorkspace.includes("randomToken"), "React admin: typed lifecycle must not read raw access codes or generate credentials in the browser");
+assert(reactAdminWorkspace.includes("ProviderAdminPanel") && reactAdminWorkspace.includes("LogicalModelAdminPanel") && reactAdminWorkspace.includes("ReliabilityAdminPanel"), "React admin: typed provider-pool views are missing");
+assert(reactAdminWorkspace.includes("放弃这些修改") && reactAdminWorkspace.includes("setPoolDirty(false)"), "React admin: leaving a pool editor must explicitly discard and clear its local dirty state");
+assert(reactProviderAdmin.includes("createProviderDraft") && reactProviderAdmin.includes("使用服务器版本"), "React admin: provider drafts need shared normalization and an explicit conflict reset");
+assert(reactProviderAdmin.includes('type="password"') && (reactProviderAdmin.match(/setSecretValue\(\"\"\)/g) || []).length >= 2, "React admin: provider credentials must be write-only and cleared after mutations");
+assert(reactProviderAdmin.includes("secretCanEdit") && reactProviderAdmin.includes("hasProviderIdConflict"), "React admin: provider key writes and renames must stay scoped and collision-safe");
+assert(reactLogicalModelAdmin.includes("createLogicalModelDraft") && reactLogicalModelAdmin.includes("使用服务器版本"), "React admin: logical-model drafts need shared normalization and an explicit conflict reset");
+assert(reactLogicalModelAdmin.includes("hasLogicalModelIdConflict") && reactLogicalModelAdmin.includes("图片能力") && reactLogicalModelAdmin.includes("工具能力"), "React admin: logical-model offering edits need collision guards and capability overrides");
+assert(reactReliabilityAdmin.includes("fetchAdminReliability()") && reactReliabilityAdmin.includes("真实任务被动记录") && !reactReliabilityAdmin.includes("discoverAdminProviderModels"), "React admin: reliability must remain passive and model-call free");
+assert(reactAdminProvider.includes("...(provider || {})") && reactAdminProvider.includes("...(route || {})"), "React admin: draft helpers must retain sanitized fields that are not rendered as controls");
 assert(reactApi.includes("hasExactKeys(value, [\"member\", \"accessCode\", \"accessRevision\", \"sessionRevocation\"])") && reactApi.includes("isAdminMemberRevokeResponse"), "React admin: member lifecycle responses need strict secret-aware decoders");
 assert(reactApi.includes("isAdminMemberConfigRemovalResponse") && reactApi.includes("isAdminMemberSessionsResponse") && reactApi.includes('hasExactKeys(value, ["ok", "label", "revoked", "complete"])'), "React admin: member reset/session responses need strict decoders");
 assert(reactApi.includes('"/api/sessions/revoke-all"') && reactApi.includes('"/api/user-data"') && reactApi.includes('"/api/user-data/export"'), "React client: user session, deletion, and export APIs are missing");
+assert(reactApi.includes("fetchAdminReliability") && reactApi.includes('"/api/admin/reliability"'), "React admin: passive reliability API wrapper is missing");
 assert(reactApi.includes("isUserDataMutationResponse") && reactApi.includes('hasExactKeys(value, ["ok", "revoked"])'), "React client: user data mutations need exact secret-free response validation");
 assert(reactApi.includes("isUserDataExport") && reactApi.includes("new TextEncoder().encode(text)"), "React client: user data downloads need exact bounded JSON validation");
 assert(reactAdminConfig.includes("routesDirty: false") && reactAdminConfig.includes("if (draft.routesDirty)"), "React admin: untouched route assignments must survive capability-only saves");
@@ -145,6 +162,7 @@ assert(workerScript.includes('fetchRewrittenAsset(request, env, url, "/legacy/")
 assert(workerScript.includes('env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html"'), "Worker: React default and legacy rollback selection is missing");
 assert(workerScript.includes('url.pathname === "/react-chat/admin"') && workerScript.includes('fetchRewrittenAsset(request, env, url, "/react-chat/")'), "Worker: typed admin shell fallback must preserve the admin pathname without an Assets index redirect");
 assert(workerScript.includes('url.pathname === "/api/admin/members"'), "Worker: typed admin member projection is missing");
+assert(workerScript.includes('url.pathname === "/api/admin/reliability"') && workerScript.includes("isRecentProviderRouteReliability"), "Worker: typed reliability must expose only recent passive provider-pair records");
 assert(workerScript.includes("handleCreateAdminMemberAccess") && workerScript.includes("handleRotateAdminMemberAccess") && workerScript.includes("handleRevokeAdminMemberAccess"), "Worker: narrow member lifecycle endpoints are missing");
 assert(workerScript.includes("handleRemoveAdminMemberConfig") && workerScript.includes("requireConfigMutationSnapshot"), "Worker: member configuration removal must be revision checked");
 assert(workerScript.includes('url.pathname === "/api/user-data/export"') && workerScript.includes("handleExportUserData"), "Worker: authenticated user data export endpoint is missing");

@@ -1,0 +1,399 @@
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { KeyRound, Plus, RefreshCw, RotateCcw, Save, Search, Trash2, WandSparkles, X } from "lucide-react";
+import {
+  ApiError,
+  discoverAdminProviderModels,
+  fetchAdminConfig,
+  fetchAdminRouteSecrets,
+  putAdminConfig,
+  putAdminRouteSecret,
+  deleteAdminRouteSecret,
+  type AdminConfigSnapshot,
+  type AdminRouteSecretsSnapshot,
+} from "../lib/api";
+import {
+  addDiscoveredModels,
+  applyProviderDraft,
+  canDeleteProvider,
+  createProviderDraft,
+  hasProviderIdConflict,
+  projectAdminLogicalModels,
+  projectAdminProviders,
+  validateProviderDraft,
+  type ProviderDraft,
+} from "../lib/admin-provider";
+
+type Notice = { kind: "success" | "warning" | "error"; text: string };
+
+type ProviderAdminPanelProps = {
+  snapshot: AdminConfigSnapshot;
+  onSnapshot: (snapshot: AdminConfigSnapshot) => void;
+  onSessionExpired: () => void;
+  onDirtyChange: (dirty: boolean) => void;
+  onNotice: (notice: Notice | null) => void;
+  resetKey?: number;
+};
+
+export function ProviderAdminPanel({
+  snapshot,
+  onSnapshot,
+  onSessionExpired,
+  onDirtyChange,
+  onNotice,
+  resetKey = 0,
+}: ProviderAdminPanelProps) {
+  const [secrets, setSecrets] = useState<AdminRouteSecretsSnapshot | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<ProviderDraft | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [secretValue, setSecretValue] = useState("");
+  const [discoveryOpen, setDiscoveryOpen] = useState(false);
+  const [discoveryProviderId, setDiscoveryProviderId] = useState("");
+  const [discoveryModels, setDiscoveryModels] = useState<string[]>([]);
+  const [discoverySelected, setDiscoverySelected] = useState<string[]>([]);
+  const [discoverySearch, setDiscoverySearch] = useState("");
+  const [discoveryRouteId, setDiscoveryRouteId] = useState("");
+  const [discoveryBusy, setDiscoveryBusy] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  const providers = useMemo(() => projectAdminProviders(snapshot.config, secrets?.items || []), [snapshot.config, secrets]);
+  const logicalModels = useMemo(() => projectAdminLogicalModels(snapshot.config), [snapshot.config]);
+  const selectedProvider = providers.find((provider) => provider.id === selectedId) || null;
+  const secretRef = draft?.apiKeyRef?.trim() || "";
+  const selectedSecret = secretRef
+    ? secrets?.items.find((item) => item.apiKeyRef === secretRef)
+    : undefined;
+  const secretCanEdit = Boolean(
+    secretRef
+      && selectedId !== "__new__"
+      && selectedProvider
+      && selectedProvider.apiKeyRef === secretRef,
+  );
+  const visibleDiscoveryModels = discoveryModels.filter((model) => model.toLocaleLowerCase().includes(discoverySearch.trim().toLocaleLowerCase()));
+
+  useEffect(() => {
+    void refreshSecrets();
+  }, []);
+
+  useEffect(() => {
+    setSecretValue("");
+  }, [secretRef]);
+
+  useEffect(() => {
+    const first = Object.keys(snapshot.config.providers).sort((a, b) => a.localeCompare(b))[0] || null;
+    if (!selectedId || (!Object.prototype.hasOwnProperty.call(snapshot.config.providers, selectedId) && selectedId !== "__new__")) {
+      setSelectedId(first);
+      setDraft(first ? createProviderDraft(snapshot.config.providers[first], first) : null);
+      setDirty(false);
+      setConflict(false);
+      onDirtyChange(false);
+    } else if (!dirty && selectedId !== "__new__") {
+      const provider = snapshot.config.providers[selectedId];
+      if (provider) setDraft(createProviderDraft(provider, selectedId));
+    }
+  }, [snapshot.revision, resetKey]);
+
+  useEffect(() => {
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
+
+  useEffect(() => {
+    if (!discoveryOpen) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, [discoveryOpen]);
+
+  async function refreshSecrets() {
+    setSecretValue("");
+    try {
+      setSecrets(await fetchAdminRouteSecrets());
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      else onNotice({ kind: "warning", text: getErrorMessage(error, "暂时无法读取密钥状态。") });
+    }
+  }
+
+  function selectProvider(id: string) {
+    if (busy || discoveryBusy) return;
+    if (dirty && !window.confirm("放弃当前未保存的服务商修改？")) return;
+    if (id === "__new__") {
+      setSelectedId("__new__");
+      setDraft(createProviderDraft(undefined, ""));
+    } else {
+      const provider = snapshot.config.providers[id];
+      if (!provider) return;
+      setSelectedId(id);
+      setDraft(createProviderDraft(provider, id));
+    }
+    setDirty(false);
+    setConflict(false);
+    setSecretValue("");
+    onNotice(null);
+  }
+
+  function updateDraft(update: (current: ProviderDraft) => ProviderDraft) {
+    if (!draft || busy) return;
+    setDraft(update(draft));
+    setDirty(true);
+    onNotice(null);
+  }
+
+  async function saveProvider(event?: FormEvent) {
+    event?.preventDefault();
+    if (!draft || busy) return;
+    const validation = validateProviderDraft(draft);
+    if (!validation.ok) {
+      onNotice({ kind: "error", text: validation.message });
+      return;
+    }
+    if (selectedId === "__new__" && Object.prototype.hasOwnProperty.call(snapshot.config.providers, draft.id)) {
+      onNotice({ kind: "error", text: "这个服务商 ID 已存在，请换一个。" });
+      return;
+    }
+    if (hasProviderIdConflict(snapshot.config, selectedId === "__new__" ? null : selectedId, draft.id)) {
+      onNotice({ kind: "error", text: "改名后的服务商 ID 已存在，请换一个。" });
+      return;
+    }
+    setBusy(true);
+    onNotice(null);
+    try {
+      const config = applyProviderDraft(snapshot.config, selectedId === "__new__" ? null : selectedId, draft);
+      const next = await putAdminConfig(config, snapshot.revision);
+      onSnapshot(next);
+      setSelectedId(draft.id);
+      setDraft(createProviderDraft(next.config.providers[draft.id], draft.id));
+      setDirty(false);
+      setConflict(false);
+      onNotice({ kind: "success", text: "服务商配置已保存。" });
+    } catch (error) {
+      await handleConfigError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteProvider() {
+    if (!selectedProvider || busy) return;
+    const guard = canDeleteProvider(snapshot.config, selectedProvider.id);
+    if (!guard.ok) {
+      onNotice({ kind: "warning", text: `不能删除，仍被逻辑模型引用：${guard.referencedBy.join("、")}` });
+      return;
+    }
+    if (!window.confirm(`删除服务商「${selectedProvider.label}」？`)) return;
+    setBusy(true);
+    try {
+      const providers = { ...snapshot.config.providers };
+      delete providers[selectedProvider.id];
+      const next = await putAdminConfig({ ...snapshot.config, providers }, snapshot.revision);
+      onSnapshot(next);
+      const nextId = Object.keys(next.config.providers).sort()[0] || null;
+      setSelectedId(nextId);
+      setDraft(nextId ? createProviderDraft(next.config.providers[nextId], nextId) : null);
+      setDirty(false);
+      setConflict(false);
+      onNotice({ kind: "success", text: "服务商已删除。" });
+    } catch (error) {
+      await handleConfigError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveSecret() {
+    const ref = secretRef;
+    if (!secretCanEdit || !secretValue.trim() || busy) return;
+    setBusy(true);
+    try {
+      const result = await putAdminRouteSecret(ref, secretValue.trim(), selectedSecret?.revision);
+      setSecrets((current) => current ? {
+        ...current,
+        items: [...current.items.filter((item) => item.apiKeyRef !== ref), result.item].sort((a, b) => a.apiKeyRef.localeCompare(b.apiKeyRef)),
+      } : current);
+      setSecretValue("");
+      onNotice({ kind: "success", text: "密钥已保存，输入框已清空。" });
+    } catch (error) {
+      setSecretValue("");
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      else onNotice({ kind: "error", text: getErrorMessage(error, "密钥保存失败。") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSecret() {
+    const ref = secretRef;
+    if (!secretCanEdit || busy || !selectedSecret?.managed) return;
+    if (!window.confirm("删除这个托管密钥？")) return;
+    setBusy(true);
+    try {
+      const result = await deleteAdminRouteSecret(ref, selectedSecret.revision);
+      setSecrets((current) => current ? {
+        ...current,
+        items: [...current.items.filter((item) => item.apiKeyRef !== ref), result.item],
+      } : current);
+      setSecretValue("");
+      onNotice({ kind: "success", text: "托管密钥已删除。" });
+    } catch (error) {
+      setSecretValue("");
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      else onNotice({ kind: "error", text: getErrorMessage(error, "密钥删除失败。") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openDiscovery() {
+    if (!selectedProvider || selectedId === "__new__" || busy) return;
+    setDiscoveryProviderId(selectedProvider.id);
+    setDiscoveryModels([]);
+    setDiscoverySelected([]);
+    setDiscoverySearch("");
+    setDiscoveryRouteId("");
+    setDiscoveryOpen(true);
+    setDiscoveryBusy(true);
+    try {
+      const result = await discoverAdminProviderModels(selectedProvider.id);
+      setDiscoveryModels(result.models);
+    } catch (error) {
+      setDiscoveryOpen(false);
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      else onNotice({ kind: "error", text: getErrorMessage(error, "模型发现失败。") });
+    } finally {
+      setDiscoveryBusy(false);
+    }
+  }
+
+  async function addSelectedModels() {
+    if (!discoverySelected.length || discoveryBusy) return;
+    setDiscoveryBusy(true);
+    try {
+      const result = addDiscoveredModels(snapshot.config, discoveryProviderId, discoverySelected, discoveryRouteId || undefined);
+      if (!result.routeIds.length) {
+        onNotice({ kind: "warning", text: "没有可添加的模型，可能是服务商已在目标逻辑模型中存在。" });
+        return;
+      }
+      const next = await putAdminConfig(result.config, snapshot.revision);
+      onSnapshot(next);
+      setDiscoveryOpen(false);
+      onNotice({ kind: "success", text: `已添加 ${result.routeIds.length} 个逻辑模型。` });
+    } catch (error) {
+      await handleConfigError(error);
+    } finally {
+      setDiscoveryBusy(false);
+    }
+  }
+
+  async function handleConfigError(error: unknown) {
+    if (error instanceof ApiError && error.status === 401) {
+      onSessionExpired();
+      return;
+    }
+    if (error instanceof ApiError && error.code === "config_conflict") {
+      try {
+        const latest = await fetchAdminConfig();
+        onSnapshot(latest);
+        setConflict(true);
+        onNotice({ kind: "warning", text: "配置已被其他窗口更新；当前服务商草稿仍保留，请确认后重新保存。" });
+      } catch (refreshError) {
+        onNotice({ kind: "error", text: getErrorMessage(refreshError, "配置冲突后无法刷新服务器版本。") });
+      }
+      return;
+    }
+    onNotice({ kind: "error", text: getErrorMessage(error, "配置保存失败。") });
+  }
+
+  function useServerVersion() {
+    const ids = Object.keys(snapshot.config.providers).sort((left, right) => left.localeCompare(right));
+    const nextId = selectedId && selectedId !== "__new__" && Object.prototype.hasOwnProperty.call(snapshot.config.providers, selectedId)
+      ? selectedId
+      : ids[0] || null;
+    setSelectedId(nextId);
+    setDraft(nextId ? createProviderDraft(snapshot.config.providers[nextId], nextId) : null);
+    setDirty(false);
+    setConflict(false);
+    setSecretValue("");
+    onDirtyChange(false);
+    onNotice({ kind: "success", text: "已切换到服务器版本，当前草稿已放弃。" });
+  }
+
+  const canEdit = Boolean(draft) && !busy;
+  return (
+    <section className="admin-pool-panel" aria-labelledby="provider-admin-title">
+      <div className="admin-pool-sidebar">
+        <div className="admin-pool-sidebar-head">
+          <div>
+            <p className="eyebrow">PROVIDER POOL</p>
+            <h1 id="provider-admin-title">服务商</h1>
+          </div>
+          <button className="icon-button" type="button" onClick={() => selectProvider("__new__")} disabled={busy} aria-label="新增服务商" title="新增服务商"><Plus size={17} /></button>
+        </div>
+        <div className="admin-pool-list" role="listbox" aria-label="服务商列表">
+          {providers.map((provider) => (
+            <button className={`admin-pool-list-item ${provider.id === selectedId ? "active" : ""}`} type="button" key={provider.id} onClick={() => selectProvider(provider.id)} aria-selected={provider.id === selectedId}>
+              <span><strong>{provider.label}</strong><small>{provider.id}</small></span>
+              <em className={`status-dot ${provider.credentialStatus}`}>{provider.credentialStatus === "configured" ? "已配置" : provider.credentialStatus === "missing" ? "缺密钥" : provider.credentialStatus === "unavailable" ? "不可用" : "需用户密钥"}</em>
+            </button>
+          ))}
+          {!providers.length && <p className="admin-pool-empty">还没有服务商</p>}
+        </div>
+      </div>
+
+      <div className="admin-pool-editor">
+        {!draft ? (
+          <div className="admin-pool-empty-state"><p>暂无服务商配置</p><button className="primary-button icon-text-button" type="button" onClick={() => selectProvider("__new__")}><Plus size={16} /><span>新增服务商</span></button></div>
+        ) : (
+          <>
+            <div className="admin-pool-editor-head">
+              <div><p className="eyebrow">PROVIDER INSTANCE</p><h2>{selectedId === "__new__" ? "新增服务商" : draft.label || draft.id}</h2><p className="admin-pool-meta">一个服务商可以被多个逻辑模型复用，凭据不会复制到模型行。</p></div>
+              <div className="admin-pool-actions">
+                {conflict && <button className="quiet-button icon-text-button" type="button" onClick={useServerVersion}><RotateCcw size={15} /><span>使用服务器版本</span></button>}
+                {selectedProvider && <button className="quiet-button icon-text-button" type="button" onClick={() => void openDiscovery()} disabled={!canEdit}><WandSparkles size={15} /><span>发现模型</span></button>}
+                {selectedProvider && <button className="quiet-button danger icon-text-button" type="button" onClick={() => void deleteProvider()} disabled={!canEdit}><Trash2 size={15} /><span>删除</span></button>}
+                <button className="primary-button icon-text-button" type="button" onClick={() => void saveProvider()} disabled={!canEdit || !dirty}><Save size={15} /><span>{busy ? "保存中..." : "保存服务商"}</span></button>
+              </div>
+            </div>
+            <form className="admin-pool-form" onSubmit={(event) => void saveProvider(event)}>
+              <div className="admin-form-grid two">
+                <label><span>服务商 ID</span><input value={draft.id} onChange={(event) => updateDraft((current) => ({ ...current, id: event.target.value }))} autoComplete="off" maxLength={80} /></label>
+                <label><span>显示名称</span><input value={draft.label} onChange={(event) => updateDraft((current) => ({ ...current, label: event.target.value }))} maxLength={120} /></label>
+                <label><span>协议</span><select value={draft.type} onChange={(event) => updateDraft((current) => ({ ...current, type: event.target.value as ProviderDraft["type"] }))}><option value="openai-chat">OpenAI 兼容</option><option value="anthropic-messages">Anthropic Messages</option></select></label>
+                <label><span>Base URL</span><input value={draft.baseUrl} onChange={(event) => updateDraft((current) => ({ ...current, baseUrl: event.target.value }))} inputMode="url" /></label>
+                <label><span>API Key Ref</span><input value={draft.apiKeyRef || ""} onChange={(event) => updateDraft((current) => ({ ...current, apiKeyRef: event.target.value || undefined }))} autoComplete="off" maxLength={64} placeholder="例如 SHARED_KEY" /></label>
+                <label><span>并发策略</span><select value={draft.concurrency || "unlimited"} onChange={(event) => updateDraft((current) => ({ ...current, concurrency: event.target.value as ProviderDraft["concurrency"] }))}><option value="unlimited">不限并发</option><option value="exclusive">独占（一次一位用户）</option><option value="bounded">有上限</option></select></label>
+                {draft.concurrency === "bounded" && <label><span>最大并发</span><input type="number" min={1} max={100} value={draft.maxConcurrent || 1} onChange={(event) => updateDraft((current) => ({ ...current, maxConcurrent: Number(event.target.value) }))} /></label>}
+                <label><span>繁忙等待（毫秒）</span><input type="number" min={0} max={10000} value={draft.queueTimeoutMs || 0} onChange={(event) => updateDraft((current) => ({ ...current, queueTimeoutMs: Number(event.target.value) }))} /></label>
+                <label><span>管理员优先级</span><input type="number" value={draft.priority || 0} onChange={(event) => updateDraft((current) => ({ ...current, priority: Number(event.target.value) }))} /></label>
+              </div>
+              <fieldset className="admin-check-grid"><legend>能力与策略</legend><label><input type="checkbox" checked={draft.enabled !== false} onChange={(event) => updateDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>启用服务商</span></label><label><input type="checkbox" checked={draft.directEndpoint === true} onChange={(event) => updateDraft((current) => ({ ...current, directEndpoint: event.target.checked }))} /><span>直接请求端点</span></label><label><input type="checkbox" checked={draft.supportsImages !== false} onChange={(event) => updateDraft((current) => ({ ...current, supportsImages: event.target.checked }))} /><span>支持图片</span></label><label><input type="checkbox" checked={draft.supportsTools === true} onChange={(event) => updateDraft((current) => ({ ...current, supportsTools: event.target.checked }))} /><span>支持工具</span></label><label><input type="checkbox" checked={draft.allowUserKey !== false} onChange={(event) => updateDraft((current) => ({ ...current, allowUserKey: event.target.checked }))} /><span>允许用户密钥</span></label><label><input type="checkbox" checked={draft.requiresUserKey === true} onChange={(event) => updateDraft((current) => ({ ...current, requiresUserKey: event.target.checked }))} /><span>必须使用用户密钥</span></label></fieldset>
+            </form>
+
+            <section className="admin-secret-box" aria-labelledby="provider-secret-title">
+              <div><p className="eyebrow">CREDENTIAL VAULT</p><h3 id="provider-secret-title">密钥状态</h3><p>{selectedSecret ? `${selectedSecret.source === "managed" ? "托管密钥" : "Worker Secret"} · ${selectedSecret.status}` : draft.apiKeyRef ? "尚未读取到此 Ref 的状态" : "先填写 API Key Ref，再保存服务商配置"}</p></div>
+              <div className="admin-secret-actions"><input type="password" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder={secretCanEdit ? "只写入，不会回显" : "先保存服务商和 API Key Ref"} autoComplete="new-password" disabled={!secretCanEdit || busy} /><button className="quiet-button icon-text-button" type="button" onClick={() => void saveSecret()} disabled={!secretCanEdit || !secretValue.trim() || busy}><KeyRound size={15} /><span>保存密钥</span></button>{selectedSecret?.managed && <button className="quiet-button danger icon-text-button" type="button" onClick={() => void removeSecret()} disabled={!secretCanEdit || busy}><Trash2 size={15} /><span>删除托管密钥</span></button>}</div>
+            </section>
+
+            <section className="admin-reference-box"><h3>已被逻辑模型引用</h3><div className="admin-reference-list">{selectedProvider?.referencedBy.length ? selectedProvider.referencedBy.map((routeId) => <span key={routeId}>{routeId}</span>) : <span className="muted">尚未引用</span>}</div></section>
+          </>
+        )}
+      </div>
+
+      <dialog ref={dialogRef} className="admin-discovery-dialog" onCancel={() => setDiscoveryOpen(false)}>
+        <div className="admin-dialog-head"><div><p className="eyebrow">MODEL DISCOVERY</p><h2>从 {discoveryProviderId} 发现模型</h2></div><button className="icon-button" type="button" onClick={() => setDiscoveryOpen(false)} aria-label="关闭模型发现" title="关闭"><X size={17} /></button></div>
+        <label className="admin-discovery-search"><Search size={15} /><input value={discoverySearch} onChange={(event) => setDiscoverySearch(event.target.value)} placeholder="搜索已发现的模型" autoFocus /></label>
+        <div className="admin-discovery-list">{discoveryBusy && !discoveryModels.length ? <p className="admin-pool-empty">正在读取模型列表...</p> : visibleDiscoveryModels.map((model) => <label key={model}><input type="checkbox" checked={discoverySelected.includes(model)} onChange={(event) => setDiscoverySelected((current) => event.target.checked ? [...current, model] : current.filter((item) => item !== model))} /><span>{model}</span></label>)}{!discoveryBusy && !visibleDiscoveryModels.length && <p className="admin-pool-empty">没有匹配模型</p>}</div>
+        <label className="admin-discovery-target"><span>第一个模型加入</span><select value={discoveryRouteId} onChange={(event) => setDiscoveryRouteId(event.target.value)}><option value="">新建逻辑模型</option>{logicalModels.map((model) => <option value={model.id} key={model.id}>{model.label} · {model.id}</option>)}</select></label>
+        <div className="admin-dialog-actions"><span>{discoverySelected.length} 个已选择</span><button className="quiet-button" type="button" onClick={() => setDiscoveryOpen(false)}>取消</button><button className="primary-button icon-text-button" type="button" onClick={() => void addSelectedModels()} disabled={!discoverySelected.length || discoveryBusy}><Plus size={15} /><span>添加到池子</span></button></div>
+      </dialog>
+    </section>
+  );
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : error instanceof Error ? error.message : fallback;
+}

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  isRecentProviderRouteReliability,
   isRecentRouteReliability,
   loadProviderRouteReliability,
   loadRouteReliability,
@@ -174,11 +175,32 @@ describe("route reliability service", () => {
       attempts: 2,
       successes: 1,
       lastOutcome: "upstream_server",
+      lastFallback: true,
+      fallbackCount: 1,
     });
     await expect(loadProviderRouteReliability(env, "reasoning", "provider-b")).resolves.toMatchObject({
       attempts: 1,
       successes: 1,
       lastOutcome: "success",
+      lastFallback: false,
+      fallbackCount: 0,
     });
+  });
+
+  it("treats expired provider-pair quality as unknown", async () => {
+    const expired = {
+      version: 1,
+      source: "real_task",
+      routeId: "old-route",
+      providerId: "old-provider",
+      attempts: 4,
+      successes: 3,
+      averageLatencyMs: 180,
+      lastOutcome: "success" as const,
+      observedAt: "2026-07-01T00:00:00.000Z",
+      lastFallback: false,
+      fallbackCount: 0,
+    };
+    expect(isRecentProviderRouteReliability(expired, Date.parse("2026-07-17T00:00:00.000Z"))).toBe(false);
   });
 });

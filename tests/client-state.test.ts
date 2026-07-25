@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { friendlyAgentError } from "../client/src/lib/agent-errors";
 import {
+  findRetrySourceMessageId,
+  hasVisibleAssistantTextAfterLatestUser,
   restoreRejectedDraft,
   resolveLoadedMemoryDraft,
   resolvePendingDraftAction,
@@ -23,6 +25,26 @@ describe("React client state recovery", () => {
     expect(resolvePendingDraftAction("submitted", false, false)).toBe("keep");
     expect(resolvePendingDraftAction("error", true, true)).toBe("restore");
     expect(resolvePendingDraftAction("ready", false, true)).toBe("clear");
+  });
+
+  it("retries from the latest user turn without treating an assistant error as the source", () => {
+    expect(findRetrySourceMessageId([
+      { id: "user-1", role: "user" },
+      { id: "assistant-1", role: "assistant" },
+      { id: "user-2", role: "user" },
+    ])).toBe("user-2");
+    expect(findRetrySourceMessageId([{ id: "assistant-1", role: "assistant" }])).toBeUndefined();
+  });
+
+  it("keeps the waiting state until the current turn has visible assistant text", () => {
+    expect(hasVisibleAssistantTextAfterLatestUser([
+      { role: "assistant", parts: [{ type: "text", text: "previous reply" }] },
+      { role: "user", parts: [{ type: "text", text: "new request" }] },
+    ])).toBe(false);
+    expect(hasVisibleAssistantTextAfterLatestUser([
+      { role: "user", parts: [{ type: "text", text: "new request" }] },
+      { role: "assistant", parts: [{ type: "text", text: "first visible chunk" }] },
+    ])).toBe(true);
   });
 
   it("turns structured Agent failures into actionable messages", () => {

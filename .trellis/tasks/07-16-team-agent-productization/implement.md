@@ -92,13 +92,13 @@ The remaining experience work should run in the following order. Each stage is i
 
 #### D. Typed Provider-pool Administration
 
-- [ ] Add typed-admin navigation for Providers, Logical Models, Member Access, and Reliability while keeping the full backend link as rollback.
-- [ ] Implement provider inventory editing for protocol, endpoint, capacity, priority, enablement, and write-only credential readiness with revision-safe rollback.
-- [ ] Implement logical-model editing with ordered offerings, upstream model IDs, fallback logical models, capability flags, and duplicate/provider-existence validation.
-- [ ] Port provider-scoped model discovery and credential-free batch offering creation into typed components.
-- [ ] Add passive route/provider status, recent failure class, first-visible/total latency, fallback, and capacity visibility without model probes.
-- [ ] Add explicit legacy-route migration and prove one provider can serve many logical models while one logical model can use many providers.
-- [ ] Retire only the corresponding legacy route/provider panels after typed browser acceptance; keep unrelated legacy administration available.
+- [x] Add typed-admin navigation for Providers, Logical Models, Member Access, and Reliability while keeping the full backend link as rollback.
+- [x] Implement provider inventory editing for protocol, endpoint, capacity, priority, enablement, and write-only credential readiness with revision-safe rollback.
+- [x] Implement logical-model editing with ordered offerings, upstream model IDs, fallback logical models, capability flags, and duplicate/provider-existence validation.
+- [x] Port provider-scoped model discovery and credential-free batch offering creation into typed components.
+- [x] Add passive route/provider status, recent failure class, total latency, fallback, and capacity visibility without model probes. First-visible latency and stream-shape evidence remain in the next hardening slice.
+- [x] Add explicit legacy-route migration and prove one provider can serve many logical models while one logical model can use many providers.
+- [x] Retire only the corresponding legacy route/provider panels after typed browser acceptance; keep unrelated legacy administration available.
 
 #### E. Workspace Visual And Interaction Pass
 
@@ -118,11 +118,11 @@ The remaining experience work should run in the following order. Each stage is i
 
 ### Current Checkpoint (2026-07-24)
 
-- The runtime/provider-pool foundation, managed-access bootstrap, Agent persistence hardening, typed member lifecycle, and the responsive React workspace are implemented and remain uncommitted in the working tree.
+- The runtime/provider-pool foundation, managed-access bootstrap, Agent persistence hardening, typed member lifecycle, the responsive React workspace, and the typed provider-pool administration slice are implemented and remain uncommitted in the working tree.
 - The durable message-action slice is partially complete: server-owned branch/edit/resend/regenerate/continue operations, idempotency, source preservation, secret-free client decoders, role-aware action bars, and truthful waiting-first-output feedback are implemented. Parent-origin navigation, a dedicated failed-turn retry action, and the full fake-provider timing matrix remain open.
-- The typed provider-inventory/logical-model/reliability administration surface is still pending; the legacy admin remains the rollback surface for those panels.
+- The typed provider-inventory/logical-model/reliability administration surface is implemented; the legacy admin remains the rollback surface for unrelated administration sections.
 - Managed-mode local browser acceptance now bootstraps a temporary member through the admin API instead of supplying `ACCESS_CODES`; desktop 1440x900 and touch 390x844 passed action visibility and horizontal-overflow assertions without a live model.
-- Final quality gates for this checkpoint passed: frontend structure checks, 19 test files / 232 tests, strict type-check, Wrangler dry-run, and `git diff --check`. No production deployment or push was performed.
+- Final quality gates for this checkpoint passed: frontend structure checks, 20 test files / 246 tests, strict type-check, Wrangler dry-run, and `git diff --check`. No production deployment or push was performed.
 
 ### Final Product Hardening
 
@@ -165,6 +165,7 @@ The remaining experience work should run in the following order. Each stage is i
 - 2026-07-23 (managed access bootstrap): Production deployment no longer consumes the GitHub `ACCESS_CODES` Secret. Generated configs set `ACCESS_CODES_MODE=managed`, the Worker ignores legacy environment access codes in that mode, `/healthz` remains ready while member access is empty and reports `memberAccessConfigured=false`, and the first member can be created through the revisioned typed admin endpoint. Deployment, Worker, client-decoder, and production-acceptance contracts were updated for the `managed` source. Final gates passed with frontend structure checks, 19 test files / 228 tests, strict type-check, default and generated-config Wrangler deployment dry-runs, and `git diff --check`; the generated Secret file contained no `ACCESS_CODES`. A fresh local managed-mode Worker also passed the full no-model production-member acceptance and restored the empty `managed` source during cleanup. Known Vite chunk/plugin timing and dependency sourcemap warnings remain non-fatal.
 - 2026-07-23 (free-plan migration correction): GitHub Actions run `30020616414` reached deployment but Cloudflare rejected the unapplied `ProviderCoordinator` `v3` migration because it used `new_classes` (error 10097; Workers Free requires SQLite-backed namespaces). The preceding run had skipped deployment, so the tag was safe to correct in place. `v3` now uses `new_sqlite_classes`, the repository contract rejects `new_classes`, and local full gates passed with 19 test files / 229 tests, strict type-check, default and generated-config Wrangler dry-runs, and `git diff --check`. Production retry is pending this fix commit.
 - 2026-07-24 (message actions and managed browser acceptance): Agent branch/edit/resend/regenerate/continue operations, role-aware React action bars, waiting-first-output elapsed feedback, and safe truncated-output metadata persistence were verified. A local managed-mode Worker created a temporary member through the admin API and passed Playwright acceptance at 1440x900 and 390x844 with no horizontal overflow and visible Continue/action controls. Full gates passed with 19 test files / 232 tests, strict type-check, Wrangler dry-run, and `git diff --check`; no live model call or production deployment was used.
+- 2026-07-25 (typed pool hardening): Provider/logical-model rename collisions are blocked, secret writes stay scoped to the saved provider/ref and clear on transitions, offering capability overrides preserve inherit/true/false semantics, reliability shows enabled/readiness state, failed turns expose resend-branch retry, transcript scrolling respects manual position, and edit cancellation restores focus. Full gates passed with 20 test files / 246 tests, frontend structure checks, strict type-check, Wrangler dry-run, and diff checks; no live model call or production deployment was used.
 - No local production deployment was run. Production remains gated by commit/push, GitHub Actions deployment, and the production smoke step.
 
 ## Validation

@@ -32,6 +32,11 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - User-data export is an authenticated, secret-free JSON v1 attachment. It contains the member label, root-Agent memory, conversation metadata, text parts, and file names/types only; credentials, provider/admin configuration, message metadata, raw tool payloads, and file URLs never enter the export. The Worker reads conversations sequentially, caps the attachment at 5 MB and each conversation at 512 KB, and marks omitted content with top-level `truncated` and per-conversation `messagesTruncated` flags. The client validates this exact envelope before creating a download and reports truncation instead of presenting it as a complete archive.
 - The mobile sidebar drawer is removed from hit testing and accessibility flow while closed. Opening it moves focus to the close control, traps Tab focus, closes on Escape, and restores focus to the opener; account dialogs retain their own native modal focus lifecycle.
 - A rejected `sendMessage()` restores the submitted draft only when the user has not already entered newer text.
+- Typed provider and logical-model editors own ephemeral local drafts. Their parent owns only the dirty flag and revisioned snapshot; leaving those views discards the unmounted pool draft after an explicit confirmation and resets the shared dirty flag. Member capability drafts remain parent-owned and may survive a view switch.
+- A provider-pool configuration conflict replaces the authoritative snapshot but does not silently replace the local entity draft. The editor remains dirty until a successful save or an explicit server-version reset.
+- Provider secret input is ephemeral and keyed by the currently selected saved provider/ref. It is cleared on ref or view changes and never participates in the configuration draft.
+- Failed-turn retry uses the latest parent conversation snapshot and the latest user message ID, so a stream error can be retried as a durable resend branch without replaying stale conversation metadata.
+- Transcript auto-scroll is conditional on a near-bottom check; a reader who scrolls upward is not pulled back to the newest chunk.
 
 ## Server State
 
