@@ -469,3 +469,36 @@ Completed typed provider and logical-model administration, passive reliability, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Workspace visual and interaction pass
+
+**Date**: 2026-07-25
+**Task**: Workspace visual and interaction pass
+**Branch**: `main`
+
+### Summary
+
+Added a compact responsive workspace header, accessible conversation drawer and delete flow, contained rich messages, bounded pinned composer, and a synthetic no-network Playwright viewport matrix.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2fa6905` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
