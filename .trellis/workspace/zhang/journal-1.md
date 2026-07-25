@@ -702,3 +702,36 @@ Added action-specific branch titles, parent-origin header return navigation, mis
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Product boundary reconciliation
+
+**Date**: 2026-07-26
+**Task**: Product boundary reconciliation
+**Branch**: `main`
+
+### Summary
+
+Aligned the parent productization PRD, implementation record, and README with the implemented restricted public guest entry: Chatus remains a teammate work Agent, not a public API proxy or open consumer service, while optional guests get one quota-limited public route without member capabilities or self-registration.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dc13fa2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
