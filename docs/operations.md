@@ -34,10 +34,22 @@ PRODUCTION_URL=https://你的生产域名 ADMIN_TOKEN=<从环境变量读取> np
 
 不要把 Token、临时访问码、Cookie、响应正文或生产记忆复制到日志、issue、截图或任务文件。
 
+## 公开访客生产验收
+
+`Production member acceptance` 只覆盖登录成员和数据隔离，不代表完整产品验收。启用公开访客访问后，使用新的隐私窗口人工检查：
+
+1. 未登录访问生产 origin 可获得独立访客会话。
+2. 页面只显示管理员配置的固定访客模型，并保留成员登录入口。
+3. 访客不能看到 BYOK、Skills、工具、MCP、长期记忆、反馈、导出或成员文件上传能力。
+4. 关闭公开访问开关后，新的未登录访问不能进入访客聊天。
+
+这些检查不得调用 Cron、doctor、后台刷新 completion 或隐藏 synthetic prompt。若要验证真实生成，只能由用户批准并执行一个有实际用途的任务。
+
 生产地址统一从 Repository Variable `CHATUS_PRODUCTION_URL` 派生：
 
 ```text
 $CHATUS_PRODUCTION_URL
+$CHATUS_PRODUCTION_URL/react-chat/admin
 $CHATUS_PRODUCTION_URL/admin.html
 $CHATUS_PRODUCTION_URL/healthz
 $CHATUS_PRODUCTION_URL/release.json
@@ -57,7 +69,7 @@ $CHATUS_PRODUCTION_URL/release.json
 
 ## 故障判断
 
-1. 查看 `/healthz`。`kv`、`legacyDurableObject`、`teamAgent`、`durableObject`、`configured` 应全部为 `true`；首次引导期间 `memberAccessConfigured` 可以是 `false`。
+1. 查看 `/healthz`。`kv`、`legacyDurableObject`、`teamAgent`、`durableObject`、`configured` 应全部为 `true`；首次引导期间 `memberAccessConfigured` 可以是 `false`。`legacyDurableObject` 目前仍承担登录限流、用量兼容和回滚导入职责，不只是待删除旧聊天存储。
 2. 查看 `/release.json`，确认 `commit` 是预期的完整 Git SHA。
 3. 查看 GitHub Actions 中失败的具体步骤。
 4. 用户错误中的 8 位“请求编号”对应响应头 `X-Request-ID` 的前 8 位；在 Cloudflare Observability 中按完整 ID 检索结构化日志。
@@ -91,6 +103,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 2. 在“后台服务商密钥”中输入新 key 并保存。输入框会立即清空，后台只显示配置来源和更新时间。
 3. 保存后可直接拉取完整模型列表并刷新线路状态。若需要验证真实生成，只能由用户批准并执行一个有实际用途的任务。
 4. 删除托管密钥只会删除 KV 中的 AES-GCM 密文；若存在同名 Worker Secret，会自动恢复使用它。
+
+公开访客线路必须使用后台托管 provider key。Worker Secret 或 `WORKER_SECRETS_JSON` 可以继续作为成员/兼容来源，但访客会把它们视为不可用的服务端密钥来源。删除或轮换前先看后台状态：KV 托管项在后台删除或替换；Worker Secret 必须在 Cloudflare Dashboard 显式删除，并重新运行 Actions 部署和 smoke。
 
 若状态显示“无法解密”或“记录损坏”，不要复制 KV 内容排查，也不要尝试记录密文。确认主密钥是否被更换，然后删除该托管项并重新录入。托管密钥的优先级高于同名 Worker Secret；损坏的托管项不会静默回退到另一个值。
 
@@ -126,8 +140,8 @@ git push origin main
 - 用户可删除本机缓存、退出所有设备或永久删除全部数据。永久删除会清除对话、摘要、记忆、反馈、用量和指标，注销全部设备，并阻止删除前的本地副本回流。
 - 长期记忆可由用户或管理员查看和编辑。
 - provider/逻辑模型等后台覆盖保存在 KV，删除后按各配置的兼容来源恢复；生产成员访问码由 KV 托管，删除后不会回退到 GitHub/Worker `ACCESS_CODES`，空值表示等待管理员创建首个成员。后台 provider key 以 AES-GCM 密文单独保存在 KV，主密钥只存在于 Worker Secret。
-- 根 `TeamAgent` 保存会话索引、权威长期记忆、迁移标记和删除清理状态；对话 `TeamAgent` 保存消息、流和审批状态。`UserState` 与旧 KV 记录在迁移验收前继续作为导入/回滚来源。
-- SQLite 表通过构造器中的幂等 `CREATE TABLE IF NOT EXISTS` 升级；新增或重命名 Durable Object 类绑定时才增加 Wrangler migration tag，任何已经上线的 tag 都不能修改。
+- 根 `TeamAgent` 保存会话索引、权威长期记忆、迁移标记和删除清理状态；对话 `TeamAgent` 保存消息、流和审批状态；`ProviderCoordinator` 保存 provider 并发租约状态。`UserState` 与旧 KV 记录在迁移验收前继续作为导入/回滚来源。
+- SQLite 表通过构造器中的幂等 `CREATE TABLE IF NOT EXISTS` 升级；当前 Durable Object migrations 包含 `UserState`、`TeamAgent` 与 `ProviderCoordinator`。新增或重命名 Durable Object 类绑定时才增加 Wrangler migration tag，任何已经上线的 tag 都不能修改。
 - 当前没有把 KV/DO 跨账号复制为另一实例的自动迁移命令。不要通过替换 `CHATUS_KV_NAMESPACE_ID` 或 `CHATUS_WORKER_NAME` 尝试恢复数据；先保留原实例并做专门迁移与对账。
 
 ## 开发流程

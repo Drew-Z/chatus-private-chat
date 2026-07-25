@@ -2,7 +2,7 @@
 
 ## 1. Scope / Trigger
 
-Use this contract when authentication, session projection, Agent identity, conversation storage, memory, WebSocket routing, optimistic concurrency, tombstones, or user-data deletion changes. Anonymous release smoke is necessary but does not cover these member-owned boundaries.
+Use this contract when authentication, session projection, Agent identity, conversation storage, memory, WebSocket routing, optimistic concurrency, tombstones, or user-data deletion changes. Anonymous release smoke is necessary but does not cover these member-owned boundaries. This authenticated workflow is not full product acceptance when public guest access is enabled; guest access has a separate manual acceptance boundary.
 
 ## 2. Signatures
 
@@ -23,6 +23,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Always purge temporary member data and remove both access-code entries in `finally`.
 - When no concurrent edit occurred, restore the exact original access-code text and its `kv`, `secret`, or `managed` source. If a concurrent edit occurred, remove only the temporary labels, preserve other entries, and fail the run for operator review.
 - Logs may contain milestone names and HTTP status codes only. Never print tokens, access codes, cookies, raw access-code payloads, memory, or conversation content.
+- Public guest acceptance is manual and model-probe-free: use a fresh private window, verify an isolated guest session, verify only the configured public route is visible, verify member-only controls are absent, verify the member login path remains available, then disable public access and verify new anonymous entry is closed.
 
 ## 4. Validation & Error Matrix
 
@@ -42,8 +43,10 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 ## 5. Good / Base / Bad Cases
 
 - Good: the exact deployed `main` SHA passes anonymous smoke, two temporary members pass every authenticated check, data is purged, and the original access-code value/source is restored.
+- Good: public access is enabled only after a manual guest check proves a constrained anonymous session and disabled again to prove rollback of the guest entry.
 - Base: local Wrangler verification passes with dummy credentials and a local KV/DO state before the workflow is shipped.
 - Bad: a shell script writes random access codes directly to KV, loses the original source, logs generated credentials, or exits on the first assertion without a cleanup path.
+- Bad: treating the member acceptance workflow as public-guest acceptance, or using a hidden completion prompt to prove guest availability.
 
 ## 6. Tests Required
 
@@ -52,6 +55,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Run `node --check scripts/acceptance-production.mjs`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 - After deployment through GitHub Actions, manually run `Production member acceptance` and retain only the run URL/result, never generated credentials or response bodies.
+- When public access is enabled, retain only the public guest manual acceptance result and target route label, never prompts, responses, cookies, access codes, or screenshots with secrets.
 
 ## 7. Wrong vs Correct
 

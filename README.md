@@ -1,6 +1,6 @@
 # Chatus
 
-一个部署在 Cloudflare Workers 上、面向受信任成员的邀请制私有工作 Agent。编程与项目协作是首个内置能力包，产品本身仍保持通用；它只暴露网页体验，不提供公开的 OpenAI-compatible API 分发入口。
+一个部署在 Cloudflare Workers 上、面向受信任成员的工作 Agent，可选开放受限访客入口。编程与项目协作是首个内置能力包，产品本身仍保持通用；它只暴露网页体验，不提供公开的 OpenAI-compatible API 分发入口。
 
 ## 架构
 
@@ -25,6 +25,7 @@ Browser
 - 多协议：`openai-chat` 适合 OpenAI-compatible 中转；`anthropic-messages` 适合 Claude/Claude Code 一类 Anthropic Messages 接口。
 - 多模态：前端支持图片上传；后端会按线路协议转换图片格式。
 - 私有访问：访问码登录、HttpOnly session、强一致用户限额，不暴露 `/v1/chat/completions` 分发接口。
+- 公开访客：可选择一条逻辑模型给未登录用户试用；访客没有 BYOK、Skills、工具、MCP、长期记忆、反馈、导出或成员文件上传能力。
 - 登录保护：按 IP 对失败访问码尝试做 Durable Object 强一致限流，成功登录后自动清空失败计数。
 - 管理保护：管理员 Token 使用独立的 IP 限流窗口，避免与普通用户访问码计数相互影响。
 - 会话安全：朋友可从设置主动退出所有设备，撤销同一用户的全部登录 Cookie，但保留聊天和记忆数据。
@@ -47,7 +48,7 @@ Browser
 - 聊天体验：Markdown、代码块复制和表格渲染；历史消息编辑、重发、重新生成和截断续写都会创建独立分支，并支持会话搜索导出和移动端抽屉侧栏。
 - 安装与更新：支持 PWA 安装；检测到新版本后由用户确认刷新，不会在回答生成中途强制接管。
 - 回答反馈：朋友可标记“有帮助 / 需改进”，后台查看近期好评率；只记录线路与消息标识，不保存反馈对应的对话正文。
-- 管理后台：`/admin.html` 可管理访问码、用户额度、专属提示词、线路与能力分配、长期记忆和 7 日用量/错误率；线路状态来自配置就绪度与真实任务的脱敏遥测，不发送主动测活提示。
+- 管理后台：`/react-chat/admin` 管理成员访问与公开访客入口；`/admin.html` 仍保留完整静态后台回滚面，可管理高级线路、服务商、长期记忆和 7 日用量/错误率；线路状态来自配置就绪度与真实任务的脱敏遥测，不发送主动测活提示。
 - 后台编辑保护：用户、线路、访问码、JSON 和长期记忆存在未保存修改时，切换对象、刷新、退出或关闭页面前会提醒确认。
 - 配置并发保护：后台保存或恢复 Secret 配置时校验版本指纹，避免旧标签页或另一台设备覆盖较新的线路与用户配置。
 - 凭据并发保护：访问码保存、轮换、撤销和恢复 Secret 时校验版本指纹，旧后台不能恢复已经失效的访问码。
@@ -77,7 +78,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 
 ## ROUTES_CONFIG
 
-推荐把 `ROUTES_CONFIG` 放进 GitHub Secret 或 Cloudflare Secret，不提交到仓库。
+生产 provider-pool 模式需要把 `ROUTES_CONFIG` 放进 GitHub Secret；GitHub Actions 会在部署时上传为 Worker Secret。直接在 Cloudflare Dashboard 设置同名 Worker Secret 可作为运行时兼容来源，但不能通过 Actions preflight，所以不适合作为干净 fork 的唯一配置入口。本地开发可以把同一 JSON 放进 `.dev.vars`。
 
 ```json
 {
@@ -124,6 +125,15 @@ ACCESS_CODES="friend:code-one,alice:code-two"
     "allowBringYourOwnKey": false,
     "blockedPrompts": ["你好", "hi", "hello", "测试", "test", "在吗", "嗨", "哈喽", "hey", "ping"]
   },
+  "publicAccess": {
+    "enabled": false,
+    "routeId": "general-chat",
+    "sessionTtlSeconds": 86400,
+    "dailyMessageLimit": 20,
+    "minuteMessageLimit": 6,
+    "sourceDailyMessageLimit": 200,
+    "sourceMinuteMessageLimit": 30
+  },
   "users": {
     "friend": {
       "defaultRoute": "general-chat",
@@ -169,6 +179,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 - `providers.<id>` 是物理服务商实例。ID 必须以字母或数字开头，最多 80 个字符，只能包含字母、数字、点、下划线和短横线。`type` 支持 `openai-chat` 和 `anthropic-messages`；`baseUrl`、`headers`、`apiKeyRef`、BYOK 策略和 endpoint 只在这里配置一次。
 - `routes.<id>` 是用户选择的逻辑模型和权限 ID。`fallbacks` 引用其他逻辑模型，不是同一 provider 的备用副本。
 - `offerings` 只连接 `providerId` 与上游 `model`，可覆盖 `priority`、`supportsImages`、`supportsTools`；不要在 offering 中复制 endpoint 或密钥。
+- `publicAccess` 控制未登录访客入口，默认关闭。启用后只能暴露一条逻辑模型，并分别限制单访客和同来源的每日/每分钟额度。访客线路必须使用后台 KV 托管的 provider key；仅存在同名 Worker Secret 或 `WORKER_SECRETS_JSON` 不会让访客线路可用。
 - `priority` 数值越大越优先；同优先级才按该逻辑模型/provider 对的真实任务成功率和延迟排序。系统不发送主动测活请求。
 - `concurrency: "exclusive"` 让 provider 在所有模型、所有成员之间只允许一个活动请求；`"bounded"` 使用 `maxConcurrent`；`"unlimited"` 不获取并发租约。
 - provider 忙时会先跳过并尝试其他 offering；全部候选都忙才统一等待，`queueTimeoutMs` 只能是 `0..10000` 毫秒，超时返回稳定的忙碌错误，不打断已有请求。
@@ -193,8 +204,8 @@ CHATUS_PRODUCTION_URL   完整 HTTPS origin，不带路径，例如 https://chat
 ```text
 CLOUDFLARE_API_TOKEN   Cloudflare API Token，用于 GitHub Actions 部署
 CLOUDFLARE_ACCOUNT_ID  当前 Cloudflare 账号 ID
-ADMIN_TOKEN            管理后台登录 token，用于 /admin.html
-ROUTES_CONFIG          provider、逻辑模型与成员权限配置，推荐设置
+ADMIN_TOKEN            管理后台登录 token，用于 /react-chat/admin 和 /admin.html
+ROUTES_CONFIG          provider、逻辑模型与成员权限配置；provider-pool 模式必需，只有旧单线路 fallback 可由 UPSTREAM_API_KEY 替代
 ROUTE_KEYS_MASTER_KEY  可选但推荐，后台加密管理 provider key 的一次性主密钥
 WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态 provider key
 SYSTEM_PROMPT          可选，默认系统提示词
@@ -204,7 +215,7 @@ UPSTREAM_API_KEY       可选，旧单线路 fallback
 
 从零创建 Cloudflare 资源、设置最小变量/密钥并完成首次 Actions 发布的完整流程见 [`docs/self-hosting.md`](docs/self-hosting.md)。仓库不保存维护者的 Account ID、KV ID 或生产域名。
 
-首次发布不需要在 GitHub 保存成员访问码。部署成功后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建 `bill` 或其他成员；随机访问码只在创建/轮换成功时显示一次。忘记旧码时直接在后台轮换，旧码和该成员已有会话会同时失效。
+首次发布不需要在 GitHub 保存成员访问码。部署成功后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建 `team-member` 之类的成员 label；随机访问码只在创建/轮换成功时显示一次。成员 label 必须与后台成员权限或 `ROUTES_CONFIG.users` 中的 label 一致。忘记旧码时直接在后台轮换，旧码和该成员已有会话会同时失效。
 
 若要在管理后台直接新增和轮换 provider key，先生成 32 个随机字节的 Base64 值：
 
@@ -225,6 +236,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
 托管密钥优先于同名 Worker Secret；只有显式删除托管密钥后才会恢复使用同名 Worker Secret，损坏或无法解密的托管记录不会静默回退。生产发布只通过 GitHub Actions，不要从本机 Wrangler 账号部署。更换 `ROUTE_KEYS_MASTER_KEY` 后，原有托管密钥无法解密，需要在后台逐条重新录入。
+
+公开访客访问默认关闭。启用前先确认目标逻辑模型可供成员正常使用，并在 `/react-chat/admin` 的公开访问设置中选择唯一访客线路和额度。访客线路必须引用后台托管 provider key；若只依赖 Worker Secret，成员可能可用，但访客会被视为没有可用服务端密钥。关闭公开访问开关就是访客功能回滚，不影响成员登录和成员线路。
 
 `BLOCKED_PROMPTS` 可以填逗号分隔：
 
@@ -257,9 +270,20 @@ https://你的 Worker 域名/admin.html
 - 拉取 provider 的完整模型列表，批量创建逻辑模型或合并 offering；批量操作不复制 endpoint/key，也不自动扩大成员的 `allowedRoutes`。
 - 在不重新部署的情况下新增、替换或删除后台加密 provider key；后台只显示配置状态，不回显密钥。
 - 直接编辑完整 `ROUTES_CONFIG` JSON，处理 `headers`、`authHeader`、`directEndpoint` 等高级字段。
-- 删除 KV 覆盖配置，恢复到 GitHub/Cloudflare Secret 中的默认配置。
+- 删除 provider/线路的 KV 覆盖配置，恢复到 GitHub Actions 上传的 `ROUTES_CONFIG` / Worker Secret 基线。
 
-后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。provider 密钥解析优先级为：用户 BYOK（允许时）→ 旧式 route/provider `apiKey` → 后台加密密钥 → 同名 Worker Secret。`requiresUserKey` 会阻止使用所有服务端密钥。
+后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。provider 密钥解析优先级为：用户 BYOK（允许时）→ 旧式 route/provider `apiKey` → 后台加密密钥 → 同名 Worker Secret。`requiresUserKey` 会阻止使用所有服务端密钥。成员访问码是独立的 KV 托管状态，删除或撤销后不会回退到 GitHub/Worker `ACCESS_CODES`；后台托管 provider key 删除后若存在同名 Worker Secret，才会按兼容规则恢复。
+
+## 公开访客访问
+
+公开访客是受限匿名会话，不是开放 API。未登录用户只能获得一条管理员指定的逻辑模型，不能使用 BYOK、Skills、工具、MCP、长期记忆、反馈、导出、成员专属文件上传或自定义 System Prompt。访客会话和来源都有独立额度，并且同一访客 label 同时只能有一个生成中的请求。
+
+生产启用流程：
+
+1. 在 provider pool 中配置一条稳定逻辑模型，并为它的 provider 写入后台托管密钥。
+2. 在 `/react-chat/admin` 启用公开访问，选择该逻辑模型并设置 TTL、单访客额度和同来源额度。
+3. 用新的隐私窗口访问生产 origin，确认只显示固定访客模型和成员登录入口。
+4. 禁用公开访问后再次验证访客入口关闭；不要用 Cron、doctor 或隐藏 completion 作为验收方式。
 
 ## 会话与记忆
 
@@ -308,7 +332,7 @@ install -> typecheck/frontend/test -> instance + secret preflight
 
 生产运行、故障判断、密钥轮换、回滚和数据恢复流程见 [`docs/operations.md`](docs/operations.md)。
 
-`wrangler.jsonc` 只保留可共享的本地/干跑基线，不包含任何生产实例 ID。生成后的生产配置包含 `UserState` 与 `TeamAgent` 的 SQLite 类迁移，首次部署会自动创建 Durable Object namespace；只有新增、删除或重命名 Durable Object 类绑定时才增加 migration tag，不能修改已经上线的 tag。
+`wrangler.jsonc` 只保留可共享的本地/干跑基线，不包含任何生产实例 ID。生成后的生产配置包含 `UserState`、`TeamAgent` 与 `ProviderCoordinator` 的 SQLite 类迁移，首次部署会自动创建 Durable Object namespace；只有新增、删除或重命名 Durable Object 类绑定时才增加 migration tag，不能修改已经上线的 tag。
 
 ## 开发
 

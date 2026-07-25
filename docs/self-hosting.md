@@ -10,7 +10,7 @@
 4. 决定生产 HTTPS origin：可以是 `https://<worker>.<account-subdomain>.workers.dev`，也可以是账号中可管理的自定义域名，例如 `https://chat.example.com`。不要包含 `/admin`、其他路径、查询或 fragment。
 5. 创建 Cloudflare API Token。可从 Cloudflare 的 **Edit Cloudflare Workers** 模板开始，将 Account Resources 限制到目标账号；使用自定义域名时再把 Zone Resources 限制到目标域名。不要使用 Global API Key。
 
-Durable Object namespace 不需要手工创建。工作流中的 Wrangler migrations 会在首次部署时创建 `UserState` 和 `TeamAgent` SQLite classes。
+Durable Object namespace 不需要手工创建。工作流中的 Wrangler migrations 会在首次部署时创建 `UserState`、`TeamAgent` 和 `ProviderCoordinator` SQLite classes。
 
 ## 2. 设置 GitHub Repository Variables
 
@@ -87,11 +87,20 @@ Durable Object namespace 不需要手工创建。工作流中的 Wrangler migrat
   "defaults": {
     "defaultRoute": "general",
     "allowedRoutes": ["general", "reasoning"]
+  },
+  "publicAccess": {
+    "enabled": false,
+    "routeId": "general",
+    "sessionTtlSeconds": 86400,
+    "dailyMessageLimit": 20,
+    "minuteMessageLimit": 6,
+    "sourceDailyMessageLimit": 200,
+    "sourceMinuteMessageLimit": 30
   }
 }
 ```
 
-`exclusive` 在该 provider 的所有模型和成员之间只允许一个活动请求；`bounded` 使用 `maxConcurrent`；`unlimited` 不获取租约。`queueTimeoutMs` 必须是 `0..10000` 的整数。管理员优先级先决定候选顺序，同优先级才使用真实任务的脱敏成功率和延迟；不要配置 Cron、doctor 或隐藏 completion 做模型测活。流式 fallback 只在首次可见输出前发生，HTTP `200` 的错误/空 SSE 也会被判为失败；输出后断流不会切换 provider。
+`exclusive` 在该 provider 的所有模型和成员之间只允许一个活动请求；`bounded` 使用 `maxConcurrent`；`unlimited` 不获取租约。`queueTimeoutMs` 必须是 `0..10000` 的整数。管理员优先级先决定候选顺序，同优先级才使用真实任务的脱敏成功率和延迟；不要配置 Cron、doctor 或隐藏 completion 做模型测活。流式 fallback 只在首次可见输出前发生，HTTP `200` 的错误/空 SSE 也会被判为失败；输出后断流不会切换 provider。`publicAccess` 默认关闭，启用时只能暴露一条逻辑模型，并同时限制单访客和同来源的消息额度。
 
 在可信终端生成随机值，并只把输出放进对应 GitHub Secret：
 
@@ -113,7 +122,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 它不能覆盖 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、Cloudflare 凭据或三项实例 Variables。生产部署不再要求或读取 GitHub `ACCESS_CODES`；部署配置会启用 KV 托管模式。首次发布后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建成员并生成访问码；访问码只显示一次，忘记后直接轮换。更方便的长期做法是只设置一次 `ROUTE_KEYS_MASTER_KEY`，部署后在 `/admin.html` 中按 provider 的 `apiKeyRef` 录入和轮换托管密钥。密钥输入在提交后立即清空，页面和读取 API 只返回来源、状态与更新时间，永不回显明文。
 
-Wrangler 的 `--secrets-file` 是增量上传：从 GitHub 删除一个可选 Secret 或从 `WORKER_SECRETS_JSON` 删除一个 key，**不会从 Cloudflare Worker 删除已经存在的远端 Secret**。需要撤销时，先让线路/`apiKeyRef` 停止引用它，再在 Cloudflare Dashboard 的 Worker Variables and Secrets 中显式删除，并重新运行部署与 smoke。仅删除 GitHub Secret 不是凭据撤销。
+公开访客访问仍默认关闭。启用前先让目标逻辑模型在成员账号下可用，并确认该 provider 的密钥来源是后台 KV 托管；同名 Worker Secret 或 `WORKER_SECRETS_JSON` 只能作为成员/兼容来源，不能让访客线路隐式可用。然后在 `/react-chat/admin` 的公开访问设置中选择唯一逻辑模型、设置 TTL 和额度。关闭公开访问开关即可回滚访客入口，不会撤销成员访问。
+
+Wrangler 的 `--secrets-file` 是增量上传：从 GitHub 删除一个可选 Secret 或从 `WORKER_SECRETS_JSON` 删除一个 key，**不会从 Cloudflare Worker 删除已经存在的远端 Secret**。需要撤销时，先确认后台状态显示的是 KV 托管还是 Worker Secret；KV 托管项在后台删除，Worker Secret 则要先让线路/`apiKeyRef` 停止引用它，再在 Cloudflare Dashboard 的 Worker Variables and Secrets 中显式删除，并重新运行部署与 smoke。仅删除 GitHub Secret 不是凭据撤销。
 
 管理后台可从 provider 拉取完整模型列表，并批量创建逻辑模型或合并 offering。新增模型不会复制 endpoint 或 credential，也不会自动修改成员 `allowedRoutes`。旧式 route 的 `type`、`baseUrl`、`model`、`apiKeyRef` 会继续投影为单一 `unlimited` provider；旧明文 key 只在服务端兼容保留，显式迁移前必须先让该 `apiKeyRef` 对应后台托管密钥或同名 Worker Secret。迁移只保存 credential reference 并移除旧内嵌字段，不会复制明文。
 
@@ -133,9 +144,10 @@ Preflight 错误只指出缺失或无效的变量名，不输出 Secret 值。�
 ## 5. 更新、验收与恢复
 
 - 常规更新：把上游改动合并到 fork 的 `main`，由同一工作流发布。不要改三项实例 Variables。
-- 成员数据验收：部署后手动运行 **Production member acceptance**。它读取 `CHATUS_PRODUCTION_URL` 与 `ADMIN_TOKEN`，创建并清理随机临时成员，不调用模型。
+- 成员数据验收：部署后手动运行 **Production member acceptance**。它读取 `CHATUS_PRODUCTION_URL` 与 `ADMIN_TOKEN`，创建并清理随机临时成员，不调用模型。该工作流不覆盖公开访客体验。
+- 公开访客验收：在新的隐私窗口打开生产 origin，确认可取得隔离访客会话、只看到固定访客模型和成员登录入口；禁用公开访问后确认访客入口关闭。不要用合成 prompt 或后台 completion 探测替代这一步。
 - 代码回滚：对错误提交执行 `git revert` 并推送 `main`，让完整 Actions 门禁重新发布。不要 force-push，也不要本地覆盖 Worker。
-- 配置恢复：GitHub Secrets 定义每次部署要上传的基线值，但不会自动清理远端旧 Worker Secret；后台 KV 配置是生产成员访问码的唯一来源。旧 `ACCESS_CODES` Secret 在托管模式下被忽略，确认 KV 成员正常后可在 Cloudflare Dashboard 中显式删除。托管 provider key 依赖原 `ROUTE_KEYS_MASTER_KEY`，更换主密钥后需重新录入。
+- 配置恢复：GitHub Secrets 定义每次部署要上传的基线值，但不会自动清理远端旧 Worker Secret；后台 KV 配置是生产成员访问码的唯一来源。旧 `ACCESS_CODES` Secret 在托管模式下被忽略，确认 KV 成员正常后可在 Cloudflare Dashboard 中显式删除。托管 provider key 删除后可能回退同名 Worker Secret；撤销前先停止引用并确认当前来源。托管 provider key 依赖原 `ROUTE_KEYS_MASTER_KEY`，更换主密钥后需重新录入。
 - provider 配置迁移：旧式 route 可在迁移期间继续运行。先创建 provider 与 offering，核对逻辑模型 fallback、成员权限和密钥引用，再移除旧内嵌 endpoint 字段；配置回滚不应修改 Worker 名、KV ID 或 Account。
 - 数据边界：切换 KV ID、Worker 名或 Cloudflare Account 会指向新的存储边界，不是数据迁移。现阶段不要删除旧 KV/UserState 数据；Agent 导入仍以这些源记录作为回滚证据。
 

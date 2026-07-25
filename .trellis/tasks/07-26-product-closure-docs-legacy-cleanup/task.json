@@ -3,7 +3,7 @@
   "name": "product-closure-docs-legacy-cleanup",
   "title": "Product Closure Docs And Legacy Cleanup",
   "description": "Close Chatus productization gaps by documenting clean installation/operations after public guest access and auditing legacy protocol/storage cleanup readiness without weakening rollback.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

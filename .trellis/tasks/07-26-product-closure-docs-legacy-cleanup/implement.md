@@ -2,12 +2,12 @@
 
 ## Execution
 
-1. [ ] Read current README, self-hosting guide, operations guide, deployment workflow, `.env.example`, Wrangler config, and production acceptance scripts.
-2. [ ] Search for stale access-code, liveness-probe, legacy admin, legacy chat, and maintainer-specific setup references.
-3. [ ] Update operator docs for public guest access, managed member bootstrap, provider secrets, production acceptance, rollback, and remote secret deletion.
-4. [ ] Create `legacy-cleanup-audit.md` with evidence-backed classifications for protocol, storage, UI, and config compatibility surfaces.
-5. [ ] Add follow-up Trellis task recommendations for runtime deletion only where the audit gives clear prerequisites.
-6. [ ] Validate docs and task artifacts without live model calls or production deploys.
+1. [x] Read current README, self-hosting guide, operations guide, deployment workflow, `.env.example`, Wrangler config, and production acceptance scripts.
+2. [x] Search for stale access-code, liveness-probe, legacy admin, legacy chat, and maintainer-specific setup references.
+3. [x] Update operator docs for public guest access, managed member bootstrap, provider secrets, production acceptance, rollback, and remote secret deletion.
+4. [x] Create `legacy-cleanup-audit.md` with evidence-backed classifications for protocol, storage, UI, and config compatibility surfaces.
+5. [x] Add follow-up Trellis task recommendations for runtime deletion only where the audit gives clear prerequisites.
+6. [x] Validate docs and task artifacts without live model calls or production deploys.
 
 ## Validation
 
