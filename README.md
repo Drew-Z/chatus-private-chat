@@ -361,4 +361,4 @@ npm run deploy:dry-run
 - LangChain：适合作为短期上下文窗口和长期记忆分层的参考。
 - LiteLLM：适合作为路由、fallback、virtual key 和 provider adapter 的参考。
 
-这个项目的取舍更轻：不做公开 API proxy，只做一个私有网页登录聊天窗。
+这个项目的取舍更轻：不做公开 API proxy，只做受限访客入口和私有成员网页登录工作区。

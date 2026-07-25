@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn Chatus from a capable but monolithic private chat Worker into a maintainable, invitation-only general private work Agent for trusted teammates, with programming and project collaboration as its first bundled capability pack. The final product must use a formal Cloudflare-native Agent runtime, preserve administrator-controlled model routing and tools, provide durable per-user work context, and remain operational without arbitrary model liveness prompts.
+Turn Chatus from a capable but monolithic private chat Worker into a maintainable general work Agent for trusted teammates, with an optional restricted public guest entry for one administrator-selected model. Programming and project collaboration are the first bundled capability pack. The final product must use a formal Cloudflare-native Agent runtime, preserve administrator-controlled model routing and tools, provide durable per-member work context, and remain operational without arbitrary model liveness prompts.
 
 ## Confirmed Facts
 
@@ -16,12 +16,14 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 
 ## Requirements
 
-### R1. Private Team Product Boundary
+### R1. Team Product Boundary With Restricted Guest Entry
 
-- Chatus is a separately branded teammate Agent, not a BIAU Operator subpage and not a public anonymous chatbot.
+- Chatus is a separately branded teammate Agent, not a BIAU Operator subpage, not an OpenAI-compatible public API proxy, and not an open consumer chat service.
 - Its product scope is a general private work Agent. Programming and project collaboration ship as the first bundled capability pack rather than constraining the entire runtime to coding use cases.
-- Admission remains invitation/access-code based; public self-registration is not added.
+- Member admission remains invitation/access-code based; public self-registration is not added.
+- A deployment may enable a restricted guest entry. A guest can use exactly one administrator-selected logical model under configured quotas and cannot become a member without administrator-issued access.
 - Each teammate receives an isolated identity, conversations, memory, limits, permitted model routes, Skills, tools, and MCP capabilities.
+- Guests do not receive member capabilities such as assigned routes beyond the public route, BYOK, Skills, tools, MCP, durable memory, feedback, export, member file upload, or account controls.
 - Chatus must not share BIAU cookies, databases, private memories, model credentials, or administrator credentials.
 
 ### R2. Formal Cloudflare Agent Runtime
@@ -107,7 +109,7 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 ## Acceptance Criteria
 
 - [ ] Chatus runs on a formal Cloudflare Agents SDK boundary with one isolated durable Agent identity per teammate.
-- [ ] Invitation-only authentication and administrator capability assignment work without public registration.
+- [ ] Member access-code authentication, restricted guest access, and administrator capability assignment work without public self-registration or cross-surface capability leakage.
 - [ ] Existing route adapters, fallback, BYOK, quota, memory, Skills, tools, MCP, and audit capabilities survive the migration under explicit module boundaries.
 - [ ] Automatic and scheduled model liveness prompts are absent; `/healthz` and normal diagnostics make zero model calls.
 - [ ] Real-task telemetry provides redacted route reliability and fallback evidence.
@@ -125,7 +127,7 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 
 ## Out Of Scope
 
-- Public anonymous registration or an open consumer chat service.
+- Public self-registration, anonymous membership, an open consumer chat service, or an OpenAI-compatible public API proxy.
 - Sharing BIAU Operator authentication, databases, private memory, credentials, or write-capable tools.
 - Modifying the concurrently developed `D:\workspace4Cursor\learn\duoduo` repository.
 - Local production deployment or force-pushing the four existing local commits.
