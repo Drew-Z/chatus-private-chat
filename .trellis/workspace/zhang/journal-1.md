@@ -502,3 +502,36 @@ Added a compact responsive workspace header, accessible conversation drawer and 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Truthful stream telemetry acceptance
+
+**Date**: 2026-07-25
+**Task**: Truthful stream telemetry acceptance
+**Branch**: `main`
+
+### Summary
+
+Completed integrated stream telemetry: bounded first-visible latency and progressive versus single-chunk evidence, v2 reliability cleanup, exact admin decoding, responsive browser acceptance, and full no-live-model release gates. Added the streamSamples <= successes invariant and archived the child task. No push or production deployment performed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `85a9b9c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
