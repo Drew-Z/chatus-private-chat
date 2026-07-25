@@ -12,12 +12,15 @@
     "check:frontend": "npm run build:client && node scripts/check-frontend.mjs",
     "smoke:production": "node scripts/smoke-production.mjs",
     "acceptance:production": "node scripts/acceptance-production.mjs",
+    "test:browser:workspace": "playwright test --config tests/browser/playwright.config.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit && tsc -p tests/browser/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",
     "@cloudflare/workers-types": "^5.20260708.1",
+    "@playwright/test": "1.62.0",
+    "@types/node": "26.1.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",

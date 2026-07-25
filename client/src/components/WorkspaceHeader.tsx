@@ -1,0 +1,84 @@
+import { Brain, Download, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
+import type { AgentConversation, SessionProjection } from "../lib/api";
+
+export type ConnectionState = "connecting" | "ready" | "error";
+
+export function WorkspaceHeader({
+  session,
+  conversation,
+  routeId,
+  connectionState,
+  busy,
+  accountBusy,
+  onOpenSidebar,
+  onOpenRouteSettings,
+  onOpenMemory,
+  onLogout,
+}: {
+  session: SessionProjection;
+  conversation: AgentConversation | null;
+  routeId: string;
+  connectionState: ConnectionState;
+  busy: boolean;
+  accountBusy: boolean;
+  onOpenSidebar: () => void;
+  onOpenRouteSettings: () => void;
+  onOpenMemory: () => void;
+  onLogout: () => Promise<void>;
+}) {
+  const route = session.routes.find((candidate) => candidate.id === routeId);
+  const health = routeHealthLabel(route?.healthStatus);
+  const connection = connectionLabel(connectionState);
+
+  return (
+    <header className="workspace-header">
+      <div className="header-leading">
+        <button className="icon-button mobile-only" type="button" onClick={onOpenSidebar} title="打开会话" aria-label="打开会话"><Menu size={19} /></button>
+        <div className="brand-lockup compact">
+          <div className="brand-mark small">C</div>
+          <div><strong>Chatus</strong><span>{session.displayName}</span></div>
+        </div>
+      </div>
+
+      <div className="header-conversation">
+        <strong className="header-conversation-title" title={conversation?.title || "对话"}>{conversation?.title || "对话"}</strong>
+        <button className="header-route-button" type="button" onClick={onOpenRouteSettings} disabled={busy || accountBusy} title="查看线路与状态" aria-label="查看线路与状态">
+          <Route size={14} aria-hidden="true" />
+          <span className="header-route-copy">
+            <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
+            <small>{health}</small>
+          </span>
+        </button>
+      </div>
+
+      <div className="header-actions">
+        <div className={`connection compact ${connectionState}`} role="status" aria-label={`连接状态：${connection}`}>
+          {connectionState === "error" ? <WifiOff size={15} aria-hidden="true" /> : <Wifi size={15} aria-hidden="true" />}
+          <span>{connection}</span>
+        </div>
+        <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
+        <button className="icon-text-button quiet-button" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={() => void onLogout()}
+          disabled={busy || accountBusy}
+          title={busy ? "请先停止当前任务" : accountBusy ? "账号操作正在处理" : "退出登录"}
+          aria-label="退出登录"
+        ><LogOut size={18} /></button>
+      </div>
+    </header>
+  );
+}
+
+function routeHealthLabel(status: SessionProjection["routes"][number]["healthStatus"]): string {
+  if (status === "healthy") return "最近真实任务正常";
+  if (status === "unhealthy") return "最近任务有异常，可切换线路";
+  return "暂无近期真实任务记录";
+}
+
+function connectionLabel(state: ConnectionState): string {
+  if (state === "ready") return "已连接";
+  if (state === "error") return "连接异常";
+  return "连接中";
+}

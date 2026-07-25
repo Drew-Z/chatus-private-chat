@@ -1,17 +1,7 @@
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import {
-  Brain,
-  Download,
-  LogOut,
-  Menu,
-  RefreshCw,
-  RotateCw,
-  SendHorizontal,
-  Square,
-  WifiOff,
-} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { RefreshCw, RotateCw, WifiOff } from "lucide-react";
 import {
   ApiError,
   createAgentConversationBranch,
@@ -31,7 +21,9 @@ import { friendlyAgentError } from "../lib/agent-errors";
 import { findRetrySourceMessageId, hasVisibleAssistantTextAfterLatestUser, resolvePendingDraftAction, restoreRejectedDraft } from "../lib/state";
 import { ConversationSidebar } from "./ConversationSidebar";
 import { MemoryPanel } from "./MemoryPanel";
+import { MessageComposer } from "./MessageComposer";
 import { MessageView, type MessageAction } from "./MessageView";
+import { WorkspaceHeader, type ConnectionState } from "./WorkspaceHeader";
 import type { UIMessage } from "ai";
 
 export function ChatWorkspace({
@@ -50,7 +42,9 @@ export function ChatWorkspace({
   const [busy, setBusy] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarView, setSidebarView] = useState<"history" | "settings">("history");
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const bootstrapped = useRef(false);
   const conversationSnapshots = useRef(new Map<string, AgentConversation>());
   const settingsQueues = useRef(new Map<string, Promise<void>>());
@@ -198,6 +192,11 @@ export function ChatWorkspace({
     await onLogout();
   };
 
+  const openRouteSettings = () => {
+    setSidebarView("settings");
+    setSidebarOpen(true);
+  };
+
   const handleRevokeAllSessions = async () => {
     if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
     setAccountBusy(true);
@@ -256,27 +255,18 @@ export function ChatWorkspace({
 
   return (
     <main className="workspace-shell">
-      <header className="workspace-header">
-        <div className="header-leading">
-          <button className="icon-button mobile-only" type="button" onClick={() => setSidebarOpen(true)} title="打开会话" aria-label="打开会话"><Menu size={19} /></button>
-          <div className="brand-lockup compact">
-            <div className="brand-mark small">C</div>
-            <div><strong>Chatus</strong><span>{session.displayName}</span></div>
-          </div>
-        </div>
-        <div className="header-actions">
-          <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
-          <button className="icon-text-button quiet-button" type="button" onClick={() => setMemoryOpen(true)} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
-          <button
-            className="icon-button"
-            type="button"
-            onClick={() => void handleLogout()}
-            disabled={busy || accountBusy}
-            title={busy ? "请先停止当前任务" : accountBusy ? "账号操作正在处理" : "退出登录"}
-            aria-label="退出登录"
-          ><LogOut size={18} /></button>
-        </div>
-      </header>
+      <WorkspaceHeader
+        session={session}
+        conversation={activeConversation}
+        routeId={routeId}
+        connectionState={connectionState}
+        busy={busy}
+        accountBusy={accountBusy}
+        onOpenSidebar={() => setSidebarOpen(true)}
+        onOpenRouteSettings={openRouteSettings}
+        onOpenMemory={() => setMemoryOpen(true)}
+        onLogout={handleLogout}
+      />
 
       <div className="workspace-layout">
         <ConversationSidebar
@@ -286,9 +276,11 @@ export function ChatWorkspace({
           activeId={activeId}
           routeId={routeId}
           skillIds={skillIds}
+          view={sidebarView}
           busy={busy || accountBusy}
           loading={loading}
           onClose={() => setSidebarOpen(false)}
+          onViewChange={setSidebarView}
           onSelect={(conversation) => setActiveId(conversation.id)}
           onCreate={createConversation}
           onRename={renameConversation}
@@ -319,6 +311,7 @@ export function ChatWorkspace({
               skillIds={skillIds}
               blocked={accountBusy}
               onBusyChange={setBusy}
+              onConnectionStateChange={setConnectionState}
               onConversationChanged={handleConversationChanged}
               onBranch={handleBranch}
             />
@@ -342,6 +335,7 @@ function ConversationChat({
   skillIds,
   blocked,
   onBusyChange,
+  onConnectionStateChange,
   onConversationChanged,
   onBranch,
 }: {
@@ -351,6 +345,7 @@ function ConversationChat({
   skillIds: string[];
   blocked: boolean;
   onBusyChange: (busy: boolean) => void;
+  onConnectionStateChange: (state: ConnectionState) => void;
   onConversationChanged: () => void;
   onBranch: (
     source: AgentConversation,
@@ -391,6 +386,7 @@ function ConversationChat({
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
+  const connectionState: ConnectionState = agent.connectionError ? "error" : agent.identified ? "ready" : "connecting";
 
   useEffect(() => {
     onBusyChange(busy);
@@ -398,6 +394,11 @@ function ConversationChat({
     wasBusy.current = busy;
     return () => onBusyChange(false);
   }, [busy, onBusyChange, onConversationChanged]);
+
+  useEffect(() => {
+    onConnectionStateChange(connectionState);
+    return () => onConnectionStateChange("connecting");
+  }, [connectionState, onConnectionStateChange]);
 
   useEffect(() => {
     if (!waitingFirstOutput) {
@@ -442,8 +443,7 @@ function ConversationChat({
     window.requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end", behavior }));
   }, [chat.messages, chat.isRecovering]);
 
-  const send = async (event: FormEvent) => {
-    event.preventDefault();
+  const send = async () => {
     const text = input.trim();
     if (!text || interactionBlocked || !online || !routeAvailable) return;
     const submittedDraft = input;
@@ -515,17 +515,6 @@ function ConversationChat({
 
   return (
     <div className="conversation-chat">
-      <div className="chat-toolbar">
-        <div className="chat-title">
-          <h1>{conversation.title}</h1>
-          <span>{selectedRoute?.label || "未选择线路"}{skillIds.length ? ` · ${skillIds.length} 个 Skill` : ""}</span>
-        </div>
-        <div className={`connection ${agent.connectionError ? "error" : agent.identified ? "ready" : "connecting"}`}>
-          <span className="connection-dot" />
-          {agent.connectionError ? "连接异常" : agent.identified ? "已连接" : "连接中"}
-        </div>
-      </div>
-
       {!online && <div className="offline-banner" role="status"><WifiOff size={16} /><span>当前离线。已保留草稿，恢复网络后可以继续发送。</span></div>}
       {!routeAvailable && <div className="configuration-banner" role="status">当前没有可用模型线路，请联系管理员完成配置。</div>}
       {messageActionError && <div className="workspace-error" role="alert"><span>{messageActionError}</span><button className="icon-button" type="button" onClick={() => setMessageActionError("")} title="关闭提示" aria-label="关闭提示">×</button></div>}
@@ -566,30 +555,19 @@ function ConversationChat({
           <div className="error-actions"><button className="quiet-button icon-text-button" type="button" onClick={() => void retryFailedTurn()} disabled={retryBusy || busy || !online} title="重试这一轮" aria-label="重试这一轮"><RotateCw size={15} /><span>{retryBusy ? "重试中..." : "重试"}</span></button><button className="icon-button" type="button" onClick={() => window.location.reload()} title="重新连接" aria-label="重新连接"><RefreshCw size={16} /></button></div>
         </div>
       )}
-      <form className="composer" onSubmit={send}>
-        <div className="composer-box">
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-            placeholder={!online ? "等待网络恢复" : routeAvailable ? "输入消息" : "等待管理员配置线路"}
-            rows={2}
-            disabled={interactionBlocked || !online || !routeAvailable}
-            aria-label="消息"
-          />
-          {busy ? (
-            <button className="composer-action stop" type="button" onClick={() => chat.stop()} title="停止生成" aria-label="停止生成"><Square size={17} /></button>
-          ) : (
-            <button className="composer-action" type="submit" disabled={blocked || !input.trim() || !online || !agent.identified || !routeAvailable} title="发送" aria-label="发送"><SendHorizontal size={18} /></button>
-          )}
-        </div>
-        {(chat.isRecovering || chat.isServerStreaming) && <span className="composer-status">{chat.isRecovering ? "正在恢复任务" : "Agent 正在继续处理"}</span>}
-      </form>
+      <MessageComposer
+        value={input}
+        onChange={setInput}
+        onSubmit={() => void send()}
+        onStop={() => chat.stop()}
+        busy={busy}
+        blocked={blocked}
+        online={online}
+        routeAvailable={routeAvailable}
+        agentReady={agent.identified}
+        placeholder={!online ? "等待网络恢复" : routeAvailable ? "输入消息" : "等待管理员配置线路"}
+        statusText={chat.isRecovering ? "正在恢复任务" : chat.isServerStreaming ? "Agent 正在继续处理" : ""}
+      />
     </div>
   );
 }

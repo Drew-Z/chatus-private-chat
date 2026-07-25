@@ -51,6 +51,7 @@ export function MessageView({
     .filter((part) => part.type === "text")
     .map((part) => part.text)
     .join("\n");
+  const sourceParts = message.parts.filter((part) => part.type === "source-url" || part.type === "source-document");
 
   const copy = async () => {
     if (!text || !(await copyText(text))) return;
@@ -109,7 +110,7 @@ export function MessageView({
           if (part.type === "file") {
             return part.mediaType.startsWith("image/")
               ? <img className="message-image" src={part.url} alt={part.filename || "对话图片"} key={key} />
-              : <div className="message-file" key={key}><FileText size={16} /><span>{part.filename || "附件"}</span></div>;
+              : <div className="message-file" key={key} title={part.filename || "附件"}><FileText size={16} /><span>{part.filename || "附件"}</span></div>;
           }
           if (part.type === "reasoning" && part.text.trim()) {
             return (
@@ -119,24 +120,23 @@ export function MessageView({
               </details>
             );
           }
-          if (part.type === "source-url") {
-            const href = sanitizeMarkdownUrl(part.url);
-            if (!href) {
-              return <div className="source-link" key={key}><Link size={14} /><span>{part.title || part.url}</span></div>;
-            }
-            return (
-              <a className="source-link" href={href} target="_blank" rel="noreferrer" key={key}>
-                <Link size={14} /><span>{part.title || part.url}</span>
-              </a>
-            );
-          }
-          if (part.type === "source-document") {
-            return <div className="source-link" key={key}><FileText size={14} /><span>{part.title}</span></div>;
-          }
+          if (part.type === "source-url" || part.type === "source-document") return null;
           if (isToolUIPart(part)) return <ToolTrace part={part} onApprove={onApprove} key={part.toolCallId} />;
           return null;
         })}
       </div>
+      {sourceParts.length > 0 && (
+        <section className="message-sources" aria-label="消息来源">
+          <span className="message-sources-label">来源 · {sourceParts.length}</span>
+          {sourceParts.map((part, index) => {
+            const key = `${message.id}-source-${index}`;
+            if (part.type === "source-document") return <div className="source-link" key={key} title={part.title}><FileText size={14} /><span>{part.title}</span></div>;
+            const href = sanitizeMarkdownUrl(part.url);
+            if (!href) return <div className="source-link" key={key} title={part.title || part.url}><Link size={14} /><span>{part.title || part.url}</span></div>;
+            return <a className="source-link" href={href} target="_blank" rel="noreferrer" key={key} title={part.title || part.url}><Link size={14} /><span>{part.title || part.url}</span></a>;
+          })}
+        </section>
+      )}
       {editing && message.role === "user" && (
         <form
           className="message-edit-form"

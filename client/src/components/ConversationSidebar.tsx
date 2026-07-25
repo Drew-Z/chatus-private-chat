@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Download, LogOut, MessageSquarePlus, Pencil, Plug, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
 
+export type SidebarView = "history" | "settings";
+
 export function ConversationSidebar({
   open,
   session,
@@ -9,9 +11,11 @@ export function ConversationSidebar({
   activeId,
   routeId,
   skillIds,
+  view,
   busy,
   loading,
   onClose,
+  onViewChange,
   onSelect,
   onCreate,
   onRename,
@@ -28,9 +32,11 @@ export function ConversationSidebar({
   activeId: string;
   routeId: string;
   skillIds: string[];
+  view: SidebarView;
   busy: boolean;
   loading: boolean;
   onClose: () => void;
+  onViewChange: (view: SidebarView) => void;
   onSelect: (conversation: AgentConversation) => void;
   onCreate: () => Promise<void>;
   onRename: (conversation: AgentConversation, title: string) => Promise<void>;
@@ -41,17 +47,18 @@ export function ConversationSidebar({
   onDeleteUserData: () => Promise<void>;
   onExportUserData: () => Promise<{ truncated: boolean }>;
 }) {
-  const [view, setView] = useState<"history" | "settings">("history");
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const [pendingId, setPendingId] = useState("");
   const [accountDialog, setAccountDialog] = useState<"sessions" | "delete" | null>(null);
+  const [conversationToDelete, setConversationToDelete] = useState<AgentConversation | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountMessage, setAccountMessage] = useState("");
   const [accountError, setAccountError] = useState("");
   const sidebarRef = useRef<HTMLElement>(null);
   const previousSidebarFocusRef = useRef<HTMLElement | null>(null);
+  const sidebarWasOpenRef = useRef(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const visible = useMemo(() => {
@@ -69,11 +76,24 @@ export function ConversationSidebar({
   );
 
   useEffect(() => {
-    if (!open || !window.matchMedia("(max-width: 780px)").matches) return;
-    previousSidebarFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frame = window.requestAnimationFrame(() => {
+    if (!open || !window.matchMedia("(max-width: 780px)").matches) {
+      if (sidebarWasOpenRef.current) {
+        sidebarWasOpenRef.current = false;
+        const previousFocus = previousSidebarFocusRef.current;
+        previousSidebarFocusRef.current = null;
+        previousFocus?.focus();
+      }
+      return;
+    }
+    if (!sidebarWasOpenRef.current) {
+      sidebarWasOpenRef.current = true;
+      previousSidebarFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    // Let the opening click and visibility transition settle before moving focus.
+    const focusTimer = window.setTimeout(() => {
+      if (document.activeElement !== previousSidebarFocusRef.current && document.activeElement !== document.body) return;
       sidebarRef.current?.querySelector<HTMLElement>("[data-sidebar-initial-focus]")?.focus();
-    });
+    }, 100);
     const handleKeyDown = (event: KeyboardEvent) => {
       const sidebar = sidebarRef.current;
       if (!sidebar || sidebar.querySelector("dialog[open]")) return;
@@ -99,11 +119,14 @@ export function ConversationSidebar({
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => {
-      window.cancelAnimationFrame(frame);
+      window.clearTimeout(focusTimer);
       document.removeEventListener("keydown", handleKeyDown);
-      previousSidebarFocusRef.current?.focus();
     };
   }, [open]);
+
+  useEffect(() => () => {
+    if (sidebarWasOpenRef.current) previousSidebarFocusRef.current?.focus();
+  }, []);
 
   const rename = async (conversation: AgentConversation) => {
     const title = titleDraft.trim();
@@ -122,11 +145,11 @@ export function ConversationSidebar({
     }
   };
 
-  const remove = async (conversation: AgentConversation) => {
-    if (!window.confirm(`删除“${conversation.title}”？此操作会清空该会话记录。`)) return;
+  const confirmRemove = async (conversation: AgentConversation) => {
     setPendingId(conversation.id);
     try {
       await onDelete(conversation);
+      setConversationToDelete(null);
     } catch {
       // The workspace owns the visible error and refresh behavior.
     } finally {
@@ -168,8 +191,8 @@ export function ConversationSidebar({
     <aside ref={sidebarRef} className={`conversation-sidebar ${open ? "open" : ""}`} aria-label="会话与设置">
       <div className="sidebar-topbar">
         <div className="sidebar-tabs" role="group" aria-label="侧栏视图">
-          <button type="button" aria-pressed={view === "history"} onClick={() => setView("history")}>对话</button>
-          <button type="button" aria-pressed={view === "settings"} onClick={() => setView("settings")}>设置</button>
+          <button type="button" aria-pressed={view === "history"} onClick={() => onViewChange("history")}>对话</button>
+          <button type="button" aria-pressed={view === "settings"} onClick={() => onViewChange("settings")}>设置</button>
         </div>
         <button className="icon-button mobile-only" data-sidebar-initial-focus type="button" onClick={onClose} title="关闭侧栏" aria-label="关闭侧栏"><X size={18} /></button>
       </div>
@@ -208,6 +231,7 @@ export function ConversationSidebar({
                       <button
                         className="conversation-select"
                         type="button"
+                        aria-pressed={active}
                         onClick={() => { onSelect(conversation); onClose(); }}
                         disabled={busy && !active}
                         title={busy && !active ? "请先停止当前任务" : conversation.title}
@@ -228,7 +252,7 @@ export function ConversationSidebar({
                           className="icon-button danger"
                           type="button"
                           disabled={busy || pendingId === conversation.id}
-                          onClick={() => void remove(conversation)}
+                          onClick={() => setConversationToDelete(conversation)}
                           title="删除会话"
                           aria-label="删除会话"
                         ><Trash2 size={14} /></button>
@@ -331,6 +355,14 @@ export function ConversationSidebar({
           onConfirm={() => void confirmAccountAction()}
         />
       )}
+      {conversationToDelete && (
+        <ConversationDeleteDialog
+          conversation={conversationToDelete}
+          busy={pendingId === conversationToDelete.id}
+          onClose={() => { if (pendingId !== conversationToDelete.id) setConversationToDelete(null); }}
+          onConfirm={() => void confirmRemove(conversationToDelete)}
+        />
+      )}
     </aside>
   );
 }
@@ -390,6 +422,61 @@ function AccountActionDialog({
             <button className={deleting ? "danger-button icon-text-button" : "primary-button icon-text-button"} type="button" onClick={onConfirm} disabled={busy}>
               {deleting ? <Trash2 size={15} /> : <LogOut size={15} />}
               <span>{busy ? "处理中..." : deleting ? "确认清空" : "确认注销"}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
+function ConversationDeleteDialog({
+  conversation,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  conversation: AgentConversation;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+    const frame = window.requestAnimationFrame(() => dialog?.querySelector<HTMLElement>("[data-dialog-initial-focus]")?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (dialog?.open) dialog.close();
+      previousFocusRef.current?.focus();
+    };
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="conversation-delete-dialog"
+      aria-labelledby="conversation-delete-title"
+      aria-describedby="conversation-delete-description"
+      onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}
+    >
+      <div className="conversation-delete-dialog-content">
+        <header>
+          <div><Trash2 size={17} aria-hidden="true" /><strong id="conversation-delete-title">删除这段对话？</strong></div>
+          <button className="icon-button" type="button" onClick={onClose} disabled={busy} aria-label="关闭" title="关闭"><X size={18} /></button>
+        </header>
+        <div className="conversation-delete-dialog-body">
+          <p id="conversation-delete-description">“{conversation.title}”的聊天记录会被清空，且无法恢复。账号、其他对话和长期记忆不会受到影响。</p>
+          <div className="conversation-delete-actions">
+            <button className="quiet-button" data-dialog-initial-focus type="button" onClick={onClose} disabled={busy}>取消</button>
+            <button className="danger-button icon-text-button" type="button" onClick={onConfirm} disabled={busy}>
+              <Trash2 size={15} />
+              <span>{busy ? "删除中..." : "确认删除"}</span>
             </button>
           </div>
         </div>

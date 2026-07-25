@@ -180,6 +180,21 @@ type ModelOffering = {
 - Assert the role/state matrix for copy, edit, resend, regenerate, feedback, branch, and conditional Continue, including no-route, offline, active-run, and failed-turn states.
 - Assert desktop and 390px action bars are visible, keyboard focusable, and free of horizontal overflow; assert the edit form restores focus to its originating control after cancel or completion.
 
+## React Workspace Shell
+
+- `ChatWorkspace` owns one `WorkspaceHeader` and the controlled history/settings sidebar view. `ConversationChat` may report its existing connecting/ready/error projection upward, but the header must not derive new Agent, provider, fallback, or telemetry semantics.
+- Keep the message list as the chat column's vertical scroll owner. `MessageComposer` is the non-shrinking bottom child, reserves status height, applies safe-area padding, grows its textarea to a bounded cap, and keeps Send and Stop in the same action box.
+- The transcript stays at or below 720px. Assistant content is unframed, user content uses a compact bubble, and code/tables scroll locally instead of widening the page.
+- Render source URL/document parts after primary content in a named `<section>`. Sanitize URL protocols before creating links, retain the full accessible/title text, and visually contain long labels.
+- At 520px and below, preserve measurable space for both the conversation title and logical route/model. Compact the product identity to its mark instead of hiding the active conversation title.
+- A mobile drawer records its opener only on the closed-to-open transition. Move focus to the close control after the opening click/visibility transition settles only if the user has not moved focus, and restore the opener on an actual close or unmount rather than every effect cleanup.
+
+### Tests Required
+
+- Assert header regions do not overlap, the title and route retain visible width at 480px and 390px, the header is at most 60px, and the transcript stays at or below 720px.
+- Assert the drawer receives initial focus, traps Tab, closes on Escape, restores its opener, and returns focus from the conversation-delete dialog.
+- Assert textarea growth/capping, equal Send/Stop geometry, reserved status space, local code overflow, source containment, user-bubble contrast, and 44px touch actions.
+
 ## Styling Patterns
 
 - Put React visual rules in `client/src/styles.css` and legacy/admin rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in legacy scripts.

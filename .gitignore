@@ -7,4 +7,5 @@ public/react-chat/
 public/legacy/
 .wrangler/
 dist/
+test-results/
 *.log

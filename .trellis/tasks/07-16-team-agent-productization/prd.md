@@ -114,7 +114,7 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 - [x] A logical model can use multiple ordered provider offerings, and one provider credential can be reused by multiple models without redeployment.
 - [x] Exclusive and bounded provider capacity is enforced atomically across teammates and across every model offered by the provider; all-busy requests wait no longer than 10 seconds.
 - [x] Lease release, cancellation, expiry recovery, pre-output fallback, legacy route compatibility, and provider/model configuration validation have deterministic tests without live model calls.
-- [ ] Typed administration exposes provider inventory, logical models, offerings, capacity, credential readiness, model discovery, and passive health without revealing secret material.
+- [x] Typed administration exposes provider inventory, logical models, offerings, capacity, credential readiness, model discovery, and passive health without revealing secret material.
 - [ ] The web client supports streaming/recovery, history, memory, tool approvals, run traces, mobile/PWA states, and actionable errors.
 - [ ] Slow turns show a truthful waiting/first-output/streaming state; local fake-provider tests cover delayed SSE, single-chunk output, provider-busy timeout, cancellation, and recovery without live model calls.
 - [ ] Copy, edit, resend, regenerate, feedback, branch, continue, and failed-turn retry actions follow role/state availability rules and preserve the source conversation.

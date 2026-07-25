@@ -37,11 +37,15 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - Pure reusable browser helpers receive focused Vitest tests.
 - Worker/API behavior receives integration tests using `cloudflare:test`.
 - Bug fixes include a regression test or a structural assertion in `scripts/check-frontend.mjs` when browser DOM behavior is impractical to unit test.
+- Browser geometry, focus, overflow, and touch contracts use the Playwright component fixture under `tests/browser/`. Keep that directory excluded from the Cloudflare Vitest pool with `configDefaults.exclude`, and type-check its Node/DOM boundary separately.
+- The workspace fixture may import real presentational React components with deterministic synthetic data, but it must not mount Agent hooks, authenticate, call `/api`, open `/agent`, or contact a model. Abort unexpected requests and assert the blocked-request list again in `afterEach` so interactions cannot bypass the guard.
+- Successful viewport screenshots must be written through `testInfo.outputPath(...)`, attached by path, and retained with `preserveOutput: "always"`. Keep `test-results/` ignored by Git; in-memory attachments alone are not retained by the line reporter for passing tests.
 - Before shipping run:
 
 ```bash
 npm run check:frontend
 npm test
+npm run test:browser:workspace
 npm run typecheck
 npx wrangler deploy --dry-run
 git diff --check
@@ -64,3 +68,4 @@ git diff --check
 - For Agent streaming work, prove fallback happens only before visible output, cancellation is forwarded, AI SDK retries are disabled, and integration tests use local fake provider responses only.
 - For typed provider-pool administration, verify provider/model drafts preserve sanitized non-UI fields, conflict reset is visible, reliability data is passive and recent-only, secret inputs are empty write-only password fields, and the admin root has no horizontal overflow at 390px, 480px, 780px, and desktop widths.
 - For chat recovery, verify the failed-turn retry creates a resend branch, edit cancellation returns focus to its opener, and incremental output does not override manual transcript scrolling.
+- For workspace visual changes, verify the five-view matrix at `1920x1080`, `1440x900`, `780x900`, `480x844`, and touch-enabled `390x844`; inspect retained screenshots in addition to geometry assertions.

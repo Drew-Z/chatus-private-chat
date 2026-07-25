@@ -19,7 +19,8 @@
   "pr_url": null,
   "subtasks": [],
   "children": [
-    "07-24-typed-provider-pool-admin"
+    "07-24-typed-provider-pool-admin",
+    "07-25-workspace-visual-interaction-pass"
   ],
   "parent": null,
   "relatedFiles": [],

@@ -118,7 +118,7 @@ The remaining experience work should run in the following order. Each stage is i
 
 ### Current Checkpoint (2026-07-24)
 
-- The runtime/provider-pool foundation, managed-access bootstrap, Agent persistence hardening, typed member lifecycle, the responsive React workspace, and the typed provider-pool administration slice are implemented and remain uncommitted in the working tree.
+- The runtime/provider-pool foundation, managed-access bootstrap, Agent persistence hardening, typed member lifecycle, and typed provider-pool administration are committed through `000f409`; the provider-admin child is archived and the workspace visual/interaction child is now in planning.
 - The durable message-action slice is partially complete: server-owned branch/edit/resend/regenerate/continue operations, idempotency, source preservation, secret-free client decoders, role-aware action bars, and truthful waiting-first-output feedback are implemented. Parent-origin navigation, a dedicated failed-turn retry action, and the full fake-provider timing matrix remain open.
 - The typed provider-inventory/logical-model/reliability administration surface is implemented; the legacy admin remains the rollback surface for unrelated administration sections.
 - Managed-mode local browser acceptance now bootstraps a temporary member through the admin API instead of supplying `ACCESS_CODES`; desktop 1440x900 and touch 390x844 passed action visibility and horizontal-overflow assertions without a live model.
