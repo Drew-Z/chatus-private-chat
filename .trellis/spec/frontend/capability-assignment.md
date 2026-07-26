@@ -220,7 +220,7 @@ DELETE /api/admin/members/:label/access-code
 - The Worker generates access codes. Create and rotate return the new code only in that successful mutation response; later list/revoke responses and audit records never contain it.
 - Create may issue access for an existing configured member without replacing configuration. A new access-only member inherits defaults until an assignment is saved.
 - Rotate replaces every historical code for the label with one new code and revokes all sessions for the label. Revoke removes every code for the label and revokes sessions.
-- Session cleanup is part of the server action. A response reports `{ revoked, complete }`; an incomplete cleanup must be shown as a warning rather than as full success.
+- Session cleanup is part of the server action. A response reports `{ revoked, complete }`; an incomplete cleanup must be shown as a warning rather than as full success. The typed warning retains the affected label and exposes an in-place retry through `POST /api/admin/sessions/revoke`; it must not redirect recovery to the legacy administrator shell.
 - Revoking the last parsed access entry returns `409 last_access_code`. In legacy mode, writing or deleting an empty KV override could fall back to the deployment `ACCESS_CODES` Secret and revive an old credential; managed production mode deliberately has no environment fallback and uses the `managed` empty source until the first KV code is created.
 - Revoke returns the configured member with `hasAccessCode: false`, or `member: null` when the label existed only through access data. It never deletes `config.users[label]` or user-owned data.
 - The React client keeps a returned code only in the mounted one-time credential dialog. Closing the dialog, logging out, or unmounting clears it; `beforeunload` warns while it is visible. The code is never stored in member state, notices, browser storage, URLs, logs, or clipboard fallback elements.
@@ -270,21 +270,21 @@ POST /api/admin/sessions/revoke
 - Configuration removal restores default routes, Skills, tools, limits, and other user policy fields. It does not change access codes, sessions, conversations, Agent memory, legacy memory, feedback, usage, or provider credentials.
 - A configured member that still has access remains in the member projection with `configured: false`; an access-only member whose access has already been removed may return `member: null`.
 - A stale or missing configuration revision fails before the write with `409 config_conflict` or `400 expected_config_revision_required`. The typed client keeps the current assignment draft and leaves the confirmation action retryable.
-- Session revocation is idempotent and uses the existing label session scan. The response reports whether the scan completed; incomplete cleanup is a warning, not a success claim. The endpoint does not revoke access codes or delete user data.
+- Session revocation is idempotent and uses the existing label session scan. The response reports whether the scan completed; incomplete cleanup is a warning, not a success claim. The typed warning keeps a retry action for the same label until a complete response is received; retry failure remains visible and retryable. The endpoint does not revoke access codes or delete user data.
 - The typed editor confirms configuration removal when the selected member has a dirty draft, and confirms both destructive operations in a native modal. Successful configuration removal updates the snapshot and selected member state without silently discarding unrelated dirty drafts.
 
 ### 4. Validation & Error Matrix
 
 - Unknown configured member -> `404 member_config_not_found`; no configuration or session mutation.
 - Invalid/oversized path label -> `400 invalid_member_label`.
-- Session scan failure after retries -> `complete: false`; audit uses an incomplete action and the UI exposes a retryable warning.
+- Session scan failure after retries -> `complete: false`; audit uses an incomplete action and the typed UI exposes a same-label retry button backed by the strict session-revocation decoder.
 - Any response containing provider keys, custom headers, access codes, or extra envelope fields -> client decoder rejects it.
 
 ### 5. Tests Required
 
 - Worker tests cover missing/stale/current configuration revisions, duplicate trimmed legacy labels, configured-member retention, access/session/data preservation, secret-free response and audit output, cross-origin rejection, and incomplete session cleanup reporting.
 - Client decoder tests cover exact configuration-removal and session-revocation envelopes and reject secret-bearing extras.
-- Frontend checks require the reset/session actions, confirmation text, revisioned reset helper, and strict decoders.
+- Frontend checks require the reset/session actions, confirmation text, revisioned reset helper, strict decoders, and in-place retry after incomplete access create/rotate/revoke cleanup.
 
 ## Scenario: Typed Member Policy And Current-day Usage Reset
 

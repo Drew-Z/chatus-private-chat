@@ -446,6 +446,7 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
   let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
   let revision = "a".repeat(64);
   const savedConfigs: AdminConfig[] = [];
+  let sessionRetryCount = 0;
 
   await page.route("**/api/admin/**", async (route) => {
     const request = route.request();
@@ -480,6 +481,21 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
     if (url.pathname === "/api/admin/usage" && request.method() === "POST") {
       expect(request.postDataJSON()).toEqual({ label: "bill" });
       await json({ ok: true, label: "bill", day: "2026-07-26" });
+      return;
+    }
+    if (url.pathname === "/api/admin/members/bill/access-code" && request.method() === "DELETE") {
+      expect(request.postDataJSON()).toEqual({ expectedAccessRevision: "c".repeat(64) });
+      await json({
+        member: { label: "bill", displayName: "Bill", configured: true, hasAccessCode: false },
+        accessRevision: "d".repeat(64),
+        sessionRevocation: { revoked: 1, complete: false },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/sessions/revoke" && request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({ label: "bill" });
+      sessionRetryCount += 1;
+      await json({ ok: true, label: "bill", revoked: 1, complete: true });
       return;
     }
     throw new Error(`unexpected admin fixture request: ${request.method()} ${url.pathname}`);
@@ -520,6 +536,23 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
   await dialog.getByRole("button", { name: "重置今日用量" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByText("bill 的今日用量已重置。", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "撤销访问" }).click();
+  const revokeDialog = page.getByRole("dialog", { name: "撤销成员访问" });
+  await expect(revokeDialog).toBeVisible();
+  await revokeDialog.getByRole("button", { name: "确认撤销" }).click();
+  await expect(revokeDialog).toHaveCount(0);
+  await expect(page.getByText("bill 的访问码已撤销，但会话注销未完成。", { exact: true })).toBeVisible();
+  if (testInfo.project.name === "touch-390") {
+    await page.getByRole("combobox", { name: "选择成员" }).selectOption("");
+  } else {
+    await page.locator(".typed-admin-member").filter({ hasText: "默认配置" }).click();
+  }
+  await expect(page.getByRole("button", { name: "重试注销会话" })).toBeVisible();
+  await page.getByRole("button", { name: "重试注销会话" }).click();
+  await expect(page.getByText("已注销 bill 的 1 个会话。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试注销会话" })).toHaveCount(0);
+  expect(sessionRetryCount).toBe(1);
 
   const geometry = await page.evaluate(() => {
     const policy = document.querySelector<HTMLElement>('[aria-labelledby="capability-policy"]');

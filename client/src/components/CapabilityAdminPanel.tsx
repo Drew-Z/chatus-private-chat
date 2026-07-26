@@ -56,6 +56,9 @@ type ConfirmState =
   | { kind: "delete-tool"; id: string; label: string }
   | { kind: "delete-mcp"; id: string; label: string }
   | { kind: "delete-secret"; ref: string };
+type PendingConfirmationFocus =
+  | { kind: "selection"; selection: Selection }
+  | { kind: "opener"; opener: HTMLElement | null; fallbackId?: string };
 
 type CapabilityAdminPanelProps = {
   snapshot: AdminConfigSnapshot;
@@ -91,6 +94,7 @@ export function CapabilityAdminPanel({
   const confirmDialogRef = useRef<HTMLDialogElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const confirmOpenerRef = useRef<HTMLElement | null>(null);
+  const pendingConfirmationFocusRef = useRef<PendingConfirmationFocus | null>(null);
 
   const skills = useMemo(() => orderedSkillEntries(snapshot.config), [snapshot.config]);
   const tools = useMemo(() => orderedToolEntries(snapshot.config), [snapshot.config]);
@@ -138,6 +142,23 @@ export function CapabilityAdminPanel({
       if (dialog.open) dialog.close();
     };
   }, [confirmState]);
+
+  useEffect(() => {
+    const pending = pendingConfirmationFocusRef.current;
+    if (confirmState || !pending) return;
+    const focusFrame = requestAnimationFrame(() => {
+      const target = pending.kind === "selection"
+        ? resolveSelectionFocusTarget(pending.selection)
+        : pending.opener?.isConnected
+          ? pending.opener
+          : pending.fallbackId
+            ? document.getElementById(pending.fallbackId)
+            : null;
+      pendingConfirmationFocusRef.current = null;
+      target?.focus();
+    });
+    return () => cancelAnimationFrame(focusFrame);
+  }, [confirmState, activeTab, selectedId, snapshot.revision]);
 
   async function refreshSecrets() {
     setSecretValue("");
@@ -289,17 +310,17 @@ export function CapabilityAdminPanel({
     const action = confirmState;
     if (!action || busy) return;
     if (action.kind === "discard") {
+      queueSelectionFocus(action.selection);
       setConfirmState(null);
       applySelection(action.selection, true);
-      restoreSelectionFocus(action.selection);
       return;
     }
     setBusy(true);
     try {
       if (action.kind === "delete-secret") {
         if (await removeSecret(action.ref)) {
+          queueConfirmationOpener("mcp-managed-secret-input");
           setConfirmState(null);
-          restoreConfirmationOpener("mcp-managed-secret-input");
         }
         return;
       }
@@ -310,10 +331,10 @@ export function CapabilityAdminPanel({
           : deleteMcpServer(snapshot.config, action.id);
       const next = await putAdminConfig(nextConfig, snapshot.revision);
       onSnapshot(next);
-      setConfirmState(null);
       const selection = getInitialSelection(next, activeTab);
+      queueSelectionFocus(selection);
+      setConfirmState(null);
       applySelection(selection, false, next);
-      restoreSelectionFocus(selection);
       onNotice({ kind: "success", text: action.kind === "delete-skill" ? "Skill 已删除。" : action.kind === "delete-tool" ? "远程工具已删除。" : "MCP Server 已删除。" });
     } catch (error) {
       await handleConfigError(error);
@@ -406,31 +427,22 @@ export function CapabilityAdminPanel({
 
   function openConfirmation(state: ConfirmState) {
     confirmOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    pendingConfirmationFocusRef.current = null;
     setConfirmState(state);
   }
 
   function closeConfirmation(restoreFocus = true) {
     if (busy) return;
+    if (restoreFocus) queueConfirmationOpener();
     setConfirmState(null);
-    if (restoreFocus) restoreConfirmationOpener();
   }
 
-  function restoreConfirmationOpener(fallbackId?: string) {
-    const opener = confirmOpenerRef.current;
-    requestAnimationFrame(() => {
-      if (opener?.isConnected) opener.focus();
-      else if (fallbackId) document.getElementById(fallbackId)?.focus();
-    });
+  function queueConfirmationOpener(fallbackId?: string) {
+    pendingConfirmationFocusRef.current = { kind: "opener", opener: confirmOpenerRef.current, fallbackId };
   }
 
-  function restoreSelectionFocus(selection: Selection) {
-    requestAnimationFrame(() => {
-      const option = selection.id
-        ? document.getElementById(capabilityOptionId(selection.tab, selection.id))
-        : null;
-      const target = option || document.getElementById(capabilityTabId(selection.tab));
-      target?.focus();
-    });
+  function queueSelectionFocus(selection: Selection) {
+    pendingConfirmationFocusRef.current = { kind: "selection", selection };
   }
 
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, tab: CapabilityTab) {
@@ -737,6 +749,13 @@ function capabilityTabId(tab: CapabilityTab): string {
 
 function capabilityOptionId(tab: CapabilityTab, id: string): string {
   return `capability-admin-option-${tab}-${id}`;
+}
+
+function resolveSelectionFocusTarget(selection: Selection): HTMLElement | null {
+  const option = selection.id
+    ? document.getElementById(capabilityOptionId(selection.tab, selection.id))
+    : null;
+  return option || document.getElementById(capabilityTabId(selection.tab));
 }
 
 function getConfirmationCopy(state: ConfirmState | null): { title: string; body: string; action: string } {

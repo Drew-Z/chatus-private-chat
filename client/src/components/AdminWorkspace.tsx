@@ -70,6 +70,12 @@ type AdminData = {
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
 
+type SessionRetryNotice = {
+  kind: "warning" | "error";
+  label: string;
+  text: string;
+};
+
 type AdminView = "members" | "providers" | "models" | "capabilities" | "public" | "reliability" | "operations";
 
 type MemberAccessDialogState =
@@ -103,6 +109,7 @@ export function AdminWorkspace({
   const [loading, setLoading] = useState(true);
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [sessionRetryNotice, setSessionRetryNotice] = useState<SessionRetryNotice | null>(null);
   const [memberDialog, setMemberDialog] = useState<MemberAccessDialogState | null>(null);
   const [memberDialogError, setMemberDialogError] = useState("");
   const [memberActionBusy, setMemberActionBusy] = useState(false);
@@ -349,12 +356,13 @@ export function AdminWorkspace({
         setConflict(false);
       }
       setMemberDialog(null);
-      setNotice({
-        kind: result.sessionRevocation.complete ? "success" : "warning",
-        text: result.sessionRevocation.complete
-          ? `已撤销 ${member.label} 的访问权限，现有会话已注销。`
-          : `${member.label} 的访问码已撤销，但会话注销未完成，请在完整后台重试。`,
-      });
+      if (result.sessionRevocation.complete) {
+        clearSessionRetryNotice(member.label);
+        setNotice({ kind: "success", text: `已撤销 ${member.label} 的访问权限，现有会话已注销。` });
+      } else {
+        setNotice(null);
+        setSessionRetryNotice({ kind: "warning", label: member.label, text: `${member.label} 的访问码已撤销，但会话注销未完成。` });
+      }
     } catch (error) {
       await handleMemberActionError(error);
     } finally {
@@ -423,12 +431,13 @@ export function AdminWorkspace({
       accessCode: result.accessCode,
       sessionRevocation: result.sessionRevocation,
     });
-    setNotice({
-      kind: result.sessionRevocation.complete ? "success" : "warning",
-      text: result.sessionRevocation.complete
-        ? action === "create" ? "成员访问已创建。" : "访问码已轮换，旧会话已注销。"
-        : "新访问码已生效，但会话注销未完成，请在完整后台重试。",
-    });
+    if (result.sessionRevocation.complete) {
+      clearSessionRetryNotice(result.member.label);
+      setNotice({ kind: "success", text: action === "create" ? "成员访问已创建。" : "访问码已轮换，旧会话已注销。" });
+    } else {
+      setNotice(null);
+      setSessionRetryNotice({ kind: "warning", label: result.member.label, text: "新访问码已生效，但会话注销未完成。" });
+    }
   }
 
   function applyConfigRemovalResult(result: AdminMemberConfigRemovalResponse, label: string) {
@@ -461,12 +470,46 @@ export function AdminWorkspace({
 
   function applySessionRevocationResult(result: AdminMemberSessionsResponse) {
     setMemberDialog(null);
-    setNotice({
-      kind: result.complete ? "success" : "warning",
-      text: result.complete
-        ? result.revoked ? `已注销 ${result.label} 的 ${result.revoked} 个会话。` : `${result.label} 当前没有活动会话。`
-        : `${result.label} 的访问会话只注销了一部分，请稍后重试。`,
-    });
+    if (result.complete) {
+      clearSessionRetryNotice(result.label);
+      setNotice({
+        kind: "success",
+        text: result.revoked ? `已注销 ${result.label} 的 ${result.revoked} 个会话。` : `${result.label} 当前没有活动会话。`,
+      });
+    } else {
+      setNotice(null);
+      setSessionRetryNotice({ kind: "warning", label: result.label, text: `${result.label} 的访问会话只注销了一部分，请稍后重试。` });
+    }
+  }
+
+  function clearSessionRetryNotice(label: string) {
+    setSessionRetryNotice((current) => current?.label === label ? null : current);
+  }
+
+  async function retrySessionRevocation(label: string) {
+    if (memberActionBusy) return;
+    setMemberActionBusy(true);
+    setSessionRetryNotice({ kind: "warning", label, text: `正在重新注销 ${label} 的访问会话...` });
+    try {
+      const result = await revokeAdminMemberSessions(label);
+      if (result.complete) {
+        clearSessionRetryNotice(label);
+        setNotice({
+          kind: "success",
+          text: result.revoked ? `已注销 ${result.label} 的 ${result.revoked} 个会话。` : `${result.label} 当前没有活动会话。`,
+        });
+      } else {
+        setSessionRetryNotice({ kind: "warning", label, text: `${result.label} 的访问会话仍未全部注销，请稍后再次重试。` });
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setSessionRetryNotice({ kind: "error", label, text: getAdminErrorMessage(error) });
+    } finally {
+      setMemberActionBusy(false);
+    }
   }
 
   function applyUsageResetResult(result: AdminUsageResetResponse) {
@@ -589,6 +632,21 @@ export function AdminWorkspace({
         <div className={`admin-react-notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
           <span>{notice.text}</span>
           {conflict && <button className="quiet-button" type="button" onClick={resetDraft}>使用服务器版本</button>}
+        </div>
+      )}
+
+      {sessionRetryNotice && (
+        <div className={`admin-react-notice ${sessionRetryNotice.kind}`} role={sessionRetryNotice.kind === "error" ? "alert" : "status"}>
+          <span>{sessionRetryNotice.text}</span>
+          <button
+            className="quiet-button icon-text-button"
+            type="button"
+            onClick={() => void retrySessionRevocation(sessionRetryNotice.label)}
+            disabled={memberActionBusy}
+          >
+            <RefreshCw size={15} />
+            <span>{memberActionBusy ? "重试中..." : "重试注销会话"}</span>
+          </button>
         </div>
       )}
 
@@ -1233,7 +1291,7 @@ function MemberAccessDialog({
               </button>
             </div>
             {!state.sessionRevocation.complete && (
-              <p className="member-dialog-status warning" role="alert">访问码已生效，但旧会话注销未完成。</p>
+              <p className="member-dialog-status warning" role="alert">访问码已生效，但旧会话注销未完成。关闭后可在页面提示中重试。</p>
             )}
             <p className="member-dialog-status" role="status" aria-live="polite">{copyStatus}</p>
             <div className="member-dialog-actions">
