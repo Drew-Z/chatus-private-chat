@@ -118,12 +118,14 @@ import {
   DEFAULT_ANTHROPIC_VERSION,
   formatUpstreamErrorMessage,
   ProviderToolError,
-  routeUrl,
   setAuthHeader,
-  toAnthropicMessages,
   type ProviderToolExecutionResult,
   type ProviderToolHistory,
 } from "./services/provider-tool-runtime";
+import {
+  callProviderStream,
+  UpstreamRequestError,
+} from "./services/provider-stream-runtime";
 import type { ProviderCoordinator } from "./provider-coordinator";
 
 export type { ChatMessage } from "./contracts/chat";
@@ -341,7 +343,6 @@ const MAX_CLOUD_SESSION_BYTES = 1_800_000;
 const MAX_USER_DATA_EXPORT_BYTES = 5_000_000;
 const MAX_USER_DATA_EXPORT_CONVERSATION_BYTES = 512_000;
 const USER_DATA_EXPORT_ITEM_HEADROOM_BYTES = 4_096;
-const MAX_SSE_PREFLIGHT_BYTES = 256 * 1024;
 const AGENT_LEGACY_MIGRATION_ID = "legacy-user-state-v1";
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const ADMIN_AUDIT_KEY = "config:admin_audit";
@@ -392,17 +393,6 @@ class CapabilityError extends Error {
   ) {
     super(message);
     this.name = "CapabilityError";
-  }
-}
-
-class UpstreamRequestError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    readonly outcome?: RouteReliabilityOutcome,
-  ) {
-    super(message);
-    this.name = "UpstreamRequestError";
   }
 }
 
@@ -5427,15 +5417,17 @@ async function callRoute(args: {
   terminal: boolean;
 }> {
   const { route, routeId, usedUserKey } = args;
-  const response =
-    route.type === "anthropic-messages"
-      ? await callAnthropicMessages(args)
-      : await callOpenAiChat(args);
+  const attempt = await callProviderStream({
+    route,
+    apiKey: args.apiKey,
+    usedUserKey,
+    messages: args.messages,
+    temperature: args.temperature,
+    defaultMaxTokens: numberEnv(args.env.DEFAULT_MAX_TOKENS, 4096),
+    signal: args.signal,
+  });
 
-  if (response.ok && response.body) {
-    const normalizedBody =
-      route.type === "anthropic-messages" ? transformAnthropicStream(response.body) : response.body;
-    const preparedStream = await prepareValidatedOpenAiSseStream(normalizedBody);
+  if (attempt.ok) {
     const headers = securityHeaders({
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store, no-transform",
@@ -5443,22 +5435,19 @@ async function callRoute(args: {
       "X-Accel-Buffering": "no",
     });
     return {
-      response: new Response(preparedStream.body, { status: 200, headers }),
-      cancelUpstream: preparedStream.cancel,
+      response: new Response(attempt.body, { status: 200, headers }),
+      cancelUpstream: attempt.cancelUpstream,
       error: { routeId, status: 0, message: "" },
       terminal: false,
     };
   }
-
-  const message = await response.text().catch(() => "");
-  const terminal = isTerminalProviderFailure(response.status, usedUserKey);
   return {
     error: {
       routeId,
-      status: response.status,
-      message: formatUpstreamErrorMessage(message),
+      status: attempt.status,
+      message: attempt.message,
     },
-    terminal,
+    terminal: attempt.terminal,
   };
 }
 
@@ -5466,169 +5455,6 @@ type ProviderStreamLifecycle = {
   onComplete: () => Promise<void>;
   onError: (error: unknown) => Promise<void>;
 };
-
-class OpenAiSseValidator {
-  private readonly decoder = new TextDecoder();
-  private buffer = "";
-  private visibleContent = false;
-  private terminal = false;
-
-  get hasVisibleContent(): boolean {
-    return this.visibleContent;
-  }
-
-  get isTerminal(): boolean {
-    return this.terminal;
-  }
-
-  push(chunk: Uint8Array): void {
-    this.buffer += this.decoder.decode(chunk, { stream: true });
-    this.consumeFrames();
-  }
-
-  finish(): void {
-    this.buffer += this.decoder.decode();
-    this.consumeFrames();
-    if (this.buffer.trim()) {
-      throw protocolStreamError("upstream returned an incomplete SSE event");
-    }
-    if (!this.visibleContent) {
-      throw protocolStreamError("upstream stream ended before visible content");
-    }
-  }
-
-  private consumeFrames(): void {
-    while (true) {
-      const separator = /\r?\n\r?\n/.exec(this.buffer);
-      if (!separator) return;
-      const frame = this.buffer.slice(0, separator.index);
-      this.buffer = this.buffer.slice(separator.index + separator[0].length);
-      const kind = inspectOpenAiSseFrame(frame);
-      if (kind === "content") this.visibleContent = true;
-      if (kind === "done") {
-        if (!this.visibleContent) {
-          throw protocolStreamError("upstream stream ended before visible content");
-        }
-        this.terminal = true;
-        return;
-      }
-    }
-  }
-}
-
-async function prepareValidatedOpenAiSseStream(
-  source: ReadableStream<Uint8Array>,
-): Promise<{
-  body: ReadableStream<Uint8Array>;
-  cancel: (reason?: unknown) => Promise<void>;
-}> {
-  const reader = source.getReader();
-  const validator = new OpenAiSseValidator();
-  const prefix: Uint8Array[] = [];
-  let prefixBytes = 0;
-  let cancelled = false;
-  const cancel = async (reason?: unknown) => {
-    if (cancelled) return;
-    cancelled = true;
-    await reader.cancel(reason).catch(() => undefined);
-  };
-
-  try {
-    while (!validator.hasVisibleContent) {
-      const next = await reader.read();
-      if (next.done) {
-        validator.finish();
-        break;
-      }
-      if (!next.value.byteLength) continue;
-      prefixBytes += next.value.byteLength;
-      if (prefixBytes > MAX_SSE_PREFLIGHT_BYTES) {
-        throw protocolStreamError("upstream produced too much metadata before visible content");
-      }
-      prefix.push(next.value);
-      validator.push(next.value);
-    }
-  } catch (error) {
-    await cancel();
-    throw error;
-  }
-
-  let prefixIndex = 0;
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (prefixIndex < prefix.length) {
-        controller.enqueue(prefix[prefixIndex]);
-        prefixIndex += 1;
-        return;
-      }
-      if (validator.isTerminal) {
-        await cancel();
-        controller.close();
-        return;
-      }
-      try {
-        const next = await reader.read();
-        if (next.done) {
-          validator.finish();
-          controller.close();
-          return;
-        }
-        if (!next.value.byteLength) return;
-        validator.push(next.value);
-        controller.enqueue(next.value);
-      } catch (error) {
-        await cancel();
-        controller.error(error);
-      }
-    },
-    async cancel(reason) {
-      await cancel(reason);
-    },
-  }, { highWaterMark: 0 });
-  return { body, cancel };
-}
-
-function inspectOpenAiSseFrame(frame: string): "ignore" | "content" | "done" {
-  const dataLines = frame
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).replace(/^ /, ""));
-  if (!dataLines.length) return "ignore";
-  const payload = dataLines.join("\n").trim();
-  if (!payload) return "ignore";
-  if (payload === "[DONE]") return "done";
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    throw protocolStreamError("upstream returned an invalid SSE event");
-  }
-  if (!isRecord(parsed)) {
-    throw protocolStreamError("upstream returned an invalid SSE payload");
-  }
-  if (Object.prototype.hasOwnProperty.call(parsed, "error") && parsed.error !== undefined) {
-    throw protocolStreamError("upstream returned an error event");
-  }
-  if (!Array.isArray(parsed.choices) || !parsed.choices.length || !isRecord(parsed.choices[0])) {
-    return "ignore";
-  }
-  const choice = parsed.choices[0];
-  const delta = isRecord(choice.delta) ? choice.delta : {};
-  const message = isRecord(choice.message) ? choice.message : {};
-  const text = typeof delta.content === "string"
-    ? delta.content
-    : typeof message.content === "string"
-      ? message.content
-      : typeof choice.text === "string"
-        ? choice.text
-        : "";
-  return text ? "content" : "ignore";
-}
-
-function protocolStreamError(message: string): UpstreamRequestError {
-  return new UpstreamRequestError(502, message, "protocol_error");
-}
 
 export function responseWithProviderLease(
   response: Response,
@@ -6240,175 +6066,6 @@ function providerErrorStatus(error: unknown): number | undefined {
 
 function upstreamReliabilityOutcome(error: unknown): RouteReliabilityOutcome | undefined {
   return error instanceof UpstreamRequestError ? error.outcome : undefined;
-}
-
-async function callOpenAiChat(args: {
-  route: ResolvedProviderRoute;
-  apiKey: string;
-  messages: ChatMessage[];
-  temperature: unknown;
-  signal?: AbortSignal;
-}): Promise<Response> {
-  const { route, apiKey, messages, temperature } = args;
-  const headers = buildHeaders(route.headers);
-  setAuthHeader(headers, route, apiKey, "Authorization");
-  headers.set("Content-Type", "application/json");
-  headers.set("Accept", "text/event-stream");
-
-  return fetch(routeUrl(route, "/chat/completions"), {
-    method: "POST",
-    headers,
-    signal: args.signal,
-    body: JSON.stringify({
-      model: route.model,
-      messages,
-      stream: true,
-      temperature: clampNumber(temperature, 0, 2, route.temperature ?? 0.7),
-      ...(route.maxTokens ? { max_tokens: route.maxTokens } : {}),
-    }),
-  });
-}
-
-async function callAnthropicMessages(args: {
-  route: ResolvedProviderRoute;
-  apiKey: string;
-  messages: ChatMessage[];
-  temperature: unknown;
-  env: Env;
-  signal?: AbortSignal;
-}): Promise<Response> {
-  const { route, apiKey, messages, temperature, env } = args;
-  const headers = buildHeaders(route.headers);
-  setAuthHeader(headers, route, apiKey, "x-api-key");
-  headers.set("Content-Type", "application/json");
-  headers.set("Accept", "text/event-stream");
-  if (!headers.has("anthropic-version")) {
-    headers.set("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
-  }
-
-  const anthropic = toAnthropicMessages(messages);
-
-  return fetch(routeUrl(route, "/v1/messages"), {
-    method: "POST",
-    headers,
-    signal: args.signal,
-    body: JSON.stringify({
-      model: route.model,
-      messages: anthropic.messages,
-      stream: true,
-      max_tokens: route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
-      temperature: clampNumber(temperature, 0, 1, route.temperature ?? 0.7),
-      ...(anthropic.system ? { system: anthropic.system } : {}),
-    }),
-  });
-}
-
-function transformAnthropicStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let buffer = "";
-  let eventName = "";
-  let doneSent = false;
-
-  return new ReadableStream({
-    async pull(controller) {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) {
-          if (buffer.trim()) {
-            throw protocolStreamError("upstream returned an incomplete Anthropic SSE event");
-          }
-          controller.close();
-          return;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            eventName = line.slice(6).trim();
-            continue;
-          }
-
-          if (!line.startsWith("data:")) {
-            if (!line.trim()) eventName = "";
-            continue;
-          }
-
-          const payload = line.slice(5).trim();
-          if (!payload) continue;
-
-          const chunk = anthropicPayloadToOpenAiChunk(payload, eventName);
-          if (chunk) {
-            if (chunk === "data: [DONE]\n\n") {
-              if (!doneSent) {
-                controller.enqueue(encoder.encode(chunk));
-                doneSent = true;
-              }
-              controller.close();
-              await reader.cancel().catch(() => undefined);
-              return;
-            }
-
-            controller.enqueue(encoder.encode(chunk));
-            return;
-          }
-        }
-      }
-    },
-    cancel() {
-      return reader.cancel();
-    },
-  });
-}
-
-function anthropicPayloadToOpenAiChunk(payload: string, eventName: string): string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    throw protocolStreamError("upstream returned an invalid Anthropic SSE event");
-  }
-  if (!isRecord(parsed)) {
-    throw protocolStreamError("upstream returned an invalid Anthropic SSE payload");
-  }
-
-  if (parsed.type === "content_block_delta" && isRecord(parsed.delta)) {
-    if (parsed.delta.type === "text_delta" && typeof parsed.delta.text === "string") {
-      return openAiSseChunk(parsed.delta.text);
-    }
-
-    return "";
-  }
-
-  if (parsed.type === "error" || eventName === "error") {
-    throw protocolStreamError("upstream returned an Anthropic error event");
-  }
-
-  if (parsed.type === "message_delta" && isRecord(parsed.delta) && typeof parsed.delta.stop_reason === "string") {
-    return openAiFinishChunk(parsed.delta.stop_reason === "max_tokens" ? "length" : parsed.delta.stop_reason);
-  }
-
-  if (parsed.type === "message_stop" || eventName === "message_stop") {
-    return "data: [DONE]\n\n";
-  }
-
-  return "";
-}
-
-function openAiSseChunk(text: string): string {
-  return `data: ${JSON.stringify({
-    choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-  })}\n\n`;
-}
-
-function openAiFinishChunk(finishReason: string): string {
-  return `data: ${JSON.stringify({
-    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-  })}\n\n`;
 }
 
 async function getSession(request: Request, env: Env): Promise<Session | null> {
