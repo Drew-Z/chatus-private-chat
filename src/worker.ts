@@ -4420,6 +4420,7 @@ export type PreparedTeamAgentTurn =
       messages: ModelMessage[];
       systemMessages: ModelMessage[];
       toolDefinitions: NormalizedToolDefinition[];
+      memoryToolEnabled: boolean;
       runTool: CapabilityToolRunner;
       closeTools: () => Promise<void>;
       maxToolSteps: number;
@@ -4470,6 +4471,7 @@ export async function prepareTeamAgentTurn(
   }
   const selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
     || access.routes.find((route) => route.id === access.defaultRoute);
+  const memoryToolEnabled = session.kind === "member" && selectedPublicRoute?.supportsTools === true;
   if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
     return {
       ok: false,
@@ -4508,7 +4510,7 @@ export async function prepareTeamAgentTurn(
     if (!publicRoute) continue;
     if (messagesContainImages(normalized) && !publicRoute.supportsImages) continue;
     if (messagesContainImages(normalized) && !route.supportsImages) continue;
-    if (toolDefinitions.length && !route.supportsTools) continue;
+    if ((toolDefinitions.length || memoryToolEnabled) && !route.supportsTools) continue;
 
     let credential: ProviderCredential;
     try {
@@ -4615,6 +4617,7 @@ export async function prepareTeamAgentTurn(
     messages: toProviderModelMessages(messages),
     systemMessages,
     toolDefinitions,
+    memoryToolEnabled,
     runTool: toolRuntime.runTool,
     closeTools: toolRuntime.close,
     maxToolSteps: MAX_TOOL_ROUNDS,

@@ -228,6 +228,7 @@ describe("prepared TeamAgent turn", () => {
     if (!prepared.ok) return;
 
     expect(prepared.toolDefinitions).toHaveLength(1);
+    expect(prepared.memoryToolEnabled).toBe(true);
     const result = await prepared.runTool(prepared.toolDefinitions[0], { text: "hello world\nagain" });
     expect(JSON.parse(result.text)).toEqual({ characters: 17, codePoints: 17, words: 3, lines: 2 });
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -291,6 +292,7 @@ describe("prepared TeamAgent turn", () => {
 
     expect(prepared.skillIds).toEqual([]);
     expect(prepared.toolDefinitions).toEqual([]);
+    expect(prepared.memoryToolEnabled).toBe(true);
     expect(JSON.stringify(prepared.messages)).not.toContain("Revoked instructions");
     await prepared.closeTools();
   });
@@ -326,6 +328,7 @@ describe("prepared TeamAgent turn", () => {
 
     expect(prepared.skillIds).toEqual([]);
     expect(prepared.toolDefinitions).toEqual([]);
+    expect(prepared.memoryToolEnabled).toBe(false);
     expect(JSON.stringify(prepared.messages)).not.toContain("GUEST SUMMARY MUST NOT REACH PROVIDER");
     await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
   });

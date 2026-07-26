@@ -15,6 +15,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { isToolUIPart, type UIMessage } from "ai";
+import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../../../src/contracts/agent";
 import { copyText, sanitizeMarkdownUrl } from "../lib/markdown";
 import { MarkdownContent } from "./MarkdownContent";
 
@@ -238,6 +239,10 @@ function ToolTrace({
   const toolName = part.type === "dynamic-tool"
     ? part.toolName
     : part.title || part.type.replace(/^tool-/, "").replace(/_[0-9a-f]{8,}$/i, "");
+  const memoryProposal = toolName === AGENT_MEMORY_PROPOSAL_TOOL_NAME
+    ? readMemoryProposal(part)
+    : null;
+  const displayName = memoryProposal ? "更新长期记忆" : toolName || "工具调用";
   const status = toolStatus(part.state);
   const decide = (approved: boolean) => {
     if (part.state !== "approval-requested" || deciding) return;
@@ -249,16 +254,21 @@ function ToolTrace({
     <details className={`tool-trace state-${part.state}`} open={part.state === "approval-requested"}>
       <summary>
         <Wrench size={15} />
-        <span className="tool-name">{toolName || "工具调用"}</span>
+        <span className="tool-name">{displayName}</span>
         <span className="tool-status">{status}</span>
         <ChevronDown className="tool-chevron" size={15} />
       </summary>
       <div className="tool-detail">
         {part.state === "input-streaming" && <p>Agent 正在准备工具输入。</p>}
         {part.state === "input-available" && <p>工具已进入执行队列。</p>}
+        {memoryProposal && (
+          <pre className="memory-proposal-preview" aria-label="建议的长期记忆">
+            {memoryProposal.memory || "（清空长期记忆）"}
+          </pre>
+        )}
         {part.state === "approval-requested" && (
           <>
-            <p>这项操作需要你的确认后才能继续。</p>
+            <p>{memoryProposal ? "确认后才会更新长期记忆。" : "这项操作需要你的确认后才能继续。"}</p>
             <div className="approval-actions">
               <button type="button" disabled={deciding} onClick={() => decide(true)}>批准</button>
               <button type="button" className="quiet-button" disabled={deciding} onClick={() => decide(false)}>拒绝</button>
@@ -272,6 +282,18 @@ function ToolTrace({
       </div>
     </details>
   );
+}
+
+function readMemoryProposal(part: UIMessage["parts"][number]): { memory: string } | null {
+  const candidate: unknown = part;
+  if (!isRecord(candidate) || !isRecord(candidate.input) || typeof candidate.input.memory !== "string") {
+    return null;
+  }
+  return { memory: candidate.input.memory };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function toolStatus(state: string): string {

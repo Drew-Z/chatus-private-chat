@@ -1,5 +1,6 @@
 import { convertToModelMessages, type ToolSet, type UIMessage } from "ai";
 import { describe, expect, it, vi } from "vitest";
+import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../src/contracts/agent";
 import type { NormalizedToolDefinition } from "../src/contracts/capability";
 import { createAgentToolSet } from "../src/services/agent-tools";
 
@@ -132,6 +133,33 @@ describe("Agent AI SDK tools", () => {
         }],
       },
     ]);
+  });
+
+  it("requires approval and revision checks before applying a memory proposal", async () => {
+    const update = vi.fn(async (memory: string, expectedRevision: string) => ({
+      ok: true,
+      record: { memory, revision: "next-revision", updatedAt: 42 },
+    }));
+    const tools = createAgentToolSet({
+      definitions: [],
+      conversationId: "chat-memory",
+      runTool: async () => ({ text: "unused", preview: "unused", truncated: false }),
+      approvals: { isTrusted: () => true, markTrusted: () => undefined },
+      memory: { revision: "base-revision", maxChars: 100, update },
+    });
+
+    const input = { memory: "- 偏好简洁回答", expectedRevision: "base-revision" };
+    expect(await needsApproval(tools, AGENT_MEMORY_PROPOSAL_TOOL_NAME, input)).toBe(true);
+    expect(update).not.toHaveBeenCalled();
+    await expect(executeTool(tools, AGENT_MEMORY_PROPOSAL_TOOL_NAME, input))
+      .resolves.toBe(JSON.stringify({ ok: true, status: "memory_updated", updatedAt: 42 }));
+    expect(update).toHaveBeenCalledWith(input.memory, input.expectedRevision);
+
+    await expect(executeTool(tools, AGENT_MEMORY_PROPOSAL_TOOL_NAME, {
+      memory: "must not overwrite",
+      expectedRevision: "stale-revision",
+    })).resolves.toBe(JSON.stringify({ ok: false, error: "memory_proposal_invalid" }));
+    expect(update).toHaveBeenCalledTimes(1);
   });
 });
 

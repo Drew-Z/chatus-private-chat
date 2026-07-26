@@ -169,6 +169,17 @@ test("message edit restores focus and rich content remains visible", async ({ pa
   expect(colors.code).not.toBe(colors.heading);
 });
 
+test("memory proposals show the exact candidate before approval", async ({ page }) => {
+  const trace = page.locator(".tool-trace").filter({ hasText: "更新长期记忆" });
+  await expect(trace).toBeVisible();
+  await expect(trace.locator(".memory-proposal-preview")).toHaveText(
+    "- 偏好简洁、直接的回答\n- 长期使用 TypeScript",
+  );
+  await expect(trace).toContainText("确认后才会更新长期记忆");
+  await expect(trace.getByRole("button", { name: "批准" })).toBeVisible();
+  await expect(trace.getByRole("button", { name: "拒绝" })).toBeVisible();
+});
+
 test("composer grows within its cap and keeps send stop dimensions stable", async ({ page }) => {
   const textarea = page.getByRole("textbox", { name: "消息" });
   const initialHeight = await textarea.evaluate((element) => element.getBoundingClientRect().height);

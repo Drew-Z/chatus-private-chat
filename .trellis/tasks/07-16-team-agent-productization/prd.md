@@ -108,22 +108,22 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 
 ## Acceptance Criteria
 
-- [ ] Chatus runs on a formal Cloudflare Agents SDK boundary with one isolated durable Agent identity per teammate.
-- [ ] Member access-code authentication, restricted guest access, and administrator capability assignment work without public self-registration or cross-surface capability leakage.
+- [x] Chatus runs on a formal Cloudflare Agents SDK boundary with one isolated durable Agent identity per teammate.
+- [x] Member access-code authentication, restricted guest access, and administrator capability assignment work without public self-registration or cross-surface capability leakage.
 - [ ] Existing route adapters, fallback, BYOK, quota, memory, Skills, tools, MCP, and audit capabilities survive the migration under explicit module boundaries.
-- [ ] Automatic and scheduled model liveness prompts are absent; `/healthz` and normal diagnostics make zero model calls.
-- [ ] Real-task telemetry provides redacted route reliability and fallback evidence.
+- [x] Automatic and scheduled model liveness prompts are absent; `/healthz` and normal diagnostics make zero model calls.
+- [x] Real-task telemetry provides redacted route reliability and fallback evidence.
 - [x] A logical model can use multiple ordered provider offerings, and one provider credential can be reused by multiple models without redeployment.
 - [x] Exclusive and bounded provider capacity is enforced atomically across teammates and across every model offered by the provider; all-busy requests wait no longer than 10 seconds.
 - [x] Lease release, cancellation, expiry recovery, pre-output fallback, legacy route compatibility, and provider/model configuration validation have deterministic tests without live model calls.
 - [x] Typed administration exposes provider inventory, logical models, offerings, capacity, credential readiness, model discovery, and passive health without revealing secret material.
-- [ ] The web client supports streaming/recovery, history, memory, tool approvals, run traces, mobile/PWA states, and actionable errors.
-- [ ] Slow turns show a truthful waiting/first-output/streaming state; local fake-provider tests cover delayed SSE, single-chunk output, provider-busy timeout, cancellation, and recovery without live model calls.
-- [ ] Copy, edit, resend, regenerate, feedback, branch, continue, and failed-turn retry actions follow role/state availability rules and preserve the source conversation.
-- [ ] Desktop and 390px touch acceptance confirms readable transcript width, stable composer/actions, visible touch controls, keyboard focus, no horizontal overflow, and no overlapping UI.
-- [ ] User data and credentials remain isolated from BIAU Operator and from other Chatus users.
-- [ ] README, operations docs, environment examples, and CI describe a clean installation and GitHub-Actions-only release flow.
-- [ ] `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` pass with no live model calls.
+- [x] The web client supports streaming/recovery, history, memory, tool approvals, run traces, mobile/PWA states, and actionable errors.
+- [x] Slow turns show a truthful waiting/first-output/streaming state; local fake-provider tests cover delayed SSE, single-chunk output, provider-busy timeout, cancellation, and recovery without live model calls.
+- [x] Copy, edit, resend, regenerate, feedback, branch, continue, and failed-turn retry actions follow role/state availability rules and preserve the source conversation.
+- [x] Desktop and 390px touch acceptance confirms readable transcript width, stable composer/actions, visible touch controls, keyboard focus, no horizontal overflow, and no overlapping UI.
+- [x] User data and credentials remain isolated from BIAU Operator and from other Chatus users.
+- [x] README, operations docs, environment examples, and CI describe a clean installation and GitHub-Actions-only release flow.
+- [x] `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` pass with no live model calls.
 
 ## Out Of Scope
 

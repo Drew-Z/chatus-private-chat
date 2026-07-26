@@ -537,6 +537,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .tool-trace[open] .tool-chevron { transform: rotate(180deg); }
 .tool-detail { padding: 0 10px 11px 33px; color: var(--muted); font-size: 12px; }
 .tool-detail p { margin: 0; line-height: 1.55; }
+.memory-proposal-preview { max-height: 180px; margin: 8px 0; padding: 8px 10px; overflow: auto; border-left: 3px solid var(--accent); color: var(--ink); background: var(--surface-muted); font: inherit; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tool-error { color: var(--danger); }
 .approval-actions { display: flex; gap: 8px; margin-top: 10px; }
 .approval-actions button { min-height: 34px; }

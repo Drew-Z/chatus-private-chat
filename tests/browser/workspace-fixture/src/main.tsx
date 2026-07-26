@@ -14,6 +14,7 @@ import {
   type DraftAttachment,
 } from "../../../../client/src/lib/image-input";
 import { DEFAULT_FILE_INPUT_POLICY } from "../../../../src/contracts/file";
+import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../../../../src/contracts/agent";
 import "../../../../client/src/styles.css";
 
 const now = Date.now();
@@ -165,10 +166,10 @@ const messages: UIMessage[] = [
       { type: "reasoning", text: "这是纯合成的折叠内容，用于验证渐进展开布局。" },
       {
         type: "dynamic-tool",
-        toolName: "synthetic_search",
+        toolName: AGENT_MEMORY_PROPOSAL_TOOL_NAME,
         toolCallId: "visual-tool-call",
         state: "approval-requested",
-        input: { query: "synthetic" },
+        input: { memory: "- 偏好简洁、直接的回答\n- 长期使用 TypeScript", expectedRevision: "visual-revision" },
         approval: { id: "visual-approval" },
       },
       { type: "source-url", sourceId: "source-1", url: "https://example.com/a/very/long/source/path/that/stays/inside/the/message", title: "一条很长的合成网页来源标题，用于验证来源分组和省略" },

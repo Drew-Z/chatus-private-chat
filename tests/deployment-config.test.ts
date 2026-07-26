@@ -8,6 +8,7 @@ import {
 import deployWorkflow from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflow from "../.github/workflows/production-acceptance.yml?raw";
 import acceptanceProductionSource from "../scripts/acceptance-production.mjs?raw";
+import localEnvironmentExample from "../.env.example?raw";
 import packageSource from "../package.json?raw";
 import wranglerSource from "../wrangler.jsonc?raw";
 import selfHostingGuide from "../docs/self-hosting.md?raw";
@@ -252,6 +253,15 @@ describe("repository deployment contract", () => {
     const config = JSON.parse(wranglerSource);
     expect(config.name).toBe("chatus");
     expect(config.kv_namespaces).toEqual([{ binding: "CHAT_STORE" }]);
+  });
+
+  it("keeps the local ROUTES_CONFIG example parseable after dotenv quote removal", () => {
+    const line = localEnvironmentExample.split(/\r?\n/u).find((entry) => entry.startsWith("ROUTES_CONFIG="));
+    expect(line).toMatch(/^ROUTES_CONFIG='\{.*\}'$/u);
+    const value = line?.slice("ROUTES_CONFIG='".length, -1) || "";
+    const config = JSON.parse(value);
+    expect(Object.keys(config.providers)).not.toHaveLength(0);
+    expect(Object.keys(config.routes)).not.toHaveLength(0);
   });
 
   it("uses free-plan-compatible SQLite migrations for Durable Objects", () => {

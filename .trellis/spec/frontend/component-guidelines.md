@@ -174,11 +174,13 @@ type ModelOffering = {
 - Edit Cancel and successful edit completion restore focus to the originating edit action. Failed turns expose a focused retry action that creates a resend branch from the latest user message; a full reload remains a separate reconnect fallback.
 - Keep action busy state local to the owning message so two message rows cannot block or mutate one another. Disable the row while its branch request is in flight, then activate the server-returned conversation.
 - Streaming transcript scroll follows new output only while the reader is near the bottom; manual upward scrolling is preserved.
+- The internal long-term-memory tool is rendered as a named memory update rather than an opaque provider tool. Before approval, show the complete proposed replacement in a bounded, wrapping, scrollable region beside explicit Approve and Reject controls. Do not expose the revision token as user-facing content, and do not imply that the memory changed until tool execution completes.
 
 ### Tests Required
 
 - Assert the role/state matrix for copy, edit, resend, regenerate, feedback, branch, and conditional Continue, including no-route, offline, active-run, and failed-turn states.
 - Assert desktop and 390px action bars are visible, keyboard focusable, and free of horizontal overflow; assert the edit form restores focus to its originating control after cancel or completion.
+- Assert memory proposals always request approval, stale revisions cannot write, guests do not receive the proposal tool, and the exact proposed memory remains readable without overflow at desktop and 390px widths.
 
 ## React Workspace Shell
 

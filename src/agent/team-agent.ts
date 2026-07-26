@@ -845,10 +845,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           expiresAt: this.sessionExpiresAt,
         };
     let longTermMemory = "";
+    let memoryRecord: AgentMemoryRecord | undefined;
     if (this.accessKind === "member") {
       try {
         const root = await this.getRootAgent();
-        longTermMemory = (await root.getMemory()).memory;
+        memoryRecord = await root.getMemory();
+        longTermMemory = memoryRecord.memory;
       } catch {
         // Conversation execution remains available if the optional memory read is temporarily unavailable.
       }
@@ -877,9 +879,21 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         isTrusted: (targetConversationId, toolId) => this.isToolTrusted(targetConversationId, toolId),
         markTrusted: (targetConversationId, toolId) => this.markToolTrusted(targetConversationId, toolId),
       },
+      ...(prepared.memoryToolEnabled && memoryRecord
+        ? {
+            memory: {
+              revision: memoryRecord.revision,
+              maxChars: positiveNumber(this.env.MAX_MEMORY_CHARS, 4_000),
+              update: async (memory: string, expectedRevision: string) => {
+                const root = await this.getRootAgent();
+                return root.putMemory(memory, expectedRevision);
+              },
+            },
+          }
+        : {}),
     });
     let messages: ModelMessage[] = prepared.messages;
-    if (options?.continuation && prepared.toolDefinitions.length) {
+    if (options?.continuation && Object.keys(tools).length) {
       try {
         messages = [
           ...prepared.systemMessages,

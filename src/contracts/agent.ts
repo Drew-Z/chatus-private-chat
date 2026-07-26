@@ -2,6 +2,7 @@ import type { UIMessage } from "ai";
 import type { SessionKind } from "./session";
 
 export const MAX_AGENT_CONVERSATIONS = 50;
+export const AGENT_MEMORY_PROPOSAL_TOOL_NAME = "chatus_update_memory";
 
 export type TeamAgentScope = "root" | "conversation";
 

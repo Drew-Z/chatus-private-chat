@@ -41,6 +41,10 @@ Required GitHub Secrets:
 the authenticated administrator surface. A local `ACCESS_CODES` value remains supported only for
 legacy/local development mode; it is never read by the managed production deployment.
 
+Local `.dev.vars` examples must survive Wrangler's dotenv quote removal. Write `ROUTES_CONFIG` as
+single-quoted, unescaped, single-line JSON (or an equivalent raw single line) so the Worker receives
+a value that can be passed directly to `JSON.parse`; do not wrap backslash-escaped JSON in double quotes.
+
 Optional Worker Secrets are `SYSTEM_PROMPT`, `BLOCKED_PROMPTS`, `ROUTE_KEYS_MASTER_KEY`, and extra uppercase string entries from `WORKER_SECRETS_JSON`. The master key must be canonical Base64 for exactly 32 bytes. Extra entries cannot override core Worker Secrets, Cloudflare credentials, or instance Variables.
 
 Wrangler `--secrets-file` is additive. Omitting a previously uploaded name does not delete the remote Worker Secret. Revocation requires stopping references, explicitly deleting the remote Secret in Cloudflare, and re-running deployment/smoke.
@@ -77,6 +81,7 @@ Production deploy and production member acceptance share the `chatus-production-
 - Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
 - Assert every newly introduced Durable Object uses a SQLite-backed migration and reject `new_classes` in the checked-in Wrangler contract.
 - Import workflow/config files as raw fixtures and assert Repository Variables, generated `--config`, shared non-canceling production concurrency, early and late stale-SHA checks, parameterized production URL, generic Wrangler baseline, and absence of a local `deploy` script.
+- Parse the checked-in `.env.example` `ROUTES_CONFIG` after dotenv quote removal and require non-empty provider and route registries.
 - Run `node --check` for both deployment scripts.
 - Execute the generator with dummy values and run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, default `npx wrangler deploy --dry-run`, and `git diff --check`.

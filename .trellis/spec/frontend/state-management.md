@@ -48,6 +48,7 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - Normalize selected Skill IDs into the server-projected administrator order and cap them at three; branches copy the ordered selection while new chats start empty.
 - Backup restore and device merge are distinct operations; do not silently evict existing chats on import.
 - `/api/memory`, `/api/agent/memory`, admin memory, legacy prompts, and Agent prompts all read/write the root Agent memory record. KV is read only for idempotent import and deleted during full user-data removal.
+- Agent-proposed memory changes use the built-in AIChat tool-approval record as the durable proposal boundary. The tool is available only to members on a tool-capable logical route, carries the complete replacement memory plus the exact root-memory revision, and always requires approval. Rejection performs no write; approval calls the root Agent with the proposed revision, so an intervening edit returns a conflict instead of being overwritten. Manual user/admin memory editing remains revision-checked and independent of the proposal flow.
 - Legacy conversation sync is append-only/prefix-safe. It may import new chats and append compatible snapshots, but it must never overwrite a divergent Agent transcript.
 - Deleted Agent conversation IDs retain tombstones. Stale Agent reconnects and legacy uploads must not recreate them; transcript cleanup failures remain in a persisted retry queue.
 

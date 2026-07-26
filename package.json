@@ -12,6 +12,7 @@
     "check:frontend": "npm run build:client && node scripts/check-frontend.mjs",
     "smoke:production": "node scripts/smoke-production.mjs",
     "acceptance:production": "node scripts/acceptance-production.mjs",
+    "test:browser:agent": "node scripts/run-browser-agent-e2e.mjs",
     "test:browser:workspace": "playwright test --config tests/browser/playwright.config.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit && tsc -p tests/browser/tsconfig.json --noEmit"

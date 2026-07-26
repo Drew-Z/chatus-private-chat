@@ -40,6 +40,7 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - Keep the Cloudflare Vitest pool serial (`maxWorkers: 1`) on Windows. Parallel pool workers can fall back to random Miniflare ports, and Node/undici rejects some random port values as forbidden ports after the test assertions have already passed.
 - Browser geometry, focus, overflow, and touch contracts use the Playwright component fixture under `tests/browser/`. Keep that directory excluded from the Cloudflare Vitest pool with `configDefaults.exclude`, and type-check its Node/DOM boundary separately.
 - The workspace fixture may import real presentational React components with deterministic synthetic data, but it must not mount Agent hooks, authenticate, call `/api`, open `/agent`, or contact a model. Abort unexpected requests and assert the blocked-request list again in `afterEach` so interactions cannot bypass the guard.
+- Real Agent browser acceptance uses its separate `tests/browser/agent-e2e/` config and a local fake provider. Its runner must generate runtime-only credentials, use isolated Wrangler persistence and Playwright output directories, redact credentials from errors, remove temporary state, and expose only bounded non-sensitive provider counters.
 - Successful viewport screenshots must be written through `testInfo.outputPath(...)`, attached by path, and retained with `preserveOutput: "always"`. Keep `test-results/` ignored by Git; in-memory attachments alone are not retained by the line reporter for passing tests.
 - Before shipping run:
 
@@ -47,6 +48,7 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 npm run check:frontend
 npm test
 npm run test:browser:workspace
+npm run test:browser:agent
 npm run typecheck
 npx wrangler deploy --dry-run
 git diff --check
@@ -66,6 +68,7 @@ git diff --check
 - For capability work, test the legacy provider stream and `capability-v1` stream separately; verify completed, failed, pending-confirmation, and stale-confirmation states on desktop and 390px touch layouts.
 - For Agent runtime work, prove the Wrangler binding/export package, per-member instance isolation, unauthenticated/cross-origin denial, and zero provider calls from infrastructure or route diagnostics.
 - For Agent persistence work, prove legacy/Agent memory API consistency, post-migration legacy import, tombstone rejection, and persisted transcript-cleanup retry.
+- For Agent-proposed memory writes, prove approval is unconditional, rejection performs no execution, stale revisions preserve the current memory, guest/non-tool routes cannot expose the tool, and the approval trace shows the candidate without revealing provider or MCP credentials.
 - For Agent streaming work, prove fallback happens only before visible output, cancellation is forwarded, AI SDK retries are disabled, and integration tests use local fake provider responses only.
 - For typed provider-pool administration, verify provider/model drafts preserve sanitized non-UI fields, conflict reset is visible, reliability data is passive and recent-only, secret inputs are empty write-only password fields, and the admin root has no horizontal overflow at 390px, 480px, 780px, and desktop widths.
 - For chat recovery, verify the failed-turn retry creates a resend branch, edit cancellation returns focus to its opener, and incremental output does not override manual transcript scrolling.
