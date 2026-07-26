@@ -4,6 +4,8 @@
 
 Use this contract whenever GitHub Actions deployment, Wrangler bindings/routes, production instance identity, Worker Secrets, first-party smoke, or third-party installation changes.
 
+It also applies when code reads or writes encrypted route/MCP credentials. Runtime secret resolution is an infrastructure boundary even when the HTTP API and deployment files do not change.
+
 Production deployment is GitHub-Actions-only. The checked-in Wrangler file is a local and dry-run baseline; it must not contain a production Worker name, KV namespace ID, account ID, route, or maintainer domain.
 
 ## 2. Signatures
@@ -15,6 +17,9 @@ Production deployment is GitHub-Actions-only. The checked-in Wrangler file is a 
 - Production deploy: `npx wrangler deploy --config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json`
 - Default local verification: `npm run deploy:dry-run`
 - Post-deploy verification: `npm run smoke:production -- "$PRODUCTION_URL" "$GITHUB_SHA"`
+- Managed-secret factory: `createManagedSecretService(dependencies)` in `src/services/managed-secrets.ts`
+- Runtime reads: `load(namespace, ref)` for managed-only reads and `resolve(namespace, ref)` for managed-then-Worker resolution
+- Administration operations: `inspect`, `revision`, `write`, and `delete`
 
 Both generated files are ignored by Git. The config stays at the repository root because Wrangler resolves `main`, assets, and schema paths relative to the config file location.
 
@@ -47,6 +52,10 @@ a value that can be passed directly to `JSON.parse`; do not wrap backslash-escap
 
 Optional Worker Secrets are `SYSTEM_PROMPT`, `BLOCKED_PROMPTS`, `ROUTE_KEYS_MASTER_KEY`, and extra uppercase string entries from `WORKER_SECRETS_JSON`. The master key must be canonical Base64 for exactly 32 bytes. Extra entries cannot override core Worker Secrets, Cloudflare credentials, or instance Variables.
 
+Encrypted route and MCP records use separate KV prefixes and AES-GCM AAD namespaces. `KVNamespace.get()` returning the literal `null` is the only condition that permits a same-name Worker Secret fallback. Any other stored value, including `""`, malformed JSON, invalid Base64, an unavailable master key, or failed decryption, represents an existing managed record and must not fall back. Runtime resolution throws the stable managed-secret error; administration inspection reports `source="managed"`, `status="unavailable"`, and never returns plaintext or ciphertext. Worker fallback values are trimmed and blank values are treated as missing.
+
+Provider credential precedence remains `user BYOK > requiresUserKey > legacy apiKey > managed record > Worker Secret > missing`. The legacy `apiKey` branch belongs to provider routing and must not be folded into the generic managed-secret service.
+
 Wrangler `--secrets-file` is additive. Omitting a previously uploaded name does not delete the remote Worker Secret. Revocation requires stopping references, explicitly deleting the remote Secret in Cloudflare, and re-running deployment/smoke.
 
 New Durable Object namespaces must use `new_sqlite_classes`; `new_classes` selects the key-value storage backend, which Workers Free cannot create. Never edit a migration tag that reached a successful deployment. If Cloudflare rejects a new tag before applying it, correct that unapplied tag before retrying rather than inventing a follow-up migration for a namespace that does not exist.
@@ -68,12 +77,20 @@ Production deploy and production member acceptance share the `chatus-production-
 | Checked-out SHA is no longer the `main` tip | Fail before deployment, including the late pre-upload guard |
 | Generated Wrangler config fails current Wrangler validation | Fail dry-run before deployment |
 | Post-deploy SHA smoke fails | Fail the workflow; do not report release success |
+| Managed KV key is absent (`null`) | Allow a non-blank same-name Worker Secret fallback |
+| Managed KV key exists but is empty or malformed | Return `invalid_record`; never read the Worker fallback |
+| Managed record cannot decrypt or the master key is unavailable | Return `decrypt_failed` or `master_key_unavailable`; never read the Worker fallback |
+| Managed record exists but administration cannot use it | Project `managed/unavailable`, preserve the record revision, and expose no secret material |
+| Worker fallback contains only whitespace | Treat the credential as missing |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: an installer configures three non-secret Variables plus GitHub Secrets, Actions generates the target config, dry-run validates the exact bindings/routes, deploy uses the same config, and exact-SHA smoke passes.
 - Base: `wrangler.jsonc` has a generic name and an ID-free `CHAT_STORE` binding, so Vitest, local dev, and default dry-run work without any production identifiers.
 - Bad: commit an account/KV/domain value, interpolate shell text into JSONC, place a generated config under `.wrangler/` without rebasing relative paths, deploy without a stale-SHA guard, or assume removing a GitHub Secret deletes its remote Worker value.
+- Good managed secret: the KV read returns `null`, so a trimmed Worker binding may satisfy the credential.
+- Base managed secret: a valid encrypted record decrypts with its namespace/ref AAD and shadows any same-name Worker binding.
+- Bad managed secret: an empty, malformed, moved, or undecryptable record silently falls through to an older Worker binding.
 
 ## 6. Tests Required
 
@@ -85,6 +102,9 @@ Production deploy and production member acceptance share the `chatus-production-
 - Run `node --check` for both deployment scripts.
 - Execute the generator with dummy values and run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, default `npx wrangler deploy --dry-run`, and `git diff --check`.
+- Unit-test route and MCP namespaces symmetrically: valid encryption, exact-`null` fallback, empty/malformed records, master-key rotation, namespace/ref AAD isolation, blank Worker bindings, revision retention, and deletion.
+- Keep provider-router tests for BYOK/legacy/managed/Worker precedence and assert Worker bindings are trimmed.
+- Keep Worker API tests proving write-only responses, route/MCP namespace isolation, revision conflicts, deletion projection, model discovery, and MCP discovery/execution.
 
 ## 7. Wrong vs Correct
 
@@ -106,3 +126,22 @@ This deploys the checked-in instance binding, hard-codes one operator's target, 
 ```
 
 Generate one validated target config from Repository Variables, use it for both dry-run and upload, then smoke `vars.CHATUS_PRODUCTION_URL` at the exact deployed SHA.
+
+### Managed Secret Fallback
+
+Wrong:
+
+```typescript
+const raw = await store.get(key);
+if (!raw) return workerSecret;
+```
+
+Correct:
+
+```typescript
+const raw = await store.get(key);
+if (raw === null) return workerSecret.trim();
+return decrypt(parseEncryptedRecord(raw));
+```
+
+The correct form distinguishes a missing KV key from a present but corrupted record and prevents accidental credential rollback.

@@ -94,6 +94,14 @@ import {
   type QuotaBucket,
   type QuotaUsageResult,
 } from "./services/quota-admission";
+import {
+  createManagedSecretService,
+  managedSecretPrefix,
+  ManagedSecretError,
+  MANAGED_SECRET_REF_PATTERN,
+  MAX_MANAGED_SECRET_CHARS,
+  type ManagedSecretMetadata,
+} from "./services/managed-secrets";
 import type { ProviderCoordinator } from "./provider-coordinator";
 
 export type { ChatMessage } from "./contracts/chat";
@@ -250,30 +258,14 @@ type RouteAccess = {
   publicAccess?: PublicAccessConfig;
 };
 
-type EncryptedSecret = {
-  version: 1;
-  algorithm: "AES-GCM";
-  iv: string;
-  ciphertext: string;
-  updatedAt: string;
-};
-
-type EncryptedRouteSecret = EncryptedSecret;
-
 type RouteSecretSource = "managed" | "worker" | "legacy" | "missing";
 
-type RouteSecretMetadata = {
+type RouteSecretMetadata = Omit<ManagedSecretMetadata, "namespace" | "ref" | "source"> & {
   apiKeyRef: string;
   source: RouteSecretSource;
-  status: "configured" | "unavailable" | "missing";
-  managed: boolean;
-  environmentFallback: boolean;
-  updatedAt?: string;
-  revision?: string;
-  message?: string;
 };
 
-type McpSecretMetadata = Omit<RouteSecretMetadata, "apiKeyRef"> & { secretRef: string };
+type McpSecretMetadata = Omit<ManagedSecretMetadata, "namespace" | "ref"> & { secretRef: string };
 
 type AnthropicContentBlock =
   | { type: "text"; text: string }
@@ -348,12 +340,6 @@ const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
-const ROUTE_SECRET_PREFIX = "route-secret:";
-const ROUTE_SECRET_AAD_PREFIX = "chatus:route-secret:v1:";
-const MCP_SECRET_PREFIX = "mcp-secret:";
-const MCP_SECRET_AAD_PREFIX = "chatus:mcp-secret:v1:";
-const ROUTE_SECRET_REF_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
-const MAX_ROUTE_SECRET_CHARS = 8_192;
 const MAX_SKILLS = 50;
 const MAX_TOOLS = 200;
 const MAX_MCP_SERVERS = 20;
@@ -398,16 +384,6 @@ class CapabilityError extends Error {
   ) {
     super(message);
     this.name = "CapabilityError";
-  }
-}
-
-class RouteSecretError extends Error {
-  constructor(
-    readonly code: "master_key_unavailable" | "invalid_record" | "decrypt_failed",
-    message: string,
-  ) {
-    super(message);
-    this.name = "RouteSecretError";
   }
 }
 
@@ -1978,19 +1954,20 @@ function secretRefFromAdminPath(pathname: string, prefix: string): string | null
 
 async function handleGetAdminRouteSecrets(env: Env): Promise<Response> {
   const config = await loadAppConfig(env);
+  const prefix = managedSecretPrefix("route");
   const refs = new Set(
     [...Object.values(config.providers), ...Object.values(config.routes)]
       .map((item) => item.apiKeyRef?.trim() || "")
-      .filter((ref) => ROUTE_SECRET_REF_PATTERN.test(ref)),
+      .filter((ref) => MANAGED_SECRET_REF_PATTERN.test(ref)),
   );
   let cursor: string | undefined;
   do {
-    const page = await env.CHAT_STORE.list({ prefix: ROUTE_SECRET_PREFIX, cursor, limit: 100 });
+    const page = await env.CHAT_STORE.list({ prefix, cursor, limit: 100 });
     for (const key of page.keys) {
-      const encodedRef = key.name.slice(ROUTE_SECRET_PREFIX.length);
+      const encodedRef = key.name.slice(prefix.length);
       try {
         const ref = decodeURIComponent(encodedRef);
-        if (ROUTE_SECRET_REF_PATTERN.test(ref)) refs.add(ref);
+        if (MANAGED_SECRET_REF_PATTERN.test(ref)) refs.add(ref);
       } catch {
         // Invalid historical keys remain inaccessible and are not exposed by the admin API.
       }
@@ -2010,7 +1987,7 @@ async function handleGetAdminRouteSecrets(env: Env): Promise<Response> {
 }
 
 async function handlePutAdminRouteSecret(request: Request, env: Env, apiKeyRef: string): Promise<Response> {
-  if (!ROUTE_SECRET_REF_PATTERN.test(apiKeyRef)) {
+  if (!MANAGED_SECRET_REF_PATTERN.test(apiKeyRef)) {
     return jsonResponse({
       error: "invalid_api_key_ref",
       message: "API Key Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
@@ -2022,7 +1999,7 @@ async function handlePutAdminRouteSecret(request: Request, env: Env, apiKeyRef: 
   if (!apiKey) {
     return jsonResponse({ error: "api_key_required", message: "请输入要保存的线路密钥" }, 400);
   }
-  if (apiKey.length > MAX_ROUTE_SECRET_CHARS) {
+  if (apiKey.length > MAX_MANAGED_SECRET_CHARS) {
     return jsonResponse({ error: "api_key_too_long", message: "线路密钥长度超出限制" }, 400);
   }
 
@@ -2030,8 +2007,7 @@ async function handlePutAdminRouteSecret(request: Request, env: Env, apiKeyRef: 
   if (conflict) return conflict;
 
   try {
-    const record = await encryptRouteSecret(env, apiKeyRef, apiKey);
-    await env.CHAT_STORE.put(routeSecretKey(apiKeyRef), JSON.stringify(record));
+    await managedSecretService(env).write("route", apiKeyRef, apiKey);
     await appendAdminAudit(env, "route-secret.update", apiKeyRef);
     return jsonResponse({ ok: true, item: await inspectRouteSecret(env, apiKeyRef) });
   } catch (error) {
@@ -2040,7 +2016,7 @@ async function handlePutAdminRouteSecret(request: Request, env: Env, apiKeyRef: 
 }
 
 async function handleDeleteAdminRouteSecret(request: Request, env: Env, apiKeyRef: string): Promise<Response> {
-  if (!ROUTE_SECRET_REF_PATTERN.test(apiKeyRef)) {
+  if (!MANAGED_SECRET_REF_PATTERN.test(apiKeyRef)) {
     return jsonResponse({
       error: "invalid_api_key_ref",
       message: "API Key Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
@@ -2049,26 +2025,27 @@ async function handleDeleteAdminRouteSecret(request: Request, env: Env, apiKeyRe
   const body = await readJson<{ expectedRevision?: unknown }>(request);
   const conflict = await routeSecretRevisionConflict(env, apiKeyRef, body.expectedRevision);
   if (conflict) return conflict;
-  await env.CHAT_STORE.delete(routeSecretKey(apiKeyRef));
+  await managedSecretService(env).delete("route", apiKeyRef);
   await appendAdminAudit(env, "route-secret.delete", apiKeyRef);
   return jsonResponse({ ok: true, item: await inspectRouteSecret(env, apiKeyRef) });
 }
 
 async function handleGetAdminMcpSecrets(env: Env): Promise<Response> {
   const config = await loadAppConfig(env);
+  const prefix = managedSecretPrefix("mcp");
   const refs = new Set(
     Object.values(config.mcpServers || {})
       .map((server) => server.secretRef?.trim() || "")
-      .filter((ref) => ROUTE_SECRET_REF_PATTERN.test(ref)),
+      .filter((ref) => MANAGED_SECRET_REF_PATTERN.test(ref)),
   );
   let cursor: string | undefined;
   do {
-    const page = await env.CHAT_STORE.list({ prefix: MCP_SECRET_PREFIX, cursor, limit: 100 });
+    const page = await env.CHAT_STORE.list({ prefix, cursor, limit: 100 });
     for (const key of page.keys) {
-      const encodedRef = key.name.slice(MCP_SECRET_PREFIX.length);
+      const encodedRef = key.name.slice(prefix.length);
       try {
         const ref = decodeURIComponent(encodedRef);
-        if (ROUTE_SECRET_REF_PATTERN.test(ref)) refs.add(ref);
+        if (MANAGED_SECRET_REF_PATTERN.test(ref)) refs.add(ref);
       } catch {
         // Invalid historical keys remain inaccessible and are not exposed by the admin API.
       }
@@ -2088,7 +2065,7 @@ async function handleGetAdminMcpSecrets(env: Env): Promise<Response> {
 }
 
 async function handlePutAdminMcpSecret(request: Request, env: Env, secretRef: string): Promise<Response> {
-  if (!ROUTE_SECRET_REF_PATTERN.test(secretRef)) {
+  if (!MANAGED_SECRET_REF_PATTERN.test(secretRef)) {
     return jsonResponse({
       error: "invalid_secret_ref",
       message: "Secret Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
@@ -2097,14 +2074,13 @@ async function handlePutAdminMcpSecret(request: Request, env: Env, secretRef: st
   const body = await readJson<{ secret?: unknown; expectedRevision?: unknown }>(request);
   const secret = typeof body.secret === "string" ? body.secret.trim() : "";
   if (!secret) return jsonResponse({ error: "secret_required", message: "请输入要保存的 MCP 密钥" }, 400);
-  if (secret.length > MAX_ROUTE_SECRET_CHARS) {
+  if (secret.length > MAX_MANAGED_SECRET_CHARS) {
     return jsonResponse({ error: "secret_too_long", message: "MCP 密钥长度超出限制" }, 400);
   }
   const conflict = await managedSecretRevisionConflict(env, "mcp", secretRef, body.expectedRevision);
   if (conflict) return conflict;
   try {
-    const record = await encryptManagedSecret(env, "mcp", secretRef, secret);
-    await env.CHAT_STORE.put(managedSecretKey("mcp", secretRef), JSON.stringify(record));
+    await managedSecretService(env).write("mcp", secretRef, secret);
     await appendAdminAudit(env, "mcp-secret.update", secretRef);
     return jsonResponse({ ok: true, item: await inspectMcpSecret(env, secretRef) });
   } catch (error) {
@@ -2113,7 +2089,7 @@ async function handlePutAdminMcpSecret(request: Request, env: Env, secretRef: st
 }
 
 async function handleDeleteAdminMcpSecret(request: Request, env: Env, secretRef: string): Promise<Response> {
-  if (!ROUTE_SECRET_REF_PATTERN.test(secretRef)) {
+  if (!MANAGED_SECRET_REF_PATTERN.test(secretRef)) {
     return jsonResponse({
       error: "invalid_secret_ref",
       message: "Secret Ref 必须以大写字母开头，且只能包含大写字母、数字和下划线",
@@ -2122,47 +2098,14 @@ async function handleDeleteAdminMcpSecret(request: Request, env: Env, secretRef:
   const body = await readJson<{ expectedRevision?: unknown }>(request);
   const conflict = await managedSecretRevisionConflict(env, "mcp", secretRef, body.expectedRevision);
   if (conflict) return conflict;
-  await env.CHAT_STORE.delete(managedSecretKey("mcp", secretRef));
+  await managedSecretService(env).delete("mcp", secretRef);
   await appendAdminAudit(env, "mcp-secret.delete", secretRef);
   return jsonResponse({ ok: true, item: await inspectMcpSecret(env, secretRef) });
 }
 
 async function inspectMcpSecret(env: Env, secretRef: string): Promise<McpSecretMetadata> {
-  const raw = await env.CHAT_STORE.get(managedSecretKey("mcp", secretRef));
-  const environmentFallback = typeof env[secretRef] === "string" && Boolean(String(env[secretRef]).trim());
-  if (!raw) {
-    return {
-      secretRef,
-      source: environmentFallback ? "worker" : "missing",
-      status: environmentFallback ? "configured" : "missing",
-      managed: false,
-      environmentFallback,
-    };
-  }
-  const revision = await secretFingerprint(raw);
-  try {
-    const record = parseEncryptedSecret(raw, "mcp");
-    await decryptManagedSecretRecord(env, "mcp", secretRef, record);
-    return {
-      secretRef,
-      source: "managed",
-      status: "configured",
-      managed: true,
-      environmentFallback,
-      updatedAt: record.updatedAt,
-      revision,
-    };
-  } catch (error) {
-    return {
-      secretRef,
-      source: "managed",
-      status: "unavailable",
-      managed: true,
-      environmentFallback,
-      revision,
-      message: error instanceof RouteSecretError ? error.message : "后台 MCP 密钥不可用",
-    };
-  }
+  const { namespace: _namespace, ref, ...metadata } = await managedSecretService(env).inspect("mcp", secretRef);
+  return { secretRef: ref, ...metadata };
 }
 
 async function managedSecretRevisionConflict(
@@ -2173,8 +2116,7 @@ async function managedSecretRevisionConflict(
 ): Promise<Response | null> {
   const expectedRevision = typeof expectedValue === "string" ? expectedValue : "";
   if (!expectedRevision) return null;
-  const raw = await env.CHAT_STORE.get(managedSecretKey(namespace, secretRef));
-  const currentRevision = raw ? await secretFingerprint(raw) : "";
+  const currentRevision = await managedSecretService(env).revision(namespace, secretRef);
   if (currentRevision === expectedRevision) return null;
   return jsonResponse({
     error: namespace === "route" ? "route_secret_conflict" : "mcp_secret_conflict",
@@ -2194,58 +2136,16 @@ async function routeSecretRevisionConflict(
 }
 
 async function inspectRouteMasterKey(env: Env): Promise<{ ready: boolean; message?: string }> {
-  try {
-    await importRouteMasterKey(env);
-    return { ready: true };
-  } catch (error) {
-    return {
-      ready: false,
-      message: error instanceof RouteSecretError ? error.message : "线路密钥主密钥不可用",
-    };
-  }
+  return managedSecretService(env).inspectMasterKey();
 }
 
 async function inspectRouteSecret(env: Env, apiKeyRef: string): Promise<RouteSecretMetadata> {
-  const raw = await env.CHAT_STORE.get(routeSecretKey(apiKeyRef));
-  const environmentFallback = typeof env[apiKeyRef] === "string" && Boolean(String(env[apiKeyRef]).trim());
-  if (!raw) {
-    return {
-      apiKeyRef,
-      source: environmentFallback ? "worker" : "missing",
-      status: environmentFallback ? "configured" : "missing",
-      managed: false,
-      environmentFallback,
-    };
-  }
-
-  const revision = await secretFingerprint(raw);
-  try {
-    const record = parseEncryptedRouteSecret(raw);
-    await decryptRouteSecretRecord(env, apiKeyRef, record);
-    return {
-      apiKeyRef,
-      source: "managed",
-      status: "configured",
-      managed: true,
-      environmentFallback,
-      updatedAt: record.updatedAt,
-      revision,
-    };
-  } catch (error) {
-    return {
-      apiKeyRef,
-      source: "managed",
-      status: "unavailable",
-      managed: true,
-      environmentFallback,
-      revision,
-      message: error instanceof RouteSecretError ? error.message : "后台线路密钥不可用",
-    };
-  }
+  const { namespace: _namespace, ref, ...metadata } = await managedSecretService(env).inspect("route", apiKeyRef);
+  return { apiKeyRef: ref, ...metadata };
 }
 
 function routeSecretAdminErrorResponse(error: unknown): Response {
-  if (error instanceof RouteSecretError) {
+  if (error instanceof ManagedSecretError) {
     return jsonResponse({ error: error.code, message: error.message }, 503);
   }
   return jsonResponse({ error: "route_secret_operation_failed", message: "线路密钥操作失败" }, 500);
@@ -3743,7 +3643,7 @@ async function handleAdminMcpDiscovery(request: Request, env: Env): Promise<Resp
     label: normalizeBoundedText(body.label, 80) || serverId,
     endpoint,
     authType,
-    secretRef: secretRef && ROUTE_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
+    secretRef: secretRef && MANAGED_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
   };
   if (!isValidMcpEndpoint(server.endpoint) || isForbiddenMcpUrl(new URL(server.endpoint))) {
     return jsonResponse({ error: "mcp_endpoint_invalid", message: "MCP 地址必须是可公开访问的 HTTPS 地址" }, 400);
@@ -4510,7 +4410,7 @@ export async function prepareTeamAgentTurn(
     } catch (error) {
       lastError = {
         routeId,
-        message: error instanceof RouteSecretError ? error.message : "route key is unavailable",
+        message: error instanceof ManagedSecretError ? error.message : "route key is unavailable",
       };
       continue;
     }
@@ -5223,7 +5123,7 @@ async function resolveRouteCredential(
     route,
     userApiKey,
     bindings: env,
-    isManagedReference: (apiKeyRef) => ROUTE_SECRET_REF_PATTERN.test(apiKeyRef),
+    isManagedReference: (apiKeyRef) => MANAGED_SECRET_REF_PATTERN.test(apiKeyRef),
     loadManagedSecret: (apiKeyRef) => loadManagedRouteSecret(env, apiKeyRef),
   });
 }
@@ -5248,181 +5148,21 @@ async function buildRuntimeProviderPlan(
 }
 
 async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<string | null> {
-  const raw = await env.CHAT_STORE.get(routeSecretKey(apiKeyRef));
-  if (!raw) return null;
-  return decryptRouteSecretRecord(env, apiKeyRef, parseEncryptedRouteSecret(raw));
+  return managedSecretService(env).load("route", apiKeyRef);
 }
 
 async function resolveMcpSecret(env: Env, secretRef: string): Promise<string> {
-  const raw = await env.CHAT_STORE.get(managedSecretKey("mcp", secretRef));
-  if (raw) return decryptManagedSecretRecord(env, "mcp", secretRef, parseEncryptedSecret(raw, "mcp"));
-  return typeof env[secretRef] === "string" ? String(env[secretRef]).trim() : "";
+  return managedSecretService(env).resolve("mcp", secretRef);
 }
 
-async function encryptRouteSecret(env: Env, apiKeyRef: string, apiKey: string): Promise<EncryptedRouteSecret> {
-  return encryptManagedSecret(env, "route", apiKeyRef, apiKey);
-}
-
-async function encryptManagedSecret(
-  env: Env,
-  namespace: "route" | "mcp",
-  secretRef: string,
-  secret: string,
-): Promise<EncryptedSecret> {
-  const key = await importRouteMasterKey(env);
-  const iv = new Uint8Array(12);
-  crypto.getRandomValues(iv);
-  const plaintext = new TextEncoder().encode(secret);
-  const ciphertext = await crypto.subtle.encrypt(
-    {
-      name: "AES-GCM",
-      iv,
-      additionalData: managedSecretAdditionalData(namespace, secretRef),
-    },
-    key,
-    plaintext,
-  );
-  return {
-    version: 1,
-    algorithm: "AES-GCM",
-    iv: bytesToBase64(iv),
-    ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-async function decryptRouteSecretRecord(
-  env: Env,
-  apiKeyRef: string,
-  record: EncryptedRouteSecret,
-): Promise<string> {
-  return decryptManagedSecretRecord(env, "route", apiKeyRef, record);
-}
-
-async function decryptManagedSecretRecord(
-  env: Env,
-  namespace: "route" | "mcp",
-  secretRef: string,
-  record: EncryptedSecret,
-): Promise<string> {
-  const key = await importRouteMasterKey(env);
-  try {
-    const plaintext = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: base64ToBytes(record.iv),
-        additionalData: managedSecretAdditionalData(namespace, secretRef),
-      },
-      key,
-      base64ToBytes(record.ciphertext),
-    );
-    const secret = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(plaintext);
-    if (!secret) throw new Error("empty managed secret");
-    return secret;
-  } catch (error) {
-    if (error instanceof RouteSecretError) throw error;
-    throw new RouteSecretError(
-      "decrypt_failed",
-      namespace === "route"
-        ? "后台线路密钥无法解密；如主密钥已轮换，请重新录入该密钥"
-        : "后台 MCP 密钥无法解密；如主密钥已轮换，请重新录入该密钥",
-    );
-  }
-}
-
-async function importRouteMasterKey(env: Env): Promise<CryptoKey> {
-  const encoded = env.ROUTE_KEYS_MASTER_KEY?.trim() || "";
-  if (!encoded) {
-    throw new RouteSecretError(
-      "master_key_unavailable",
-      "未配置 ROUTE_KEYS_MASTER_KEY，暂时无法保存后台线路密钥",
-    );
-  }
-
-  let raw: Uint8Array;
-  try {
-    raw = base64ToBytes(encoded);
-  } catch {
-    throw new RouteSecretError(
-      "master_key_unavailable",
-      "ROUTE_KEYS_MASTER_KEY 格式无效，应为 32 字节随机值的 Base64 编码",
-    );
-  }
-  if (raw.byteLength !== 32) {
-    throw new RouteSecretError(
-      "master_key_unavailable",
-      "ROUTE_KEYS_MASTER_KEY 长度无效，应为 32 字节随机值的 Base64 编码",
-    );
-  }
-
-  try {
-    return await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-  } catch {
-    throw new RouteSecretError("master_key_unavailable", "ROUTE_KEYS_MASTER_KEY 无法导入");
-  }
-}
-
-function parseEncryptedRouteSecret(raw: string): EncryptedRouteSecret {
-  return parseEncryptedSecret(raw, "route");
-}
-
-function parseEncryptedSecret(raw: string, namespace: "route" | "mcp"): EncryptedSecret {
-  try {
-    const parsed = JSON.parse(raw);
-    if (
-      !isRecord(parsed) ||
-      parsed.version !== 1 ||
-      parsed.algorithm !== "AES-GCM" ||
-      typeof parsed.iv !== "string" ||
-      typeof parsed.ciphertext !== "string" ||
-      typeof parsed.updatedAt !== "string" ||
-      !Number.isFinite(Date.parse(parsed.updatedAt)) ||
-      base64ToBytes(parsed.iv).byteLength !== 12 ||
-      base64ToBytes(parsed.ciphertext).byteLength < 16
-    ) {
-      throw new Error("invalid encrypted secret");
-    }
-    return parsed as EncryptedRouteSecret;
-  } catch {
-    throw new RouteSecretError(
-      "invalid_record",
-      namespace === "route" ? "后台线路密钥记录损坏，请删除后重新录入" : "后台 MCP 密钥记录损坏，请删除后重新录入",
-    );
-  }
-}
-
-function routeSecretAdditionalData(apiKeyRef: string): Uint8Array {
-  return managedSecretAdditionalData("route", apiKeyRef);
-}
-
-function routeSecretKey(apiKeyRef: string): string {
-  return managedSecretKey("route", apiKeyRef);
-}
-
-function managedSecretAdditionalData(namespace: "route" | "mcp", secretRef: string): Uint8Array {
-  const prefix = namespace === "route" ? ROUTE_SECRET_AAD_PREFIX : MCP_SECRET_AAD_PREFIX;
-  return new TextEncoder().encode(`${prefix}${secretRef}`);
-}
-
-function managedSecretKey(namespace: "route" | "mcp", secretRef: string): string {
-  const prefix = namespace === "route" ? ROUTE_SECRET_PREFIX : MCP_SECRET_PREFIX;
-  return `${prefix}${encodeURIComponent(secretRef)}`;
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
-    throw new Error("invalid base64");
-  }
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-function bytesToBase64(value: Uint8Array): string {
-  let binary = "";
-  for (const byte of value) binary += String.fromCharCode(byte);
-  return btoa(binary);
+function managedSecretService(env: Env) {
+  return createManagedSecretService({
+    store: env.CHAT_STORE,
+    masterKey: env.ROUTE_KEYS_MASTER_KEY,
+    bindings: env,
+    fingerprint: secretFingerprint,
+    nowIso: () => new Date().toISOString(),
+  });
 }
 
 async function buildMessagesWithSystem(
@@ -5507,7 +5247,7 @@ async function prepareProviderPlan(
     } catch (error) {
       lastError = {
         routeId: route.routeId,
-        message: error instanceof RouteSecretError ? error.message : "route key is unavailable",
+        message: error instanceof ManagedSecretError ? error.message : "route key is unavailable",
       };
       continue;
     }
@@ -7925,7 +7665,7 @@ function normalizeMcpServerRegistry(value: unknown): Record<string, McpServerCon
       label: normalizeBoundedText(rawServer.label, 80) || id,
       endpoint,
       authType,
-      secretRef: secretRef && ROUTE_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
+      secretRef: secretRef && MANAGED_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
     };
   }
   return output;

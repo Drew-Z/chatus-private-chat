@@ -137,7 +137,7 @@ describe("provider router", () => {
   it("resolves credentials using user, user-required, legacy, managed, Worker, and missing precedence", async () => {
     const loadManagedSecret = vi.fn(async (apiKeyRef: string) => apiKeyRef === "MANAGED_KEY" ? "managed-key" : null);
     const common = {
-      bindings: { MANAGED_KEY: "worker-shadowed", WORKER_KEY: "worker-key" },
+      bindings: { MANAGED_KEY: "worker-shadowed", WORKER_KEY: "  worker-key  ", BLANK_KEY: "   " },
       isManagedReference: (apiKeyRef: string) => /^[A-Z][A-Z0-9_]+$/.test(apiKeyRef),
       loadManagedSecret,
     };
@@ -175,6 +175,12 @@ describe("provider router", () => {
     await expect(resolveProviderCredential({
       ...common,
       route: route({ apiKeyRef: "MISSING_KEY" }),
+      userApiKey: "",
+    })).resolves.toEqual({ apiKey: "", source: "missing", usedUserKey: false });
+
+    await expect(resolveProviderCredential({
+      ...common,
+      route: route({ apiKeyRef: "BLANK_KEY" }),
       userApiKey: "",
     })).resolves.toEqual({ apiKey: "", source: "missing", usedUserKey: false });
   });

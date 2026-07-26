@@ -143,9 +143,10 @@ export async function resolveProviderCredential(
     const managed = await args.loadManagedSecret(apiKeyRef);
     if (managed !== null) return { apiKey: managed, source: "managed", usedUserKey: false };
   }
-  if (apiKeyRef && typeof args.bindings[apiKeyRef] === "string") {
-    return { apiKey: String(args.bindings[apiKeyRef]), source: "worker", usedUserKey: false };
-  }
+  const workerSecret = apiKeyRef && typeof args.bindings[apiKeyRef] === "string"
+    ? String(args.bindings[apiKeyRef]).trim()
+    : "";
+  if (workerSecret) return { apiKey: workerSecret, source: "worker", usedUserKey: false };
   return missingCredential();
 }
 
