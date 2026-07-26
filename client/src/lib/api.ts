@@ -197,6 +197,66 @@ export type AdminModelDiscoveryResponse = {
   endpoint: string;
 };
 
+export type AdminMcpAuthType = "none" | "bearer" | "x-api-key";
+
+export type AdminMcpServerConfig = {
+  enabled: boolean;
+  label: string;
+  endpoint: string;
+  authType: AdminMcpAuthType;
+  secretRef?: string;
+};
+
+export type AdminMcpSecretMetadata = {
+  secretRef: string;
+  source: "managed" | "worker" | "missing";
+  status: "configured" | "unavailable" | "missing";
+  managed: boolean;
+  environmentFallback: boolean;
+  updatedAt?: string;
+  revision?: string;
+  message?: string;
+};
+
+export type AdminMcpSecretsSnapshot = {
+  masterKeyReady: boolean;
+  masterKeyMessage?: string;
+  items: AdminMcpSecretMetadata[];
+};
+
+export type AdminMcpSecretMutationResponse = {
+  ok: true;
+  item: AdminMcpSecretMetadata;
+};
+
+export type AdminMcpDiscoveryRequest = {
+  serverId: string;
+  label?: string;
+  endpoint: string;
+  authType: AdminMcpAuthType;
+  secretRef?: string;
+};
+
+export type AdminMcpDiscoveredTool = {
+  id: string;
+  label: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  confirmation: "first-per-conversation";
+  executor: {
+    type: "mcp";
+    serverId: string;
+    remoteName: string;
+  };
+  schemaFingerprint: string;
+};
+
+export type AdminMcpDiscoveryResponse = {
+  serverId: string;
+  tools: AdminMcpDiscoveredTool[];
+  rejected: number;
+};
+
 export type AdminReliabilityRoute = {
   routeId: string;
   model: string;
@@ -337,7 +397,11 @@ export type AdminToolConfig = {
   label: string;
   description?: string;
   confirmation: "auto" | "first-per-conversation" | "always";
-  executor: { type: "builtin" | "mcp"; [key: string]: unknown };
+  inputSchema: Record<string, unknown>;
+  executor:
+    | { type: "builtin"; name: "text_stats" }
+    | { type: "mcp"; serverId: string; remoteName: string };
+  schemaFingerprint?: string;
   [key: string]: unknown;
 };
 
@@ -349,7 +413,7 @@ export type AdminConfig = {
   publicAccess: AdminPublicAccessConfig;
   skills: Record<string, AdminSkillConfig>;
   tools: Record<string, AdminToolConfig>;
-  mcpServers: Record<string, Record<string, unknown>>;
+  mcpServers: Record<string, AdminMcpServerConfig>;
   [key: string]: unknown;
 };
 
@@ -586,6 +650,54 @@ export async function discoverAdminProviderModels(providerId: string): Promise<A
   });
   if (!isAdminModelDiscoveryResponse(data)) {
     throw new ApiError("invalid_admin_model_discovery_response", "模型列表格式无效。", 502);
+  }
+  return data;
+}
+
+export async function fetchAdminMcpSecrets(): Promise<AdminMcpSecretsSnapshot> {
+  const data = await requestJson("/api/admin/mcp-secrets");
+  if (!isAdminMcpSecretsSnapshot(data)) {
+    throw new ApiError("invalid_admin_mcp_secrets_response", "MCP 密钥状态格式无效。", 502);
+  }
+  return data;
+}
+
+export async function putAdminMcpSecret(
+  secretRef: string,
+  secret: string,
+  expectedRevision?: string,
+): Promise<AdminMcpSecretMutationResponse> {
+  const data = await requestJson(`/api/admin/mcp-secrets/${encodeURIComponent(secretRef)}`, {
+    method: "PUT",
+    body: JSON.stringify({ secret, ...(expectedRevision === undefined ? {} : { expectedRevision }) }),
+  });
+  if (!isAdminMcpSecretMutationResponse(data)) {
+    throw new ApiError("invalid_admin_mcp_secret_response", "MCP 密钥保存结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function deleteAdminMcpSecret(
+  secretRef: string,
+  expectedRevision?: string,
+): Promise<AdminMcpSecretMutationResponse> {
+  const data = await requestJson(`/api/admin/mcp-secrets/${encodeURIComponent(secretRef)}`, {
+    method: "DELETE",
+    body: JSON.stringify(expectedRevision === undefined ? {} : { expectedRevision }),
+  });
+  if (!isAdminMcpSecretMutationResponse(data)) {
+    throw new ApiError("invalid_admin_mcp_secret_response", "MCP 密钥删除结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function discoverAdminMcpTools(request: AdminMcpDiscoveryRequest): Promise<AdminMcpDiscoveryResponse> {
+  const data = await requestJson("/api/admin/mcp-discovery", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+  if (!isAdminMcpDiscoveryResponse(data)) {
+    throw new ApiError("invalid_admin_mcp_discovery_response", "MCP 工具发现结果格式无效。", 502);
   }
   return data;
 }
@@ -996,6 +1108,38 @@ export function isAdminModelDiscoveryResponse(value: unknown): value is AdminMod
     && isSafeHttpUrl(value.endpoint);
 }
 
+export function isAdminMcpSecretsSnapshot(value: unknown): value is AdminMcpSecretsSnapshot {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["masterKeyReady", "masterKeyMessage", "items"])
+    && typeof value.masterKeyReady === "boolean"
+    && (value.masterKeyMessage === undefined || isNonEmptyString(value.masterKeyMessage))
+    && Array.isArray(value.items)
+    && value.items.length <= 1_000
+    && value.items.every(isAdminMcpSecretMetadata)
+    && new Set(value.items.map((item) => item.secretRef)).size === value.items.length;
+}
+
+export function isAdminMcpSecretMutationResponse(value: unknown): value is AdminMcpSecretMutationResponse {
+  return isRecord(value)
+    && hasExactKeys(value, ["ok", "item"])
+    && value.ok === true
+    && isAdminMcpSecretMetadata(value.item);
+}
+
+export function isAdminMcpDiscoveryResponse(value: unknown): value is AdminMcpDiscoveryResponse {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["serverId", "tools", "rejected"])
+    || !isCapabilityId(value.serverId, 80)
+    || !Array.isArray(value.tools)
+    || value.tools.length > 200
+    || !isNonNegativeInteger(value.rejected)) {
+    return false;
+  }
+  const serverId = value.serverId;
+  if (!value.tools.every((tool) => isAdminMcpDiscoveredTool(tool, serverId))) return false;
+  return new Set(value.tools.map((tool) => tool.id)).size === value.tools.length;
+}
+
 export function isAdminReliabilitySnapshot(value: unknown): value is AdminReliabilitySnapshot {
   if (!isRecord(value)
     || !hasExactKeys(value, ["generatedAt", "providers"])
@@ -1186,6 +1330,17 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
   if (!isRegistry(users, isAdminUserConfig) || !isAdminUserConfig(defaults) || !isAdminPublicAccessConfig(publicAccess)) return false;
   if (!isRegistry(skills, isAdminSkillConfig) || !isRegistry(tools, isAdminToolConfig)) return false;
   if (!isRegistry(mcpServers, isAdminMcpServerConfig)) return false;
+  const skillRegistryIds = Object.keys(skills);
+  const toolRegistryIds = Object.keys(tools);
+  const mcpServerIds = Object.keys(mcpServers);
+  if (skillRegistryIds.length > 50
+    || toolRegistryIds.length > 200
+    || mcpServerIds.length > 20
+    || !skillRegistryIds.every((id) => isCapabilityId(id, 80))
+    || !toolRegistryIds.every((id) => isCapabilityId(id, 160))
+    || !mcpServerIds.every((id) => isCapabilityId(id, 80))) {
+    return false;
+  }
   if (publicAccess.enabled) {
     const publicRoute = routes[publicAccess.routeId];
     if (!publicRoute || publicRoute.enabled === false) return false;
@@ -1199,6 +1354,7 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
 
   const skillIds = new Set(Object.keys(skills));
   const toolIds = new Set(Object.keys(tools));
+  const mcpIds = new Set(Object.keys(mcpServers));
   const assignments = [defaults, ...Object.values(users)];
   if (assignments.some((assignment) => (
     (assignment.defaultRoute !== undefined && !routeIds.has(assignment.defaultRoute))
@@ -1206,7 +1362,13 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
     || assignment.allowedSkills?.some((id) => !skillIds.has(id))
     || assignment.allowedTools?.some((id) => !toolIds.has(id))
   ))) return false;
-  return Object.values(skills).every((skill) => skill.toolIds.every((id) => toolIds.has(id)));
+  if (!Object.values(skills).every((skill) => skill.toolIds.every((id) => toolIds.has(id)))) return false;
+  return Object.entries(tools).every(([id, tool]) => (
+    tool.executor.type === "builtin"
+      ? id === "builtin:text_stats"
+      : mcpIds.has(tool.executor.serverId)
+        && id === `mcp:${tool.executor.serverId}:${tool.executor.remoteName}`
+  ));
 }
 
 export function isAgentConversation(value: unknown): value is AgentConversation {
@@ -1581,6 +1743,29 @@ function isAdminRouteSecretMetadata(value: unknown): value is AdminRouteSecretMe
     && (value.message === undefined || isNonEmptyString(value.message));
 }
 
+function isAdminMcpSecretMetadata(value: unknown): value is AdminMcpSecretMetadata {
+  return isRecord(value)
+    && !hasForbiddenSecretField(value)
+    && hasOnlyKeys(value, [
+      "secretRef",
+      "source",
+      "status",
+      "managed",
+      "environmentFallback",
+      "updatedAt",
+      "revision",
+      "message",
+    ])
+    && isRouteSecretRef(value.secretRef)
+    && (value.source === "managed" || value.source === "worker" || value.source === "missing")
+    && (value.status === "configured" || value.status === "unavailable" || value.status === "missing")
+    && typeof value.managed === "boolean"
+    && typeof value.environmentFallback === "boolean"
+    && (value.updatedAt === undefined || isIsoDate(value.updatedAt))
+    && (value.revision === undefined || isNonEmptyString(value.revision))
+    && (value.message === undefined || isNonEmptyString(value.message));
+}
+
 function isAdminReliabilityProvider(value: unknown): value is AdminReliabilityProvider {
   if (!isRecord(value)
     || !hasOnlyKeys(value, [
@@ -1819,36 +2004,73 @@ function hasValidAdminStreamEvidence(value: Record<string, unknown>, successes: 
 
 function isAdminSkillConfig(value: unknown): value is AdminSkillConfig {
   return isRecord(value)
+    && hasOnlyKeys(value, ["enabled", "label", "description", "instructions", "toolIds", "order"])
     && typeof value.enabled === "boolean"
-    && typeof value.label === "string"
-    && (value.description === undefined || typeof value.description === "string")
-    && isNonEmptyString(value.instructions)
-    && isUniqueStringIdArray(value.toolIds)
-    && (value.order === undefined || (typeof value.order === "number" && Number.isFinite(value.order)));
+    && isBoundedText(value.label, 80, false)
+    && (value.description === undefined || isBoundedText(value.description, 500, true))
+    && isBoundedText(value.instructions, 8_000, false)
+    && isUniqueCapabilityIdArray(value.toolIds, 160, 200)
+    && (value.order === undefined || (typeof value.order === "number" && Number.isInteger(value.order) && value.order >= -10_000 && value.order <= 10_000));
 }
 
 function isAdminToolConfig(value: unknown): value is AdminToolConfig {
-  return isRecord(value)
-    && typeof value.enabled === "boolean"
-    && typeof value.label === "string"
-    && (value.description === undefined || typeof value.description === "string")
-    && (
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ["enabled", "label", "description", "inputSchema", "confirmation", "executor", "schemaFingerprint"])
+    || typeof value.enabled !== "boolean"
+    || !isBoundedText(value.label, 80, false)
+    || (value.description !== undefined && !isBoundedText(value.description, 1_000, true))
+    || !(
       value.confirmation === "auto"
       || value.confirmation === "first-per-conversation"
       || value.confirmation === "always"
     )
-    && isRecord(value.inputSchema)
-    && isRecord(value.executor)
-    && (value.executor.type === "builtin" || value.executor.type === "mcp");
+    || !isRecord(value.inputSchema)
+    || !isRecord(value.executor)
+    || (value.schemaFingerprint !== undefined && !isSchemaFingerprint(value.schemaFingerprint))) {
+    return false;
+  }
+  if (value.executor.type === "builtin") {
+    return hasExactKeys(value.executor, ["type", "name"])
+      && value.executor.name === "text_stats"
+      && (value.confirmation === "auto" || value.confirmation === "always")
+      && value.schemaFingerprint === undefined;
+  }
+  return value.executor.type === "mcp"
+    && hasExactKeys(value.executor, ["type", "serverId", "remoteName"])
+    && isCapabilityId(value.executor.serverId, 80)
+    && isMcpRemoteName(value.executor.remoteName)
+    && value.confirmation !== "auto"
+    && isSchemaFingerprint(value.schemaFingerprint);
 }
 
-function isAdminMcpServerConfig(value: unknown): value is Record<string, unknown> {
+function isAdminMcpServerConfig(value: unknown): value is AdminMcpServerConfig {
   return isRecord(value)
+    && hasOnlyKeys(value, ["enabled", "label", "endpoint", "authType", "secretRef"])
     && typeof value.enabled === "boolean"
-    && typeof value.label === "string"
-    && isNonEmptyString(value.endpoint)
+    && isBoundedText(value.label, 80, false)
+    && isSafeMcpEndpoint(value.endpoint)
     && (value.authType === "none" || value.authType === "bearer" || value.authType === "x-api-key")
-    && (value.secretRef === undefined || typeof value.secretRef === "string");
+    && (value.secretRef === undefined || isRouteSecretRef(value.secretRef))
+    && (value.authType === "none" ? value.secretRef === undefined : value.secretRef !== undefined);
+}
+
+function isAdminMcpDiscoveredTool(value: unknown, serverId: string): value is AdminMcpDiscoveredTool {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["id", "label", "description", "inputSchema", "confirmation", "executor", "schemaFingerprint"])
+    || !isCapabilityId(value.id, 160)
+    || !isBoundedText(value.label, 80, false)
+    || !isBoundedText(value.description, 1_000, true)
+    || !isRecord(value.inputSchema)
+    || value.confirmation !== "first-per-conversation"
+    || !isSchemaFingerprint(value.schemaFingerprint)
+    || !isRecord(value.executor)
+    || !hasExactKeys(value.executor, ["type", "serverId", "remoteName"])
+    || value.executor.type !== "mcp"
+    || value.executor.serverId !== serverId
+    || !isMcpRemoteName(value.executor.remoteName)) {
+    return false;
+  }
+  return value.id === `mcp:${serverId}:${value.executor.remoteName}`;
 }
 
 async function requestJson(path: string, init: RequestInit = {}): Promise<unknown> {
@@ -1930,6 +2152,37 @@ function isProviderId(value: unknown): value is string {
 
 function isRouteSecretRef(value: unknown): value is string {
   return typeof value === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(value);
+}
+
+function isCapabilityId(value: unknown, maxLength: number): value is string {
+  return typeof value === "string"
+    && value.length <= maxLength
+    && /^[A-Za-z0-9][A-Za-z0-9:._-]*$/.test(value);
+}
+
+function isUniqueCapabilityIdArray(value: unknown, maxLength: number, maxItems: number): value is string[] {
+  return Array.isArray(value)
+    && value.length <= maxItems
+    && value.every((item) => isCapabilityId(item, maxLength))
+    && new Set(value).size === value.length;
+}
+
+function isSchemaFingerprint(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isMcpRemoteName(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
+function isSafeMcpEndpoint(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2_048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && Boolean(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 function isSafeHttpUrl(value: unknown): value is string {

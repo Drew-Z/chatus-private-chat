@@ -2070,8 +2070,8 @@ async function handlePutAdminMcpSecret(request: Request, env: Env, secretRef: st
     }, 400);
   }
   const body = await readJson<{ secret?: unknown; expectedRevision?: unknown }>(request);
-  const secret = typeof body.secret === "string" ? body.secret.trim() : "";
-  if (!secret) return jsonResponse({ error: "secret_required", message: "请输入要保存的 MCP 密钥" }, 400);
+  const secret = typeof body.secret === "string" ? body.secret : "";
+  if (secret.length === 0) return jsonResponse({ error: "secret_required", message: "请输入要保存的 MCP 密钥" }, 400);
   if (secret.length > MAX_MANAGED_SECRET_CHARS) {
     return jsonResponse({ error: "secret_too_long", message: "MCP 密钥长度超出限制" }, 400);
   }

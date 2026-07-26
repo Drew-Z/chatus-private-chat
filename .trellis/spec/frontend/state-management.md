@@ -37,6 +37,9 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - Typed provider and logical-model editors own ephemeral local drafts. Their parent owns only the dirty flag and revisioned snapshot; leaving those views discards the unmounted pool draft after an explicit confirmation and resets the shared dirty flag. Member capability drafts remain parent-owned and may survive a view switch.
 - A provider-pool configuration conflict replaces the authoritative snapshot but does not silently replace the local entity draft. The editor remains dirty until a successful save or an explicit server-version reset.
 - Provider secret input is ephemeral and keyed by the currently selected saved provider/ref. It is cleared on ref or view changes and never participates in the configuration draft.
+- Skill, tool-policy, and MCP-server editors follow the same entity-draft rule. A configuration conflict refreshes the authoritative snapshot while retaining the local draft and any pending discovery result for an explicit retry; snapshot effects must not reset a dirty entity draft.
+- An MCP secret value is local-only state keyed by the selected saved server and saved `secretRef`. It never joins the revisioned config draft and is cleared on every entity/ref/view/snapshot transition, mutation outcome, conflict, refresh, and unmount.
+- MCP discovery remains read-only until its result is merged into the latest revisioned configuration. A conflict preserves the response in `pendingDiscovery`; retry merges it over the refreshed snapshot instead of replaying an old full config.
 - Failed-turn retry uses the latest parent conversation snapshot and the latest user message ID, so a stream error can be retried as a durable resend branch without replaying stale conversation metadata.
 - Transcript auto-scroll is conditional on a near-bottom check; a reader who scrolls upward is not pulled back to the newest chunk.
 

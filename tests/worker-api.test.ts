@@ -3510,7 +3510,7 @@ describe("Worker API", () => {
   it("isolates MCP secrets in their own encrypted namespace", async () => {
     const cookie = await adminLogin();
     const secretRef = "TEST_ROUTE_KEY";
-    const secret = "managed-mcp-secret-value";
+    const secret = " managed-mcp-secret-value ";
     const created = await apiRequest(`/api/admin/mcp-secrets/${secretRef}`, cookie, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },

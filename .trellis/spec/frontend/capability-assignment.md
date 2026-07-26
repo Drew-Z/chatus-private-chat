@@ -384,3 +384,105 @@ setPanelResetKey((value) => value + 1);
 ```
 
 Only explicit policy intent changes revisioned configuration; usage reset stays separate and refreshes its read projection.
+
+## Scenario: Typed Capability Registry Administration
+
+### 1. Scope / Trigger
+
+- Trigger: changing the typed React administration surface for Skill definitions, tool policy, MCP server configuration, managed MCP credentials, remote-tool discovery/review, or capability reference repair.
+- The registry is administrator-only. Members receive only their assigned public capability projection and never receive Skill instructions, MCP endpoints, schemas, secret metadata, or physical credential values.
+
+### 2. Signatures
+
+```text
+GET    /api/admin/config
+PUT    /api/admin/config
+  <- { config: SanitizedAdminConfig, expectedRevision: string }
+
+GET    /api/admin/mcp-secrets
+PUT    /api/admin/mcp-secrets/:secretRef
+  <- { secret: string, expectedRevision?: string }
+DELETE /api/admin/mcp-secrets/:secretRef
+  <- { expectedRevision?: string }
+
+POST   /api/admin/mcp-discovery
+  <- { serverId, label?, endpoint, authType, secretRef? }
+  -> { serverId, tools: AdminMcpDiscoveredTool[], rejected }
+```
+
+```typescript
+type AdminMcpServerConfig = {
+  enabled: boolean;
+  label: string;
+  endpoint: string;
+  authType: "none" | "bearer" | "x-api-key";
+  secretRef?: string;
+};
+
+type AdminToolExecutor =
+  | { type: "builtin"; name: "text_stats" }
+  | { type: "mcp"; serverId: string; remoteName: string };
+```
+
+### 3. Contracts
+
+- `config.skills`, `config.tools`, and `config.mcpServers` are exact runtime-decoded registries. IDs and references use locale-independent UTF-16 code-unit ordering in deterministic UI/test output.
+- Skill rename/delete repairs `defaults.allowedSkills` and every explicit user `allowedSkills`. Remote-tool deletion repairs every Skill `toolIds` plus default/user `allowedTools`. `builtin:text_stats` is never deletable.
+- MCP rename is delete-plus-create because remote tool IDs embed the server ID. Rename/delete removes that server's reviewed tools and all Skill/member references; it does not migrate old discovered tools to the new ID. Managed secret records remain separately owned and are not deleted implicitly.
+- A Skill/tool/MCP entity draft is local. Every config save uses the current snapshot revision. `config_conflict` refreshes the snapshot but keeps the local entity draft dirty and exposes an explicit server-version reset.
+- An authenticated MCP server requires a saved `secretRef`; `authType: "none"` forbids one. Secret writes are enabled only when the selected server and exact ref match the saved, clean snapshot.
+- MCP secret input is write-only and ephemeral. The client sends the exact string without trimming; only a zero-length value is rejected. The input clears on success, failure, conflict, ref/entity/view/snapshot changes, refresh, and unmount.
+- Discovery is read-only and saved separately through the revisioned config boundary. New tools are disabled. A changed `schemaFingerprint` forces disabled review state. A stable fingerprint preserves enabled state and preserves only `always`; all other remote policies normalize to `first-per-conversation`. Tools absent from the newest discovery response are not deleted automatically.
+- The tablist uses roving tabindex plus Arrow/Home/End navigation and labels one `tabpanel`. At mobile widths, the bounded sidebar remains outside the editor scroll owner; tabs are at least 44px and cannot scroll behind the global header.
+
+### 4. Validation & Error Matrix
+
+- Blank/oversized label, invalid ID, missing Skill/tool/MCP reference, non-HTTPS endpoint, or invalid auth/ref pairing -> reject the local draft; submitted invalid config -> `400 invalid_config`.
+- Unknown or extra response fields, blank labels, invalid executor union, invalid remote name, uppercase/malformed fingerprint, or secret-bearing projection -> client rejects the response as an invalid admin config/discovery/secret response.
+- Stale config revision -> `409 config_conflict`; refresh the snapshot and retain the draft/discovery result.
+- Stale managed-secret revision -> `409 mcp_secret_conflict`; clear plaintext and keep the saved secret unchanged.
+- Zero-length or over-8192-character secret -> `400 secret_required` / `400 secret_too_long`. Leading and trailing whitespace are credential bytes and are preserved.
+- Attempt to delete a builtin tool -> no mutation and no delete control.
+- New or changed discovered schema -> persist `enabled: false`; do not silently retain the former approval state.
+
+### 5. Good / Base / Bad Cases
+
+- Good: rename a Skill, save with `expectedRevision`, and update every explicit assignment reference atomically while inherited assignments remain inherited.
+- Good: discover a changed remote schema, save it disabled for review, then deliberately enable it in the tool-policy editor.
+- Base: a stable rediscovery keeps an enabled remote tool enabled and retains `always` confirmation without deleting older reviewed tools omitted by the server.
+- Bad: trim an MCP bearer token before encryption, submit the surrounding MCP form when Enter is pressed in the password input, or persist plaintext in the config draft.
+- Bad: make the whole mobile sidebar sticky inside the panel scroll container; `scrollIntoView()` can place the tab under the header/editor and make touch clicks unreachable.
+
+### 6. Tests Required
+
+- Pure helper tests cover Skill rename/delete, remote-tool delete, MCP rename/delete, assignment/Skill reference repair, builtin deletion denial, schema merge counts, stable enablement, and changed-schema disablement.
+- Client decoder tests accept exact valid Skill/tool/MCP/secret/discovery projections and reject unknown fields, blank labels, invalid auth/ref pairs, invalid executor names, malformed remote names, and malformed fingerprints.
+- Worker tests decrypt a padded synthetic MCP secret and assert byte-for-byte preservation while API responses, audit records, and stored JSON omit plaintext/ciphertext.
+- Desktop 1440px and touch-enabled 390px browser tests cover dirty-discard confirmation, Escape and successful-delete focus restoration, keyboard tab navigation, Enter-to-save-secret behavior, discovery review, touch targets, local editor scrolling, and horizontal containment.
+- Run the full workspace matrix and the separate fake-provider Agent browser acceptance; neither may contact a live model.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await putAdminMcpSecret(secretRef, secretValue.trim());
+tools[id] = { ...discovered, enabled: existing?.enabled ?? true };
+```
+
+This changes credential bytes and lets a new or changed remote schema execute without administrator review.
+
+#### Correct
+
+```typescript
+await putAdminMcpSecret(secretRef, secretValue, metadata.revision);
+tools[id] = {
+  ...discovered,
+  enabled: sameFingerprint ? existing.enabled : false,
+  confirmation: sameFingerprint && existing.confirmation === "always"
+    ? "always"
+    : "first-per-conversation",
+};
+```
+
+The secret remains byte-exact and schema trust is granted only through explicit review.

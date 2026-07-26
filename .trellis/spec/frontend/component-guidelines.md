@@ -157,8 +157,10 @@ type ModelOffering = {
 ## AI Capability Editors And Tool Timeline
 
 - Keep Skills, tools, and MCP servers in one admin section with native tab, form, checkbox, and password controls. The revisioned config remains the only persisted browser draft.
-- MCP plaintext may be read only by the dedicated secret save action. Clear the password input on save success/failure, auth-type changes, editor/tab/section switches, refresh, login transitions, and discarded edits.
+- Use a roving-tabindex tablist with Arrow/Home/End navigation and one labelled `tabpanel`. Entity choices are ordinary pressed buttons, not an incomplete custom listbox. Confirmation dialogs receive initial focus and restore focus to the opener or the next valid entity/tab after deletion.
+- MCP plaintext may be read only by the dedicated secret save action. Submit it byte-for-byte without trimming, intercept Enter inside the password input so it cannot submit the surrounding MCP configuration form, and clear it on save success/failure, auth-type changes, editor/tab/section switches, refresh, login transitions, and discarded edits.
 - Discovery sends only `serverId`, endpoint metadata, auth type, and a saved `secretRef`. New tools and tools whose `schemaFingerprint` changes must be saved with `enabled: false`; unchanged tools preserve their existing enabled state and confirmation policy.
+- At 780px and below, the capability sidebar owns a fixed bounded top region and only the editor scrolls. Do not make the complete sidebar sticky inside the same scrolling grid; browser `scrollIntoView()` can oscillate between overlapping header, sidebar, and editor boxes. Touch tabs remain at least 44px high.
 - Capability chat responses are selected by `X-Chatus-Stream: capability-v1`. Tool approval writes must include `X-Chatus-Client: web` and `{ runId, callId, decision }`; disable or remove the visible approval controls after the first decision.
 - Keep an active capability stream attached to its source chat. Do not allow chat switching, active-chat deletion, logout, or local-data clearing until the user stops the run.
 - Render persisted tool summaries as compact unframed rows in the assistant message. Never reconstruct or persist raw arguments, raw results, remote endpoints, schemas, or credentials in the browser timeline or Markdown export.

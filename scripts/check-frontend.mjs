@@ -75,8 +75,10 @@ const reactProviderAdmin = await readFile(path.join(root, "client/src/components
 const reactLogicalModelAdmin = await readFile(path.join(root, "client/src/components/LogicalModelAdminPanel.tsx"), "utf8");
 const reactReliabilityAdmin = await readFile(path.join(root, "client/src/components/ReliabilityAdminPanel.tsx"), "utf8");
 const reactOperationsAdmin = await readFile(path.join(root, "client/src/components/AdminOperationsPanel.tsx"), "utf8");
+const reactCapabilityAdmin = await readFile(path.join(root, "client/src/components/CapabilityAdminPanel.tsx"), "utf8");
 const reactAdminProvider = await readFile(path.join(root, "client/src/lib/admin-provider.ts"), "utf8");
 const reactAdminConfig = await readFile(path.join(root, "client/src/lib/admin-config.ts"), "utf8");
+const reactAdminCapabilities = await readFile(path.join(root, "client/src/lib/admin-capabilities.ts"), "utf8");
 const reactApi = await readFile(path.join(root, "client/src/lib/api.ts"), "utf8");
 const reactApp = await readFile(path.join(root, "client/src/App.tsx"), "utf8");
 const reactMain = await readFile(path.join(root, "client/src/main.tsx"), "utf8");
@@ -149,7 +151,8 @@ assert(reactAdminWorkspace.includes("恢复默认配置") && reactAdminWorkspace
 assert(reactAdminWorkspace.includes("<dialog") && reactAdminWorkspace.includes("dialog.showModal()") && reactAdminWorkspace.includes("previousFocusRef.current?.focus()"), "React admin: member lifecycle dialog must be modal and restore focus");
 assert(reactAdminWorkspace.includes('readOnly\n                autoComplete="off"') && reactAdminWorkspace.includes('aria-label="复制访问码"'), "React admin: the one-time access code needs a selectable copy fallback");
 assert(!reactAdminWorkspace.includes("/api/admin/access-codes") && !reactAdminWorkspace.includes("generateAccessCode") && !reactAdminWorkspace.includes("randomToken"), "React admin: typed lifecycle must not read raw access codes or generate credentials in the browser");
-assert(reactAdminWorkspace.includes("ProviderAdminPanel") && reactAdminWorkspace.includes("LogicalModelAdminPanel") && reactAdminWorkspace.includes("ReliabilityAdminPanel") && reactAdminWorkspace.includes("AdminOperationsPanel"), "React admin: typed provider-pool and operations views are missing");
+assert(reactAdminWorkspace.includes("ProviderAdminPanel") && reactAdminWorkspace.includes("LogicalModelAdminPanel") && reactAdminWorkspace.includes("CapabilityAdminPanel") && reactAdminWorkspace.includes("ReliabilityAdminPanel") && reactAdminWorkspace.includes("AdminOperationsPanel"), "React admin: typed provider-pool, capability, and operations views are missing");
+assert(reactAdminWorkspace.includes('activeView === "capabilities"') && reactAdminWorkspace.includes('activeView === "capabilities" || activeView === "public"'), "React admin: capability drafts must participate in guarded view changes");
 assert(reactAdminWorkspace.includes("放弃这些修改") && reactAdminWorkspace.includes("setPoolDirty(false)"), "React admin: leaving a pool editor must explicitly discard and clear its local dirty state");
 assert(reactProviderAdmin.includes("createProviderDraft") && reactProviderAdmin.includes("使用服务器版本"), "React admin: provider drafts need shared normalization and an explicit conflict reset");
 assert(reactProviderAdmin.includes('type="password"') && (reactProviderAdmin.match(/setSecretValue\(\"\"\)/g) || []).length >= 2, "React admin: provider credentials must be write-only and cleared after mutations");
@@ -160,6 +163,12 @@ assert(reactReliabilityAdmin.includes("fetchAdminReliability()") && reactReliabi
 assert(reactReliabilityAdmin.includes("averageFirstVisibleLatencyMs") && reactReliabilityAdmin.includes("lastStreamShape") && reactReliabilityAdmin.includes("progressiveSamples"), "React admin: truthful first-output and stream-shape evidence is missing");
 assert(reactOperationsAdmin.includes("fetchAdminOperations()") && reactOperationsAdmin.includes("不含消息内容") && !reactOperationsAdmin.includes("chatId}</") && !reactOperationsAdmin.includes("messageId}</"), "React admin: operations must expose only aggregate and metadata views");
 assert(reactOperationsAdmin.includes("operations-user-table-wrap") && reactStyles.includes(".operations-user-table-wrap { max-width: 100%; overflow-x: auto; }"), "React admin: operations member usage needs local table overflow");
+assert(reactCapabilityAdmin.includes("putAdminConfig(config, snapshot.revision)") && reactCapabilityAdmin.includes('error.code === "config_conflict"') && reactCapabilityAdmin.includes("使用服务器版本"), "React admin: capability drafts need revisioned saves and explicit conflict recovery");
+assert(reactCapabilityAdmin.includes('type="password"') && (reactCapabilityAdmin.match(/setSecretValue\(\"\"\)/g) || []).length >= 4 && reactCapabilityAdmin.includes("secretCanEdit"), "React admin: MCP credentials must be saved only for the persisted server/ref and cleared on every transition");
+assert(reactCapabilityAdmin.includes("<dialog") && reactCapabilityAdmin.includes("dialog.showModal()") && reactCapabilityAdmin.includes("restoreConfirmationOpener()") && reactCapabilityAdmin.includes("opener?.isConnected"), "React admin: capability deletion and draft discard need an accessible modal with connected focus return");
+assert(reactCapabilityAdmin.includes("discoverAdminMcpTools") && reactCapabilityAdmin.includes("pendingDiscovery") && reactCapabilityAdmin.includes("mergeMcpDiscovery"), "React admin: reviewed MCP discovery is incomplete");
+assert(reactAdminCapabilities.includes("deleteRemoteTool") && reactAdminCapabilities.includes("deleteMcpServer") && reactAdminCapabilities.includes("replaceAssignmentReference"), "React admin: capability deletion must repair Skill and member references through one pure boundary");
+assert(reactAdminCapabilities.includes("sameFingerprint ? existing.enabled : false") && reactAdminCapabilities.includes('confirmation: sameFingerprint && existing.confirmation === "always"'), "React admin: MCP schema changes must disable tools for review while stable schemas retain policy");
 assert(reactAdminProvider.includes("...(provider || {})") && reactAdminProvider.includes("...(route || {})"), "React admin: draft helpers must retain sanitized fields that are not rendered as controls");
 assert(reactApi.includes("hasExactKeys(value, [\"member\", \"accessCode\", \"accessRevision\", \"sessionRevocation\"])") && reactApi.includes("isAdminMemberRevokeResponse"), "React admin: member lifecycle responses need strict secret-aware decoders");
 assert(reactApi.includes("isAdminMemberConfigRemovalResponse") && reactApi.includes("isAdminMemberSessionsResponse") && reactApi.includes('hasExactKeys(value, ["ok", "label", "revoked", "complete"])'), "React admin: member reset/session responses need strict decoders");
@@ -167,6 +176,8 @@ assert(reactApi.includes('"/api/sessions/revoke-all"') && reactApi.includes('"/a
 assert(reactApi.includes("fetchAdminReliability") && reactApi.includes('"/api/admin/reliability"'), "React admin: passive reliability API wrapper is missing");
 assert(reactApi.includes("hasValidAdminStreamEvidence") && reactApi.includes('"single_chunk"') && reactApi.includes('"progressive"'), "React admin: stream evidence decoder contract is missing");
 assert(reactApi.includes("fetchAdminOperations") && reactApi.includes('"/api/admin/stats"') && reactApi.includes('"/api/admin/audit"') && reactApi.includes('"/api/admin/feedback"'), "React admin: operations API wrapper is incomplete");
+assert(reactApi.includes("fetchAdminMcpSecrets") && reactApi.includes("putAdminMcpSecret") && reactApi.includes("deleteAdminMcpSecret") && reactApi.includes("discoverAdminMcpTools"), "React admin: MCP secret and discovery API wrappers are incomplete");
+assert(reactApi.includes("isAdminMcpDiscoveryResponse") && reactApi.includes("isAdminMcpSecretMutationResponse") && reactApi.includes("isAdminMcpSecretsSnapshot"), "React admin: MCP responses need strict secret-aware decoders");
 assert(reactApi.includes("isAdminOperationsStats") && reactApi.includes("isAdminAuditSnapshot") && reactApi.includes("isAdminFeedbackSnapshot"), "React admin: operations responses need strict secret-aware decoders");
 assert(reactApi.includes("isUserDataMutationResponse") && reactApi.includes('hasExactKeys(value, ["ok", "revoked"])'), "React client: user data mutations need exact secret-free response validation");
 assert(reactApi.includes("isUserDataExport") && reactApi.includes("new TextEncoder().encode(text)"), "React client: user data downloads need exact bounded JSON validation");

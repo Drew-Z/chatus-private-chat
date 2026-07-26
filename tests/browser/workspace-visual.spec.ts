@@ -26,8 +26,8 @@ const adminMemberConfig: AdminConfig = {
     enabled: true,
     defaultRoute: "primary",
     allowedRoutes: ["primary"],
-    allowedSkills: [],
-    allowedTools: [],
+    allowedSkills: ["coding"],
+    allowedTools: ["builtin:text_stats"],
     dailyMessageLimit: 500,
     minuteMessageLimit: 12,
   },
@@ -40,9 +40,44 @@ const adminMemberConfig: AdminConfig = {
     sourceDailyMessageLimit: 200,
     sourceMinuteMessageLimit: 30,
   },
-  skills: {},
-  tools: {},
-  mcpServers: {},
+  skills: {
+    coding: {
+      enabled: true,
+      label: "Coding workflow with a long synthetic title",
+      description: "Synthetic Skill used only for responsive browser acceptance.",
+      instructions: "Review the request, use assigned tools when needed, and keep the result concise.",
+      toolIds: ["builtin:text_stats"],
+      order: 1,
+    },
+  },
+  tools: {
+    "builtin:text_stats": {
+      enabled: true,
+      label: "Text statistics",
+      description: "Counts text without contacting a provider.",
+      inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+      confirmation: "auto",
+      executor: { type: "builtin", name: "text_stats" },
+    },
+    "mcp:docs:search": {
+      enabled: true,
+      label: "Search remote documentation",
+      description: "Synthetic reviewed read-only remote tool.",
+      inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+      confirmation: "first-per-conversation",
+      executor: { type: "mcp", serverId: "docs", remoteName: "search" },
+      schemaFingerprint: "d".repeat(64),
+    },
+  },
+  mcpServers: {
+    docs: {
+      enabled: true,
+      label: "Documentation service with a long synthetic name",
+      endpoint: "https://docs.example/mcp",
+      authType: "bearer",
+      secretRef: "DOCS_MCP",
+    },
+  },
 };
 
 test.beforeEach(async ({ page }) => {
@@ -498,6 +533,158 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
   expect(geometry.documentFits).toBe(true);
   expect(geometry.policyFits).toBe(true);
   await attachScreenshot(page, testInfo, "admin-member-policy");
+});
+
+test("capability registry keeps drafts, secrets, and review actions contained", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "capability registry coverage targets desktop and 390px");
+  let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
+  let revision = "a".repeat(64);
+  let secretWriteCount = 0;
+  let discoveryCount = 0;
+
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = async (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({ members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }], accessRevision: "c".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/mcp-secrets" && request.method() === "GET") {
+      await json({
+        masterKeyReady: true,
+        items: [{
+          secretRef: "DOCS_MCP",
+          source: "managed",
+          status: "configured",
+          managed: true,
+          environmentFallback: false,
+          updatedAt: "2026-07-26T12:00:00.000Z",
+          revision: "s".repeat(64),
+        }],
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/mcp-secrets/DOCS_MCP" && request.method() === "PUT") {
+      const payload = request.postDataJSON() as { secret: string; expectedRevision?: string };
+      expect(payload.secret).toBe(" not-a-real-secret ");
+      expect(payload.expectedRevision).toBe("s".repeat(64));
+      secretWriteCount += 1;
+      await json({
+        ok: true,
+        item: {
+          secretRef: "DOCS_MCP",
+          source: "managed",
+          status: "configured",
+          managed: true,
+          environmentFallback: false,
+          updatedAt: "2026-07-26T12:05:00.000Z",
+          revision: "t".repeat(64),
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/mcp-discovery" && request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({
+        serverId: "docs",
+        label: currentConfig.mcpServers.docs.label,
+        endpoint: "https://docs.example/mcp",
+        authType: "bearer",
+        secretRef: "DOCS_MCP",
+      });
+      discoveryCount += 1;
+      await json({
+        serverId: "docs",
+        tools: [{
+          id: "mcp:docs:search",
+          label: "Search remote documentation v2",
+          description: "Synthetic reviewed read-only remote tool.",
+          inputSchema: { type: "object", properties: { query: { type: "string" }, scope: { type: "string" } }, required: ["query"] },
+          confirmation: "first-per-conversation",
+          executor: { type: "mcp", serverId: "docs", remoteName: "search" },
+          schemaFingerprint: "e".repeat(64),
+        }],
+        rejected: 1,
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/config" && request.method() === "PUT") {
+      const payload = request.postDataJSON() as { config: AdminConfig; expectedRevision: string };
+      expect(payload.expectedRevision).toBe(revision);
+      currentConfig = payload.config;
+      revision = "b".repeat(64);
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    throw new Error(`unexpected capability fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  await page.getByRole("button", { name: "AI 能力" }).click();
+  await expect(page.getByRole("heading", { name: "Skills", exact: true })).toBeVisible();
+
+  const skillName = page.getByLabel("显示名称");
+  await skillName.fill("Unsaved synthetic Skill title");
+  await page.getByRole("tab", { name: "工具" }).click();
+  const discardDialog = page.getByRole("dialog", { name: "放弃当前草稿？" });
+  await expect(discardDialog).toBeVisible();
+  await expect(discardDialog.getByRole("button", { name: "取消" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(discardDialog).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "工具" })).toBeFocused();
+  await page.getByRole("tab", { name: "工具" }).click();
+  await page.getByRole("dialog", { name: "放弃当前草稿？" }).getByRole("button", { name: "放弃并切换" }).click();
+  await expect(page.getByRole("heading", { name: "工具", exact: true })).toBeVisible();
+
+  await page.getByRole("tab", { name: "工具" }).press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "MCP" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "MCP Servers", exact: true })).toBeVisible();
+  const secretInput = page.getByLabel("MCP 托管密钥");
+  await secretInput.fill(" not-a-real-secret ");
+  await secretInput.press("Enter");
+  await expect(secretInput).toHaveValue("");
+  expect(secretWriteCount).toBe(1);
+
+  await page.getByRole("button", { name: "发现工具" }).click();
+  await expect(page.getByText(/Schema 变更 1/)).toBeVisible();
+  expect(discoveryCount).toBe(1);
+  expect(currentConfig.tools["mcp:docs:search"]).toMatchObject({ enabled: false, schemaFingerprint: "e".repeat(64) });
+
+  const deleteButton = page.getByRole("button", { name: "删除", exact: true });
+  await deleteButton.click();
+  const deleteDialog = page.getByRole("dialog", { name: /删除 MCP Server/ });
+  await expect(deleteDialog).toBeVisible();
+  await expect(deleteDialog.getByRole("button", { name: "取消" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(deleteDialog).toHaveCount(0);
+  await expect(deleteButton).toBeFocused();
+
+  const geometry = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>(".capability-admin-panel");
+    if (!panel) throw new Error("missing capability admin panel");
+    const rect = panel.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      panelFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1,
+    };
+  });
+  expect(geometry).toEqual({ documentFits: true, bodyFits: true, panelFits: true });
+  await attachScreenshot(page, testInfo, "admin-capabilities");
+
+  await deleteButton.click();
+  await page.getByRole("dialog", { name: /删除 MCP Server/ }).getByRole("button", { name: "删除 Server" }).click();
+  await expect(page.getByRole("tab", { name: "MCP" })).toBeFocused();
+  await expect(page.getByText("暂无MCP Server", { exact: true })).toBeVisible();
 });
 
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {

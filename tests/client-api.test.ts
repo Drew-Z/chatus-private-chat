@@ -9,6 +9,9 @@ import {
   isAdminMemberListResponse,
   isAdminMemberRevokeResponse,
   isAdminMemberSessionsResponse,
+  isAdminMcpDiscoveryResponse,
+  isAdminMcpSecretMutationResponse,
+  isAdminMcpSecretsSnapshot,
   isAdminUsageResetResponse,
   isAdminOperationsStats,
   isAdminReliabilitySnapshot,
@@ -237,6 +240,24 @@ describe("React client runtime validation", () => {
       config: {
         ...validAdminConfig,
         routes: { primary: { ...validAdminConfig.routes.primary, enabled: false } },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        skills: { coding: { ...validAdminConfig.skills.coding, label: " " } },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        mcpServers: {
+          docs: { enabled: true, label: "Docs", endpoint: "https://docs.example/mcp", authType: "none", secretRef: "DOCS_MCP" },
+        },
       },
       source: "kv",
       revision: "a",
@@ -732,5 +753,41 @@ describe("React client runtime validation", () => {
       ...snapshot,
       providers: [{ ...snapshot.providers[0], routes: [{ ...route, firstVisibleLatencyMs: 60 }] }],
     })).toBe(false);
+  });
+
+  it("validates exact secret-free MCP secret metadata", () => {
+    const item = {
+      secretRef: "DOCS_MCP",
+      source: "managed",
+      status: "configured",
+      managed: true,
+      environmentFallback: false,
+      updatedAt: "2026-07-26T12:00:00.000Z",
+      revision: "revision-1",
+    };
+    expect(isAdminMcpSecretsSnapshot({ masterKeyReady: true, items: [item] })).toBe(true);
+    expect(isAdminMcpSecretMutationResponse({ ok: true, item })).toBe(true);
+    expect(isAdminMcpSecretsSnapshot({ masterKeyReady: true, items: [item, item] })).toBe(false);
+    expect(isAdminMcpSecretsSnapshot({ masterKeyReady: true, items: [{ ...item, secret: "hidden" }] })).toBe(false);
+    expect(isAdminMcpSecretMutationResponse({ ok: true, item: { ...item, source: "legacy" } })).toBe(false);
+  });
+
+  it("validates exact MCP discovery ownership and schema fingerprints", () => {
+    const tool = {
+      id: "mcp:docs:search",
+      label: "Search",
+      description: "Search docs",
+      inputSchema: { type: "object", properties: {} },
+      confirmation: "first-per-conversation",
+      executor: { type: "mcp", serverId: "docs", remoteName: "search" },
+      schemaFingerprint: "a".repeat(64),
+    };
+    expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [tool], rejected: 2 })).toBe(true);
+    expect(isAdminMcpDiscoveryResponse({ serverId: "other", tools: [tool], rejected: 2 })).toBe(false);
+    expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [{ ...tool, id: "mcp:docs:other" }], rejected: 2 })).toBe(false);
+    expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [{ ...tool, schemaFingerprint: "A".repeat(64) }], rejected: 2 })).toBe(false);
+    expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [{ ...tool, label: " " }], rejected: 2 })).toBe(false);
+    expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [{ ...tool, id: "mcp:docs:bad:name", executor: { ...tool.executor, remoteName: "bad:name" } }], rejected: 2 })).toBe(false);
+    expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [tool], rejected: 2, secret: "hidden" })).toBe(false);
   });
 });

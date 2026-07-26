@@ -13,6 +13,8 @@ The Worker, tests, and default React client use strict TypeScript. Legacy module
 - Tests may use `as const` to preserve literal values, as in `tests/user-state.test.ts`.
 - Keep browser HTTP response decoders and validators in `client/src/lib/api.ts`; components consume validated projections instead of casting raw JSON.
 - Keep pure draft/conflict recovery helpers in `client/src/lib/` so they can be tested without a DOM runtime.
+- Decode Skill, tool, MCP-server, MCP-secret, and discovery projections as exact semantic shapes. Labels are non-blank; tool executors are exact builtin/MCP unions; `authType: "none"` forbids `secretRef`; MCP remote names match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; and schema fingerprints are lowercase 64-character hex values.
+- Match browser bounds to the Worker projection: Skill/MCP/tool labels are at most 80 characters, Skill descriptions 500, tool descriptions 1000, Skill instructions 8000, MCP endpoints 2048, and managed secret references match `^[A-Z][A-Z0-9_]{1,63}$`.
 - Keep the session decoder synchronized with the Worker projection. Policy flags such as `allowBringYourOwnKey` and `hasUserSystemPrompt` are required booleans, not optional component guesses.
 - Treat member lifecycle payloads as exact shapes. Member objects, list envelopes, session-revocation metadata, credential responses, and revoke responses reject unknown keys so a server regression cannot silently smuggle a code or token into long-lived client state.
 - Access codes belong only to the create/rotate mutation response type. They must not be added to `AdminMemberProjection`, member-list snapshots, revoke responses, configuration snapshots, or error details.

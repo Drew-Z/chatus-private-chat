@@ -247,6 +247,29 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .admin-pool-meta { max-width: 680px; margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .admin-pool-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .admin-pool-form { padding: 26px 30px; }
+.capability-admin-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; padding: 10px 10px 0; }
+.capability-admin-tabs button { min-width: 0; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 6px; padding: 0 6px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 700; }
+.capability-admin-tabs button[aria-selected="true"] { color: var(--accent-hover); background: var(--accent-soft); }
+.capability-editor-form { min-width: 0; display: grid; gap: 20px; padding: 0 30px 30px; }
+.capability-editor-form > .admin-pool-editor-head { margin-inline: -30px; }
+.admin-form-wide { min-width: 0; display: grid; gap: 6px; color: #46524c; font-size: 12px; font-weight: 700; }
+.admin-form-wide textarea { min-width: 0; resize: vertical; }
+.admin-form-span { grid-column: 1 / -1; }
+.admin-checkbox-row { align-content: center; grid-template-columns: 18px minmax(0, 1fr) !important; align-items: center; }
+.admin-checkbox-row input { width: 17px; min-height: 17px; margin: 0; accent-color: var(--accent); }
+.capability-tool-checks { margin-top: 0; }
+.capability-tool-checks label { min-width: 0; align-items: flex-start; }
+.capability-tool-checks label span { min-width: 0; overflow-wrap: anywhere; }
+.capability-tool-checks small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.capability-schema { min-width: 0; border-block: 1px solid var(--line); padding: 10px 0; }
+.capability-schema summary { cursor: pointer; color: #46524c; font-size: 12px; font-weight: 700; }
+.capability-schema pre { max-height: 320px; margin: 10px 0 0; overflow: auto; color: #dce7e1; background: #26312c; padding: 14px; border-radius: 7px; font: 11px/1.55 "SFMono-Regular", Consolas, monospace; white-space: pre; }
+.capability-fingerprint { min-width: 0; display: grid; gap: 6px; margin: 0; color: var(--muted); font-size: 11px; }
+.capability-fingerprint code { display: block; max-width: 100%; overflow-x: auto; color: #46524c; font-family: "SFMono-Regular", Consolas, monospace; }
+.capability-discovery-pending { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-block: 12px; border-block: 1px solid var(--line); color: var(--warning); font-size: 12px; }
+.admin-confirm-dialog { width: min(460px, calc(100% - 24px)); max-height: min(620px, calc(100dvh - 24px)); padding: 0; overflow: auto; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--surface); box-shadow: 0 24px 70px rgba(24, 38, 31, .24); }
+.admin-confirm-dialog::backdrop { background: rgba(25, 36, 31, .42); }
+.admin-confirm-dialog > p { margin: 0; padding: 20px 18px 8px; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .admin-form-grid { display: grid; gap: 14px; }
 .admin-form-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .admin-form-grid label, .admin-offering-row label, .admin-discovery-target { display: grid; gap: 6px; min-width: 0; color: #46524c; font-size: 12px; font-weight: 700; }
@@ -703,14 +726,22 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .typed-admin-editor-footer { padding-inline: 16px; }
   .admin-pool-panel { grid-template-columns: 1fr; overflow-y: auto; }
   .admin-pool-sidebar { max-height: 220px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .capability-admin-panel { display: flex; flex-direction: column; overflow: hidden; }
+  .capability-admin-panel .admin-pool-sidebar { max-height: 190px; flex: 0 0 190px; position: static; z-index: auto; box-shadow: none; }
   .admin-pool-list { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 8px 10px 12px; }
   .admin-pool-list-item { width: 190px; flex: 0 0 190px; }
   .admin-pool-editor { overflow: visible; }
+  .capability-admin-panel .admin-pool-editor { min-height: 0; flex: 1; overflow-y: auto; }
   .admin-pool-editor-head, .admin-reliability-head, .admin-operations-head { align-items: stretch; flex-direction: column; gap: 14px; padding: 18px 16px; }
   .admin-pool-actions { justify-content: stretch; }
   .admin-pool-actions > button { flex: 1 1 auto; }
   .admin-pool-form { padding: 20px 16px; }
+  .capability-admin-tabs { padding-top: 8px; }
+  .capability-editor-form { gap: 17px; padding: 0 16px 24px; }
+  .capability-editor-form > .admin-pool-editor-head { margin-inline: -16px; }
+  .capability-discovery-pending { align-items: stretch; flex-direction: column; }
   .admin-form-grid.two { grid-template-columns: 1fr; }
+  .admin-form-span { grid-column: auto; }
   .admin-check-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-secret-box, .admin-reference-box { align-items: stretch; margin-inline: 16px; flex-direction: column; }
   .admin-secret-actions { min-width: 0; flex-wrap: wrap; justify-content: stretch; }
@@ -769,6 +800,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .admin-check-grid { grid-template-columns: 1fr; }
   .admin-pool-actions { display: grid; grid-template-columns: 1fr; }
   .admin-pool-actions > button { width: 100%; }
+  .capability-admin-tabs button span { display: none; }
+  .capability-admin-tabs button { min-height: 44px; }
   .admin-public-header { align-items: stretch; flex-direction: column; padding: 18px; }
   .admin-public-form { padding: 20px 18px; }
   .admin-dialog-actions { align-items: stretch; flex-direction: column; }

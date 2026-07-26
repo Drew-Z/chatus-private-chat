@@ -56,6 +56,7 @@ import {
 import { mergeAdminMemberProjection } from "../lib/admin-members";
 import { LogicalModelAdminPanel } from "./LogicalModelAdminPanel";
 import { AdminOperationsPanel } from "./AdminOperationsPanel";
+import { CapabilityAdminPanel } from "./CapabilityAdminPanel";
 import { ProviderAdminPanel } from "./ProviderAdminPanel";
 import { PublicAccessAdminPanel } from "./PublicAccessAdminPanel";
 import { ReliabilityAdminPanel } from "./ReliabilityAdminPanel";
@@ -69,7 +70,7 @@ type AdminData = {
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
 
-type AdminView = "members" | "providers" | "models" | "public" | "reliability" | "operations";
+type AdminView = "members" | "providers" | "models" | "capabilities" | "public" | "reliability" | "operations";
 
 type MemberAccessDialogState =
   | { kind: "create"; label: string; existingMember: boolean }
@@ -257,7 +258,7 @@ export function AdminWorkspace({
 
   function selectView(view: AdminView) {
     if (view === activeView) return;
-    const leavingPoolEditor = activeView === "providers" || activeView === "models" || activeView === "public";
+    const leavingPoolEditor = activeView === "providers" || activeView === "models" || activeView === "capabilities" || activeView === "public";
     if (leavingPoolEditor && poolDirty) {
       if (!window.confirm("当前配置有未保存修改，切换视图会放弃这些修改，继续吗？")) return;
       setPoolDirty(false);
@@ -549,6 +550,7 @@ export function AdminWorkspace({
           <button className={activeView === "members" ? "active" : ""} type="button" onClick={() => selectView("members")} aria-pressed={activeView === "members"}>成员访问</button>
           <button className={activeView === "providers" ? "active" : ""} type="button" onClick={() => selectView("providers")} aria-pressed={activeView === "providers"}>服务商</button>
           <button className={activeView === "models" ? "active" : ""} type="button" onClick={() => selectView("models")} aria-pressed={activeView === "models"}>逻辑模型</button>
+          <button className={activeView === "capabilities" ? "active" : ""} type="button" onClick={() => selectView("capabilities")} aria-pressed={activeView === "capabilities"}>AI 能力</button>
           <button className={activeView === "public" ? "active" : ""} type="button" onClick={() => selectView("public")} aria-pressed={activeView === "public"}>公开访问</button>
           <button className={activeView === "reliability" ? "active" : ""} type="button" onClick={() => selectView("reliability")} aria-pressed={activeView === "reliability"}>可靠性</button>
           <button className={activeView === "operations" ? "active" : ""} type="button" onClick={() => selectView("operations")} aria-pressed={activeView === "operations"}>运营</button>
@@ -971,6 +973,15 @@ export function AdminWorkspace({
             onNotice={setPanelNotice}
             resetKey={panelResetKey}
           />
+        ) : activeView === "capabilities" ? (
+          <CapabilityAdminPanel
+            snapshot={data.snapshot}
+            onSnapshot={applyPoolSnapshot}
+            onSessionExpired={onSessionExpired}
+            onDirtyChange={setPoolDirty}
+            onNotice={setPanelNotice}
+            resetKey={panelResetKey}
+          />
         ) : activeView === "public" ? (
           <PublicAccessAdminPanel
             snapshot={data.snapshot}
@@ -1023,6 +1034,7 @@ function adminViewLabel(view: AdminView): string {
     members: "成员分配",
     providers: "服务商池",
     models: "逻辑模型",
+    capabilities: "AI 能力",
     public: "公开访问",
     reliability: "可靠性",
     operations: "运营",

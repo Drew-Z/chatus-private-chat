@@ -23,7 +23,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 | [Agent Streaming And Fallback](./agent-streaming.md) | AIChat streaming, route commitment, fallback and telemetry | Ready |
 | [Multimodal Image Input](./multimodal-image-input.md) | Capability-aware image drafts, strict normalization, Agent persistence, provider conversion, and privacy | Ready |
 | [Text File Attachments](./file-attachments.md) | Member-only UTF-8 file context uploads, mixed attachment drafts, deterministic provider text, and guest denial | Ready |
-| [Member Capability Assignment](./capability-assignment.md) | Per-member access lifecycle plus route, Skill, and tool projection, editing, validation, and execution enforcement | Ready |
+| [Member And Registry Capabilities](./capability-assignment.md) | Per-member assignment plus typed Skill, tool, MCP, secret, and discovery administration contracts | Ready |
 | [Public Guest Access](./public-guest-access.md) | Restricted anonymous sessions, single public route enforcement, guest capability denial, quotas, cleanup, and workspace projection | Ready |
 
 ---
