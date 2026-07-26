@@ -101,7 +101,7 @@ export function projectAdminProviders(
         ...(provider.maxConcurrent === undefined ? {} : { maxConcurrent: provider.maxConcurrent }),
         queueTimeoutMs: provider.queueTimeoutMs || 0,
         priority: provider.priority || 0,
-        referencedBy: [...new Set(referencedBy.get(id) || [])].sort((a, b) => a.localeCompare(b)),
+        referencedBy: [...new Set(referencedBy.get(id) || [])].sort(compareStableText),
       } satisfies AdminProvider;
     })
     .sort(compareProviders);
@@ -134,20 +134,20 @@ export function projectAdminLogicalModels(config: AdminConfig): AdminLogicalMode
       supportsImages: route.supportsImages !== false,
       supportsTools: route.supportsTools === true,
       offerings: (route.offerings || []).map((offering) => ({ ...offering })),
-      referencedBy: [...(referencedBy.get(id) || [])].sort((a, b) => a.localeCompare(b)),
+      referencedBy: [...(referencedBy.get(id) || [])].sort(compareStableText),
     }))
     .sort(compareLogicalModels);
 }
 
 export function compareProviders(left: Pick<AdminProvider, "label" | "id">, right: Pick<AdminProvider, "label" | "id">): number {
-  return left.label.localeCompare(right.label) || left.id.localeCompare(right.id);
+  return compareStableText(left.label, right.label) || compareStableText(left.id, right.id);
 }
 
 export function compareLogicalModels(
   left: Pick<AdminLogicalModel, "label" | "id">,
   right: Pick<AdminLogicalModel, "label" | "id">,
 ): number {
-  return left.label.localeCompare(right.label) || left.id.localeCompare(right.id);
+  return compareStableText(left.label, right.label) || compareStableText(left.id, right.id);
 }
 
 export function validateProviderDraft(draft: ProviderDraft): ValidationResult {
@@ -211,7 +211,7 @@ export function canDeleteProvider(config: AdminConfig, providerId: string): { ok
   const referencedBy = Object.entries(config.routes)
     .filter(([, route]) => route.offerings?.some((offering) => offering.providerId === providerId))
     .map(([routeId]) => routeId)
-    .sort((a, b) => a.localeCompare(b));
+    .sort(compareStableText);
   return referencedBy.length ? { ok: false, referencedBy } : { ok: true };
 }
 
@@ -465,4 +465,10 @@ function isLegacyRoute(route: AdminRouteConfig): boolean {
     && Boolean(route.baseUrl.trim())
     && typeof route.model === "string"
     && Boolean(route.model.trim());
+}
+
+function compareStableText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }

@@ -94,7 +94,7 @@ describe("typed provider administration helpers", () => {
 
     const models = projectAdminLogicalModels(config);
     expect(models.map((model) => model.id)).toEqual(["backup", "writer"]);
-    expect(models.find((model) => model.id === "writer")).toMatchObject({ referencedBy: ["公开访问", "bill", "defaults"], supportsTools: true });
+    expect(models.find((model) => model.id === "writer")).toMatchObject({ referencedBy: ["bill", "defaults", "公开访问"], supportsTools: true });
   });
 
   it("guards provider deletion and validates duplicate or missing offerings", () => {

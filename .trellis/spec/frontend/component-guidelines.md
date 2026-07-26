@@ -33,6 +33,7 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 
 ### Typed Admin Draft Preservation And Conflict Recovery
 
+- Exact provider/logical-model projections use a locale-independent code-unit comparator for IDs, labels, and reference lists. Do not use the runtime's default `localeCompare` for persisted or test-asserted order because Node/browser ICU defaults differ across Windows and Linux.
 - Build provider and logical-model drafts through shared helpers that spread the sanitized server projection before applying visible defaults. This preserves safe fields that are intentionally not rendered as controls, such as provider auth metadata and legacy route limits or user-key policy.
 - A pool editor is local component state. Switching away from the provider or logical-model view unmounts that editor, so the navigation guard must say that the unsaved pool draft will be discarded and clear the shared pool-dirty flag after confirmation. Do not claim that an unmounted pool draft is retained.
 - On `config_conflict`, refresh the authoritative snapshot, keep the local entity draft dirty for retry, and expose an explicit "use server version" action that resets the selected draft and clears the conflict state.
