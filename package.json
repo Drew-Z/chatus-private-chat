@@ -18,18 +18,18 @@
     "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit && tsc -p tests/browser/tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@cloudflare/workers-types": "^5.20260708.1",
     "@playwright/test": "1.62.0",
     "@types/node": "26.1.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.3",
-    "typescript": "^5.9.3",
-    "vite": "8.1.4",
+    "@vitejs/plugin-react": "6.0.4",
+    "typescript": "^7.0.2",
+    "vite": "8.1.5",
     "vitest": "^4.1.10",
     "wrangler": "^4.54.0",
-    "ws": "^8.21.0"
+    "ws": "^8.21.1"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "3.0.97",
