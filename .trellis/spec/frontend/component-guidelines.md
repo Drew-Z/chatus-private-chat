@@ -175,6 +175,14 @@ type ModelOffering = {
 - State clearly in the revoke confirmation that access and sessions are removed while chats, memory, and assignments remain. Full user-data deletion is a separate destructive workflow.
 - Keep "恢复默认配置" and "注销会话" as separate member operations. The former is revision-checked and resets only `config.users[label]`; the latter reports session cleanup completeness and never mutates capability assignments.
 
+## Typed Member Policy Controls
+
+- Keep account enablement, daily quota, and minute quota in the same atomic member/default draft as routes, Skills, and tools. Each policy field has an independent inheritance control and field-level dirty state.
+- Use native checkbox and number inputs. Explicit limits require positive safe integers; invalid inputs keep their entered state, disable the shared save, set `aria-invalid`, and reference a field-specific error through `aria-describedby`.
+- Keep the enablement control available for default policy and selected members. Hide inheritance controls for defaults rather than rendering a meaningless disabled inheritance choice.
+- Treat "重置今日用量" as a separate confirmed member operation. It must not mark the assignment draft clean or dirty, replace the config snapshot, or share the configuration reset action.
+- At 390px, policy copy, inheritance labels, and numeric inputs wrap or stack within the editor. The inputs must not impose a minimum width that creates horizontal page overflow.
+
 ## React Message Action Bar
 
 - `MessageView` owns a compact action bar immediately below the message. Copy is always available for non-empty text; user messages expose edit/resend/branch, and assistant messages expose regenerate/feedback/branch plus Continue only when the server-persisted metadata is exactly `{ finishReason: "length" }`.

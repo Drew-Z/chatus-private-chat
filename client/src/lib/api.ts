@@ -404,6 +404,12 @@ export type AdminMemberSessionsResponse = {
   complete: boolean;
 };
 
+export type AdminUsageResetResponse = {
+  ok: true;
+  label: string;
+  day: string;
+};
+
 export type UserDataMutationResponse = {
   ok: true;
   revoked: number;
@@ -681,6 +687,17 @@ export async function revokeAdminMemberSessions(label: string): Promise<AdminMem
   });
   if (!isAdminMemberSessionsResponse(data)) {
     throw new ApiError("invalid_admin_member_sessions_response", "成员会话注销结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function resetAdminMemberUsage(label: string): Promise<AdminUsageResetResponse> {
+  const data = await requestJson("/api/admin/usage", {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  });
+  if (!isAdminUsageResetResponse(data)) {
+    throw new ApiError("invalid_admin_usage_reset_response", "成员用量重置结果格式无效。", 502);
   }
   return data;
 }
@@ -1112,6 +1129,14 @@ export function isAdminMemberSessionsResponse(
     && isNonEmptyString(value.label)
     && isNonNegativeInteger(value.revoked)
     && typeof value.complete === "boolean";
+}
+
+export function isAdminUsageResetResponse(value: unknown): value is AdminUsageResetResponse {
+  return isRecord(value)
+    && hasExactKeys(value, ["ok", "label", "day"])
+    && value.ok === true
+    && isNonEmptyString(value.label)
+    && isDayString(value.day);
 }
 
 export function isUserDataMutationResponse(value: unknown): value is UserDataMutationResponse {

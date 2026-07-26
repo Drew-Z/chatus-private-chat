@@ -143,6 +143,8 @@ assert(reactAdminWorkspace.includes('id="routes"') && reactAdminWorkspace.includ
 assert(reactAdminWorkspace.includes("inheritDefaultRoute") && reactAdminWorkspace.includes("setRouteAllowed("), "React admin: route and default-route inheritance controls are missing");
 assert(reactAdminWorkspace.includes("createAdminMemberAccess(") && reactAdminWorkspace.includes("rotateAdminMemberAccess(") && reactAdminWorkspace.includes("revokeAdminMemberAccess("), "React admin: typed member lifecycle actions are missing");
 assert(reactAdminWorkspace.includes("removeAdminMemberConfig(") && reactAdminWorkspace.includes("revokeAdminMemberSessions("), "React admin: member configuration reset and session management actions are missing");
+assert(reactAdminWorkspace.includes("setMemberPolicyInheritance(") && reactAdminWorkspace.includes("dailyMessageLimitDirty") && reactAdminWorkspace.includes("minuteMessageLimitDirty"), "React admin: member status and quota policy controls are missing");
+assert(reactAdminWorkspace.includes("resetAdminMemberUsage(") && reactAdminWorkspace.includes("重置今日用量"), "React admin: independent current-day usage reset is missing");
 assert(reactAdminWorkspace.includes("恢复默认配置") && reactAdminWorkspace.includes("注销所有会话"), "React admin: member operation confirmations are missing");
 assert(reactAdminWorkspace.includes("<dialog") && reactAdminWorkspace.includes("dialog.showModal()") && reactAdminWorkspace.includes("previousFocusRef.current?.focus()"), "React admin: member lifecycle dialog must be modal and restore focus");
 assert(reactAdminWorkspace.includes('readOnly\n                autoComplete="off"') && reactAdminWorkspace.includes('aria-label="复制访问码"'), "React admin: the one-time access code needs a selectable copy fallback");

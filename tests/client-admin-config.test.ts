@@ -3,10 +3,13 @@ import {
   applyCapabilityAssignmentDraft,
   createCapabilityAssignmentDraft,
   DEFAULT_ADMIN_MEMBER,
+  getCapabilityAssignmentDraftError,
+  getMemberPolicyLimitError,
   rebaseCapabilityAssignmentDraft,
   setDefaultRoute,
   setRouteAllowed,
   setRouteInheritance,
+  setMemberPolicyInheritance,
 } from "../client/src/lib/admin-config";
 import type { AdminConfig } from "../client/src/lib/api";
 
@@ -35,10 +38,13 @@ function configFixture(): AdminConfig {
       },
     },
     defaults: {
+      enabled: true,
       defaultRoute: "primary",
       allowedRoutes: ["primary", "secondary"],
       allowedSkills: ["coding"],
       allowedTools: ["builtin:text_stats"],
+      dailyMessageLimit: 500,
+      minuteMessageLimit: 12,
     },
     skills: {
       coding: { enabled: true, label: "Coding", instructions: "code", toolIds: [], order: 1 },
@@ -71,6 +77,12 @@ describe("typed admin capability assignment", () => {
     expect(draft.inheritDefaultRoute).toBe(true);
     expect(draft.defaultRoute).toBe("primary");
     expect(draft.routesDirty).toBe(false);
+    expect(draft.inheritEnabled).toBe(true);
+    expect(draft.enabled).toBe(true);
+    expect(draft.inheritDailyMessageLimit).toBe(true);
+    expect(draft.dailyMessageLimit).toBe(500);
+    expect(draft.inheritMinuteMessageLimit).toBe(true);
+    expect(draft.minuteMessageLimit).toBe(12);
   });
 
   it("writes explicit empty lists without changing unrelated configuration", () => {
@@ -88,6 +100,76 @@ describe("typed admin capability assignment", () => {
     expect(next.routes).toEqual(config.routes);
     expect(next.users.bill.defaultRoute).toBe("primary");
     expect(next.users.bill.allowedRoutes).toEqual(["primary", "secondary"]);
+    expect(next.users.bill.enabled).toBeUndefined();
+    expect(next.users.bill.dailyMessageLimit).toBeUndefined();
+    expect(next.users.bill.minuteMessageLimit).toBeUndefined();
+  });
+
+  it("writes member status and quotas atomically while preserving unrelated fields", () => {
+    const config = configFixture();
+    const draft = createCapabilityAssignmentDraft(config, "bill");
+    const next = applyCapabilityAssignmentDraft(config, "bill", {
+      ...draft,
+      inheritEnabled: false,
+      enabled: false,
+      enabledDirty: true,
+      inheritDailyMessageLimit: false,
+      dailyMessageLimit: 250,
+      dailyMessageLimitDirty: true,
+      inheritMinuteMessageLimit: false,
+      minuteMessageLimit: 8,
+      minuteMessageLimitDirty: true,
+    });
+    expect(next.users.bill).toMatchObject({
+      enabled: false,
+      dailyMessageLimit: 250,
+      minuteMessageLimit: 8,
+      timezone: "Asia/Shanghai",
+    });
+    expect(next.routes).toEqual(config.routes);
+    expect(next.providers).toEqual(config.providers);
+  });
+
+  it("restores independent member policy fields to inheritance", () => {
+    const config = configFixture();
+    config.users.bill = {
+      ...config.users.bill,
+      enabled: false,
+      dailyMessageLimit: 100,
+      minuteMessageLimit: 2,
+    };
+    let draft = createCapabilityAssignmentDraft(config, "bill");
+    draft = setMemberPolicyInheritance(config, draft, "enabled", true);
+    draft = setMemberPolicyInheritance(config, draft, "dailyMessageLimit", true);
+    draft = setMemberPolicyInheritance(config, draft, "minuteMessageLimit", true);
+    const next = applyCapabilityAssignmentDraft(config, "bill", draft);
+    expect(next.users.bill.enabled).toBeUndefined();
+    expect(next.users.bill.dailyMessageLimit).toBeUndefined();
+    expect(next.users.bill.minuteMessageLimit).toBeUndefined();
+    expect(next.users.bill.timezone).toBe("Asia/Shanghai");
+  });
+
+  it("rejects an explicit empty or fractional quota draft", () => {
+    const config = configFixture();
+    const draft = createCapabilityAssignmentDraft(config, "bill");
+    const emptyDaily = {
+      ...draft,
+      inheritDailyMessageLimit: false,
+      dailyMessageLimit: null,
+      dailyMessageLimitDirty: true,
+    };
+    expect(getCapabilityAssignmentDraftError(emptyDaily)).toBe("每日消息额度必须是正整数。");
+    expect(() => applyCapabilityAssignmentDraft(config, "bill", emptyDaily)).toThrow("invalid_dailyMessageLimit");
+
+    const fractionalMinute = {
+      ...draft,
+      inheritMinuteMessageLimit: false,
+      minuteMessageLimit: 1.5,
+      minuteMessageLimitDirty: true,
+    };
+    expect(getCapabilityAssignmentDraftError(fractionalMinute)).toBe("每分钟消息额度必须是正整数。");
+    expect(getMemberPolicyLimitError(emptyDaily, "dailyMessageLimit")).toBe("每日消息额度必须是正整数。");
+    expect(getMemberPolicyLimitError(fractionalMinute, "minuteMessageLimit")).toBe("每分钟消息额度必须是正整数。");
   });
 
   it("updates defaults without enabling inheritance controls", () => {
@@ -183,7 +265,7 @@ describe("typed admin capability assignment", () => {
         bill: { ...config.users.bill, timezone: "UTC" },
       },
     };
-    const rebased = rebaseCapabilityAssignmentDraft(latest, draft);
+    const rebased = rebaseCapabilityAssignmentDraft(latest, "bill", draft);
     expect(rebased.routeSelectionMode).toBe("all");
     expect(rebased.allowedRoutes).toContain("tertiary");
     const next = applyCapabilityAssignmentDraft(latest, "bill", rebased);
@@ -206,10 +288,48 @@ describe("typed admin capability assignment", () => {
         tertiary: { label: "Tertiary", enabled: true },
       },
     };
-    const rebased = rebaseCapabilityAssignmentDraft(latest, draft);
+    const rebased = rebaseCapabilityAssignmentDraft(latest, "bill", draft);
     expect(rebased.routeSelectionMode).toBe("selected");
     expect(rebased.allowedRoutes).not.toContain("tertiary");
     const next = applyCapabilityAssignmentDraft(latest, "bill", rebased);
     expect(next.users.bill.allowedRoutes).toEqual(["primary", "secondary", "retired"]);
+  });
+
+  it("keeps dirty quota intent but adopts untouched policy fields after a conflict", () => {
+    const config = configFixture();
+    const draft = {
+      ...createCapabilityAssignmentDraft(config, "bill"),
+      inheritDailyMessageLimit: false,
+      dailyMessageLimit: 250,
+      dailyMessageLimitDirty: true,
+    };
+    const latest: AdminConfig = {
+      ...config,
+      defaults: { ...config.defaults, dailyMessageLimit: 600 },
+      users: {
+        ...config.users,
+        bill: {
+          ...config.users.bill,
+          enabled: false,
+          dailyMessageLimit: 300,
+          minuteMessageLimit: 3,
+          timezone: "UTC",
+        },
+      },
+    };
+    const rebased = rebaseCapabilityAssignmentDraft(latest, "bill", draft);
+    expect(rebased.dailyMessageLimit).toBe(250);
+    expect(rebased.inheritDailyMessageLimit).toBe(false);
+    expect(rebased.enabled).toBe(false);
+    expect(rebased.inheritEnabled).toBe(false);
+    expect(rebased.minuteMessageLimit).toBe(3);
+    expect(rebased.inheritMinuteMessageLimit).toBe(false);
+    const next = applyCapabilityAssignmentDraft(latest, "bill", rebased);
+    expect(next.users.bill).toMatchObject({
+      enabled: false,
+      dailyMessageLimit: 250,
+      minuteMessageLimit: 3,
+      timezone: "UTC",
+    });
   });
 });

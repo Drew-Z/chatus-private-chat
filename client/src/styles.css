@@ -179,6 +179,18 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .typed-admin-option strong { font-size: 13px; }
 .typed-admin-option small { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .typed-admin-option.disabled strong { color: var(--muted); }
+.typed-admin-policy-list { border-top: 1px solid var(--line); }
+.typed-admin-policy-row { min-width: 0; min-height: 66px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, auto); align-items: center; gap: 18px; padding: 10px 4px; border-bottom: 1px solid #edf1ef; }
+.typed-admin-policy-copy, .typed-admin-policy-actions { min-width: 0; }
+.typed-admin-policy-copy label, .typed-admin-policy-copy strong, .typed-admin-policy-copy small { display: block; overflow-wrap: anywhere; }
+.typed-admin-policy-copy label { color: var(--ink); font-size: 13px; }
+.typed-admin-policy-copy small { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.typed-admin-policy-actions { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+.typed-admin-policy-toggle { display: inline-flex; align-items: center; gap: 7px; color: #46524c; font-size: 12px; white-space: nowrap; }
+.typed-admin-policy-toggle input { width: 17px; min-height: 17px; margin: 0; accent-color: var(--accent); }
+.typed-admin-policy-number { width: 128px; min-width: 0; }
+.typed-admin-policy-number[aria-invalid="true"] { border-color: var(--danger); }
+.typed-admin-policy-error { margin: 10px 0 0; color: var(--danger); font-size: 12px; }
 .typed-admin-route-default { display: grid; grid-template-columns: minmax(110px, 180px) minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 16px; }
 .typed-admin-route-default label, .typed-admin-route-fieldset legend { color: #46524c; font-size: 12px; font-weight: 700; }
 .typed-admin-route-default select { min-width: 0; }
@@ -683,6 +695,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .typed-admin-capability-section { padding: 20px 16px; }
   .typed-admin-section-head { align-items: stretch; flex-direction: column; gap: 12px; }
   .typed-admin-section-actions { justify-content: space-between; }
+  .typed-admin-policy-row { grid-template-columns: 1fr; gap: 9px; }
+  .typed-admin-policy-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(96px, 128px); justify-content: stretch; gap: 8px; }
+  .typed-admin-policy-actions > :only-child { grid-column: 1 / -1; }
+  .typed-admin-policy-number { width: 100%; }
   .typed-admin-route-default { grid-template-columns: 1fr; gap: 7px; }
   .typed-admin-editor-footer { padding-inline: 16px; }
   .admin-pool-panel { grid-template-columns: 1fr; overflow-y: auto; }

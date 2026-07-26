@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import {
   Copy,
   ExternalLink,
+  Gauge,
   KeyRound,
   LogOut,
   Network,
@@ -24,6 +25,7 @@ import {
   fetchAdminMembers,
   putAdminConfig,
   removeAdminMemberConfig,
+  resetAdminMemberUsage,
   revokeAdminMemberAccess,
   revokeAdminMemberSessions,
   rotateAdminMemberAccess,
@@ -33,16 +35,20 @@ import {
   type AdminMemberProjection,
   type AdminMemberSessionsResponse,
   type AdminSessionRevocation,
+  type AdminUsageResetResponse,
 } from "../lib/api";
 import {
   applyCapabilityAssignmentDraft,
   createCapabilityAssignmentDraft,
   DEFAULT_ADMIN_MEMBER,
+  getCapabilityAssignmentDraftError,
+  getMemberPolicyLimitError,
   isRouteEnabled,
   orderedRouteIds,
   rebaseCapabilityAssignmentDraft,
   setDefaultRoute,
   setDefaultRouteInheritance,
+  setMemberPolicyInheritance,
   setRouteAllowed,
   setRouteInheritance,
   type CapabilityAssignmentDraft,
@@ -71,6 +77,7 @@ type MemberAccessDialogState =
   | { kind: "revoke"; member: AdminMemberProjection }
   | { kind: "remove-config"; member: AdminMemberProjection }
   | { kind: "sessions"; member: AdminMemberProjection }
+  | { kind: "usage"; member: AdminMemberProjection }
   | {
       kind: "credential";
       action: "create" | "rotate";
@@ -154,7 +161,7 @@ export function AdminWorkspace({
         setConflict(false);
       }
       if (preserveDraft) {
-        setDraft((current) => current ? rebaseCapabilityAssignmentDraft(snapshot.config, current) : current);
+        setDraft((current) => current ? rebaseCapabilityAssignmentDraft(snapshot.config, selectedMember, current) : current);
         setConflict(true);
         setNotice({ kind: "warning", text: "配置已更新，当前草稿仍保留；再次保存将应用本页的成员分配。" });
       }
@@ -191,6 +198,11 @@ export function AdminWorkspace({
 
   async function saveDraft() {
     if (!data || !draft || saving) return;
+    const draftError = getCapabilityAssignmentDraftError(draft);
+    if (draftError) {
+      setNotice({ kind: "error", text: draftError });
+      return;
+    }
     setSaving(true);
     setNotice(null);
     try {
@@ -203,7 +215,7 @@ export function AdminWorkspace({
       setDraft(createCapabilityAssignmentDraft(snapshot.config, selectedMember));
       setDirty(false);
       setConflict(false);
-      setNotice({ kind: "success", text: "成员分配已保存。" });
+      setNotice({ kind: "success", text: "成员分配与使用策略已保存。" });
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         onSessionExpired();
@@ -230,7 +242,7 @@ export function AdminWorkspace({
   function applyPoolSnapshot(snapshot: AdminConfigSnapshot) {
     setData((current) => current ? { ...current, snapshot } : current);
     if (dirty && draft) {
-      setDraft((current) => current ? rebaseCapabilityAssignmentDraft(snapshot.config, current) : current);
+      setDraft((current) => current ? rebaseCapabilityAssignmentDraft(snapshot.config, selectedMember, current) : current);
       setConflict(true);
     } else {
       setDraft(createCapabilityAssignmentDraft(snapshot.config, selectedMember));
@@ -276,7 +288,7 @@ export function AdminWorkspace({
     setMemberDialog({ kind: "create", label, existingMember: Boolean(label) });
   }
 
-  function openMemberConfirmation(kind: "rotate" | "revoke" | "remove-config" | "sessions", member: AdminMemberProjection) {
+  function openMemberConfirmation(kind: "rotate" | "revoke" | "remove-config" | "sessions" | "usage", member: AdminMemberProjection) {
     if (kind === "remove-config" && dirty && selectedMember === member.label) {
       if (!window.confirm("恢复默认配置会丢弃当前成员尚未保存的分配，继续吗？")) return;
     }
@@ -377,6 +389,20 @@ export function AdminWorkspace({
     }
   }
 
+  async function resetMemberUsage(member: AdminMemberProjection) {
+    if (!data || memberActionBusy) return;
+    setMemberActionBusy(true);
+    setMemberDialogError("");
+    try {
+      const result = await resetAdminMemberUsage(member.label);
+      applyUsageResetResult(result);
+    } catch (error) {
+      await handleMemberActionError(error);
+    } finally {
+      setMemberActionBusy(false);
+    }
+  }
+
   function applyCredentialResult(result: AdminMemberCredentialResponse, action: "create" | "rotate") {
     setData((current) => current ? {
       ...current,
@@ -426,7 +452,7 @@ export function AdminWorkspace({
       setDirty(false);
       setConflict(false);
     } else if (dirty) {
-      setDraft((current) => current ? rebaseCapabilityAssignmentDraft(result.config, current) : current);
+      setDraft((current) => current ? rebaseCapabilityAssignmentDraft(result.config, selectedMember, current) : current);
     }
     setMemberDialog(null);
     setNotice({ kind: "success", text: result.member ? `${label} 已恢复默认配置，访问权限和用户数据未改变。` : `${label} 的独立配置已删除。` });
@@ -440,6 +466,12 @@ export function AdminWorkspace({
         ? result.revoked ? `已注销 ${result.label} 的 ${result.revoked} 个会话。` : `${result.label} 当前没有活动会话。`
         : `${result.label} 的访问会话只注销了一部分，请稍后重试。`,
     });
+  }
+
+  function applyUsageResetResult(result: AdminUsageResetResponse) {
+    setMemberDialog(null);
+    setPanelResetKey((value) => value + 1);
+    setNotice({ kind: "success", text: `${result.label} 的今日用量已重置。` });
   }
 
   async function handleMemberActionError(error: unknown) {
@@ -494,7 +526,14 @@ export function AdminWorkspace({
   const defaultRouteOptions = data && draft
     ? routeIds.filter((id) => draft.allowedRoutes.includes(id) && isRouteEnabled(data.snapshot.config.routes[id]))
     : [];
+  const policyError = draft ? getCapabilityAssignmentDraftError(draft) : null;
+  const dailyLimitError = draft ? getMemberPolicyLimitError(draft, "dailyMessageLimit") : null;
+  const minuteLimitError = draft ? getMemberPolicyLimitError(draft, "minuteMessageLimit") : null;
+  const dailyLimitInvalid = Boolean(dailyLimitError);
+  const minuteLimitInvalid = Boolean(minuteLimitError);
   const routeInheritanceNoteId = "typed-admin-route-inheritance-note";
+  const dailyLimitErrorId = "typed-admin-policy-daily-error";
+  const minuteLimitErrorId = "typed-admin-policy-minute-error";
 
   return (
     <main className="admin-react-shell">
@@ -628,7 +667,7 @@ export function AdminWorkspace({
                   <span>撤销访问</span>
                 </button>
               )}
-              <button className="primary-button icon-text-button" type="button" onClick={() => void saveDraft()} disabled={!draft || !dirty || saving || loading || memberActionBusy}>
+              <button className="primary-button icon-text-button" type="button" onClick={() => void saveDraft()} disabled={!draft || !dirty || Boolean(policyError) || saving || loading || memberActionBusy}>
                 <Save size={16} />
                 <span>{saving ? "保存中..." : "保存分配"}</span>
               </button>
@@ -639,6 +678,135 @@ export function AdminWorkspace({
             <div className="typed-admin-panel-state" aria-live="polite">正在读取配置...</div>
           ) : (
             <>
+              <CapabilitySection
+                id="policy"
+                icon={<Gauge size={17} />}
+                title="使用策略"
+                canInherit={false}
+                disabled={saving}
+                inherit={false}
+                onInheritChange={() => undefined}
+                inheritLabel=""
+                count={policySummary(draft)}
+                extraAction={selectedMember !== DEFAULT_ADMIN_MEMBER && selected ? (
+                  <button
+                    className="quiet-button icon-text-button"
+                    type="button"
+                    onClick={() => openMemberConfirmation("usage", selected)}
+                    disabled={saving || memberActionBusy}
+                  >
+                    <RotateCcw size={15} />
+                    <span>重置今日用量</span>
+                  </button>
+                ) : undefined}
+              >
+                <div className="typed-admin-policy-list">
+                  <div className="typed-admin-policy-row">
+                    <div className="typed-admin-policy-copy">
+                      <label htmlFor="typed-admin-policy-enabled"><strong>成员状态</strong></label>
+                      <small>{draft.inheritEnabled ? "继承默认状态" : draft.enabled ? "允许使用" : "已暂停"}</small>
+                    </div>
+                    <div className="typed-admin-policy-actions">
+                      {selectedMember !== DEFAULT_ADMIN_MEMBER && (
+                        <label className="typed-admin-inherit">
+                          <input
+                            type="checkbox"
+                            checked={draft.inheritEnabled}
+                            disabled={saving}
+                            onChange={(event) => updateDraft((current) => setMemberPolicyInheritance(data.snapshot.config, current, "enabled", event.target.checked))}
+                          />
+                          <span>继承默认状态</span>
+                        </label>
+                      )}
+                      <label className="typed-admin-policy-toggle">
+                        <input
+                          id="typed-admin-policy-enabled"
+                          type="checkbox"
+                          checked={draft.enabled}
+                          disabled={draft.inheritEnabled || saving}
+                          onChange={(event) => updateDraft((current) => ({ ...current, enabled: event.target.checked, enabledDirty: true }))}
+                        />
+                        <span>允许使用</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="typed-admin-policy-row">
+                    <div className="typed-admin-policy-copy">
+                      <label htmlFor="typed-admin-policy-daily"><strong>每日消息额度</strong></label>
+                      <small>{draft.inheritDailyMessageLimit ? "继承默认额度" : "独立额度"}</small>
+                    </div>
+                    <div className="typed-admin-policy-actions">
+                      {selectedMember !== DEFAULT_ADMIN_MEMBER && (
+                        <label className="typed-admin-inherit">
+                          <input
+                            type="checkbox"
+                            checked={draft.inheritDailyMessageLimit}
+                            disabled={saving}
+                            onChange={(event) => updateDraft((current) => setMemberPolicyInheritance(data.snapshot.config, current, "dailyMessageLimit", event.target.checked))}
+                          />
+                          <span>继承默认每日额度</span>
+                        </label>
+                      )}
+                      <input
+                        id="typed-admin-policy-daily"
+                        className="typed-admin-policy-number"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={draft.dailyMessageLimit ?? ""}
+                        disabled={draft.inheritDailyMessageLimit || saving}
+                        aria-invalid={dailyLimitInvalid}
+                        aria-describedby={dailyLimitError ? dailyLimitErrorId : undefined}
+                        onChange={(event) => updateDraft((current) => ({
+                          ...current,
+                          dailyMessageLimit: parsePolicyLimit(event.target.value),
+                          dailyMessageLimitDirty: true,
+                        }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="typed-admin-policy-row">
+                    <div className="typed-admin-policy-copy">
+                      <label htmlFor="typed-admin-policy-minute"><strong>每分钟消息额度</strong></label>
+                      <small>{draft.inheritMinuteMessageLimit ? "继承默认额度" : "独立额度"}</small>
+                    </div>
+                    <div className="typed-admin-policy-actions">
+                      {selectedMember !== DEFAULT_ADMIN_MEMBER && (
+                        <label className="typed-admin-inherit">
+                          <input
+                            type="checkbox"
+                            checked={draft.inheritMinuteMessageLimit}
+                            disabled={saving}
+                            onChange={(event) => updateDraft((current) => setMemberPolicyInheritance(data.snapshot.config, current, "minuteMessageLimit", event.target.checked))}
+                          />
+                          <span>继承默认每分钟额度</span>
+                        </label>
+                      )}
+                      <input
+                        id="typed-admin-policy-minute"
+                        className="typed-admin-policy-number"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={draft.minuteMessageLimit ?? ""}
+                        disabled={draft.inheritMinuteMessageLimit || saving}
+                        aria-invalid={minuteLimitInvalid}
+                        aria-describedby={minuteLimitError ? minuteLimitErrorId : undefined}
+                        onChange={(event) => updateDraft((current) => ({
+                          ...current,
+                          minuteMessageLimit: parsePolicyLimit(event.target.value),
+                          minuteMessageLimitDirty: true,
+                        }))}
+                      />
+                    </div>
+                  </div>
+                </div>
+                {dailyLimitError && <p id={dailyLimitErrorId} className="typed-admin-policy-error" role="alert">{dailyLimitError}</p>}
+                {minuteLimitError && <p id={minuteLimitErrorId} className="typed-admin-policy-error" role="alert">{minuteLimitError}</p>}
+              </CapabilitySection>
+
               <CapabilitySection
                 id="routes"
                 icon={<Network size={17} />}
@@ -843,6 +1011,7 @@ export function AdminWorkspace({
           onRevoke={(member) => void revokeMember(member)}
           onRemoveConfig={(member) => void removeMemberConfig(member)}
           onRevokeSessions={(member) => void revokeMemberSessions(member)}
+          onResetUsage={(member) => void resetMemberUsage(member)}
         />
       )}
     </main>
@@ -872,6 +1041,7 @@ function MemberAccessDialog({
   onRevoke,
   onRemoveConfig,
   onRevokeSessions,
+  onResetUsage,
 }: {
   state: MemberAccessDialogState;
   busy: boolean;
@@ -883,6 +1053,7 @@ function MemberAccessDialog({
   onRevoke: (member: AdminMemberProjection) => void;
   onRemoveConfig: (member: AdminMemberProjection) => void;
   onRevokeSessions: (member: AdminMemberProjection) => void;
+  onResetUsage: (member: AdminMemberProjection) => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const codeInputRef = useRef<HTMLInputElement>(null);
@@ -908,7 +1079,7 @@ function MemberAccessDialog({
   }, [state.kind, state.kind === "credential" ? state.accessCode : ""]);
 
   const title = memberDialogTitle(state);
-  const dialogIcon = state.kind === "remove-config"
+  const dialogIcon = state.kind === "remove-config" || state.kind === "usage"
     ? <RotateCcw size={18} aria-hidden="true" />
     : state.kind === "sessions"
       ? <LogOut size={18} aria-hidden="true" />
@@ -983,7 +1154,7 @@ function MemberAccessDialog({
           </form>
         )}
 
-        {(state.kind === "rotate" || state.kind === "revoke" || state.kind === "remove-config" || state.kind === "sessions") && (
+        {(state.kind === "rotate" || state.kind === "revoke" || state.kind === "remove-config" || state.kind === "sessions" || state.kind === "usage") && (
           <div className="member-access-confirmation">
             <p className="member-dialog-member"><strong>{state.member.displayName}</strong><span>{state.member.label}</span></p>
             <p id="member-access-dialog-description">
@@ -992,8 +1163,10 @@ function MemberAccessDialog({
                 : state.kind === "revoke"
                   ? "该成员将无法再次登录，现有会话会被注销；聊天、记忆和成员分配不会删除。"
                   : state.kind === "remove-config"
-                    ? "该成员的独立线路、Skill 和工具分配将删除并恢复默认；访问码、会话、聊天和记忆不会改变。"
-                    : "该成员在所有设备上的登录会话会立即注销；访问码、成员分配、聊天和记忆不会改变。"}
+                    ? "该成员的独立使用策略、线路、Skill 和工具分配将删除并恢复默认；访问码、会话、聊天和记忆不会改变。"
+                    : state.kind === "sessions"
+                      ? "该成员在所有设备上的登录会话会立即注销；访问码、成员分配、聊天和记忆不会改变。"
+                      : "该成员今天已使用的消息额度将归零；成员配置和历史记录不会改变。"}
             </p>
             {error && <p className="member-dialog-status error" role="alert">{error}</p>}
             <div className="member-dialog-actions">
@@ -1013,10 +1186,15 @@ function MemberAccessDialog({
                   <RotateCcw size={15} />
                   <span>{busy ? "恢复中..." : "确认恢复默认"}</span>
                 </button>
-              ) : (
+              ) : state.kind === "sessions" ? (
                 <button className="primary-button icon-text-button" type="button" onClick={() => onRevokeSessions(state.member)} disabled={busy}>
                   <LogOut size={15} />
                   <span>{busy ? "注销中..." : "注销所有会话"}</span>
+                </button>
+              ) : (
+                <button className="primary-button icon-text-button" type="button" onClick={() => onResetUsage(state.member)} disabled={busy}>
+                  <RotateCcw size={15} />
+                  <span>{busy ? "重置中..." : "重置今日用量"}</span>
                 </button>
               )}
             </div>
@@ -1068,6 +1246,8 @@ function memberDialogTitle(state: MemberAccessDialogState): string {
       return "恢复默认配置";
     case "sessions":
       return "注销成员会话";
+    case "usage":
+      return "重置今日用量";
     case "credential":
       return state.action === "create" ? "成员访问已创建" : "访问码已轮换";
   }
@@ -1125,6 +1305,18 @@ function CapabilitySection({
 
 function toggleId(ids: string[], id: string): string[] {
   return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
+}
+
+function parsePolicyLimit(value: string): number | null {
+  const parsed = Number(value);
+  return value.trim() && Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function policySummary(draft: CapabilityAssignmentDraft): string {
+  const status = draft.enabled ? "启用" : "暂停";
+  const daily = draft.dailyMessageLimit === null ? "环境默认" : `${draft.dailyMessageLimit}/天`;
+  const minute = draft.minuteMessageLimit === null ? "环境默认" : `${draft.minuteMessageLimit}/分`;
+  return `${status} · ${daily} · ${minute}`;
 }
 
 function getAdminErrorMessage(error: unknown): string {

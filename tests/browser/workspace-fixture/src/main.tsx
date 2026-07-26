@@ -5,6 +5,7 @@ import { ConversationSidebar, type SidebarView } from "../../../../client/src/co
 import { MessageComposer } from "../../../../client/src/components/MessageComposer";
 import { MessageView, type MessageAction } from "../../../../client/src/components/MessageView";
 import { AdminOperationsContent } from "../../../../client/src/components/AdminOperationsPanel";
+import { AdminWorkspace } from "../../../../client/src/components/AdminWorkspace";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import {
@@ -405,6 +406,14 @@ function WorkspaceFixture() {
       <main data-visual-fixture="true" style={{ height: "100dvh", overflowX: "hidden", overflowY: "auto", background: "var(--surface)" }}>
         <AdminOperationsContent snapshot={operationsSnapshot} />
       </main>
+    );
+  }
+
+  if (params.get("view") === "admin-members") {
+    return (
+      <div data-visual-fixture="true">
+        <AdminWorkspace onSessionExpired={() => undefined} onLogout={() => undefined} />
+      </div>
     );
   }
 

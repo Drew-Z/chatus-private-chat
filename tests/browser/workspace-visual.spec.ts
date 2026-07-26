@@ -1,6 +1,49 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import type { AdminConfig } from "../../client/src/lib/api";
 
 const blockedRequests = new WeakMap<Page, string[]>();
+
+const adminMemberConfig: AdminConfig = {
+  routes: {
+    primary: {
+      label: "Primary",
+      enabled: true,
+      offerings: [{ providerId: "shared", model: "synthetic-model" }],
+    },
+  },
+  providers: {
+    shared: {
+      label: "Shared",
+      type: "openai-chat",
+      baseUrl: "https://provider.example/v1",
+      hasLegacyKey: true,
+    },
+  },
+  users: {
+    bill: { displayName: "Bill" },
+  },
+  defaults: {
+    enabled: true,
+    defaultRoute: "primary",
+    allowedRoutes: ["primary"],
+    allowedSkills: [],
+    allowedTools: [],
+    dailyMessageLimit: 500,
+    minuteMessageLimit: 12,
+  },
+  publicAccess: {
+    enabled: false,
+    routeId: "",
+    sessionTtlSeconds: 86_400,
+    dailyMessageLimit: 20,
+    minuteMessageLimit: 6,
+    sourceDailyMessageLimit: 200,
+    sourceMinuteMessageLimit: 30,
+  },
+  skills: {},
+  tools: {},
+  mcpServers: {},
+};
 
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -361,6 +404,100 @@ test("operations data stays scannable with local table overflow", async ({ page 
   expect(geometry.wrapperFits).toBe(true);
   if (testInfo.project.name === "touch-390") expect(geometry.localOverflow).toBe(true);
   await attachScreenshot(page, testInfo, "operations");
+});
+
+test("member policy editing and usage reset stay usable on desktop and touch", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "member policy coverage targets desktop and 390px");
+  let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
+  let revision = "a".repeat(64);
+  const savedConfigs: AdminConfig[] = [];
+
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = async (body: unknown) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({
+        members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }],
+        accessRevision: "c".repeat(64),
+        accessSource: "managed",
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/config" && request.method() === "PUT") {
+      const payload = request.postDataJSON() as { config: AdminConfig; expectedRevision: string };
+      expect(payload.expectedRevision).toBe(revision);
+      currentConfig = payload.config;
+      savedConfigs.push(structuredClone(payload.config));
+      revision = "b".repeat(64);
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/usage" && request.method() === "POST") {
+      expect(request.postDataJSON()).toEqual({ label: "bill" });
+      await json({ ok: true, label: "bill", day: "2026-07-26" });
+      return;
+    }
+    throw new Error(`unexpected admin fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  if (testInfo.project.name === "touch-390") {
+    await page.getByRole("combobox", { name: "选择成员" }).selectOption("bill");
+  } else {
+    await page.locator(".typed-admin-member").filter({ hasText: "Bill" }).click();
+  }
+
+  const policyHeading = page.getByRole("heading", { name: "使用策略" });
+  await policyHeading.scrollIntoViewIfNeeded();
+  await expect(policyHeading).toBeVisible();
+  await expect(page.getByLabel("继承默认状态")).toBeChecked();
+  await expect(page.getByLabel("继承默认每日额度")).toBeChecked();
+  await expect(page.getByLabel("继承默认每分钟额度")).toBeChecked();
+
+  await page.getByLabel("继承默认状态").uncheck();
+  await page.getByLabel("允许使用").uncheck();
+  await page.getByLabel("继承默认每日额度").uncheck();
+  const dailyLimitInput = page.getByLabel("每日消息额度");
+  await dailyLimitInput.fill("");
+  await expect(dailyLimitInput).toHaveAttribute("aria-describedby", "typed-admin-policy-daily-error");
+  await expect(page.locator("#typed-admin-policy-daily-error")).toHaveText("每日消息额度必须是正整数。");
+  await expect(page.getByRole("button", { name: "保存分配" })).toBeDisabled();
+  await dailyLimitInput.fill("250");
+  await page.getByRole("button", { name: "保存分配" }).click();
+  await expect(page.getByText("成员分配与使用策略已保存。", { exact: true })).toBeVisible();
+  expect(savedConfigs).toHaveLength(1);
+  expect(savedConfigs[0].users.bill).toMatchObject({ displayName: "Bill", enabled: false, dailyMessageLimit: 250 });
+  expect(savedConfigs[0].users.bill.minuteMessageLimit).toBeUndefined();
+
+  await page.getByRole("button", { name: "重置今日用量" }).click();
+  const dialog = page.getByRole("dialog", { name: "重置今日用量" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "重置今日用量" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("bill 的今日用量已重置。", { exact: true })).toBeVisible();
+
+  const geometry = await page.evaluate(() => {
+    const policy = document.querySelector<HTMLElement>('[aria-labelledby="capability-policy"]');
+    if (!policy) throw new Error("missing member policy section");
+    const rect = policy.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      policyFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1,
+    };
+  });
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.policyFits).toBe(true);
+  await attachScreenshot(page, testInfo, "admin-member-policy");
 });
 
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {

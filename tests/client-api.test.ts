@@ -9,6 +9,7 @@ import {
   isAdminMemberListResponse,
   isAdminMemberRevokeResponse,
   isAdminMemberSessionsResponse,
+  isAdminUsageResetResponse,
   isAdminOperationsStats,
   isAdminReliabilitySnapshot,
   isAdminSessionProjection,
@@ -394,6 +395,13 @@ describe("React client runtime validation", () => {
     expect(isAdminMemberSessionsResponse(sessions)).toBe(true);
     expect(isAdminMemberSessionsResponse({ ...sessions, token: "secret" })).toBe(false);
     expect(isAdminMemberSessionsResponse({ ...sessions, revoked: -1 })).toBe(false);
+
+    const usageReset = { ok: true, label: "bill", day: "2026-07-26" };
+    expect(isAdminUsageResetResponse(usageReset)).toBe(true);
+    expect(isAdminUsageResetResponse({ ...usageReset, token: "secret" })).toBe(false);
+    expect(isAdminUsageResetResponse({ ...usageReset, ok: false })).toBe(false);
+    expect(isAdminUsageResetResponse({ ...usageReset, label: " " })).toBe(false);
+    expect(isAdminUsageResetResponse({ ...usageReset, day: "2026-02-31" })).toBe(false);
   });
 
   it("accepts only the secret-free user data mutation envelope", () => {

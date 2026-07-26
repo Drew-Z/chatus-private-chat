@@ -81,7 +81,7 @@ The effective assignment is enforced at the execution boundary on every turn.
 
 ### 1. Scope / Trigger
 
-- Trigger: changing the typed React administrator surface for member route, Skill, or tool assignments; member discovery; or revisioned configuration editing.
+- Trigger: changing the typed React administrator surface for member policy, route, Skill, or tool assignments; member discovery; or revisioned configuration editing.
 - The typed workspace is a focused assignment editor. The legacy `/admin.html` surface remains the entry point for route/provider definitions, quotas, MCP administration, audit, and other administrator sections until those sections are migrated deliberately.
 
 ### 2. Signatures
@@ -103,6 +103,15 @@ GET /api/session
 
 ```typescript
 type CapabilityAssignmentDraft = {
+  inheritEnabled: boolean;
+  enabled: boolean;
+  enabledDirty: boolean;
+  inheritDailyMessageLimit: boolean;
+  dailyMessageLimit: number | null;
+  dailyMessageLimitDirty: boolean;
+  inheritMinuteMessageLimit: boolean;
+  minuteMessageLimit: number | null;
+  minuteMessageLimitDirty: boolean;
   inheritSkills: boolean;
   allowedSkills: string[];
   inheritTools: boolean;
@@ -119,7 +128,7 @@ type CapabilityAssignmentDraft = {
 ### 3. Contracts
 
 - `/api/admin/members` returns trimmed, unique member labels and only display/configuration metadata. It never returns access codes, prompts, memory, routes, or secret values.
-- The typed editor may change only `defaults` or one selected user's `defaultRoute`, `allowedRoutes`, `allowedSkills`, and `allowedTools`. It must preserve route definitions, providers, MCP servers, and unrelated user fields at the draft boundary.
+- The typed editor may change only `defaults` or one selected user's `enabled`, `dailyMessageLimit`, `minuteMessageLimit`, `defaultRoute`, `allowedRoutes`, `allowedSkills`, and `allowedTools`. It must preserve route definitions, providers, MCP servers, and unrelated user fields at the draft boundary.
 - For member Skills and tools, `undefined` means inherit the corresponding default assignment, while an explicit empty array denies that capability. The editor must not collapse the two states.
 - Route arrays use a different legacy contract: member `allowedRoutes === undefined` inherits defaults, while an effective `allowedRoutes === undefined` or `[]` means all configured routes. `routeSelectionMode` preserves the difference between all-routes intent and an explicit list that happens to contain every current route.
 - `routesDirty === false` prevents Skill/tool-only saves from reserializing route fields. Once routes are edited, the draft keeps at least one enabled route and resolves `defaultRoute` to an enabled allowed route before saving.
@@ -276,3 +285,102 @@ POST /api/admin/sessions/revoke
 - Worker tests cover missing/stale/current configuration revisions, duplicate trimmed legacy labels, configured-member retention, access/session/data preservation, secret-free response and audit output, cross-origin rejection, and incomplete session cleanup reporting.
 - Client decoder tests cover exact configuration-removal and session-revocation envelopes and reject secret-bearing extras.
 - Frontend checks require the reset/session actions, confirmation text, revisioned reset helper, and strict decoders.
+
+## Scenario: Typed Member Policy And Current-day Usage Reset
+
+### 1. Scope / Trigger
+
+- Trigger: editing member/default account enablement, daily message limits, minute message limits, or resetting one member's current UTC-day usage from the typed administrator workspace.
+- Policy edits belong to the revisioned capability draft. Usage reset is an independent operational mutation and must not rewrite configuration.
+
+### 2. Signatures
+
+```typescript
+type CapabilityAssignmentDraft = {
+  inheritEnabled: boolean;
+  enabled: boolean;
+  enabledDirty: boolean;
+  inheritDailyMessageLimit: boolean;
+  dailyMessageLimit: number | null;
+  dailyMessageLimitDirty: boolean;
+  inheritMinuteMessageLimit: boolean;
+  minuteMessageLimit: number | null;
+  minuteMessageLimitDirty: boolean;
+  // route, Skill, and tool draft fields remain in the same object
+};
+
+type AdminUsageResetResponse = {
+  ok: true;
+  label: string;
+  day: string; // exact YYYY-MM-DD UTC date
+};
+```
+
+```text
+PUT  /api/admin/config
+  <- { config, expectedRevision }
+
+POST /api/admin/usage
+  <- { label: string }
+  -> { ok: true, label: string, day: string }
+```
+
+### 3. Contracts
+
+- `enabled`, `dailyMessageLimit`, and `minuteMessageLimit` each have independent inheritance and dirty state. A member field set to inherit is omitted from `config.users[label]`; default-policy controls never expose inheritance.
+- A save remains atomic across policy, routes, Skills, and tools. Each policy field is written only after its own dirty flag becomes true, so saving another capability cannot freeze an environment-derived default into stored configuration.
+- After `409 config_conflict`, dirty policy fields retain the administrator's intent. Untouched policy fields use the latest member snapshot. A dirty field whose intent is inheritance uses the latest default value and remains omitted on retry.
+- Explicit quota values are positive safe integers. Empty, zero, negative, fractional, or unsafe values remain visible as invalid local drafts and block the complete save.
+- Each invalid quota input references its own visible error through `aria-describedby`; simultaneous daily and minute errors remain distinguishable.
+- `POST /api/admin/usage` trims and requires `label`, computes the current UTC day, clears both the legacy KV day counter and the member `UserState` Durable Object day counter, then appends only `usage.reset` plus the label to admin audit.
+- Usage reset requires its own confirmation. It does not mutate the configuration revision or assignment draft. Success invalidates the typed Operations projection so the next displayed usage view refreshes.
+- The browser accepts only the exact reset response keys `ok`, `label`, and `day`; the date must be a real canonical UTC calendar date. Unknown or secret-like keys are rejected.
+
+### 4. Validation & Error Matrix
+
+- Explicit policy limit is not a positive safe integer -> keep the field dirty, render its field-specific error, and disable save; the pure apply helper rejects direct invalid calls.
+- Missing/blank reset label -> `400 label_required`; neither usage store nor audit changes.
+- Missing/expired administrator session -> `401`; retain the current policy draft and return to admin authentication.
+- Reset response has an extra field, `ok !== true`, a mismatched type, or an invalid date -> client rejects `invalid_admin_usage_reset_response` and does not claim success.
+- Storage reset failure -> request fails; do not clear the dialog or show a successful Operations refresh.
+
+### 5. Good / Base / Bad Cases
+
+- Good: an administrator pauses a member and sets `250/day` plus `8/minute` in the same revisioned save while unrelated timezone, routes, providers, Skills, and tools remain unchanged.
+- Good: a conflict changes the server's minute limit while the local draft changed only the daily limit; rebasing keeps the local daily value and adopts the latest server minute value.
+- Base: an older member has no policy overrides; all three controls show inherited effective defaults, and saving only a Skill writes no policy fields.
+- Bad: opening a member draft materializes current environment quota defaults and a later Skill-only save persists them as overrides.
+- Bad: resetting usage by editing configuration or clearing only KV leaves the Durable Object counter active and the Operations projection stale.
+
+### 6. Tests Required
+
+- Pure draft tests cover independent inheritance, field-level dirty writes, atomic policy/capability saves, invalid limits, untouched-field conflict adoption, dirty-field intent retention, and latest-default inheritance after conflict.
+- Client decoder tests accept the exact reset envelope and reject extra secret-like keys, invalid dates, non-true `ok`, and malformed labels.
+- Worker API tests seed both the legacy KV counter and `UserState`, call the authenticated reset endpoint, assert both reach zero, assert the exact response, and assert a bounded `usage.reset` audit entry.
+- Browser tests use the real `AdminWorkspace` with strict same-origin fixtures at 1440px and touch-enabled 390px. Assert the revisioned save payload, reset confirmation/result, invalid-field description, and no horizontal overflow.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+next.dailyMessageLimit = draft.dailyMessageLimit ?? environmentDefault;
+await resetAdminMemberUsage(label);
+setConfigRevision("reset");
+```
+
+This freezes an implicit default during unrelated saves and treats an operational counter reset as configuration state.
+
+#### Correct
+
+```typescript
+if (draft.dailyMessageLimitDirty) {
+  if (draft.inheritDailyMessageLimit) delete next.dailyMessageLimit;
+  else next.dailyMessageLimit = requirePositiveInteger(draft.dailyMessageLimit);
+}
+
+const result = await resetAdminMemberUsage(label);
+setPanelResetKey((value) => value + 1);
+```
+
+Only explicit policy intent changes revisioned configuration; usage reset stays separate and refreshes its read projection.

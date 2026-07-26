@@ -2414,6 +2414,41 @@ describe("Worker API", () => {
     expect(await fullAdmin.text()).toContain('href="/react-chat/admin"');
   });
 
+  it("resets both current-day usage stores and records a bounded admin audit entry", async () => {
+    const label = `usage-reset-${crypto.randomUUID()}`;
+    const day = new Date().toISOString().slice(0, 10);
+    const usageStoreKey = `usage:${encodeURIComponent(label)}:${day}`;
+    const state = env.USER_STATE.getByName(label);
+
+    await env.CHAT_STORE.put(usageStoreKey, "4");
+    await state.consumeLimits(10, 10, Date.now(), 0);
+    await expect(state.getUsage(day, 0)).resolves.toBe(1);
+
+    const adminCookie = await adminLogin();
+    const blankLabel = await apiRequest("/api/admin/usage", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: "   " }),
+    });
+    expect(blankLabel.status).toBe(400);
+    await expect(blankLabel.json()).resolves.toEqual({ error: "label_required" });
+    await expect(env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).resolves.toBeNull();
+
+    const response = await apiRequest("/api/admin/usage", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, label, day });
+    await expect(env.CHAT_STORE.get(usageStoreKey)).resolves.toBeNull();
+    await expect(state.getUsage(day, 0)).resolves.toBe(0);
+    await expect(env.CHAT_STORE.get(ADMIN_AUDIT_KEY, "json")).resolves.toEqual([
+      expect.objectContaining({ action: "usage.reset", target: label }),
+    ]);
+  });
+
   it("bootstraps the first KV member without importing a deployment access-code secret", async () => {
     const adminCookie = await adminLogin();
     const managedEnv = {

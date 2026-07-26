@@ -3,6 +3,15 @@ import type { AdminConfig, AdminRouteConfig, AdminUserConfig } from "./api";
 export const DEFAULT_ADMIN_MEMBER = "";
 
 export type CapabilityAssignmentDraft = {
+  inheritEnabled: boolean;
+  enabled: boolean;
+  enabledDirty: boolean;
+  inheritDailyMessageLimit: boolean;
+  dailyMessageLimit: number | null;
+  dailyMessageLimitDirty: boolean;
+  inheritMinuteMessageLimit: boolean;
+  minuteMessageLimit: number | null;
+  minuteMessageLimitDirty: boolean;
   inheritSkills: boolean;
   allowedSkills: string[];
   inheritTools: boolean;
@@ -28,6 +37,15 @@ export function createCapabilityAssignmentDraft(
   const allowedRoutes = resolveAllowedRouteIds(routeIds, effective.allowedRoutes);
 
   return {
+    inheritEnabled: !isDefault && own.enabled === undefined,
+    enabled: effective.enabled !== false,
+    enabledDirty: false,
+    inheritDailyMessageLimit: !isDefault && own.dailyMessageLimit === undefined,
+    dailyMessageLimit: positiveIntegerOrNull(effective.dailyMessageLimit),
+    dailyMessageLimitDirty: false,
+    inheritMinuteMessageLimit: !isDefault && own.minuteMessageLimit === undefined,
+    minuteMessageLimit: positiveIntegerOrNull(effective.minuteMessageLimit),
+    minuteMessageLimitDirty: false,
     inheritSkills: !isDefault && own.allowedSkills === undefined,
     allowedSkills: orderSelection(skillIds, effective.allowedSkills ?? skillIds),
     inheritTools: !isDefault && own.allowedTools === undefined,
@@ -70,9 +88,11 @@ export function orderedRouteIds(config: AdminConfig): string[] {
 
 export function rebaseCapabilityAssignmentDraft(
   config: AdminConfig,
+  memberLabel: string,
   draft: CapabilityAssignmentDraft,
 ): CapabilityAssignmentDraft {
   const defaults = createCapabilityAssignmentDraft(config, DEFAULT_ADMIN_MEMBER);
+  const latest = createCapabilityAssignmentDraft(config, memberLabel);
   const routeIds = orderedRouteIds(config);
   const skillIds = orderedSkillIds(config);
   const toolIds = orderedToolIds(config);
@@ -84,6 +104,22 @@ export function rebaseCapabilityAssignmentDraft(
   const normalizedRoutes = ensureEnabledRoute(config, allowedRoutes);
   return {
     ...draft,
+    inheritEnabled: draft.enabledDirty ? draft.inheritEnabled : latest.inheritEnabled,
+    enabled: draft.enabledDirty
+      ? (draft.inheritEnabled ? defaults.enabled : draft.enabled)
+      : latest.enabled,
+    inheritDailyMessageLimit: draft.dailyMessageLimitDirty
+      ? draft.inheritDailyMessageLimit
+      : latest.inheritDailyMessageLimit,
+    dailyMessageLimit: draft.dailyMessageLimitDirty
+      ? (draft.inheritDailyMessageLimit ? defaults.dailyMessageLimit : draft.dailyMessageLimit)
+      : latest.dailyMessageLimit,
+    inheritMinuteMessageLimit: draft.minuteMessageLimitDirty
+      ? draft.inheritMinuteMessageLimit
+      : latest.inheritMinuteMessageLimit,
+    minuteMessageLimit: draft.minuteMessageLimitDirty
+      ? (draft.inheritMinuteMessageLimit ? defaults.minuteMessageLimit : draft.minuteMessageLimit)
+      : latest.minuteMessageLimit,
     allowedSkills: draft.inheritSkills ? defaults.allowedSkills : orderSelection(skillIds, draft.allowedSkills),
     allowedTools: draft.inheritTools ? defaults.allowedTools : orderSelection(toolIds, draft.allowedTools),
     allowedRoutes: normalizedRoutes,
@@ -94,6 +130,57 @@ export function rebaseCapabilityAssignmentDraft(
       normalizedRoutes,
     ),
   };
+}
+
+export type MemberPolicyField = "enabled" | "dailyMessageLimit" | "minuteMessageLimit";
+
+export function setMemberPolicyInheritance(
+  config: AdminConfig,
+  draft: CapabilityAssignmentDraft,
+  field: MemberPolicyField,
+  inherit: boolean,
+): CapabilityAssignmentDraft {
+  const defaults = createCapabilityAssignmentDraft(config, DEFAULT_ADMIN_MEMBER);
+  switch (field) {
+    case "enabled":
+      return {
+        ...draft,
+        inheritEnabled: inherit,
+        enabled: inherit ? defaults.enabled : draft.enabled,
+        enabledDirty: true,
+      };
+    case "dailyMessageLimit":
+      return {
+        ...draft,
+        inheritDailyMessageLimit: inherit,
+        dailyMessageLimit: inherit ? defaults.dailyMessageLimit : draft.dailyMessageLimit,
+        dailyMessageLimitDirty: true,
+      };
+    case "minuteMessageLimit":
+      return {
+        ...draft,
+        inheritMinuteMessageLimit: inherit,
+        minuteMessageLimit: inherit ? defaults.minuteMessageLimit : draft.minuteMessageLimit,
+        minuteMessageLimitDirty: true,
+      };
+  }
+}
+
+export function getCapabilityAssignmentDraftError(draft: CapabilityAssignmentDraft): string | null {
+  return getMemberPolicyLimitError(draft, "dailyMessageLimit")
+    ?? getMemberPolicyLimitError(draft, "minuteMessageLimit");
+}
+
+export function getMemberPolicyLimitError(
+  draft: CapabilityAssignmentDraft,
+  field: Exclude<MemberPolicyField, "enabled">,
+): string | null {
+  const daily = field === "dailyMessageLimit";
+  const dirty = daily ? draft.dailyMessageLimitDirty : draft.minuteMessageLimitDirty;
+  const inherit = daily ? draft.inheritDailyMessageLimit : draft.inheritMinuteMessageLimit;
+  const value = daily ? draft.dailyMessageLimit : draft.minuteMessageLimit;
+  if (!dirty || inherit || isPositiveInteger(value)) return null;
+  return daily ? "每日消息额度必须是正整数。" : "每分钟消息额度必须是正整数。";
 }
 
 export function orderedSkillIds(config: AdminConfig): string[] {
@@ -189,6 +276,18 @@ function applyDraftToUser(
   config: AdminConfig,
 ): AdminUserConfig {
   const next = { ...user };
+  if (draft.enabledDirty) {
+    if (allowInheritance && draft.inheritEnabled) delete next.enabled;
+    else next.enabled = draft.enabled;
+  }
+  if (draft.dailyMessageLimitDirty) {
+    if (allowInheritance && draft.inheritDailyMessageLimit) delete next.dailyMessageLimit;
+    else next.dailyMessageLimit = requirePositiveInteger(draft.dailyMessageLimit, "dailyMessageLimit");
+  }
+  if (draft.minuteMessageLimitDirty) {
+    if (allowInheritance && draft.inheritMinuteMessageLimit) delete next.minuteMessageLimit;
+    else next.minuteMessageLimit = requirePositiveInteger(draft.minuteMessageLimit, "minuteMessageLimit");
+  }
   if (allowInheritance && draft.inheritSkills) delete next.allowedSkills;
   else next.allowedSkills = [...draft.allowedSkills];
   if (allowInheritance && draft.inheritTools) delete next.allowedTools;
@@ -254,4 +353,17 @@ function countEnabledRoutes(config: AdminConfig, selected: Set<string>): number 
 function orderSelection(available: string[], selected: string[]): string[] {
   const selectedIds = new Set(selected);
   return available.filter((id) => selectedIds.has(id));
+}
+
+function positiveIntegerOrNull(value: unknown): number | null {
+  return isPositiveInteger(value) ? value : null;
+}
+
+function requirePositiveInteger(value: number | null, field: string): number {
+  if (!isPositiveInteger(value)) throw new Error(`invalid_${field}`);
+  return value;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
