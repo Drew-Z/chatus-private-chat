@@ -52,7 +52,7 @@ export type McpRuntimeDependencies = {
 type ActiveMcpSession = {
   client: Client;
   transport: StreamableHTTPClientTransport;
-  tools: Map<string, { schemaFingerprint: string; taskSupport: string }>;
+  tools: Map<string, { schemaFingerprint: string; taskSupport: string; readOnly: boolean }>;
 };
 
 export class McpRuntimeError extends Error {
@@ -138,6 +138,7 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
         session.tools.set(tool.name, {
           schemaFingerprint: await fingerprintSchema(inputSchema),
           taskSupport: tool.execution?.taskSupport || "forbidden",
+          readOnly: isReadOnlyMcpTool(tool.annotations),
         });
         if (session.tools.size > MAX_MCP_TOOLS) {
           throw new McpRuntimeError("mcp_protocol_error", "MCP 工具数量超过限制");
@@ -165,8 +166,7 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
           for (const remoteTool of result.tools) {
             const remoteName = normalizeBoundedText(remoteTool.name, 128);
             const inputSchema = normalizeMcpToolSchema(remoteTool.inputSchema);
-            const readOnly = remoteTool.annotations?.readOnlyHint === true
-              && remoteTool.annotations?.destructiveHint !== true;
+            const readOnly = isReadOnlyMcpTool(remoteTool.annotations);
             const taskSupport = remoteTool.execution?.taskSupport || "forbidden";
             if (
               !remoteName
@@ -232,6 +232,9 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
           }
           if (!definition.config.schemaFingerprint || remote.schemaFingerprint !== definition.config.schemaFingerprint) {
             throw new McpRuntimeError("mcp_tool_changed", "MCP 工具 Schema 已变化，请管理员重新发现并启用");
+          }
+          if (!remote.readOnly) {
+            throw new McpRuntimeError("mcp_tool_changed", "MCP 工具只读标注已变化，请管理员重新发现并启用");
           }
           if (remote.taskSupport === "required") {
             throw new McpRuntimeError("mcp_tool_unsupported", "首版不支持必须使用 Task 的 MCP 工具");
@@ -424,6 +427,12 @@ function stableJsonStringify(value: unknown): string {
 
 function normalizeBoundedText(value: unknown, maxChars: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
+}
+
+function isReadOnlyMcpTool(annotations: unknown): boolean {
+  return isRecord(annotations)
+    && annotations.readOnlyHint === true
+    && annotations.destructiveHint !== true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

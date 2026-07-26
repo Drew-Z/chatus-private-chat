@@ -29,6 +29,7 @@ async function fingerprint(value: string): Promise<string> {
 function createFixtureFetch() {
   const methods: string[] = [];
   const headers: Headers[] = [];
+  let lookupAnnotations = { readOnlyHint: true, destructiveHint: false };
   const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     headers.push(new Headers(init?.headers));
     if (init?.method === "DELETE") {
@@ -57,7 +58,7 @@ function createFixtureFetch() {
             title: "Lookup",
             description: "Find public information",
             inputSchema: schema,
-            annotations: { readOnlyHint: true, destructiveHint: false },
+            annotations: lookupAnnotations,
             execution: { taskSupport: "forbidden" },
           },
           {
@@ -75,7 +76,14 @@ function createFixtureFetch() {
     }
     throw new Error(`Unexpected MCP method ${payload.method}`);
   });
-  return { fetcher, headers, methods };
+  return {
+    fetcher,
+    headers,
+    methods,
+    setLookupAnnotations(annotations: { readOnlyHint: boolean; destructiveHint: boolean }) {
+      lookupAnnotations = annotations;
+    },
+  };
 }
 
 function rpcResponse(
@@ -159,6 +167,28 @@ describe("MCP runtime", () => {
     await execution.close();
     await execution.close();
     expect(fixture.methods.filter((method) => method === "session/delete")).toHaveLength(2);
+  });
+
+  it("rejects read-only annotation drift before calling the reviewed tool", async () => {
+    const fixture = createFixtureFetch();
+    const runtime = createMcpRuntime({
+      resolveSecret: async () => "fixture-secret",
+      fingerprint,
+      fetch: fixture.fetcher,
+    });
+    const discovery = await runtime.discoverTools("fixture", server, new AbortController().signal);
+    fixture.setLookupAnnotations({ readOnlyHint: false, destructiveHint: true });
+    const execution = runtime.createExecution();
+
+    await expect(execution.executeTool(
+      definition(discovery.tools[0].schemaFingerprint),
+      { query: "blocked" },
+      server,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: "mcp_tool_changed" });
+    expect(fixture.methods.filter((method) => method === "tools/call")).toHaveLength(0);
+
+    await execution.close();
   });
 
   it("rejects unsafe destinations, redirects, and oversized protocol responses", async () => {

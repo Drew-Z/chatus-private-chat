@@ -61,7 +61,7 @@ Provider credential precedence remains `user BYOK > requiresUserKey > legacy api
 The MCP runtime never reads KV or Worker bindings directly. The Worker injects
 `secretRef => managedSecretService(env).resolve("mcp", secretRef)`, so MCP discovery and execution share the exact managed-record failure and fallback contract. The runtime owns MCP session creation, same-origin HTTPS enforcement, private literal-address rejection, manual redirect rejection, the 256 KB protocol-response bound, discovery filtering, stable schema fingerprints, per-run session reuse, tool-result normalization, and session cleanup. The Worker continues to own HTTP validation, configuration loading, audit, capability allow-lists, general tool-call/time/result budgets, and response mapping.
 
-Each legacy or Agent capability run creates one `McpRuntimeExecution` and closes it in `finally` or the Agent runtime's `close()`. Runtime tool execution re-lists the saved server's tools before first use, compares the current stable schema fingerprint with the administrator-reviewed fingerprint, and rejects missing, changed, or Task-required tools before `tools/call`. A cached session is scoped to one run and is never reused across users or conversations.
+Each legacy or Agent capability run creates one `McpRuntimeExecution` and closes it in `finally` or the Agent runtime's `close()`. Runtime tool execution re-lists the saved server's tools before first use, requires the current annotations to retain `readOnlyHint === true` and `destructiveHint !== true`, compares the current stable schema fingerprint with the administrator-reviewed fingerprint, and rejects missing, changed, unsafe, or Task-required tools before `tools/call`. A cached session is scoped to one run and is never reused across users or conversations.
 
 Wrangler `--secrets-file` is additive. Omitting a previously uploaded name does not delete the remote Worker Secret. Revocation requires stopping references, explicitly deleting the remote Secret in Cloudflare, and re-running deployment/smoke.
 
@@ -93,6 +93,7 @@ Production deploy and production member acceptance share the `chatus-production-
 | MCP transport requests another origin or receives a redirect | Return `mcp_endpoint_invalid` or `mcp_redirect_rejected`; never follow it |
 | MCP response exceeds 256 KB by header or streamed bytes | Cancel the body and return `mcp_protocol_error` |
 | Runtime schema fingerprint differs from the reviewed tool | Return `mcp_tool_changed`; do not invoke `tools/call` |
+| Runtime tool is no longer explicitly read-only or becomes destructive | Return `mcp_tool_changed`; do not invoke `tools/call` even when its schema fingerprint is unchanged |
 | MCP tool requires the Task protocol or returns non-text content | Return `mcp_tool_unsupported` |
 
 ## 5. Good / Base / Bad Cases
@@ -103,9 +104,9 @@ Production deploy and production member acceptance share the `chatus-production-
 - Good managed secret: the KV read returns `null`, so a trimmed Worker binding may satisfy the credential.
 - Base managed secret: a valid encrypted record decrypts with its namespace/ref AAD and shadows any same-name Worker binding.
 - Bad managed secret: an empty, malformed, moved, or undecryptable record silently falls through to an older Worker binding.
-- Good MCP runtime: the Worker injects managed secret resolution, discovery records a stable reviewed fingerprint, one capability run reuses its server session, and `close()` terminates it on every exit.
+- Good MCP runtime: the Worker injects managed secret resolution, discovery records a stable reviewed fingerprint, execution revalidates both the fingerprint and read-only annotations, one capability run reuses its server session, and `close()` terminates it on every exit.
 - Base MCP runtime: an unauthenticated read-only server needs no secret but still passes the same endpoint, response-size, schema, timeout, and cleanup checks.
-- Bad MCP runtime: a service reads `env[secretRef]` itself, follows redirects, skips the runtime schema comparison, or leaves sessions open after cancellation.
+- Bad MCP runtime: a service reads `env[secretRef]` itself, follows redirects, trusts discovery-time read-only annotations without checking them in the execution session, skips the runtime schema comparison, or leaves sessions open after cancellation.
 
 ## 6. Tests Required
 
@@ -120,7 +121,7 @@ Production deploy and production member acceptance share the `chatus-production-
 - Unit-test route and MCP namespaces symmetrically: valid encryption, exact-`null` fallback, empty/malformed records, master-key rotation, namespace/ref AAD isolation, blank Worker bindings, revision retention, and deletion.
 - Keep provider-router tests for BYOK/legacy/managed/Worker precedence and assert Worker bindings are trimmed.
 - Keep Worker API tests proving write-only responses, route/MCP namespace isolation, revision conflicts, deletion projection, model discovery, and MCP discovery/execution.
-- Unit-test the MCP runtime with an injected JSON-RPC fetcher: secret resolver use, read-only discovery filtering, stable fingerprints, session reuse/close, schema-change rejection before `tools/call`, unsafe destinations, redirects, and oversized responses.
+- Unit-test the MCP runtime with an injected JSON-RPC fetcher: secret resolver use, read-only discovery filtering, stable fingerprints, session reuse/close, schema-change rejection, unchanged-schema annotation-drift rejection with zero `tools/call` requests, unsafe destinations, redirects, and oversized responses.
 
 ## 7. Wrong vs Correct
 

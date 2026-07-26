@@ -132,8 +132,9 @@ export function CapabilityAdminPanel({
     const dialog = confirmDialogRef.current;
     if (!confirmState || !dialog) return;
     if (!dialog.open) dialog.showModal();
-    requestAnimationFrame(() => confirmCancelRef.current?.focus());
+    const focusFrame = requestAnimationFrame(() => confirmCancelRef.current?.focus());
     return () => {
+      cancelAnimationFrame(focusFrame);
       if (dialog.open) dialog.close();
     };
   }, [confirmState]);
