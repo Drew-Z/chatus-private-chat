@@ -526,6 +526,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.sql`DELETE FROM chatus_memory`;
     this.sql`DELETE FROM chatus_migrations`;
     this.sql`DELETE FROM capability_tool_trust`;
+    await this.ctx.storage.delete(AGENT_IDENTITY_STORAGE_KEY);
     return { conversationIds };
   }
 
@@ -764,6 +765,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   async clearConversation(): Promise<void> {
     this.requireConversationScope();
     this.clearPersistedChatState();
+    await this.ctx.storage.delete(AGENT_IDENTITY_STORAGE_KEY);
   }
 
   async getConversationMessageCount(): Promise<number> {

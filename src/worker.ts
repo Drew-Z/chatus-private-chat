@@ -1187,6 +1187,7 @@ async function handleApi(
     ]);
     await Promise.all([
       env.CHAT_STORE.delete(memoryKey(session.label)),
+      env.CHAT_STORE.delete(chatIndexKey(session.label)),
       env.CHAT_STORE.put(FEEDBACK_KEY, JSON.stringify(feedback.filter((entry) => entry.label !== session.label))),
       ...Array.from({ length: METRICS_DAYS }, (_, index) =>
         env.CHAT_STORE.delete(usageKey(session.label, utcDayString(index))),

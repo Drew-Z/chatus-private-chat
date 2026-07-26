@@ -136,13 +136,16 @@ git push origin main
 
 ## 数据与备份
 
-- 用户可在设置中下载经过脱敏的用户数据 JSON。导出包含成员标签、长期记忆、会话元数据、文本和文件名/类型，不包含访问码、provider/admin 配置、原始工具载荷或文件 URL；附件最多 5 MB、单会话最多 512 KB，超出部分保留最新消息并以 `truncated` / `messagesTruncated` 标记。手动导入使用 `restore` 语义，可恢复明确选择的旧备份；后台自动同步只使用 `merge`，不会绕过删除时间线。
+- 必须区分三种恢复：用户导出/导入、代码与配置回滚、完整实例灾备。当前只支持前两种；尚无自动化的完整实例备份或恢复工具。
+- 用户可在设置中下载经过脱敏的用户数据 JSON。导出包含成员标签、长期记忆、会话元数据、文本和文件名/类型，不包含访问码、provider/admin 配置、原始工具载荷或文件 URL；附件最多 5 MB、单会话最多 512 KB，超出部分保留最新消息并以 `truncated` / `messagesTruncated` 标记。因此该文件是有界的用户可携带数据，不是完整、无损的实例备份。手动导入使用 `restore` 语义，可恢复明确选择的旧备份；后台自动同步只使用 `merge`，不会绕过删除时间线。
 - 用户可删除本机缓存、退出所有设备或永久删除全部数据。永久删除会清除对话、摘要、记忆、反馈、用量和指标，注销全部设备，并阻止删除前的本地副本回流。
 - 长期记忆可由用户或管理员查看和编辑。
 - provider/逻辑模型等后台覆盖保存在 KV，删除后按各配置的兼容来源恢复；生产成员访问码由 KV 托管，删除后不会回退到 GitHub/Worker `ACCESS_CODES`，空值表示等待管理员创建首个成员。后台 provider key 以 AES-GCM 密文单独保存在 KV，主密钥只存在于 Worker Secret。
 - 根 `TeamAgent` 保存会话索引、权威长期记忆、迁移标记和删除清理状态；对话 `TeamAgent` 保存消息、流和审批状态；`ProviderCoordinator` 保存 provider 并发租约状态。`UserState` 与旧 KV 记录在迁移验收前继续作为导入/回滚来源。
 - SQLite 表通过构造器中的幂等 `CREATE TABLE IF NOT EXISTS` 升级；当前 Durable Object migrations 包含 `UserState`、`TeamAgent` 与 `ProviderCoordinator`。新增或重命名 Durable Object 类绑定时才增加 Wrangler migration tag，任何已经上线的 tag 都不能修改。
-- 当前没有把 KV/DO 跨账号复制为另一实例的自动迁移命令。不要通过替换 `CHATUS_KV_NAMESPACE_ID` 或 `CHATUS_WORKER_NAME` 尝试恢复数据；先保留原实例并做专门迁移与对账。
+- 完整实例灾备需要同时覆盖 KV、`UserState`、根/对话 `TeamAgent`、稳定对象映射、schema 版本、校验清单和恢复演练。单个 SQLite Durable Object 的平台级 PITR 不能证明这些存储已在同一一致性边界内恢复。
+- 当前没有把 KV/DO 跨账号复制为另一实例的自动迁移命令。不要通过替换 `CHATUS_KV_NAMESPACE_ID`、`CHATUS_WORKER_NAME` 或 Cloudflare Account 尝试恢复数据；先保留原实例并做专门迁移与对账。
+- `ROUTE_KEYS_MASTER_KEY` 必须由运营者在应用数据之外安全保管。只有原主密钥才能解密备份中的托管 provider key 密文；丢失或替换后，旧密文不能恢复，只能逐条重新录入。
 
 ## 开发流程
 

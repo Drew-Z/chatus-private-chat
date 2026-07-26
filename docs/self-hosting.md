@@ -149,6 +149,8 @@ Preflight 错误只指出缺失或无效的变量名，不输出 Secret 值。�
 - 代码回滚：对错误提交执行 `git revert` 并推送 `main`，让完整 Actions 门禁重新发布。不要 force-push，也不要本地覆盖 Worker。
 - 配置恢复：GitHub Secrets 定义每次部署要上传的基线值，但不会自动清理远端旧 Worker Secret；后台 KV 配置是生产成员访问码的唯一来源。旧 `ACCESS_CODES` Secret 在托管模式下被忽略，确认 KV 成员正常后可在 Cloudflare Dashboard 中显式删除。托管 provider key 删除后可能回退同名 Worker Secret；撤销前先停止引用并确认当前来源。托管 provider key 依赖原 `ROUTE_KEYS_MASTER_KEY`，更换主密钥后需重新录入。
 - provider 配置迁移：旧式 route 可在迁移期间继续运行。先创建 provider 与 offering，核对逻辑模型 fallback、成员权限和密钥引用，再移除旧内嵌 endpoint 字段；配置回滚不应修改 Worker 名、KV ID 或 Account。
-- 数据边界：切换 KV ID、Worker 名或 Cloudflare Account 会指向新的存储边界，不是数据迁移。现阶段不要删除旧 KV/UserState 数据；Agent 导入仍以这些源记录作为回滚证据。
+- 用户数据恢复：设置中下载的 JSON 有脱敏和大小上限，可能带有 `truncated` / `messagesTruncated`，适合用户自行迁移或恢复已选择的会话，不是完整实例备份。
+- 数据边界：切换 KV ID、Worker 名或 Cloudflare Account 会指向新的存储边界，不是数据迁移。当前没有自动化 KV/DO 跨账号恢复工具；单个 SQLite Durable Object 的 PITR 也不能替代 KV、多个 Durable Object 与对象映射的一致恢复。现阶段不要删除旧 KV/UserState 数据；Agent 导入仍以这些源记录作为回滚证据。
+- 密钥保管：把 `ROUTE_KEYS_MASTER_KEY` 的原值保存在应用数据之外的受控密码库中。GitHub Secret 只能更新、不能回显，不能作为唯一可恢复副本；主密钥丢失或替换后，备份中的托管 provider key 密文无法解密，只能重新录入。
 
 详细生产诊断、密钥轮换和回滚约束见 [`operations.md`](operations.md)。

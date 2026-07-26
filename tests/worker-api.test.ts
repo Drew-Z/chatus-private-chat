@@ -2904,12 +2904,65 @@ describe("Worker API", () => {
       body: JSON.stringify({}),
     });
     expect(agentChat.status).toBe(201);
+    const agentConversation = (await agentChat.json() as { conversation: { id: string } }).conversation;
+    const rootAgent = await getRootAgent(label);
+    const conversationAgent = await getConversationAgent(label, agentConversation.id);
+    await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(0);
+
+    const identityStorageKey = "chatus:agent-identity:v1";
+    const legacyChatIndexKey = `chats:${encodeURIComponent(label)}:index`;
+    const preservedConfig = await configurePublicAccess({ managed: false, legacyApiKey: "purge-preserved-test-key" });
+    const preservedRouteSecretKey = `${ROUTE_SECRET_PREFIX}PURGE_PRESERVED_TEST_KEY`;
+    const preservedRouteSecretRecord = JSON.stringify({
+      version: 1,
+      algorithm: "AES-GCM",
+      iv: "synthetic-test-iv",
+      ciphertext: "synthetic-test-ciphertext",
+      updatedAt: "2026-07-26T00:00:00.000Z",
+    });
+    await env.CHAT_STORE.put(legacyChatIndexKey, "malformed legacy residue");
+    await env.CHAT_STORE.put(preservedRouteSecretKey, preservedRouteSecretRecord);
+    await runInDurableObject(rootAgent, async (_instance, state) => {
+      await expect(state.storage.get(identityStorageKey)).resolves.toMatchObject({ userLabel: label, scope: "root" });
+    });
+    await runInDurableObject(conversationAgent, async (_instance, state) => {
+      await expect(state.storage.get(identityStorageKey)).resolves.toMatchObject({
+        userLabel: label,
+        scope: "conversation",
+        chatId: agentConversation.id,
+      });
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO chatus_conversation_branch_launches(
+          request_id, fingerprint, state, body_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+        "delete-launch-residue",
+        "delete-launch-fingerprint",
+        "ready",
+        "{}",
+        now,
+        now,
+      );
+    });
 
     const remove = await apiRequest("/api/user-data", cookie, { method: "DELETE" });
     expect(remove.status).toBe(200);
     expect(remove.headers.get("Set-Cookie")).toContain("Max-Age=0");
     expect((await apiRequest("/api/chats", cookie)).status).toBe(401);
     expect((await apiRequest("/api/memory", cookie)).status).toBe(401);
+    await expect(env.CHAT_STORE.get(legacyChatIndexKey)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json")).resolves.toEqual(preservedConfig);
+    await expect(env.CHAT_STORE.get(preservedRouteSecretKey)).resolves.toBe(preservedRouteSecretRecord);
+    await runInDurableObject(rootAgent, async (_instance, state) => {
+      await expect(state.storage.get(identityStorageKey)).resolves.toBeUndefined();
+    });
+    await runInDurableObject(conversationAgent, async (_instance, state) => {
+      await expect(state.storage.get(identityStorageKey)).resolves.toBeUndefined();
+      const rows = state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM chatus_conversation_branch_launches",
+      ).toArray();
+      expect(rows).toEqual([{ count: 0 }]);
+    });
 
     const next = await login(label);
     await expect(apiRequest("/api/chats", next.cookie).then((response) => response.json())).resolves.toMatchObject({ chats: [] });
