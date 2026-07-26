@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Defines the full release gate, privacy review, and regression-test expectations."}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Defines exact browser/server capability and conversation response validation requirements."}
+{"file":".trellis/spec/frontend/capability-assignment.md","reason":"Checks that omitted, explicit empty, and revoked Skill states preserve the authorization boundary."}

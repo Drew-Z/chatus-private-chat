@@ -84,7 +84,7 @@ export function ChatWorkspace({
   const createConversation = useCallback(async () => {
     setWorkspaceError("");
     try {
-      const created = await createAgentConversation({ routeId: session.defaultRoute, skillIds: [] });
+      const created = await createAgentConversation({ routeId: session.defaultRoute });
       conversationSnapshots.current.set(created.id, created);
       setConversations((current) => [created, ...current.filter((conversation) => conversation.id !== created.id)]);
       setActiveId(created.id);

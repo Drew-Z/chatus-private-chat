@@ -369,6 +369,9 @@ describe("Worker API", () => {
     });
     expect(firstCreated.status).toBe(201);
     expect(secondCreated.status).toBe(201);
+    await expect(firstCreated.clone().json()).resolves.toMatchObject({
+      conversation: { skillIds: [] },
+    });
     await expect(apiRequest("/api/agent/conversations", first.cookie).then((response) => response.json()))
       .resolves.toMatchObject({ conversations: [expect.objectContaining({ title: "First guest" })] });
     await expect(apiRequest("/api/agent/conversations", second.cookie).then((response) => response.json()))
@@ -987,6 +990,138 @@ describe("Worker API", () => {
     expect(persisted.find((message) => message.id === "assistant-stop")).not.toHaveProperty("metadata");
     expect(JSON.stringify(persisted)).not.toContain("sensitive-metadata-marker");
     expect(JSON.stringify(persisted)).not.toContain("credentialReference");
+  });
+
+  it("defaults only omitted member conversation Skills from the current assigned projection", async () => {
+    const label = `agent-skill-default-${crypto.randomUUID()}`;
+    const config = {
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://skill-default.example/v1",
+          model: "skill-default-model",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      users: { [label]: { displayName: "Skill default tester" } },
+      skills: {
+        disabled: {
+          enabled: false,
+          label: "Disabled",
+          instructions: "Disabled instructions",
+          toolIds: [],
+          order: 0,
+        },
+        alpha: {
+          enabled: true,
+          label: "Alpha",
+          instructions: "Alpha instructions",
+          toolIds: [],
+          order: 1,
+        },
+        beta: {
+          enabled: true,
+          label: "Beta",
+          instructions: "Beta instructions",
+          toolIds: [],
+          order: 2,
+        },
+        gamma: {
+          enabled: true,
+          label: "Gamma",
+          instructions: "Gamma instructions",
+          toolIds: [],
+          order: 3,
+        },
+        delta: {
+          enabled: true,
+          label: "Delta",
+          instructions: "Delta instructions",
+          toolIds: [],
+          order: 4,
+        },
+      },
+      tools: {},
+      mcpServers: {},
+    };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(config));
+    const { cookie } = await login(label);
+
+    const createConversation = async (body: Record<string, unknown>) => {
+      const response = await apiRequest("/api/agent/conversations", cookie, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return { response, payload: await response.clone().json() as any };
+    };
+
+    const omitted = await createConversation({ title: "Server default" });
+    expect(omitted.response.status).toBe(201);
+    expect(omitted.payload.conversation.skillIds).toEqual(["alpha", "beta", "gamma"]);
+
+    const explicitEmpty = await createConversation({ title: "Explicit empty", skillIds: [] });
+    expect(explicitEmpty.response.status).toBe(201);
+    expect(explicitEmpty.payload.conversation.skillIds).toEqual([]);
+
+    const explicitSelection = await createConversation({
+      title: "Explicit selection",
+      skillIds: ["delta", "beta", "delta"],
+    });
+    expect(explicitSelection.response.status).toBe(201);
+    expect(explicitSelection.payload.conversation.skillIds).toEqual(["delta", "beta"]);
+
+    const unauthorized = await createConversation({ skillIds: ["missing"] });
+    expect(unauthorized.response.status).toBe(403);
+    expect(unauthorized.payload).toMatchObject({ error: "skill_not_allowed" });
+
+    const preservedResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(explicitSelection.payload.conversation.id)}`,
+      cookie,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: "Still explicit",
+          expectedUpdatedAt: explicitSelection.payload.conversation.updatedAt,
+        }),
+      },
+    );
+    expect(preservedResponse.status).toBe(200);
+    const preserved = await preservedResponse.json() as any;
+    expect(preserved.conversation.skillIds).toEqual(["delta", "beta"]);
+
+    const clearedResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(preserved.conversation.id)}`,
+      cookie,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          skillIds: [],
+          expectedUpdatedAt: preserved.conversation.updatedAt,
+        }),
+      },
+    );
+    expect(clearedResponse.status).toBe(200);
+    await expect(clearedResponse.json()).resolves.toMatchObject({ conversation: { skillIds: [] } });
+
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      ...config,
+      users: { [label]: { displayName: "Skill default tester", allowedSkills: ["delta", "beta"] } },
+    }));
+    const assigned = await createConversation({ title: "Assigned subset" });
+    expect(assigned.response.status).toBe(201);
+    expect(assigned.payload.conversation.skillIds).toEqual(["beta", "delta"]);
+
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      ...config,
+      users: { [label]: { displayName: "Skill default tester", allowedSkills: [] } },
+    }));
+    const denied = await createConversation({ title: "Denied Skills" });
+    expect(denied.response.status).toBe(201);
+    expect(denied.payload.conversation.skillIds).toEqual([]);
   });
 
   it("imports legacy chats and memory into Agent storage exactly once", async () => {

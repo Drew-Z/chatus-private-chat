@@ -29,7 +29,8 @@
     "07-26-branch-origin-navigation",
     "07-26-product-boundary-reconciliation",
     "07-26-production-workflow-serialization-hardening",
-    "07-26-backup-restore-contract-purge-residue"
+    "07-26-backup-restore-contract-purge-residue",
+    "07-27-first-use-skill-selection"
   ],
   "parent": null,
   "relatedFiles": [],

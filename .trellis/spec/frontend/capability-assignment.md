@@ -34,6 +34,8 @@ POST  /agent?chatId=:chatId
 - `allowedSkills: []` explicitly assigns no Skills. Do not collapse these two states during normalization or effective-user merging.
 - Stored Skill IDs are normalized to at most 50 unique IDs of at most 80 characters. User values override defaults through the existing effective-user merge.
 - `/api/session` exposes only enabled, assigned Skills. It never exposes Skill instructions.
+- Creating a member conversation with omitted `skillIds` persists up to the first three enabled, assigned Skills in the public registry's stable administrator order. Explicit `skillIds: []` remains a manual no-Skill selection; explicit non-empty values retain the existing authorization checks.
+- Guest creates always persist an empty Skill selection. Existing/imported conversations are not backfilled, PATCH omission means no change, PATCH `skillIds: []` clears the selection, and branches continue to inherit the source selection after current-access repair.
 - Both `/api/chat` and `prepareTeamAgentTurn()` call `getSelectedSkills()` with the effective user assignment on every turn. Persisted or client-supplied old Skill IDs cannot restore a revoked Skill.
 - An unassigned or disabled Skill contributes neither instructions nor referenced tools. Executable tools remain the intersection of selected assigned Skills, `allowedTools`, enabled tool definitions, and available executors.
 - The admin user editor persists `allowedSkills` through the revision-checked configuration write. Skill rename and deletion update explicit user/default allow-lists before saving.
@@ -43,6 +45,8 @@ POST  /agent?chatId=:chatId
 - User `allowedSkills` references a missing Skill -> `400 invalid_config` with the user label and missing Skill ID.
 - Default `allowedSkills` references a missing Skill -> `400 invalid_config` with the missing Skill ID.
 - Conversation create/update requests an unassigned Skill -> `403 skill_not_allowed`.
+- Conversation create omits `skillIds` -> derive the current server-authorized default; do not use a cached browser session projection to manufacture the list.
+- Conversation create or PATCH sends `skillIds: []` -> preserve the explicit empty selection; never reinterpret it as automatic selection.
 - A stale chat turn includes a revoked Skill -> continue without that Skill, its instructions, or its tools.
 - A Skill exists but is disabled -> omit it from session projection and turn selection.
 
@@ -56,8 +60,9 @@ POST  /agent?chatId=:chatId
 
 - Registry unit tests assert assigned projection, missing-field compatibility, explicit empty denial, and selected-Skill filtering.
 - Worker API tests assert admin persistence, per-member `/api/session` projection, legacy `/api/chat` prompt filtering, and missing-reference rejection.
+- Worker API tests assert omitted create defaults, the three-Skill limit and stable order, deny-all/guest empty results, explicit empty preservation, PATCH distinction, and unauthorized rejection.
 - Team Agent tests assert a revoked persisted selection produces no selected Skill, instructions, or tool definitions.
-- Frontend structure checks assert the user Skill assignment control exists and is included in user saves.
+- Frontend structure checks assert the user Skill assignment control exists, is included in user saves, and ordinary new conversations omit `skillIds` so the server owns the default.
 
 ### 7. Wrong vs Correct
 

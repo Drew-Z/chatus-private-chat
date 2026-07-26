@@ -2914,7 +2914,9 @@ async function validateAgentConversationSettings(
     }
     skillIds = requestedSkills;
   } else if (useDefaults) {
-    skillIds = [];
+    skillIds = getPublicCapabilities(config, access.user).skills
+      .slice(0, MAX_SELECTED_SKILLS)
+      .map((skill) => skill.id);
   }
   return {
     ok: true,

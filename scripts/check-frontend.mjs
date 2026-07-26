@@ -93,6 +93,9 @@ assert(reactClient.includes('resume: true'), "React client: resumable Agent chat
 assert(reactClient.includes('cancelOnClientAbort: false'), "React client: browser cleanup must not cancel resumable server turns");
 assert(reactClient.includes('query: { chatId: conversation.id }'), "React client: Agent transport must include the authenticated conversation id");
 assert(reactClient.includes('body: () => ({ routeId, skillIds, chatId: conversation.id })'), "React client: Agent turns must include route, Skill, and conversation state");
+assert(reactClient.includes("createAgentConversation({ routeId: session.defaultRoute })"), "React client: ordinary new conversations must let the server derive the initial assigned Skill selection");
+assert(!reactClient.includes("createAgentConversation({ routeId: session.defaultRoute, skillIds: [] })"), "React client: ordinary new conversations must not force an explicit empty Skill selection");
+assert(reactClient.includes("activeConversation.skillIds.filter"), "React client: existing conversations must restore their persisted Skill selection without applying create defaults");
 assert(reactClient.includes("addToolApprovalResponse"), "React client: tool approval rendering is missing");
 assert(reactClient.includes("if (busy || accountBusy) return;"), "React client: logout must not abandon an active Agent or account operation");
 assert(reactWorkspaceHeader.includes("disabled={busy || accountBusy}"), "React client: logout control must be disabled during an active Agent or account operation");
