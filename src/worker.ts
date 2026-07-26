@@ -1,7 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { getAgentByName } from "agents";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { JsonSchemaType } from "@modelcontextprotocol/sdk/validation";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
@@ -102,6 +100,15 @@ import {
   MAX_MANAGED_SECRET_CHARS,
   type ManagedSecretMetadata,
 } from "./services/managed-secrets";
+import {
+  createMcpRuntime,
+  isForbiddenMcpUrl,
+  isValidMcpEndpoint,
+  MCP_REMOTE_NAME_PATTERN,
+  McpRuntimeError,
+  normalizeMcpToolSchema,
+  type McpRuntimeExecution,
+} from "./services/mcp-runtime";
 import type { ProviderCoordinator } from "./provider-coordinator";
 
 export type { ChatMessage } from "./contracts/chat";
@@ -345,7 +352,6 @@ const MAX_TOOLS = 200;
 const MAX_MCP_SERVERS = 20;
 const MAX_SELECTED_SKILLS = 3;
 const MAX_SKILL_INSTRUCTIONS_CHARS = 8_000;
-const MAX_TOOL_SCHEMA_CHARS = 32_768;
 const MAX_TOOL_EVENTS = 16;
 const MAX_TOOL_ARGUMENT_SUMMARY_CHARS = 500;
 const MAX_TOOL_RESULT_PREVIEW_CHARS = 2_000;
@@ -368,7 +374,6 @@ const MAX_GUEST_MINUTE_LIMIT = 60;
 const MAX_GUEST_SOURCE_DAILY_LIMIT = 10_000;
 const MAX_GUEST_SOURCE_MINUTE_LIMIT = 600;
 const GUEST_TURN_LEASE_MS = 10 * 60_000;
-const MCP_REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_TOOL_ROUNDS = 4;
 const MAX_TOOL_CALLS = 8;
 const TOOL_CALL_TIMEOUT_MS = 15_000;
@@ -3652,80 +3657,12 @@ async function handleAdminMcpDiscovery(request: Request, env: Env): Promise<Resp
     return jsonResponse({ error: "mcp_auth_unavailable", message: "该认证类型需要有效的 Secret Ref" }, 400);
   }
   try {
-    const discovery = await discoverMcpTools(serverId, server, env, request.signal);
+    const discovery = await mcpRuntime(env).discoverTools(serverId, server, request.signal);
     await appendAdminAudit(env, "mcp.discovery", `${serverId}:${discovery.tools.length}/${discovery.rejected}`);
     return jsonResponse(discovery);
   } catch (error) {
     const capabilityError = toCapabilityError(error);
     return jsonResponse({ error: capabilityError.code, message: capabilityError.message }, 502);
-  }
-}
-
-async function discoverMcpTools(
-  serverId: string,
-  server: McpServerConfig,
-  env: Env,
-  signal: AbortSignal,
-): Promise<{
-  serverId: string;
-  tools: Array<{
-    id: string;
-    label: string;
-    description: string;
-    inputSchema: Record<string, unknown>;
-    confirmation: "first-per-conversation";
-    executor: { type: "mcp"; serverId: string; remoteName: string };
-    schemaFingerprint: string;
-  }>;
-  rejected: number;
-}> {
-  const session = await openMcpSession(serverId, server, env, signal);
-  try {
-    const tools: Array<{
-      id: string;
-      label: string;
-      description: string;
-      inputSchema: Record<string, unknown>;
-      confirmation: "first-per-conversation";
-      executor: { type: "mcp"; serverId: string; remoteName: string };
-      schemaFingerprint: string;
-    }> = [];
-    let cursor: string | undefined;
-    let rejected = 0;
-    for (let page = 0; page < 10 && tools.length < MAX_TOOLS; page += 1) {
-      const result = await session.client.listTools(cursor ? { cursor } : undefined, {
-        signal,
-        timeout: TOOL_CALL_TIMEOUT_MS,
-        maxTotalTimeout: TOOL_CALL_TIMEOUT_MS,
-      });
-      for (const remoteTool of result.tools) {
-        const remoteName = normalizeBoundedText(remoteTool.name, 128);
-        const inputSchema = normalizeJsonRecord(remoteTool.inputSchema, MAX_TOOL_SCHEMA_CHARS);
-        const readOnly = remoteTool.annotations?.readOnlyHint === true && remoteTool.annotations?.destructiveHint !== true;
-        const taskSupport = remoteTool.execution?.taskSupport || "forbidden";
-        if (!remoteName || !MCP_REMOTE_NAME_PATTERN.test(remoteName) || !inputSchema || !readOnly || taskSupport === "required") {
-          rejected += 1;
-          continue;
-        }
-        const id = `mcp:${serverId}:${remoteName}`;
-        tools.push({
-          id,
-          label: normalizeBoundedText(remoteTool.title, 80) || remoteName,
-          description: normalizeBoundedText(remoteTool.description, 1_000),
-          inputSchema,
-          confirmation: "first-per-conversation",
-          executor: { type: "mcp", serverId, remoteName },
-          schemaFingerprint: await jsonFingerprint(inputSchema),
-        });
-        if (tools.length >= MAX_TOOLS) break;
-      }
-      cursor = result.nextCursor;
-      if (!cursor) return { serverId, tools, rejected };
-    }
-    if (cursor) throw new CapabilityError("mcp_protocol_error", "MCP 工具列表分页超过限制");
-    return { serverId, tools, rejected };
-  } finally {
-    await closeMcpSession(session);
   }
 }
 
@@ -5093,15 +5030,6 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
   return { routes, defaultRoute, user, ...(guest ? { publicAccess: config.publicAccess } : {}) };
 }
 
-function isValidMcpEndpoint(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && !url.username && !url.password && !url.hash;
-  } catch {
-    return false;
-  }
-}
-
 function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
   return { ...(config.defaults || {}), ...(config.users?.[label] || {}) };
 }
@@ -5151,10 +5079,6 @@ async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<stri
   return managedSecretService(env).load("route", apiKeyRef);
 }
 
-async function resolveMcpSecret(env: Env, secretRef: string): Promise<string> {
-  return managedSecretService(env).resolve("mcp", secretRef);
-}
-
 function managedSecretService(env: Env) {
   return createManagedSecretService({
     store: env.CHAT_STORE,
@@ -5162,6 +5086,14 @@ function managedSecretService(env: Env) {
     bindings: env,
     fingerprint: secretFingerprint,
     nowIso: () => new Date().toISOString(),
+  });
+}
+
+function mcpRuntime(env: Env) {
+  const secrets = managedSecretService(env);
+  return createMcpRuntime({
+    resolveSecret: (secretRef) => secrets.resolve("mcp", secretRef),
+    fingerprint: secretFingerprint,
   });
 }
 
@@ -5807,12 +5739,6 @@ type ToolExecutionResult = {
   isError: boolean;
 };
 
-type ActiveMcpSession = {
-  client: Client;
-  transport: StreamableHTTPClientTransport;
-  tools: Map<string, { schemaFingerprint: string; taskSupport: string }>;
-};
-
 class ProviderToolError extends Error {
   constructor(
     readonly status: number,
@@ -5899,11 +5825,11 @@ async function runCapabilityLoop(
     event: ToolEventSummary,
   ) => ToolApprovalDecision | Promise<ToolApprovalDecision>,
 ): Promise<void> {
-  const mcpSessions = new Map<string, ActiveMcpSession>();
+  const mcpExecution = mcpRuntime(args.env).createExecution();
   try {
-    await runCapabilityLoopInner(args, runId, emit, signal, mcpSessions, requestApproval);
+    await runCapabilityLoopInner(args, runId, emit, signal, mcpExecution, requestApproval);
   } finally {
-    await Promise.all([...mcpSessions.values()].map((session) => closeMcpSession(session)));
+    await mcpExecution.close();
   }
 }
 
@@ -5912,7 +5838,7 @@ async function runCapabilityLoopInner(
   runId: string,
   emit: (event: CapabilityStreamEvent) => void,
   signal: AbortSignal,
-  mcpSessions: Map<string, ActiveMcpSession>,
+  mcpExecution: McpRuntimeExecution,
   requestApproval?: (
     definition: NormalizedToolDefinition,
     event: ToolEventSummary,
@@ -6102,7 +6028,7 @@ async function runCapabilityLoopInner(
         updatedAt: Date.now(),
       };
       emit({ type: "tool", event: runningEvent });
-      const result = await executeCapabilityTool(definition, call.arguments, args.env, signal, mcpSessions);
+      const result = await executeCapabilityTool(definition, call.arguments, args.env, signal, mcpExecution);
       const duration = Date.now() - startedAt;
       toolBudgetMs += duration;
       if (toolBudgetMs > TOOL_TOTAL_BUDGET_MS) {
@@ -6395,262 +6321,12 @@ function validateToolArguments(definition: NormalizedToolDefinition, value: unkn
   }
 }
 
-async function openMcpSession(
-  serverId: string,
-  server: McpServerConfig,
-  env: Env,
-  signal: AbortSignal,
-): Promise<ActiveMcpSession> {
-  let endpoint: URL;
-  try {
-    endpoint = new URL(server.endpoint);
-  } catch {
-    throw new CapabilityError("mcp_endpoint_invalid", `MCP 服务 ${serverId} 的地址无效`);
-  }
-  if (!isValidMcpEndpoint(server.endpoint) || isForbiddenMcpUrl(endpoint)) {
-    throw new CapabilityError("mcp_endpoint_invalid", `MCP 服务 ${serverId} 的地址不允许访问`);
-  }
-  const headers = new Headers();
-  if (server.authType !== "none") {
-    const secretRef = server.secretRef || "";
-    if (!secretRef) throw new CapabilityError("mcp_auth_unavailable", `MCP 服务 ${serverId} 缺少 Secret Ref`);
-    const secret = await resolveMcpSecret(env, secretRef);
-    if (!secret) throw new CapabilityError("mcp_auth_unavailable", `MCP 服务 ${serverId} 的认证密钥不可用`);
-    if (server.authType === "bearer") headers.set("Authorization", `Bearer ${secret}`);
-    else headers.set("X-API-Key", secret);
-  }
-  const transport = new StreamableHTTPClientTransport(endpoint, {
-    requestInit: { headers },
-    fetch: createMcpFetch(endpoint),
-    reconnectionOptions: {
-      maxReconnectionDelay: 1_000,
-      initialReconnectionDelay: 250,
-      reconnectionDelayGrowFactor: 1,
-      maxRetries: 0,
-    },
-  });
-  const client = new Client(
-    { name: "chatus", version: "0.1.0" },
-    { jsonSchemaValidator: TOOL_SCHEMA_VALIDATOR },
-  );
-  try {
-    await client.connect(transport, {
-      signal,
-      timeout: TOOL_CALL_TIMEOUT_MS,
-      maxTotalTimeout: TOOL_CALL_TIMEOUT_MS,
-    });
-    return { client, transport, tools: new Map() };
-  } catch (error) {
-    await transport.close().catch(() => undefined);
-    if (error instanceof CapabilityError) throw error;
-    throw new CapabilityError("mcp_protocol_error", `无法连接 MCP 服务 ${serverId}`, true);
-  }
-}
-
-function createMcpFetch(endpoint: URL): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
-  const endpointOrigin = endpoint.origin;
-  return async (input, init = {}) => {
-    const requestUrl = input instanceof URL
-      ? input
-      : typeof input === "string"
-        ? new URL(input)
-        : new URL(input.url);
-    if (requestUrl.origin !== endpointOrigin || !isValidMcpEndpoint(requestUrl.toString()) || isForbiddenMcpUrl(requestUrl)) {
-      throw new CapabilityError("mcp_endpoint_invalid", "MCP 请求试图访问未授权的地址");
-    }
-    const headers = new Headers(input instanceof Request ? input.headers : undefined);
-    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
-    const response = await fetch(requestUrl, { ...init, headers, redirect: "manual" });
-    if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new CapabilityError("mcp_redirect_rejected", "MCP 服务返回了不允许的重定向");
-    }
-    const length = Number(response.headers.get("Content-Length") || "0");
-    if (length > 256 * 1024) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new CapabilityError("mcp_protocol_error", "MCP 响应超过协议大小限制");
-    }
-    if (!response.body) return response;
-    const boundedBody = createBoundedReadableStream(response.body, 256 * 1024);
-    return new Response(boundedBody, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  };
-}
-
-function createBoundedReadableStream(
-  body: ReadableStream<Uint8Array>,
-  maxBytes: number,
-): ReadableStream<Uint8Array> {
-  const reader = body.getReader();
-  let total = 0;
-  return new ReadableStream({
-    async pull(controller) {
-      const { value, done } = await reader.read();
-      if (done) {
-        controller.close();
-        return;
-      }
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        controller.error(new CapabilityError("mcp_protocol_error", "MCP 响应超过协议大小限制"));
-        return;
-      }
-      controller.enqueue(value);
-    },
-    cancel(reason) {
-      return reader.cancel(reason);
-    },
-  });
-}
-
-function isForbiddenMcpUrl(url: URL): boolean {
-  if (url.protocol !== "https:" || url.username || url.password || url.hash) return true;
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) return true;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return isForbiddenIpv4(hostname);
-  if (hostname.includes(":")) return isForbiddenIpv6(hostname);
-  return false;
-}
-
-function isForbiddenIpv4(hostname: string): boolean {
-  const parts = hostname.split(".").map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-  const [a, b] = parts;
-  return a === 0 || a === 10 || a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && (b === 0 || b === 168)) ||
-    (a === 198 && (b === 18 || b === 19 || b === 51)) ||
-    (a === 203 && b === 0) || a >= 224;
-}
-
-function isForbiddenIpv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  if (normalized === "::" || normalized === "::1") return true;
-  if (normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") ||
-    normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") ||
-    normalized.startsWith("ff") || normalized.startsWith("2001:db8:")) return true;
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  return mapped ? isForbiddenIpv4(mapped[1]) : false;
-}
-
-async function executeMcpTool(
-  definition: NormalizedToolDefinition,
-  value: unknown,
-  env: Env,
-  signal: AbortSignal,
-  sessions: Map<string, ActiveMcpSession>,
-): Promise<unknown> {
-  const executor = definition.config.executor;
-  if (executor.type !== "mcp") throw new CapabilityError("tool_execution_failed", "工具执行器类型无效");
-  if (!isRecord(value)) throw new CapabilityError("tool_arguments_invalid", "MCP 工具参数必须是对象");
-  const config = await loadAppConfig(env);
-  const server = config.mcpServers?.[executor.serverId];
-  if (!server || server.enabled !== true) throw new CapabilityError("tool_not_found", "MCP 服务未启用");
-  let session = sessions.get(executor.serverId);
-  if (!session) {
-    session = await openMcpSession(executor.serverId, server, env, signal);
-    try {
-      await loadRuntimeMcpTools(session, signal);
-    } catch (error) {
-      await closeMcpSession(session);
-      throw error;
-    }
-    sessions.set(executor.serverId, session);
-  }
-  const remote = session.tools.get(executor.remoteName);
-  if (!remote) throw new CapabilityError("mcp_tool_changed", "MCP 工具已不存在，请管理员重新发现");
-  if (!definition.config.schemaFingerprint || remote.schemaFingerprint !== definition.config.schemaFingerprint) {
-    throw new CapabilityError("mcp_tool_changed", "MCP 工具 Schema 已变化，请管理员重新发现并启用");
-  }
-  if (remote.taskSupport === "required") {
-    throw new CapabilityError("mcp_tool_unsupported", "首版不支持必须使用 Task 的 MCP 工具");
-  }
-  let result: unknown;
-  try {
-    result = await session.client.callTool(
-      { name: executor.remoteName, arguments: value },
-      undefined,
-      { signal, timeout: TOOL_CALL_TIMEOUT_MS, maxTotalTimeout: TOOL_CALL_TIMEOUT_MS },
-    );
-  } catch {
-    throw new CapabilityError("tool_execution_failed", `MCP 工具 ${definition.label} 执行失败`, true);
-  }
-  return normalizeMcpToolResult(result);
-}
-
-async function loadRuntimeMcpTools(session: ActiveMcpSession, signal: AbortSignal): Promise<void> {
-  let cursor: string | undefined;
-  for (let page = 0; page < 10; page += 1) {
-    const result = await session.client.listTools(cursor ? { cursor } : undefined, {
-      signal,
-      timeout: TOOL_CALL_TIMEOUT_MS,
-      maxTotalTimeout: TOOL_CALL_TIMEOUT_MS,
-    });
-    for (const tool of result.tools) {
-      const inputSchema = normalizeJsonRecord(tool.inputSchema, MAX_TOOL_SCHEMA_CHARS);
-      if (!inputSchema || !MCP_REMOTE_NAME_PATTERN.test(tool.name)) continue;
-      session.tools.set(tool.name, {
-        schemaFingerprint: await jsonFingerprint(inputSchema),
-        taskSupport: tool.execution?.taskSupport || "forbidden",
-      });
-      if (session.tools.size > MAX_TOOLS) throw new CapabilityError("mcp_protocol_error", "MCP 工具数量超过限制");
-    }
-    cursor = result.nextCursor;
-    if (!cursor) return;
-  }
-  throw new CapabilityError("mcp_protocol_error", "MCP 工具列表分页超过限制");
-}
-
-function normalizeMcpToolResult(value: unknown): unknown {
-  if (!isRecord(value) || "toolResult" in value || !Array.isArray(value.content)) {
-    throw new CapabilityError("mcp_protocol_error", "MCP 工具返回了不支持的结果格式");
-  }
-  if (value.isError === true) throw new CapabilityError("tool_execution_failed", "MCP 工具报告执行失败");
-  const text: string[] = [];
-  for (const block of value.content) {
-    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") {
-      throw new CapabilityError("mcp_tool_unsupported", "MCP 工具返回了首版不支持的非文本内容");
-    }
-    text.push(block.text);
-  }
-  const structuredContent = isRecord(value.structuredContent) ? value.structuredContent : undefined;
-  if (structuredContent && text.length) return { structuredContent, content: text.join("\n") };
-  if (structuredContent) return structuredContent;
-  return { content: text.join("\n") };
-}
-
-async function closeMcpSession(session: ActiveMcpSession): Promise<void> {
-  await session.transport.terminateSession().catch(() => undefined);
-  await session.client.close().catch(() => undefined);
-}
-
-async function jsonFingerprint(value: unknown): Promise<string> {
-  return secretFingerprint(stableJsonStringify(value));
-}
-
-function stableJsonStringify(value: unknown): string {
-  const normalize = (item: unknown): unknown => {
-    if (Array.isArray(item)) return item.map(normalize);
-    if (isRecord(item)) {
-      return Object.fromEntries(Object.keys(item).sort().map((key) => [key, normalize(item[key])]));
-    }
-    return item;
-  };
-  return JSON.stringify(normalize(value));
-}
-
 function createAgentCapabilityRuntime(
   definitions: NormalizedToolDefinition[],
   env: Env,
 ): { runTool: CapabilityToolRunner; close: () => Promise<void> } {
   const allowed = new Map(definitions.map((definition) => [definition.id, definition]));
-  const mcpSessions = new Map<string, ActiveMcpSession>();
+  const mcpExecution = mcpRuntime(env).createExecution();
   let callCount = 0;
   let elapsedMs = 0;
   let closed = false;
@@ -6678,7 +6354,7 @@ function createAgentCapabilityRuntime(
         input,
         env,
         signal || new AbortController().signal,
-        mcpSessions,
+        mcpExecution,
         Math.min(TOOL_CALL_TIMEOUT_MS, remainingBudgetMs),
       );
     } finally {
@@ -6689,9 +6365,7 @@ function createAgentCapabilityRuntime(
   const close = async () => {
     if (closed) return;
     closed = true;
-    const sessions = [...mcpSessions.values()];
-    mcpSessions.clear();
-    await Promise.all(sessions.map((session) => closeMcpSession(session)));
+    await mcpExecution.close();
   };
 
   return { runTool, close };
@@ -6702,7 +6376,7 @@ async function executeCapabilityTool(
   value: unknown,
   env: Env,
   signal: AbortSignal,
-  mcpSessions: Map<string, ActiveMcpSession>,
+  mcpExecution: McpRuntimeExecution,
   timeoutMs = TOOL_CALL_TIMEOUT_MS,
 ): Promise<CapabilityToolExecutionResult> {
   const callController = new AbortController();
@@ -6715,7 +6389,20 @@ async function executeCapabilityTool(
     if (definition.config.executor.type === "builtin") {
       result = executeTextStats(value);
     } else {
-      result = await executeMcpTool(definition, value, env, callController.signal, mcpSessions);
+      const config = await loadAppConfig(env);
+      try {
+        result = await mcpExecution.executeTool(
+          definition,
+          value,
+          config.mcpServers?.[definition.config.executor.serverId],
+          callController.signal,
+        );
+      } catch (error) {
+        if (error instanceof McpRuntimeError) {
+          throw new CapabilityError(error.code, error.message, error.retryable);
+        }
+        throw error;
+      }
     }
     assertNotAborted(callController.signal);
     const text = JSON.stringify(result);
@@ -6774,6 +6461,9 @@ function assertNotAborted(signal: AbortSignal): void {
 
 function toCapabilityError(error: unknown): CapabilityError {
   if (error instanceof CapabilityError) return error;
+  if (error instanceof McpRuntimeError) {
+    return new CapabilityError(error.code, error.message, error.retryable);
+  }
   if (error instanceof DOMException && error.name === "AbortError") {
     return new CapabilityError("request_cancelled", "请求已取消", true);
   }
@@ -7680,7 +7370,7 @@ function normalizeToolRegistry(
   for (const [rawId, rawTool] of Object.entries(value).slice(0, MAX_TOOLS)) {
     const id = normalizeCapabilityId(rawId, 160);
     if (!id || output[id] || !isRecord(rawTool) || !isRecord(rawTool.executor)) continue;
-    const schema = normalizeJsonRecord(rawTool.inputSchema, MAX_TOOL_SCHEMA_CHARS);
+    const schema = normalizeMcpToolSchema(rawTool.inputSchema);
     if (!schema) continue;
     let executor: ToolExecutor | null = null;
     if (rawTool.executor.type === "builtin" && rawTool.executor.name === "text_stats" && id === "builtin:text_stats") {
@@ -7791,18 +7481,6 @@ function normalizeCapabilityId(value: unknown, maxChars: number): string {
 
 function normalizeBoundedText(value: unknown, maxChars: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
-}
-
-function normalizeJsonRecord(value: unknown, maxChars: number): Record<string, unknown> | null {
-  if (!isRecord(value)) return null;
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized.length > maxChars) return null;
-    const parsed = JSON.parse(serialized);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function remoteToolLabel(executor: ToolExecutor): string {
