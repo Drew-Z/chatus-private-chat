@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 17
+- **Total Sessions**: 18
 - **Last Active**: 2026-07-26
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~770 | Active |
+| `journal-1.md` | ~803 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 18 | 2026-07-26 | Backup restore contract and purge cleanup | `2e401e3` | `main` |
 | 17 | 2026-07-26 | Production workflow serialization | `1dd392e` | `main` |
 | 16 | 2026-07-26 | Product boundary reconciliation | `dc13fa2` | `main` |
 | 15 | 2026-07-26 | Branch origin navigation | `472d602` | `main` |

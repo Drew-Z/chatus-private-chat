@@ -768,3 +768,36 @@ Serialized production deploy and member acceptance in a shared non-canceling que
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: Backup restore contract and purge cleanup
+
+**Date**: 2026-07-26
+**Task**: Backup restore contract and purge cleanup
+**Branch**: `main`
+
+### Summary
+
+Defined the instance backup and restore readiness contract, documented key-custody and recovery boundaries, removed Agent identity and legacy chat-index residue from permanent deletion, and added deterministic purge regression coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2e401e3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
