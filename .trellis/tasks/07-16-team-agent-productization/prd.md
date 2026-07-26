@@ -110,7 +110,7 @@ Turn Chatus from a capable but monolithic private chat Worker into a maintainabl
 
 - [x] Chatus runs on a formal Cloudflare Agents SDK boundary with one isolated durable Agent identity per teammate.
 - [x] Member access-code authentication, restricted guest access, and administrator capability assignment work without public self-registration or cross-surface capability leakage.
-- [ ] Existing route adapters, fallback, BYOK, quota, memory, Skills, tools, MCP, and audit capabilities survive the migration under explicit module boundaries.
+- [x] Existing route adapters, fallback, BYOK, quota, memory, Skills, tools, MCP, and audit capabilities survive the migration under explicit module boundaries.
 - [x] Automatic and scheduled model liveness prompts are absent; `/healthz` and normal diagnostics make zero model calls.
 - [x] Real-task telemetry provides redacted route reliability and fallback evidence.
 - [x] A logical model can use multiple ordered provider offerings, and one provider credential can be reused by multiple models without redeployment.
