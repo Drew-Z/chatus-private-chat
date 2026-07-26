@@ -16,11 +16,13 @@ import {
 } from "lucide-react";
 import { isToolUIPart, type UIMessage } from "ai";
 import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../../../src/contracts/agent";
+import type { AgentConversationBranchAction } from "../lib/api";
 import { copyText, sanitizeMarkdownUrl } from "../lib/markdown";
+import type { MessageActionAvailability, MessageActionState } from "../lib/state";
 import { MarkdownContent } from "./MarkdownContent";
 
 type ApprovalHandler = (input: { id: string; approved: boolean }) => void;
-export type MessageAction = "edit" | "resend" | "regenerate" | "continue" | "branch";
+export type MessageAction = AgentConversationBranchAction;
 type MessageActionHandler = (action: MessageAction, editedText?: string) => void | Promise<void>;
 type FeedbackHandler = (rating: "up" | "down") => void | Promise<void>;
 
@@ -29,17 +31,13 @@ export function MessageView({
   onApprove,
   onAction,
   onFeedback,
-  canContinue = false,
-  disabled = false,
-  generationDisabled = false,
+  availability,
 }: {
   message: UIMessage;
   onApprove: ApprovalHandler;
   onAction?: MessageActionHandler;
   onFeedback?: FeedbackHandler;
-  canContinue?: boolean;
-  disabled?: boolean;
-  generationDisabled?: boolean;
+  availability: MessageActionAvailability;
 }) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -61,7 +59,7 @@ export function MessageView({
   };
 
   const runAction = async (action: MessageAction, value?: string) => {
-    if (!onAction || disabled || actionBusy || (generationDisabled && action !== "branch")) return;
+    if (!onAction || availability[action] !== "enabled" || actionBusy) return;
     setActionBusy(true);
     try {
       await onAction(action, value);
@@ -75,7 +73,7 @@ export function MessageView({
   };
 
   const submitFeedback = async (rating: "up" | "down") => {
-    if (!onFeedback || disabled || feedbackBusy) return;
+    if (!onFeedback || availability.feedback !== "enabled" || actionBusy || feedbackBusy) return;
     setFeedbackBusy(true);
     try {
       await onFeedback(rating);
@@ -86,7 +84,7 @@ export function MessageView({
   };
 
   const startEditing = () => {
-    if (disabled || generationDisabled || actionBusy) return;
+    if (availability.edit !== "enabled" || actionBusy) return;
     setEditText(text);
     setEditing(true);
   };
@@ -134,7 +132,17 @@ export function MessageView({
             );
           }
           if (part.type === "source-url" || part.type === "source-document") return null;
-          if (isToolUIPart(part)) return <ToolTrace part={part} onApprove={onApprove} key={part.toolCallId} />;
+          if (isToolUIPart(part)) {
+            return (
+              <ToolTrace
+                part={part}
+                onApprove={onApprove}
+                approvalState={availability.approveTool}
+                actionBusy={actionBusy}
+                key={part.toolCallId}
+              />
+            );
+          }
           return null;
         })}
       </div>
@@ -174,27 +182,27 @@ export function MessageView({
       )}
       {text && (
         <div className="message-actions" aria-label="消息操作">
-          <button className="icon-button" type="button" onClick={() => void copy()} title="复制消息" aria-label="复制消息">
+          {availability.copy !== "hidden" && <button className="icon-button" type="button" onClick={() => void copy()} disabled={availability.copy !== "enabled"} title="复制消息" aria-label="复制消息">
             {copied ? <Check size={15} /> : <Copy size={15} />}
-          </button>
-          {onAction && message.role === "user" && !editing && (
+          </button>}
+          {onAction && message.role === "user" && !editing && hasVisibleAction(availability.edit, availability.resend, availability.branch) && (
             <>
-              <button ref={editOpenerRef} className="icon-button" type="button" onClick={startEditing} disabled={disabled || generationDisabled || actionBusy} title="编辑并分支发送" aria-label="编辑并分支发送"><Pencil size={15} /></button>
-              <button className="icon-button" type="button" onClick={() => void runAction("resend")} disabled={disabled || generationDisabled || actionBusy} title="重新发送并创建分支" aria-label="重新发送并创建分支"><RotateCw size={15} /></button>
-              <button className="icon-button" type="button" onClick={() => void runAction("branch")} disabled={disabled || actionBusy} title="创建对话分支" aria-label="创建对话分支"><GitBranch size={15} /></button>
+              {availability.edit !== "hidden" && <button ref={editOpenerRef} className="icon-button" type="button" onClick={startEditing} disabled={availability.edit !== "enabled" || actionBusy} title="编辑并分支发送" aria-label="编辑并分支发送"><Pencil size={15} /></button>}
+              {availability.resend !== "hidden" && <button className="icon-button" type="button" onClick={() => void runAction("resend")} disabled={availability.resend !== "enabled" || actionBusy} title="重新发送并创建分支" aria-label="重新发送并创建分支"><RotateCw size={15} /></button>}
+              {availability.branch !== "hidden" && <button className="icon-button" type="button" onClick={() => void runAction("branch")} disabled={availability.branch !== "enabled" || actionBusy} title="创建对话分支" aria-label="创建对话分支"><GitBranch size={15} /></button>}
             </>
           )}
-          {onAction && message.role === "assistant" && (
+          {message.role === "assistant" && hasVisibleAction(availability.regenerate, availability.continue, availability.feedback, availability.branch) && (
             <>
-              <button className="icon-button" type="button" onClick={() => void runAction("regenerate")} disabled={disabled || generationDisabled || actionBusy} title="重新生成并创建分支" aria-label="重新生成并创建分支"><RotateCw size={15} /></button>
-              {canContinue && <button className="icon-button" type="button" onClick={() => void runAction("continue")} disabled={disabled || generationDisabled || actionBusy} title="继续生成并创建分支" aria-label="继续生成并创建分支"><Play size={15} /></button>}
-              {onFeedback && (
+              {onAction && availability.regenerate !== "hidden" && <button className="icon-button" type="button" onClick={() => void runAction("regenerate")} disabled={availability.regenerate !== "enabled" || actionBusy} title="重新生成并创建分支" aria-label="重新生成并创建分支"><RotateCw size={15} /></button>}
+              {onAction && availability.continue !== "hidden" && <button className="icon-button" type="button" onClick={() => void runAction("continue")} disabled={availability.continue !== "enabled" || actionBusy} title="继续生成并创建分支" aria-label="继续生成并创建分支"><Play size={15} /></button>}
+              {onFeedback && availability.feedback !== "hidden" && (
                 <>
-                  <button className={`icon-button ${feedback === "up" ? "selected" : ""}`} type="button" onClick={() => void submitFeedback("up")} disabled={disabled || feedbackBusy} title="有帮助" aria-label="有帮助"><ThumbsUp size={15} /></button>
-                  <button className={`icon-button ${feedback === "down" ? "selected" : ""}`} type="button" onClick={() => void submitFeedback("down")} disabled={disabled || feedbackBusy} title="没帮助" aria-label="没帮助"><ThumbsDown size={15} /></button>
+                  <button className={`icon-button ${feedback === "up" ? "selected" : ""}`} type="button" onClick={() => void submitFeedback("up")} disabled={availability.feedback !== "enabled" || actionBusy || feedbackBusy} title="有帮助" aria-label="有帮助"><ThumbsUp size={15} /></button>
+                  <button className={`icon-button ${feedback === "down" ? "selected" : ""}`} type="button" onClick={() => void submitFeedback("down")} disabled={availability.feedback !== "enabled" || actionBusy || feedbackBusy} title="没帮助" aria-label="没帮助"><ThumbsDown size={15} /></button>
                 </>
               )}
-              <button className="icon-button" type="button" onClick={() => void runAction("branch")} disabled={disabled || actionBusy} title="创建对话分支" aria-label="创建对话分支"><GitBranch size={15} /></button>
+              {onAction && availability.branch !== "hidden" && <button className="icon-button" type="button" onClick={() => void runAction("branch")} disabled={availability.branch !== "enabled" || actionBusy} title="创建对话分支" aria-label="创建对话分支"><GitBranch size={15} /></button>}
             </>
           )}
         </div>
@@ -230,9 +238,13 @@ function formatBytes(bytes: number): string {
 function ToolTrace({
   part,
   onApprove,
+  approvalState,
+  actionBusy,
 }: {
   part: UIMessage["parts"][number];
   onApprove: ApprovalHandler;
+  approvalState: MessageActionState;
+  actionBusy: boolean;
 }) {
   const [deciding, setDeciding] = useState(false);
   if (!isToolUIPart(part)) return null;
@@ -245,7 +257,7 @@ function ToolTrace({
   const displayName = memoryProposal ? "更新长期记忆" : toolName || "工具调用";
   const status = toolStatus(part.state);
   const decide = (approved: boolean) => {
-    if (part.state !== "approval-requested" || deciding) return;
+    if (part.state !== "approval-requested" || approvalState !== "enabled" || actionBusy || deciding) return;
     setDeciding(true);
     onApprove({ id: part.approval.id, approved });
   };
@@ -270,8 +282,8 @@ function ToolTrace({
           <>
             <p>{memoryProposal ? "确认后才会更新长期记忆。" : "这项操作需要你的确认后才能继续。"}</p>
             <div className="approval-actions">
-              <button type="button" disabled={deciding} onClick={() => decide(true)}>批准</button>
-              <button type="button" className="quiet-button" disabled={deciding} onClick={() => decide(false)}>拒绝</button>
+              <button type="button" disabled={approvalState !== "enabled" || actionBusy || deciding} onClick={() => decide(true)}>批准</button>
+              <button type="button" className="quiet-button" disabled={approvalState !== "enabled" || actionBusy || deciding} onClick={() => decide(false)}>拒绝</button>
             </div>
           </>
         )}
@@ -282,6 +294,10 @@ function ToolTrace({
       </div>
     </details>
   );
+}
+
+function hasVisibleAction(...states: MessageActionState[]): boolean {
+  return states.some((state) => state !== "hidden");
 }
 
 function readMemoryProposal(part: UIMessage["parts"][number]): { memory: string } | null {

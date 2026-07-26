@@ -7,6 +7,12 @@ import { MessageView, type MessageAction } from "../../../../client/src/componen
 import { AdminOperationsContent } from "../../../../client/src/components/AdminOperationsPanel";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
+import {
+  isActiveTurnPhase,
+  isPendingToolApprovalPart,
+  resolveMessageActionAvailability,
+  type TurnPhase,
+} from "../../../../client/src/lib/state";
 import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
 import {
   addDraftAttachmentFiles,
@@ -350,6 +356,12 @@ function WorkspaceFixture() {
   const [input, setInput] = useState(params.get("draft") === "long" ? "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行" : "准备发送的合成消息");
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
+  const forcedPhase = readTurnPhase(params.get("phase"));
+  const turnPhase = forcedPhase || (busy ? "waiting-first-output" : "completed");
+  const turnBusy = isActiveTurnPhase(turnPhase);
+  const online = params.get("online") !== "0";
+  const routeAvailable = params.get("route") !== "0";
+  const blocked = params.get("blocked") === "1";
   const connectionState = (params.get("connection") || "ready") as ConnectionState;
   const session = params.get("access") === "guest" ? guestSession : memberSession;
   const routeId = session.defaultRoute || "reasoning";
@@ -403,7 +415,7 @@ function WorkspaceFixture() {
         conversation={activeConversation}
         routeId={routeId}
         connectionState={connectionState}
-        busy={busy}
+        busy={turnBusy}
         accountBusy={false}
         parentConversation={parentConversation}
         parentMissing={parentMissing}
@@ -425,7 +437,7 @@ function WorkspaceFixture() {
           routeId={routeId}
           skillIds={skillIds}
           view={sidebarView}
-          busy={busy}
+          busy={turnBusy || blocked}
           loading={false}
           onClose={() => setSidebarOpen(false)}
           onViewChange={setSidebarView}
@@ -441,20 +453,32 @@ function WorkspaceFixture() {
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
         <section className="chat-panel" aria-label="对话">
-          <div className="conversation-chat">
+          <div className="conversation-chat" data-turn-phase={turnPhase}>
             <div className="message-list" aria-live="polite">
               <div className="message-column">
-                {messages.map((message) => (
+                {messages.map((message, index) => (
                   <MessageView
                     key={message.id}
                     message={message}
                     onApprove={() => undefined}
-                    onAction={handleMessageAction}
-                    onFeedback={async () => undefined}
-                    canContinue={message.role === "assistant"}
+                    onAction={session.capabilities.messageActions ? handleMessageAction : undefined}
+                    onFeedback={session.capabilities.feedback ? async () => undefined : undefined}
+                    availability={resolveMessageActionAvailability({
+                      phase: turnPhase,
+                      role: message.role,
+                      isLatestMessage: index === messages.length - 1,
+                      online,
+                      blocked,
+                      routeAvailable,
+                      messageActionsEnabled: session.capabilities.messageActions,
+                      feedbackEnabled: session.capabilities.feedback,
+                      hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
+                      canContinue: message.role === "assistant",
+                      toolApprovalPending: message.parts.some(isPendingToolApprovalPart),
+                    })}
                   />
                 ))}
-                {busy && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>正在等待首字输出 · 4s</span></div>}
+                {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>正在等待首字输出 · 4s</span></div>}
               </div>
             </div>
             <MessageComposer
@@ -476,19 +500,34 @@ function WorkspaceFixture() {
               )))}
               onSubmit={() => setBusy(true)}
               onStop={() => setBusy(false)}
-              busy={busy}
-              blocked={false}
-              online
-              routeAvailable
+              busy={turnBusy}
+              blocked={blocked}
+              online={online}
+              routeAvailable={routeAvailable}
               agentReady
               placeholder="输入消息"
-              statusText={busy ? "Agent 正在继续处理" : ""}
+              statusText={turnBusy ? "Agent 正在继续处理" : ""}
             />
           </div>
         </section>
       </div>
     </main>
   );
+}
+
+function readTurnPhase(value: string | null): TurnPhase | null {
+  if (
+    value === "idle"
+    || value === "submitted"
+    || value === "waiting-first-output"
+    || value === "streaming"
+    || value === "tool-running"
+    || value === "recovering"
+    || value === "completed"
+    || value === "stopped"
+    || value === "failed"
+  ) return value;
+  return null;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><WorkspaceFixture /></StrictMode>);

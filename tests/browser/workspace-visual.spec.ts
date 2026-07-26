@@ -169,6 +169,36 @@ test("message edit restores focus and rich content remains visible", async ({ pa
   expect(colors.code).not.toBe(colors.heading);
 });
 
+test("message actions follow phase, route, approval, and online policy", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "action matrix targets desktop and 390px");
+
+  await page.goto("/?phase=streaming");
+  await expect(page.locator(".conversation-chat")).toHaveAttribute("data-turn-phase", "streaming");
+  await expect(page.locator(".message.user").getByRole("button", { name: "复制消息" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "编辑并分支发送" })).toBeDisabled();
+  await expect(page.locator(".message.user").getByRole("button", { name: "创建对话分支" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "重新生成并创建分支" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "继续生成并创建分支" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "有帮助" })).toBeDisabled();
+
+  await page.goto("/?phase=tool-running");
+  await expect(page.getByRole("button", { name: "批准" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "拒绝" })).toBeEnabled();
+  await expect(page.locator(".message.assistant").getByRole("button", { name: "创建对话分支" })).toBeDisabled();
+
+  await page.goto("/?phase=completed&route=0");
+  await expect(page.locator(".message.user").getByRole("button", { name: "创建对话分支" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "编辑并分支发送" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "重新生成并创建分支" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "有帮助" })).toBeDisabled();
+
+  await page.goto("/?phase=tool-running&online=0");
+  await expect(page.locator(".message.assistant").getByRole("button", { name: "复制消息" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "批准" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "拒绝" })).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
 test("memory proposals show the exact candidate before approval", async ({ page }) => {
   const trace = page.locator(".tool-trace").filter({ hasText: "更新长期记忆" });
   await expect(trace).toBeVisible();

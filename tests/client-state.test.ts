@@ -3,10 +3,15 @@ import { friendlyAgentError } from "../client/src/lib/agent-errors";
 import {
   conversationAgentClientName,
   findRetrySourceMessageId,
-  hasVisibleAssistantTextAfterLatestUser,
+  hasPendingToolApprovalAfterLatestUser,
+  hasVisibleAssistantOutputAfterLatestUser,
+  isActiveTurnPhase,
+  resolveMessageActionAvailability,
   restoreRejectedDraft,
   resolveLoadedMemoryDraft,
   resolvePendingDraftAction,
+  resolveTurnPhase,
+  type TurnPhase,
 } from "../client/src/lib/state";
 import { resolveClientSurface } from "../client/src/lib/routing";
 
@@ -48,15 +53,142 @@ describe("React client state recovery", () => {
     expect(findRetrySourceMessageId([{ id: "assistant-1", role: "assistant" }])).toBeUndefined();
   });
 
-  it("keeps the waiting state until the current turn has visible assistant text", () => {
-    expect(hasVisibleAssistantTextAfterLatestUser([
+  it("keeps the waiting state until the current turn has visible assistant output", () => {
+    expect(hasVisibleAssistantOutputAfterLatestUser([
       { role: "assistant", parts: [{ type: "text", text: "previous reply" }] },
       { role: "user", parts: [{ type: "text", text: "new request" }] },
     ])).toBe(false);
-    expect(hasVisibleAssistantTextAfterLatestUser([
+    expect(hasVisibleAssistantOutputAfterLatestUser([
       { role: "user", parts: [{ type: "text", text: "new request" }] },
       { role: "assistant", parts: [{ type: "text", text: "first visible chunk" }] },
     ])).toBe(true);
+    expect(hasVisibleAssistantOutputAfterLatestUser([
+      { role: "user", parts: [{ type: "text", text: "new request" }] },
+      { role: "assistant", parts: [{ type: "reasoning", text: "visible reasoning" }] },
+    ])).toBe(true);
+    expect(hasVisibleAssistantOutputAfterLatestUser([
+      { role: "user", parts: [{ type: "text", text: "new request" }] },
+      { role: "assistant", parts: [{ type: "dynamic-tool", state: "approval-requested" }] },
+    ])).toBe(true);
+  });
+
+  it("derives every turn phase from SDK state and visible message parts", () => {
+    const userMessage = { role: "user", parts: [{ type: "text", text: "request" }] };
+    const visibleMessages = [
+      userMessage,
+      { role: "assistant", parts: [{ type: "text", text: "response" }] },
+    ];
+    const phase = (overrides: Partial<Parameters<typeof resolveTurnPhase>[0]> = {}) => resolveTurnPhase({
+      status: "ready",
+      isStreaming: false,
+      isRecovering: false,
+      hasError: false,
+      stopped: false,
+      messages: [],
+      ...overrides,
+    });
+
+    expect(phase()).toBe("idle");
+    expect(phase({ status: "submitted", messages: [userMessage] })).toBe("submitted");
+    expect(phase({ status: "streaming", isStreaming: true, messages: [userMessage] })).toBe("waiting-first-output");
+    expect(phase({ status: "streaming", isStreaming: true, messages: visibleMessages })).toBe("streaming");
+    expect(phase({
+      status: "streaming",
+      isStreaming: true,
+      messages: [userMessage, { role: "assistant", parts: [{ type: "dynamic-tool", state: "input-available" }] }],
+    })).toBe("tool-running");
+    expect(phase({ isRecovering: true, messages: visibleMessages })).toBe("recovering");
+    expect(phase({ messages: visibleMessages })).toBe("completed");
+    expect(phase({ stopped: true, messages: visibleMessages })).toBe("stopped");
+    expect(phase({ status: "error", hasError: true, messages: [userMessage] })).toBe("failed");
+
+    const activePhases: TurnPhase[] = ["submitted", "waiting-first-output", "streaming", "tool-running", "recovering"];
+    expect(activePhases.every(isActiveTurnPhase)).toBe(true);
+    expect(["idle", "completed", "stopped", "failed"].some((value) => isActiveTurnPhase(value as TurnPhase))).toBe(false);
+  });
+
+  it("detects pending approval only in the current user turn", () => {
+    expect(hasPendingToolApprovalAfterLatestUser([
+      { role: "assistant", parts: [{ type: "dynamic-tool", state: "approval-requested" }] },
+      { role: "user", parts: [{ type: "text", text: "new request" }] },
+    ])).toBe(false);
+    expect(hasPendingToolApprovalAfterLatestUser([
+      { role: "user", parts: [{ type: "text", text: "new request" }] },
+      { role: "assistant", parts: [{ type: "dynamic-tool", state: "approval-requested" }] },
+    ])).toBe(true);
+  });
+
+  it("centralizes role, phase, route, failure, approval, and online action availability", () => {
+    const availability = (overrides: Partial<Parameters<typeof resolveMessageActionAvailability>[0]> = {}) => (
+      resolveMessageActionAvailability({
+        phase: "completed",
+        role: "user",
+        isLatestMessage: true,
+        online: true,
+        blocked: false,
+        routeAvailable: true,
+        messageActionsEnabled: true,
+        feedbackEnabled: true,
+        hasText: true,
+        canContinue: false,
+        toolApprovalPending: false,
+        ...overrides,
+      })
+    );
+
+    expect(availability()).toEqual({
+      copy: "enabled",
+      edit: "enabled",
+      resend: "enabled",
+      regenerate: "hidden",
+      continue: "hidden",
+      branch: "enabled",
+      feedback: "hidden",
+      approveTool: "hidden",
+      retry: "hidden",
+    });
+    expect(availability({ role: "assistant", canContinue: true })).toMatchObject({
+      copy: "enabled",
+      edit: "hidden",
+      resend: "hidden",
+      regenerate: "enabled",
+      continue: "enabled",
+      branch: "enabled",
+      feedback: "enabled",
+    });
+    expect(availability({ role: "assistant", canContinue: true, routeAvailable: false })).toMatchObject({
+      copy: "enabled",
+      regenerate: "disabled",
+      continue: "disabled",
+      branch: "enabled",
+      feedback: "disabled",
+    });
+    expect(availability({ phase: "streaming" })).toMatchObject({
+      copy: "enabled",
+      edit: "disabled",
+      resend: "disabled",
+      branch: "disabled",
+    });
+    expect(availability({
+      phase: "tool-running",
+      role: "assistant",
+      toolApprovalPending: true,
+    })).toMatchObject({ approveTool: "enabled", regenerate: "disabled", feedback: "disabled" });
+    expect(availability({
+      phase: "tool-running",
+      role: "assistant",
+      toolApprovalPending: true,
+      online: false,
+    })).toMatchObject({ copy: "enabled", approveTool: "disabled", branch: "disabled" });
+    expect(availability({ phase: "failed" })).toMatchObject({ retry: "enabled", edit: "enabled" });
+    expect(availability({ phase: "failed", isLatestMessage: false })).toMatchObject({ retry: "hidden" });
+    expect(availability({ phase: "failed", blocked: true })).toMatchObject({ retry: "disabled", edit: "disabled", copy: "enabled" });
+    expect(availability({ messageActionsEnabled: false, role: "assistant", feedbackEnabled: false })).toMatchObject({
+      regenerate: "hidden",
+      continue: "hidden",
+      branch: "hidden",
+      feedback: "hidden",
+    });
   });
 
   it("turns structured Agent failures into actionable messages", () => {

@@ -21,8 +21,12 @@ import { friendlyAgentError } from "../lib/agent-errors";
 import {
   conversationAgentClientName,
   findRetrySourceMessageId,
-  hasVisibleAssistantTextAfterLatestUser,
+  hasPendingToolApprovalAfterLatestUser,
+  isActiveTurnPhase,
+  isPendingToolApprovalPart,
+  resolveMessageActionAvailability,
   resolvePendingDraftAction,
+  resolveTurnPhase,
   restoreRejectedDraft,
 } from "../lib/state";
 import {
@@ -395,6 +399,7 @@ function ConversationChat({
   const [waitingElapsed, setWaitingElapsed] = useState(0);
   const [messageActionError, setMessageActionError] = useState("");
   const [retryBusy, setRetryBusy] = useState(false);
+  const [stopRequested, setStopRequested] = useState(false);
   const [lastSubmittedText, setLastSubmittedText] = useState("");
   const [lastSubmittedAttachments, setLastSubmittedAttachments] = useState<DraftAttachment[]>([]);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -423,14 +428,37 @@ function ConversationChat({
     cancelOnClientAbort: false,
     body: () => ({ routeId, skillIds, chatId: conversation.id }),
   });
-  const busy = chat.status === "submitted" || chat.status === "streaming" || chat.isStreaming || chat.isRecovering;
-  const waitingFirstOutput = busy && !chat.isRecovering && !hasVisibleAssistantTextAfterLatestUser(chat.messages);
+  const turnPhase = resolveTurnPhase({
+    status: chat.status,
+    isStreaming: chat.isStreaming,
+    isRecovering: chat.isRecovering,
+    hasError: Boolean(chat.error),
+    stopped: stopRequested,
+    messages: chat.messages,
+  });
+  const busy = isActiveTurnPhase(turnPhase);
+  const waitingFirstOutput = turnPhase === "submitted" || turnPhase === "waiting-first-output";
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
   const imagesSupported = session.capabilities.imageInput && selectedRoute?.supportsImages === true;
   const filesSupported = session.capabilities.fileInput;
   const connectionState: ConnectionState = agent.connectionError ? "error" : agent.identified ? "ready" : "connecting";
+  const latestMessageId = chat.messages.at(-1)?.id;
+  const retrySourceMessageId = findRetrySourceMessageId(chat.messages);
+  const retryAvailability = resolveMessageActionAvailability({
+    phase: turnPhase,
+    role: "user",
+    isLatestMessage: Boolean(retrySourceMessageId || lastSubmittedText || lastSubmittedAttachments.length),
+    online,
+    blocked,
+    routeAvailable,
+    messageActionsEnabled: session.capabilities.messageActions,
+    feedbackEnabled: false,
+    hasText: false,
+    canContinue: false,
+    toolApprovalPending: false,
+  }).retry;
 
   useEffect(() => {
     onBusyChange(busy);
@@ -446,7 +474,7 @@ function ConversationChat({
 
   useEffect(() => {
     if (!waitingFirstOutput) {
-    setWaitingElapsed(0);
+      setWaitingElapsed(0);
       return;
     }
     const started = Date.now();
@@ -571,6 +599,7 @@ function ConversationChat({
     const submittedDraftGeneration = draftGeneration.current;
     const submissionId = submissionGeneration.current + 1;
     submissionGeneration.current = submissionId;
+    setStopRequested(false);
     chat.clearError();
     setLastSubmittedText("");
     setLastSubmittedAttachments([]);
@@ -601,8 +630,8 @@ function ConversationChat({
   };
 
   const retryFailedTurn = async () => {
-    if (!session.capabilities.messageActions || !chat.error || retryBusy || busy || blocked || !online) return;
-    const sourceMessageId = findRetrySourceMessageId(chat.messages);
+    if (!chat.error || retryAvailability !== "enabled" || retryBusy) return;
+    const sourceMessageId = retrySourceMessageId;
     if (!sourceMessageId) {
       if (lastSubmittedText || lastSubmittedAttachments.length) {
         chat.clearError();
@@ -652,8 +681,13 @@ function ConversationChat({
     }
   };
 
+  const stop = () => {
+    setStopRequested(true);
+    chat.stop();
+  };
+
   return (
-    <div className="conversation-chat">
+    <div className="conversation-chat" data-turn-phase={turnPhase}>
       {!online && <div className="offline-banner" role="status"><WifiOff size={16} /><span>当前离线。已保留草稿，恢复网络后可以继续发送。</span></div>}
       {!routeAvailable && <div className="configuration-banner" role="status">当前没有可用模型线路，请联系管理员完成配置。</div>}
       {messageActionError && <div className="workspace-error" role="alert"><span>{messageActionError}</span><button className="icon-button" type="button" onClick={() => setMessageActionError("")} title="关闭提示" aria-label="关闭提示">×</button></div>}
@@ -665,30 +699,44 @@ function ConversationChat({
               <span>{routeAvailable ? "可以直接描述目标、已有材料和期望结果。" : "管理员配置可用模型线路后即可发送消息。"}</span>
             </div>
           )}
-          {chat.messages.map((message) => (
-            <MessageView
-              key={message.id}
-              message={message}
-              onApprove={chat.addToolApprovalResponse}
-              onAction={session.capabilities.messageActions
-                ? (action, editedText) => handleMessageAction(message, action, editedText)
-                : undefined}
-              onFeedback={session.capabilities.feedback && routeAvailable
-                ? (rating) => handleFeedback(message, rating)
-                : undefined}
-              canContinue={session.capabilities.messageActions && message.role === "assistant" && isTruncatedMessage(message)}
-              disabled={interactionBlocked || !online}
-              generationDisabled={!routeAvailable}
-            />
-          ))}
+          {chat.messages.map((message) => {
+            const canContinue = message.role === "assistant" && isTruncatedMessage(message);
+            const availability = resolveMessageActionAvailability({
+              phase: turnPhase,
+              role: message.role,
+              isLatestMessage: message.id === latestMessageId,
+              online,
+              blocked,
+              routeAvailable,
+              messageActionsEnabled: session.capabilities.messageActions,
+              feedbackEnabled: session.capabilities.feedback,
+              hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
+              canContinue,
+              toolApprovalPending: message.parts.some((part) => isPendingToolApprovalPart(part)),
+            });
+            return (
+              <MessageView
+                key={message.id}
+                message={message}
+                onApprove={chat.addToolApprovalResponse}
+                onAction={session.capabilities.messageActions
+                  ? (action, editedText) => handleMessageAction(message, action, editedText)
+                  : undefined}
+                onFeedback={session.capabilities.feedback
+                  ? (rating) => handleFeedback(message, rating)
+                  : undefined}
+                availability={availability}
+              />
+            );
+          })}
           {waitingFirstOutput && (
             <div className="thinking-row" role="status" aria-live="polite">
               <span className="thinking-indicator" aria-hidden="true" />
               <span>{waitingElapsed >= 3 ? `正在等待首字输出 · ${waitingElapsed}s` : "正在准备响应"}</span>
             </div>
           )}
-          {busy && !waitingFirstOutput && !chat.isRecovering && <div className="stream-note">正在生成响应...</div>}
-          {chat.isRecovering && <div className="stream-note">正在恢复中断的任务...</div>}
+          {turnPhase === "streaming" && <div className="stream-note">正在生成响应...</div>}
+          {turnPhase === "recovering" && <div className="stream-note">正在恢复中断的任务...</div>}
           <div ref={endRef} />
         </div>
       </div>
@@ -696,7 +744,7 @@ function ConversationChat({
         <div className="error-banner" role="alert">
           <span>{friendlyAgentError(chat.error.message, online)}</span>
           <div className="error-actions">
-            {session.capabilities.messageActions && <button className="quiet-button icon-text-button" type="button" onClick={() => void retryFailedTurn()} disabled={retryBusy || busy || !online} title="重试这一轮" aria-label="重试这一轮"><RotateCw size={15} /><span>{retryBusy ? "重试中..." : "重试"}</span></button>}
+            {retryAvailability !== "hidden" && <button className="quiet-button icon-text-button" type="button" onClick={() => void retryFailedTurn()} disabled={retryAvailability !== "enabled" || retryBusy} title="重试这一轮" aria-label="重试这一轮"><RotateCw size={15} /><span>{retryBusy ? "重试中..." : "重试"}</span></button>}
             <button className="icon-button" type="button" onClick={() => window.location.reload()} title="重新连接" aria-label="重新连接"><RefreshCw size={16} /></button>
           </div>
         </div>
@@ -716,14 +764,18 @@ function ConversationChat({
         onRemoveAttachment={removeAttachment}
         onRetryAttachment={retryAttachment}
         onSubmit={() => void send()}
-        onStop={() => chat.stop()}
+        onStop={stop}
         busy={busy}
         blocked={blocked}
         online={online}
         routeAvailable={routeAvailable}
         agentReady={agent.identified}
         placeholder={!online ? "等待网络恢复" : routeAvailable ? "输入消息" : "等待管理员配置线路"}
-        statusText={chat.isRecovering ? "正在恢复任务" : chat.isServerStreaming ? "Agent 正在继续处理" : ""}
+        statusText={turnPhase === "recovering"
+          ? "正在恢复任务"
+          : turnPhase === "tool-running"
+            ? hasPendingToolApprovalAfterLatestUser(chat.messages) ? "等待工具确认" : "Agent 正在调用工具"
+            : chat.isServerStreaming ? "Agent 正在继续处理" : ""}
       />
     </div>
   );
