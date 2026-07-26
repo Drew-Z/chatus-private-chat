@@ -55,7 +55,6 @@ import type {
 } from "./contracts/provider";
 import type { GuestSession, Session } from "./contracts/session";
 import {
-  buildResolvedProviderPlan,
   buildProviderRoutePlan,
   isTerminalProviderFailure,
   MAX_PROVIDER_CONCURRENCY,
@@ -122,6 +121,7 @@ import {
   type ProviderToolExecutionResult,
   type ProviderToolHistory,
 } from "./services/provider-tool-runtime";
+import { createProviderPlanRuntime } from "./services/provider-plan-runtime";
 import {
   callProviderStream,
   UpstreamRequestError,
@@ -4093,9 +4093,12 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
       chatId,
     });
   }
-  const providerPlan = (await buildRuntimeProviderPlan(env, config, routeIds))
-    .filter((route) => !hasImages || route.supportsImages);
-  const prepared = await prepareProviderPlan(env, access, providerPlan, userApiKey);
+  const prepared = await providerPlanRuntime(env, config).preparePlan({
+    routeIds,
+    accessRoutes: access.routes,
+    userApiKey,
+    accepts: (route) => !hasImages || route.supportsImages,
+  });
   if (prepared.userKeyRequiredRouteId) {
     return jsonResponse({ error: "user_api_key_required", routeId: prepared.userKeyRequiredRouteId }, 400);
   }
@@ -4320,44 +4323,38 @@ export async function prepareTeamAgentTurn(
     ? await buildCapabilityToolDefinitions(config, access.user, selectedSkills, secretFingerprint)
     : [];
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
-  const providerPlan = await buildRuntimeProviderPlan(env, config, routeIds);
   const userApiKey = input.userApiKey?.trim() || "";
+  const hasImages = messagesContainImages(normalized);
+  const prepared = await providerPlanRuntime(env, config).preparePlan({
+    routeIds,
+    accessRoutes: access.routes,
+    userApiKey,
+    accepts: (route, publicRoute) => (
+      (!hasImages || (publicRoute.supportsImages && route.supportsImages))
+      && (!(toolDefinitions.length || memoryToolEnabled) || route.supportsTools)
+    ),
+  });
+  if (prepared.userKeyRequiredRouteId) {
+    return {
+      ok: false,
+      error: "user_api_key_required",
+      message: "需要填写 API Key",
+      status: 400,
+      routeId: prepared.userKeyRequiredRouteId,
+    };
+  }
   const candidates: FallbackModelCandidate[] = [];
   const credentials = new Map<string, ProviderCredential>();
-  let lastError: { routeId: string; message: string } | null = null;
+  const lastError = prepared.lastError;
 
-  for (const route of providerPlan) {
+  for (const route of prepared.candidates) {
     const routeId = route.routeId;
-    const publicRoute = access.routes.find((item) => item.id === routeId);
-    if (!publicRoute) continue;
-    if (messagesContainImages(normalized) && !publicRoute.supportsImages) continue;
-    if (messagesContainImages(normalized) && !route.supportsImages) continue;
-    if ((toolDefinitions.length || memoryToolEnabled) && !route.supportsTools) continue;
-
-    let credential: ProviderCredential;
-    try {
-      credential = await resolveRouteCredential(route, env, publicRoute.allowUserKey ? userApiKey : "");
-    } catch (error) {
-      lastError = {
-        routeId,
-        message: error instanceof ManagedSecretError ? error.message : "route key is unavailable",
-      };
-      continue;
-    }
-    if (!credential.apiKey) {
-      if (publicRoute.requiresUserKey) {
-        return { ok: false, error: "user_api_key_required", message: "需要填写 API Key", status: 400, routeId };
-      }
-      lastError = { routeId, message: "route key is not configured" };
-      continue;
-    }
-
-    credentials.set(routeProviderKey(routeId, route.providerId), credential);
+    credentials.set(routeProviderKey(routeId, route.providerId), route.credential);
     candidates.push({
       routeId,
       providerId: route.providerId,
-      model: createProviderLanguageModel(route, credential.apiKey),
-      usedUserKey: credential.usedUserKey,
+      model: createProviderLanguageModel(route, route.credential.apiKey),
+      usedUserKey: route.credential.usedUserKey,
       acquireLease: (waitMs, signal) => acquireProviderLease(env, route, waitMs, signal),
       settings: {
         temperature: clampNumber(input.temperature, 0, route.type === "anthropic-messages" ? 1 : 2, route.temperature ?? 0.7),
@@ -5049,23 +5046,19 @@ async function resolveRouteCredential(
   });
 }
 
-async function buildRuntimeProviderPlan(
-  env: Env,
-  config: AppConfig,
-  routeIds: string[],
-): Promise<ResolvedProviderRoute[]> {
-  const rawCandidates = routeIds.flatMap((routeId) => {
-    const route = config.routes[routeId];
-    return route ? resolveProviderRouteCandidates(routeId, route, config.providers) : [];
+function providerPlanRuntime(env: Env, config: AppConfig) {
+  return createProviderPlanRuntime({
+    routes: config.routes,
+    providers: config.providers,
+    resolveCredential: (route, userApiKey) => resolveRouteCredential(route, env, userApiKey),
+    loadQuality: async (route) => {
+      const reliability = await loadProviderRouteReliability(env, route.routeId, route.providerId);
+      return isRecentProviderRouteReliability(reliability) ? reliability : null;
+    },
+    credentialErrorMessage: (error) => (
+      error instanceof ManagedSecretError ? error.message : "route key is unavailable"
+    ),
   });
-  const qualityEntries = await Promise.all(rawCandidates.map(async (candidate) => {
-    const reliability = await loadProviderRouteReliability(env, candidate.routeId, candidate.providerId);
-    return [
-      routeProviderKey(candidate.routeId, candidate.providerId),
-      isRecentProviderRouteReliability(reliability) ? reliability : null,
-    ] as const;
-  }));
-  return buildResolvedProviderPlan(routeIds, config.routes, config.providers, new Map(qualityEntries));
 }
 
 async function loadManagedRouteSecret(env: Env, apiKeyRef: string): Promise<string | null> {
@@ -5144,51 +5137,6 @@ async function buildMessagesWithSystem(
   return [...systemMessages, ...normalized];
 }
 
-type PreparedProviderRoute = ResolvedProviderRoute & {
-  credential: ProviderCredential;
-  publicRoute: PublicRoute;
-  planIndex: number;
-};
-
-async function prepareProviderPlan(
-  env: Env,
-  access: RouteAccess,
-  providerPlan: ResolvedProviderRoute[],
-  userApiKey: string,
-): Promise<{
-  candidates: PreparedProviderRoute[];
-  lastError: { routeId: string; message: string } | null;
-  userKeyRequiredRouteId?: string;
-}> {
-  const candidates: PreparedProviderRoute[] = [];
-  let lastError: { routeId: string; message: string } | null = null;
-
-  for (const [planIndex, route] of providerPlan.entries()) {
-    const publicRoute = access.routes.find((item) => item.id === route.routeId);
-    if (!publicRoute) continue;
-    let credential: ProviderCredential;
-    try {
-      credential = await resolveRouteCredential(route, env, publicRoute.allowUserKey ? userApiKey : "");
-    } catch (error) {
-      lastError = {
-        routeId: route.routeId,
-        message: error instanceof ManagedSecretError ? error.message : "route key is unavailable",
-      };
-      continue;
-    }
-    if (!credential.apiKey) {
-      if (publicRoute.requiresUserKey) {
-        return { candidates, lastError, userKeyRequiredRouteId: route.routeId };
-      }
-      lastError = { routeId: route.routeId, message: "route key is not configured" };
-      continue;
-    }
-    candidates.push({ ...route, credential, publicRoute, planIndex });
-  }
-
-  return { candidates, lastError };
-}
-
 async function completeWithUserRoute(
   env: Env,
   session: Session,
@@ -5224,9 +5172,12 @@ async function completeWithUserRoute(
 
   const selectedRoute = args.routeId || access.defaultRoute;
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
-  const providerPlan = await buildRuntimeProviderPlan(env, config, routeIds);
   const userApiKey = args.userApiKey?.trim() || "";
-  const prepared = await prepareProviderPlan(env, access, providerPlan, userApiKey);
+  const prepared = await providerPlanRuntime(env, config).preparePlan({
+    routeIds,
+    accessRoutes: access.routes,
+    userApiKey,
+  });
   if (prepared.userKeyRequiredRouteId) {
     return {
       ok: false,
@@ -5653,8 +5604,6 @@ async function runCapabilityLoopInner(
   ) => ToolApprovalDecision | Promise<ToolApprovalDecision>,
 ): Promise<void> {
   const aliasMap = new Map(args.tools.map((tool) => [tool.providerName, tool]));
-  const providerPlan = (await buildRuntimeProviderPlan(args.env, args.config, args.routeIds))
-    .filter((route) => route.supportsTools);
   let selected:
     | {
         routeId: string;
@@ -5670,7 +5619,12 @@ async function runCapabilityLoopInner(
     | null = null;
   let attemptedRoutes = 0;
   let lastError: ProviderToolError | null = null;
-  const prepared = await prepareProviderPlan(args.env, args.access, providerPlan, args.userApiKey);
+  const prepared = await providerPlanRuntime(args.env, args.config).preparePlan({
+    routeIds: args.routeIds,
+    accessRoutes: args.access.routes,
+    userApiKey: args.userApiKey,
+    accepts: (route) => route.supportsTools,
+  });
   if (prepared.userKeyRequiredRouteId) {
     throw new CapabilityError("user_api_key_required", "当前线路需要用户 API Key");
   }
