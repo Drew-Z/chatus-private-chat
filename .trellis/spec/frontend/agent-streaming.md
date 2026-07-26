@@ -154,6 +154,72 @@ const identity = await agent.ensureIdentity(props);
 if (!identity.ok) throw new Error(identity.error);
 ```
 
+## Scenario: Secret-safe Agent Error Envelopes
+
+### 1. Scope / Trigger
+
+This contract applies to expected `TeamAgent.onChatMessage()` preflight failures and provider/tool failures emitted after `streamText()` has started.
+
+### 2. Signatures
+
+```typescript
+type AgentErrorEnvelope = {
+  error: string;
+  message: string;
+};
+
+serializeAgentErrorEnvelope(error: string): string
+parseAgentErrorEnvelope(value: string): AgentErrorEnvelope | undefined
+projectAgentStreamError(error: unknown): string
+```
+
+### 3. Contracts
+
+- `src/contracts/agent-error.ts` is the single owner of the SSE error envelope, canonical member-facing messages, parser, and provider-error projection used by the Worker and typed client.
+- The serialized envelope contains exactly `error` and canonical `message`. It never includes a logical route/provider ID, credential reference, upstream response body, request body, raw exception message, or arbitrary extra field.
+- The server classifies internal exceptions by bounded structural evidence such as `name`, `code`, `statusCode`/`status`, and a bounded `cause` chain. Raw upstream text may help select a class but is never serialized.
+- The client maps the machine-readable `error` code back through the canonical dictionary. It does not render the envelope `message` or a raw non-envelope SDK error directly; unknown or expanded payloads become the generic safe failure message.
+- `user_api_key_required` must tell the current member to switch models or contact the administrator until a member BYOK editor exists. It must not direct the member to a settings control that is not implemented.
+- Offline state remains authoritative over transport detail: a failure observed while `navigator.onLine` is false reports the preserved local draft and waits for network recovery.
+
+### 4. Validation & Error Matrix
+
+- `ProviderBusyError` -> `provider_busy`.
+- `ProviderProtocolError` or `code: "provider_protocol_error"` -> `provider_protocol_error`.
+- `TimeoutError`, HTTP `408`/`504`, or a timeout cause -> `upstream_timeout`.
+- Non-timeout `AbortError` -> `request_cancelled`.
+- HTTP `401`/`403` -> `upstream_authentication_failed`; HTTP `429` -> `upstream_rate_limited`.
+- HTTP `400`/`404`/`409`/`422` -> `upstream_request_rejected`; HTTP `5xx` -> `upstream_unavailable`.
+- Unknown provider failure -> `upstream_error`; invalid machine code -> `agent_error`.
+- Missing canonical `message` -> parser restores it from the code; unknown fields, malformed JSON, or invalid codes -> reject the envelope and show the generic safe message.
+
+### 5. Good / Base / Bad Cases
+
+- Good: an upstream `429` with a private response body produces `upstream_rate_limited`, and the member sees a retry/switch suggestion without the body or provider identity.
+- Base: a preflight `no_routes_available` failure uses the same SSE serializer and produces the administrator-contact action.
+- Bad: `onError: (error) => String(error)` exposes an upstream body, or the client falls back to displaying `chat.error.message` as raw JSON.
+
+### 6. Tests Required
+
+- Unit-test every provider class above, nested causes, invalid codes, message-less envelopes, expanded envelopes, and generic fallback behavior.
+- Assert structured client mappings for identity, unavailable routes, BYOK requirement, quota/concurrency, busy, timeout, rate-limit, authentication, protocol, and unavailable failures.
+- Assert secret-like provider text and extra `providerId` fields never appear in the rendered fallback message.
+- Keep the failed-turn retry branch and offline-first draft recovery behavior covered independently from error wording.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+onError: (error) => error instanceof Error ? error.message : JSON.stringify(error)
+```
+
+#### Correct
+
+```typescript
+onError: (error) => serializeAgentErrorEnvelope(projectAgentStreamError(error))
+```
+
 ## Scenario: Conversation Deletion Cleanup
 
 ### 1. Scope / Trigger

@@ -42,6 +42,10 @@ import {
   type TeamAgentScope,
   type TeamAgentState,
 } from "../contracts/agent";
+import {
+  projectAgentStreamError,
+  serializeAgentErrorEnvelope,
+} from "../contracts/agent-error";
 import type { ChatMessage } from "../contracts/chat";
 import {
   parseDataImage,
@@ -805,7 +809,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     options?: OnChatMessageOptions,
   ): Promise<Response> {
     if (!this.userLabel || this.scope !== "conversation" || !this.chatId || !this.rootInstance) {
-      return chatErrorResponse("agent_identity_unavailable", "Agent identity is unavailable.", 401);
+      return chatErrorResponse("agent_identity_unavailable", 401);
     }
 
     const attachmentRejection = this.takePendingAttachmentValidationError();
@@ -818,7 +822,6 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       );
       return chatErrorResponse(
         attachmentRejection.error,
-        attachmentValidationMessage(attachmentRejection.error),
         attachmentValidationStatus(attachmentRejection.error),
       );
     }
@@ -867,7 +870,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     });
 
     if (!prepared.ok) {
-      return chatErrorResponse(prepared.error, prepared.message, prepared.status, prepared.routeId);
+      return chatErrorResponse(prepared.error, prepared.status);
     }
     this.pendingActivity = { routeId: prepared.routeId, skillIds: prepared.skillIds };
 
@@ -901,7 +904,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         ];
       } catch {
         await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
-        return chatErrorResponse("agent_context_invalid", "工具续接上下文无法恢复。", 409);
+        return chatErrorResponse("agent_context_invalid", 409);
       }
     }
 
@@ -941,7 +944,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           "Cache-Control": "no-store",
           "X-RateLimit-Remaining": String(prepared.remaining),
         },
-        onError: () => "模型线路暂时不可用，请稍后重试。",
+        onError: (error) => serializeAgentErrorEnvelope(projectAgentStreamError(error)),
       });
     } catch (error) {
       await finalize();
@@ -1314,21 +1317,6 @@ function isImageFilePart(part: UIMessage["parts"][number]): boolean {
   if (part.type !== "file") return false;
   return (typeof part.mediaType === "string" && part.mediaType.trim().toLowerCase().startsWith("image/"))
     || (typeof part.url === "string" && /^data:image\//i.test(part.url));
-}
-
-function attachmentValidationMessage(error: AttachmentValidationErrorCode): string {
-  if (error === "invalid_image_type") return "图片格式不受支持。";
-  if (error === "invalid_image_data") return "图片数据无效。";
-  if (error === "image_too_large") return "单张图片超过大小限制。";
-  if (error === "too_many_images") return "图片数量超过限制。";
-  if (error === "images_too_large") return "图片总大小超过限制。";
-  if (error === "file_not_supported") return "当前会话不支持文件上传。";
-  if (error === "invalid_file_type") return "文件格式不受支持。";
-  if (error === "invalid_file_data") return "文件内容无法按 UTF-8 文本读取。";
-  if (error === "file_too_large") return "单个文件超过大小限制。";
-  if (error === "too_many_files") return "文件数量超过限制。";
-  if (error === "files_too_large") return "文件总大小超过限制。";
-  return "文件文本内容超过限制。";
 }
 
 function attachmentValidationStatus(error: AttachmentValidationErrorCode): 400 | 413 {
@@ -1739,8 +1727,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function chatErrorResponse(error: string, message: string, status: number, routeId?: string): Response {
-  const errorText = JSON.stringify({ error, message, ...(routeId ? { routeId } : {}) });
+function chatErrorResponse(error: string, status: number): Response {
+  const errorText = serializeAgentErrorEnvelope(error);
   const body = `data: ${JSON.stringify({ type: "error", errorText })}\n\ndata: [DONE]\n\n`;
   return new Response(body, {
     status,

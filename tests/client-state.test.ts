@@ -67,7 +67,23 @@ describe("React client state recovery", () => {
     expect(friendlyAgentError(JSON.stringify({
       error: "agent_context_invalid",
       message: "工具续接上下文无法恢复。",
-    }), true)).toBe("工具续接上下文无法恢复。");
+    }), true)).toBe("工具续接上下文无法恢复，请刷新页面后重试。");
+    expect(friendlyAgentError(JSON.stringify({ error: "provider_busy" }), true))
+      .toBe("当前模型的可用线路都在忙，请稍后重试或切换模型。");
+    expect(friendlyAgentError(JSON.stringify({
+      error: "user_api_key_required",
+      message: "fill the secret in settings",
+    }), true)).toBe("当前模型需要额外凭据，请切换模型或联系管理员。");
+    expect(friendlyAgentError(JSON.stringify({
+      error: "upstream_authentication_failed",
+      message: "secret provider response",
+    }), true)).toBe("模型线路凭据不可用，请切换模型或联系管理员。");
+    expect(friendlyAgentError(JSON.stringify({
+      error: "unknown_failure",
+      message: "raw provider payload",
+    }), true)).toBe("本轮任务暂时失败，可以稍后重试。");
+    expect(friendlyAgentError('{"error":"upstream_error","providerId":"private-provider"}', true))
+      .toBe("本轮任务暂时失败，可以稍后重试。");
     expect(friendlyAgentError("timeout", false)).toBe("网络已断开，草稿仍保存在当前设备。");
   });
 
