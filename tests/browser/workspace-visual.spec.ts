@@ -294,6 +294,45 @@ test("reliability stream evidence stays contained on narrow viewports", async ({
   await attachScreenshot(page, testInfo, "reliability");
 });
 
+test("operations data stays scannable with local table overflow", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "operations coverage targets desktop and 390px");
+  await page.goto("/?view=operations");
+  await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "7 日请求趋势" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "逻辑模型结果" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "成员反馈" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "管理审计" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "成员用量" })).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "2026-07-26 请求 5" })).toBeVisible();
+  await expect(page.getByText("更新配置", { exact: true })).toBeVisible();
+  await expect(page.getByText(/不准确/)).toBeVisible();
+  await expect(page.getByText("合成运营成员名称用于验证窄屏容器", { exact: true })).toBeVisible();
+
+  const geometry = await page.evaluate(() => {
+    const content = document.querySelector<HTMLElement>(".admin-operations-content");
+    const wrap = document.querySelector<HTMLElement>(".operations-user-table-wrap");
+    const table = document.querySelector<HTMLElement>(".operations-user-table");
+    const sections = [...document.querySelectorAll<HTMLElement>(".admin-operations-section")];
+    if (!content || !wrap || !table || !sections.length) throw new Error("missing operations view");
+    const viewportWidth = document.documentElement.clientWidth;
+    return {
+      documentFits: document.documentElement.scrollWidth <= viewportWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      contentFits: content.getBoundingClientRect().right <= viewportWidth,
+      sectionsFit: sections.every((section) => section.getBoundingClientRect().right <= viewportWidth),
+      wrapperFits: wrap.getBoundingClientRect().right <= viewportWidth,
+      localOverflow: table.scrollWidth > wrap.clientWidth,
+    };
+  });
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.bodyFits).toBe(true);
+  expect(geometry.contentFits).toBe(true);
+  expect(geometry.sectionsFit).toBe(true);
+  expect(geometry.wrapperFits).toBe(true);
+  if (testInfo.project.name === "touch-390") expect(geometry.localOverflow).toBe(true);
+  await attachScreenshot(page, testInfo, "operations");
+});
+
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {
   test.skip((page.viewportSize()?.width || 0) > 780, "drawer behavior applies at the mobile breakpoint");
 

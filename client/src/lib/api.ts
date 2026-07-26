@@ -231,6 +231,97 @@ export type AdminReliabilitySnapshot = {
   providers: AdminReliabilityProvider[];
 };
 
+export type AdminOperationsTrendPoint = {
+  day: string;
+  requests: number;
+  errors: number;
+  fallbacks: number;
+  rateLimited: number;
+  errorRate: number;
+};
+
+export type AdminOperationsRouteStats = {
+  id: string;
+  label: string;
+  model: string;
+  ok7d: number;
+  error7d: number;
+  errorRate7d: number;
+  days: Array<{ day: string; ok: number; error: number }>;
+};
+
+export type AdminOperationsUserStats = {
+  label: string;
+  enabled: boolean;
+  displayName: string;
+  used: number;
+  dailyLimit: number;
+  remaining: number;
+  defaultRoute: string;
+  allowedRoutes: string[];
+  allowBringYourOwnKey: boolean;
+  hasSystemPrompt: boolean;
+  systemPromptChars: number;
+  activeSessions: number;
+  memoryChars: number;
+  requests7d: number;
+  errors7d: number;
+  errorRate7d: number;
+  usageByDay: Array<{ day: string; used: number }>;
+};
+
+export type AdminOperationsStats = {
+  day: string;
+  days: string[];
+  totals: {
+    requests: number;
+    errors: number;
+    fallbacks: number;
+    rateLimited: number;
+    errorRate: number;
+  };
+  trend: AdminOperationsTrendPoint[];
+  routeStats: AdminOperationsRouteStats[];
+  users: AdminOperationsUserStats[];
+  routes: Array<{
+    id: string;
+    enabled: boolean;
+    label: string;
+    type?: "openai-chat" | "anthropic-messages";
+    model?: string;
+    baseUrl?: string;
+    apiKeyRef: string;
+    requiresUserKey: boolean;
+    supportsImages: boolean;
+  }>;
+  configSource: "kv" | "secret" | "default";
+  accessCodeSource: "kv" | "secret" | "managed";
+};
+
+export type AdminAuditEntry = {
+  id: string;
+  action: string;
+  target?: string;
+  at: string;
+};
+
+export type AdminFeedbackEntry = {
+  id: string;
+  label: string;
+  rating: "up" | "down";
+  reason?: "" | "inaccurate" | "misunderstood" | "verbose" | "format" | "other";
+  routeId: string;
+  chatId: string;
+  messageId: string;
+  at: string;
+};
+
+export type AdminOperationsSnapshot = {
+  stats: AdminOperationsStats;
+  audit: AdminAuditEntry[];
+  feedback: AdminFeedbackEntry[];
+};
+
 export type AdminSkillConfig = {
   enabled: boolean;
   label: string;
@@ -499,6 +590,24 @@ export async function fetchAdminReliability(): Promise<AdminReliabilitySnapshot>
     throw new ApiError("invalid_admin_reliability_response", "可靠性数据格式无效。", 502);
   }
   return data;
+}
+
+export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
+  const [stats, audit, feedback] = await Promise.all([
+    requestJson("/api/admin/stats"),
+    requestJson("/api/admin/audit"),
+    requestJson("/api/admin/feedback"),
+  ]);
+  if (!isAdminOperationsStats(stats)) {
+    throw new ApiError("invalid_admin_stats_response", "运营统计格式无效。", 502);
+  }
+  if (!isAdminAuditSnapshot(audit)) {
+    throw new ApiError("invalid_admin_audit_response", "管理审计格式无效。", 502);
+  }
+  if (!isAdminFeedbackSnapshot(feedback)) {
+    throw new ApiError("invalid_admin_feedback_response", "成员反馈格式无效。", 502);
+  }
+  return { stats, audit: audit.entries, feedback: feedback.entries };
 }
 
 export async function fetchAdminMembers(): Promise<AdminMembersSnapshot> {
@@ -880,6 +989,70 @@ export function isAdminReliabilitySnapshot(value: unknown): value is AdminReliab
   }
   const providerIds = value.providers.map((provider) => provider.providerId);
   return new Set(providerIds).size === providerIds.length;
+}
+
+export function isAdminOperationsStats(value: unknown): value is AdminOperationsStats {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["day", "days", "totals", "trend", "routeStats", "users", "routes", "configSource", "accessCodeSource"])
+    || !isDayString(value.day)
+    || !isDayArray(value.days)) {
+    return false;
+  }
+  const days = value.days;
+  if (days.length < 1
+    || days.length > 31
+    || days[0] !== value.day
+    || !isAdminOperationsTotals(value.totals)
+    || !Array.isArray(value.trend)
+    || value.trend.length !== days.length
+    || !value.trend.every(isAdminOperationsTrendPoint)
+    || !sameStringOrder(days, value.trend.map((item) => item.day))
+    || !Array.isArray(value.routeStats)
+    || value.routeStats.length > 500
+    || !value.routeStats.every((item) => isAdminOperationsRouteStats(item, days))
+    || !Array.isArray(value.users)
+    || value.users.length > 1_000
+    || !value.users.every((item) => isAdminOperationsUserStats(item, days))
+    || !Array.isArray(value.routes)
+    || value.routes.length > 500
+    || !value.routes.every(isAdminOperationsRoute)
+    || (value.configSource !== "kv" && value.configSource !== "secret" && value.configSource !== "default")
+    || (value.accessCodeSource !== "kv" && value.accessCodeSource !== "secret" && value.accessCodeSource !== "managed")) {
+    return false;
+  }
+  const routeIds = value.routeStats.map((route) => route.id);
+  const configuredRouteIds = value.routes.map((route) => route.id);
+  const userLabels = value.users.map((user) => user.label);
+  return new Set(routeIds).size === routeIds.length
+    && new Set(configuredRouteIds).size === configuredRouteIds.length
+    && sameStringOrder(routeIds, configuredRouteIds)
+    && new Set(userLabels).size === userLabels.length
+    && value.totals.requests === sumBy(value.trend, (item) => item.requests)
+    && value.totals.errors === sumBy(value.trend, (item) => item.errors)
+    && value.totals.fallbacks === sumBy(value.trend, (item) => item.fallbacks)
+    && value.totals.rateLimited === sumBy(value.trend, (item) => item.rateLimited);
+}
+
+export function isAdminAuditSnapshot(value: unknown): value is { entries: AdminAuditEntry[] } {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["entries"])
+    || !Array.isArray(value.entries)
+    || value.entries.length > 100
+    || !value.entries.every(isAdminAuditEntry)) {
+    return false;
+  }
+  return new Set(value.entries.map((entry) => entry.id)).size === value.entries.length;
+}
+
+export function isAdminFeedbackSnapshot(value: unknown): value is { entries: AdminFeedbackEntry[] } {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["entries"])
+    || !Array.isArray(value.entries)
+    || value.entries.length > 100
+    || !value.entries.every(isAdminFeedbackEntry)) {
+    return false;
+  }
+  return new Set(value.entries.map((entry) => entry.id)).size === value.entries.length;
 }
 
 export function isAdminMemberListResponse(
@@ -1452,6 +1625,151 @@ function isAdminReliabilityRoute(value: unknown): value is AdminReliabilityRoute
     && hasValidAdminStreamEvidence(value, value.successes);
 }
 
+function isAdminOperationsTotals(value: unknown): value is AdminOperationsStats["totals"] {
+  return isRecord(value)
+    && hasExactKeys(value, ["requests", "errors", "fallbacks", "rateLimited", "errorRate"])
+    && isMetricCount(value.requests)
+    && isMetricCount(value.errors)
+    && value.errors <= value.requests
+    && isMetricCount(value.fallbacks)
+    && value.fallbacks <= value.requests
+    && isMetricCount(value.rateLimited)
+    && isPercentage(value.errorRate)
+    && value.errorRate === metricRate(value.errors, value.requests);
+}
+
+function isAdminOperationsTrendPoint(value: unknown): value is AdminOperationsTrendPoint {
+  return isRecord(value)
+    && hasExactKeys(value, ["day", "requests", "errors", "fallbacks", "rateLimited", "errorRate"])
+    && isDayString(value.day)
+    && isMetricCount(value.requests)
+    && isMetricCount(value.errors)
+    && value.errors <= value.requests
+    && isMetricCount(value.fallbacks)
+    && value.fallbacks <= value.requests
+    && isMetricCount(value.rateLimited)
+    && isPercentage(value.errorRate)
+    && value.errorRate === metricRate(value.errors, value.requests);
+}
+
+function isAdminOperationsRouteStats(value: unknown, days: string[]): value is AdminOperationsRouteStats {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["id", "label", "model", "ok7d", "error7d", "errorRate7d", "days"])
+    || !isNonEmptyString(value.id)
+    || !isNonEmptyString(value.label)
+    || typeof value.model !== "string"
+    || !isMetricCount(value.ok7d)
+    || !isMetricCount(value.error7d)
+    || !isPercentage(value.errorRate7d)
+    || !Array.isArray(value.days)
+    || value.days.length !== days.length
+    || !value.days.every(isAdminOperationsRouteDay)) {
+    return false;
+  }
+  const ok7d = sumBy(value.days, (item) => item.ok);
+  const error7d = sumBy(value.days, (item) => item.error);
+  return sameStringOrder(days, value.days.map((item) => item.day))
+    && value.ok7d === ok7d
+    && value.error7d === error7d
+    && value.errorRate7d === metricRate(error7d, ok7d + error7d);
+}
+
+function isAdminOperationsRouteDay(value: unknown): value is AdminOperationsRouteStats["days"][number] {
+  return isRecord(value)
+    && hasExactKeys(value, ["day", "ok", "error"])
+    && isDayString(value.day)
+    && isMetricCount(value.ok)
+    && isMetricCount(value.error);
+}
+
+function isAdminOperationsUserStats(value: unknown, days: string[]): value is AdminOperationsUserStats {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
+      "label", "enabled", "displayName", "used", "dailyLimit", "remaining", "defaultRoute", "allowedRoutes",
+      "allowBringYourOwnKey", "hasSystemPrompt", "systemPromptChars", "activeSessions", "memoryChars",
+      "requests7d", "errors7d", "errorRate7d", "usageByDay",
+    ])
+    || !isNonEmptyString(value.label)
+    || typeof value.enabled !== "boolean"
+    || !isNonEmptyString(value.displayName)
+    || !isMetricCount(value.used)
+    || !isPositiveInteger(value.dailyLimit)
+    || !isMetricCount(value.remaining)
+    || value.remaining !== Math.max(0, value.dailyLimit - value.used)
+    || typeof value.defaultRoute !== "string"
+    || !isUniqueStringIdArray(value.allowedRoutes)
+    || typeof value.allowBringYourOwnKey !== "boolean"
+    || typeof value.hasSystemPrompt !== "boolean"
+    || !isMetricCount(value.systemPromptChars)
+    || value.hasSystemPrompt !== (value.systemPromptChars > 0)
+    || !isMetricCount(value.activeSessions)
+    || !isMetricCount(value.memoryChars)
+    || !isMetricCount(value.requests7d)
+    || !isMetricCount(value.errors7d)
+    || value.errors7d > value.requests7d
+    || !isPercentage(value.errorRate7d)
+    || !Array.isArray(value.usageByDay)
+    || value.usageByDay.length !== days.length
+    || !value.usageByDay.every(isAdminOperationsUsageDay)
+    || !sameStringOrder(days, value.usageByDay.map((item) => item.day))) {
+    return false;
+  }
+  return value.used === value.usageByDay[0]?.used
+    && value.requests7d === sumBy(value.usageByDay, (item) => item.used)
+    && value.errorRate7d === metricRate(value.errors7d, value.requests7d);
+}
+
+function isAdminOperationsUsageDay(value: unknown): value is AdminOperationsUserStats["usageByDay"][number] {
+  return isRecord(value)
+    && hasExactKeys(value, ["day", "used"])
+    && isDayString(value.day)
+    && isMetricCount(value.used);
+}
+
+function isAdminOperationsRoute(value: unknown): value is AdminOperationsStats["routes"][number] {
+  return isRecord(value)
+    && !hasForbiddenSecretField(value)
+    && hasOnlyKeys(value, ["id", "enabled", "label", "type", "model", "baseUrl", "apiKeyRef", "requiresUserKey", "supportsImages"])
+    && isNonEmptyString(value.id)
+    && typeof value.enabled === "boolean"
+    && typeof value.label === "string"
+    && (value.type === undefined || value.type === "openai-chat" || value.type === "anthropic-messages")
+    && (value.model === undefined || typeof value.model === "string")
+    && (value.baseUrl === undefined || isSafeHttpUrl(value.baseUrl))
+    && (value.apiKeyRef === "" || isRouteSecretRef(value.apiKeyRef))
+    && typeof value.requiresUserKey === "boolean"
+    && typeof value.supportsImages === "boolean";
+}
+
+function isAdminAuditEntry(value: unknown): value is AdminAuditEntry {
+  return isRecord(value)
+    && !hasForbiddenSecretField(value)
+    && hasOnlyKeys(value, ["id", "action", "target", "at"])
+    && isBoundedText(value.id, 100, false)
+    && isBoundedText(value.action, 100, false)
+    && (value.target === undefined || isBoundedText(value.target, 100, false))
+    && isIsoDate(value.at);
+}
+
+function isAdminFeedbackEntry(value: unknown): value is AdminFeedbackEntry {
+  const reasons = new Set(["inaccurate", "misunderstood", "verbose", "format", "other"]);
+  return isRecord(value)
+    && !hasForbiddenSecretField(value)
+    && hasOnlyKeys(value, ["id", "label", "rating", "reason", "routeId", "chatId", "messageId", "at"])
+    && isBoundedText(value.id, 512, false)
+    && isBoundedText(value.label, 160, false)
+    && (value.rating === "up" || value.rating === "down")
+    && (
+      value.rating === "up"
+        ? value.reason === undefined || value.reason === ""
+        : typeof value.reason === "string" && reasons.has(value.reason)
+    )
+    && isBoundedText(value.routeId, 100, false)
+    && isBoundedText(value.chatId, 100, false)
+    && isBoundedText(value.messageId, 100, false)
+    && isIsoDate(value.at);
+}
+
 function hasValidAdminStreamEvidence(value: Record<string, unknown>, successes: number): boolean {
   const fields = [
     value.streamSamples,
@@ -1601,6 +1919,42 @@ function isSafeHttpUrl(value: unknown): value is string {
 
 function isIsoDate(value: unknown): value is string {
   return typeof value === "string" && Boolean(value.trim()) && Number.isFinite(Date.parse(value));
+}
+
+function isDayString(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function isDayArray(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.every(isDayString)
+    && new Set(value).size === value.length;
+}
+
+function isMetricCount(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value <= 1_000_000_000;
+}
+
+function isPercentage(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0 && value <= 100;
+}
+
+function isBoundedText(value: unknown, maxChars: number, allowEmpty: boolean): value is string {
+  return typeof value === "string" && value.length <= maxChars && (allowEmpty || Boolean(value.trim()));
+}
+
+function sameStringOrder(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function metricRate(part: number, total: number): number {
+  return total > 0 ? Number(((part / total) * 100).toFixed(1)) : 0;
+}
+
+function sumBy<T>(items: T[], select: (item: T) => number): number {
+  return items.reduce((sum, item) => sum + select(item), 0);
 }
 
 function isFiniteNumber(value: unknown): value is number {

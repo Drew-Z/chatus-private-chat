@@ -49,6 +49,7 @@ import {
 } from "../lib/admin-config";
 import { mergeAdminMemberProjection } from "../lib/admin-members";
 import { LogicalModelAdminPanel } from "./LogicalModelAdminPanel";
+import { AdminOperationsPanel } from "./AdminOperationsPanel";
 import { ProviderAdminPanel } from "./ProviderAdminPanel";
 import { PublicAccessAdminPanel } from "./PublicAccessAdminPanel";
 import { ReliabilityAdminPanel } from "./ReliabilityAdminPanel";
@@ -62,7 +63,7 @@ type AdminData = {
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
 
-type AdminView = "members" | "providers" | "models" | "public" | "reliability";
+type AdminView = "members" | "providers" | "models" | "public" | "reliability" | "operations";
 
 type MemberAccessDialogState =
   | { kind: "create"; label: string; existingMember: boolean }
@@ -502,7 +503,7 @@ export function AdminWorkspace({
           <div className="brand-mark small">C</div>
           <div>
             <strong>Chatus</strong>
-            <span>{activeView === "members" ? "成员分配" : activeView === "providers" ? "服务商池" : activeView === "models" ? "逻辑模型" : activeView === "public" ? "公开访问" : "可靠性"}</span>
+            <span>{adminViewLabel(activeView)}</span>
           </div>
         </div>
         <nav className="typed-admin-nav" aria-label="管理视图">
@@ -511,6 +512,7 @@ export function AdminWorkspace({
           <button className={activeView === "models" ? "active" : ""} type="button" onClick={() => selectView("models")} aria-pressed={activeView === "models"}>逻辑模型</button>
           <button className={activeView === "public" ? "active" : ""} type="button" onClick={() => selectView("public")} aria-pressed={activeView === "public"}>公开访问</button>
           <button className={activeView === "reliability" ? "active" : ""} type="button" onClick={() => selectView("reliability")} aria-pressed={activeView === "reliability"}>可靠性</button>
+          <button className={activeView === "operations" ? "active" : ""} type="button" onClick={() => selectView("operations")} aria-pressed={activeView === "operations"}>运营</button>
         </nav>
         <div className="typed-admin-actions">
           <button
@@ -810,8 +812,15 @@ export function AdminWorkspace({
             onNotice={setPanelNotice}
             resetKey={panelResetKey}
           />
-        ) : (
+        ) : activeView === "reliability" ? (
           <ReliabilityAdminPanel
+            onSessionExpired={onSessionExpired}
+            onNotice={setPanelNotice}
+            onDirtyChange={setPoolDirty}
+            refreshKey={panelResetKey}
+          />
+        ) : (
+          <AdminOperationsPanel
             onSessionExpired={onSessionExpired}
             onNotice={setPanelNotice}
             onDirtyChange={setPoolDirty}
@@ -838,6 +847,18 @@ export function AdminWorkspace({
       )}
     </main>
   );
+}
+
+function adminViewLabel(view: AdminView): string {
+  const labels: Record<AdminView, string> = {
+    members: "成员分配",
+    providers: "服务商池",
+    models: "逻辑模型",
+    public: "公开访问",
+    reliability: "可靠性",
+    operations: "运营",
+  };
+  return labels[view];
 }
 
 function MemberAccessDialog({

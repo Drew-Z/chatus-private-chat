@@ -2,11 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   exportUserData,
   isAdminConfigSnapshot,
+  isAdminAuditSnapshot,
+  isAdminFeedbackSnapshot,
   isAdminMemberCredentialResponse,
   isAdminMemberConfigRemovalResponse,
   isAdminMemberListResponse,
   isAdminMemberRevokeResponse,
   isAdminMemberSessionsResponse,
+  isAdminOperationsStats,
   isAdminReliabilitySnapshot,
   isAdminSessionProjection,
   isAgentConversation,
@@ -108,6 +111,63 @@ const validSession = {
     confirmation: "auto",
   }],
   agent: { transport: "cloudflare-ai-chat", basePath: "agent", instance: "member-1" },
+};
+
+const validOperationsStats = {
+  day: "2026-07-26",
+  days: ["2026-07-26", "2026-07-25"],
+  totals: { requests: 8, errors: 1, fallbacks: 1, rateLimited: 1, errorRate: 12.5 },
+  trend: [
+    { day: "2026-07-26", requests: 5, errors: 1, fallbacks: 1, rateLimited: 1, errorRate: 20 },
+    { day: "2026-07-25", requests: 3, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 },
+  ],
+  routeStats: [{
+    id: "primary",
+    label: "Primary",
+    model: "model-a",
+    ok7d: 7,
+    error7d: 1,
+    errorRate7d: 12.5,
+    days: [
+      { day: "2026-07-26", ok: 4, error: 1 },
+      { day: "2026-07-25", ok: 3, error: 0 },
+    ],
+  }],
+  users: [{
+    label: "bill",
+    enabled: true,
+    displayName: "Bill",
+    used: 5,
+    dailyLimit: 10,
+    remaining: 5,
+    defaultRoute: "primary",
+    allowedRoutes: ["primary"],
+    allowBringYourOwnKey: false,
+    hasSystemPrompt: false,
+    systemPromptChars: 0,
+    activeSessions: 2,
+    memoryChars: 120,
+    requests7d: 8,
+    errors7d: 1,
+    errorRate7d: 12.5,
+    usageByDay: [
+      { day: "2026-07-26", used: 5 },
+      { day: "2026-07-25", used: 3 },
+    ],
+  }],
+  routes: [{
+    id: "primary",
+    enabled: true,
+    label: "Primary",
+    type: "openai-chat",
+    model: "model-a",
+    baseUrl: "https://provider.example/v1",
+    apiKeyRef: "PRIMARY_KEY",
+    requiresUserKey: false,
+    supportsImages: true,
+  }],
+  configSource: "kv",
+  accessCodeSource: "managed",
 };
 
 describe("React client runtime validation", () => {
@@ -217,6 +277,71 @@ describe("React client runtime validation", () => {
       accessRevision: "a".repeat(64),
       accessSource: "default",
     })).toBe(false);
+  });
+
+  it("validates coherent exact operations statistics", () => {
+    expect(isAdminOperationsStats(validOperationsStats)).toBe(true);
+    expect(isAdminOperationsStats({ ...validOperationsStats, token: "secret" })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      day: "2026-02-31",
+      days: ["2026-02-31", "2026-02-28"],
+    })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      trend: [...validOperationsStats.trend].reverse(),
+    })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      totals: { ...validOperationsStats.totals, requests: 9 },
+    })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      routeStats: [{ ...validOperationsStats.routeStats[0], ok7d: 8 }],
+    })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      routeStats: [],
+    })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      users: [{ ...validOperationsStats.users[0], used: 4 }],
+    })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      routes: [{ ...validOperationsStats.routes[0], apiKeyRef: "sk-secret" }],
+    })).toBe(false);
+    expect(isAdminOperationsStats({
+      ...validOperationsStats,
+      routes: [{ ...validOperationsStats.routes[0], apiKey: "secret" }],
+    })).toBe(false);
+  });
+
+  it("accepts only exact secret-free audit and feedback metadata", () => {
+    const auditEntry = {
+      id: "audit-1",
+      action: "config.update",
+      target: "primary",
+      at: "2026-07-26T08:00:00.000Z",
+    };
+    expect(isAdminAuditSnapshot({ entries: [auditEntry] })).toBe(true);
+    expect(isAdminAuditSnapshot({ entries: [auditEntry, auditEntry] })).toBe(false);
+    expect(isAdminAuditSnapshot({ entries: [{ ...auditEntry, token: "secret" }] })).toBe(false);
+
+    const feedbackEntry = {
+      id: "bill:chat-1:message-1",
+      label: "bill",
+      rating: "down",
+      reason: "inaccurate",
+      routeId: "primary",
+      chatId: "chat-1",
+      messageId: "message-1",
+      at: "2026-07-26T08:10:00.000Z",
+    };
+    expect(isAdminFeedbackSnapshot({ entries: [feedbackEntry] })).toBe(true);
+    expect(isAdminFeedbackSnapshot({ entries: [feedbackEntry, feedbackEntry] })).toBe(false);
+    expect(isAdminFeedbackSnapshot({ entries: [{ ...feedbackEntry, message: "private content" }] })).toBe(false);
+    expect(isAdminFeedbackSnapshot({ entries: [{ ...feedbackEntry, reason: "raw-model-output" }] })).toBe(false);
   });
 
   it("accepts access codes only in exact one-time credential responses", () => {

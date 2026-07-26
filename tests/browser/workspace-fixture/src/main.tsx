@@ -4,9 +4,10 @@ import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
 import { MessageComposer } from "../../../../client/src/components/MessageComposer";
 import { MessageView, type MessageAction } from "../../../../client/src/components/MessageView";
+import { AdminOperationsContent } from "../../../../client/src/components/AdminOperationsPanel";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
-import type { AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
+import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
 import {
   addDraftAttachmentFiles,
   readDraftAttachment,
@@ -221,6 +222,73 @@ const reliabilityProviders: AdminReliabilityProvider[] = [{
   }],
 }];
 
+const operationsSnapshot: AdminOperationsSnapshot = {
+  stats: {
+    day: "2026-07-26",
+    days: ["2026-07-26", "2026-07-25"],
+    totals: { requests: 8, errors: 1, fallbacks: 1, rateLimited: 1, errorRate: 12.5 },
+    trend: [
+      { day: "2026-07-26", requests: 5, errors: 1, fallbacks: 1, rateLimited: 1, errorRate: 20 },
+      { day: "2026-07-25", requests: 3, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 },
+    ],
+    routeStats: [{
+      id: "reasoning",
+      label: "高质量推理逻辑模型",
+      model: "synthetic-operation-model-with-a-long-name",
+      ok7d: 7,
+      error7d: 1,
+      errorRate7d: 12.5,
+      days: [
+        { day: "2026-07-26", ok: 4, error: 1 },
+        { day: "2026-07-25", ok: 3, error: 0 },
+      ],
+    }],
+    users: [{
+      label: "synthetic-operations-member",
+      enabled: true,
+      displayName: "合成运营成员名称用于验证窄屏容器",
+      used: 5,
+      dailyLimit: 10,
+      remaining: 5,
+      defaultRoute: "reasoning",
+      allowedRoutes: ["reasoning"],
+      allowBringYourOwnKey: false,
+      hasSystemPrompt: false,
+      systemPromptChars: 0,
+      activeSessions: 2,
+      memoryChars: 120,
+      requests7d: 8,
+      errors7d: 1,
+      errorRate7d: 12.5,
+      usageByDay: [
+        { day: "2026-07-26", used: 5 },
+        { day: "2026-07-25", used: 3 },
+      ],
+    }],
+    routes: [{
+      id: "reasoning",
+      enabled: true,
+      label: "高质量推理逻辑模型",
+      apiKeyRef: "",
+      requiresUserKey: false,
+      supportsImages: true,
+    }],
+    configSource: "kv",
+    accessCodeSource: "managed",
+  },
+  audit: [{ id: "audit-1", action: "config.update", target: "reasoning", at: "2026-07-26T08:00:00.000Z" }],
+  feedback: [{
+    id: "feedback-1",
+    label: "synthetic-operations-member",
+    rating: "down",
+    reason: "inaccurate",
+    routeId: "reasoning",
+    chatId: "chat-1",
+    messageId: "message-1",
+    at: "2026-07-26T08:10:00.000Z",
+  }],
+};
+
 const fixturePixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 function fixtureAttachments(mode: string | null): DraftAttachment[] {
@@ -316,6 +384,14 @@ function WorkspaceFixture() {
     return (
       <main data-visual-fixture="true" style={{ minHeight: "100dvh", overflow: "hidden", background: "var(--surface)" }}>
         <ReliabilityTable providers={reliabilityProviders} />
+      </main>
+    );
+  }
+
+  if (params.get("view") === "operations") {
+    return (
+      <main data-visual-fixture="true" style={{ height: "100dvh", overflowX: "hidden", overflowY: "auto", background: "var(--surface)" }}>
+        <AdminOperationsContent snapshot={operationsSnapshot} />
       </main>
     );
   }

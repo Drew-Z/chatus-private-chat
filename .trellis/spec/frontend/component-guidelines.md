@@ -41,6 +41,15 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Provider and logical-model renames must check the current registry for an existing target ID before applying the draft. A collision is an inline validation error, not a delete-and-overwrite operation.
 - Offering capability overrides are three-state controls: unset inherits the provider/logical-model capability, while explicit true/false values are persisted on the offering.
 
+### Typed Admin Operations Projection
+
+- The typed Operations view reads the existing model-free `/api/admin/stats`, `/api/admin/audit`, and `/api/admin/feedback` endpoints through one browser API helper. Each response has an exact runtime decoder; components never cast raw JSON.
+- Statistics validation preserves the server projection, not only its field types: the current day is first, trend/route/user day arrays retain the same order, totals equal their daily sums, rates match their counts, route statistics match the configured route list, and current member usage matches the first daily bucket.
+- Render only aggregate counts, member labels/display names, logical-route metadata, feedback rating/reason/time, and bounded audit action/target/time. Never render prompts, completions, message text, stored memory, plaintext credentials, custom headers, or raw provider payloads. Conversation/message identifiers used by the feedback repository are not visible UI content.
+- Keep the view passive. Refreshing Operations may read Durable Object, KV, session, and real-task metric state, but it must not call model discovery, provider validation, route-health completions, or any other model endpoint.
+- Use an unframed, scannable operations layout. Summary metrics form one full-width band; sections use restrained separators rather than nested cards. The eight-column member table scrolls inside its own wrapper on narrow screens and must never widen the admin page.
+- Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model.
+
 ## Scenario: Logical Model And Provider Pool Administration
 
 ### 1. Scope / Trigger
