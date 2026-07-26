@@ -834,3 +834,36 @@ Default new member conversations to up to three enabled assigned Skills in admin
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Close team Agent productization
+
+**Date**: 2026-07-27
+**Task**: Close team Agent productization
+**Branch**: `main`
+
+### Summary
+
+Completed parent integration acceptance after all twelve child tasks, verified the full frontend, Worker, browser, Agent transport, type, and Wrangler release gates, and retained legacy protocol/storage surfaces only behind documented rollback and migration evidence gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `396a8bc` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
