@@ -24,7 +24,6 @@ import type {
   CapabilityStreamEvent,
   McpServerConfig,
   ModelTurn,
-  NormalizedToolCall,
   NormalizedToolDefinition,
   SkillConfig,
   ToolApprovalDecision,
@@ -109,6 +108,22 @@ import {
   normalizeMcpToolSchema,
   type McpRuntimeExecution,
 } from "./services/mcp-runtime";
+import {
+  appendProviderToolResults,
+  appendProviderTurn,
+  buildHeaders,
+  callProviderToolTurn,
+  clampNumber,
+  createProviderToolHistory,
+  DEFAULT_ANTHROPIC_VERSION,
+  formatUpstreamErrorMessage,
+  ProviderToolError,
+  routeUrl,
+  setAuthHeader,
+  toAnthropicMessages,
+  type ProviderToolExecutionResult,
+  type ProviderToolHistory,
+} from "./services/provider-tool-runtime";
 import type { ProviderCoordinator } from "./provider-coordinator";
 
 export type { ChatMessage } from "./contracts/chat";
@@ -274,17 +289,6 @@ type RouteSecretMetadata = Omit<ManagedSecretMetadata, "namespace" | "ref" | "so
 
 type McpSecretMetadata = Omit<ManagedSecretMetadata, "namespace" | "ref"> & { secretRef: string };
 
-type AnthropicContentBlock =
-  | { type: "text"; text: string }
-  | {
-      type: "image";
-      source: {
-        type: "base64";
-        media_type: string;
-        data: string;
-      };
-    };
-
 export type Env = {
   ASSETS: Fetcher;
   CHAT_STORE: KVNamespace;
@@ -343,7 +347,6 @@ const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const ADMIN_AUDIT_KEY = "config:admin_audit";
 const FEEDBACK_KEY = "feedback:recent";
 const MAX_FEEDBACK_ENTRIES = 100;
-const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
@@ -5729,27 +5732,6 @@ type CapabilityCoordination = {
   cleanup: () => void;
 };
 
-type ToolProviderHistory =
-  | { type: "openai-chat"; messages: unknown[] }
-  | { type: "anthropic-messages"; system: string; messages: unknown[] };
-
-type ToolExecutionResult = {
-  providerCallId: string;
-  text: string;
-  isError: boolean;
-};
-
-class ProviderToolError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    readonly terminal: boolean,
-  ) {
-    super(message);
-    this.name = "ProviderToolError";
-  }
-}
-
 function capabilityErrorResponse(code: string, message: string): Response {
   return jsonResponse({ error: code, message }, code === "invalid_chat_id" ? 400 : 429);
 }
@@ -5852,7 +5834,7 @@ async function runCapabilityLoopInner(
         routeId: string;
         route: ResolvedProviderRoute;
         lease: ProviderLease;
-        history: ToolProviderHistory;
+        history: ProviderToolHistory;
         turn: ModelTurn;
         fallback: boolean;
         startedAt: number;
@@ -5882,7 +5864,7 @@ async function runCapabilityLoopInner(
     remaining.splice(remaining.indexOf(route), 1);
     const routeId = route.routeId;
     attemptedRoutes += 1;
-    const history = createToolProviderHistory(route, args.messages);
+    const history = createProviderToolHistory(route, args.messages);
     const startedAt = Date.now();
     const fallback = route.planIndex > 0 || attemptedRoutes > 1;
     let handedOff = false;
@@ -5893,7 +5875,7 @@ async function runCapabilityLoopInner(
         history,
         tools: args.tools,
         temperature: args.temperature,
-        env: args.env,
+        defaultMaxTokens: numberEnv(args.env.DEFAULT_MAX_TOKENS, 4096),
         signal,
         usedUserKey: route.credential.usedUserKey,
       });
@@ -5971,7 +5953,7 @@ async function runCapabilityLoopInner(
     if (totalCalls + turn.toolCalls.length > MAX_TOOL_CALLS) {
       throw new CapabilityError("tool_call_limit", `单次对话最多执行 ${MAX_TOOL_CALLS} 次工具调用`);
     }
-    const results: ToolExecutionResult[] = [];
+    const results: ProviderToolExecutionResult[] = [];
     for (const call of turn.toolCalls) {
       const definition = aliasMap.get(call.providerName);
       if (!definition || definition.id !== call.toolId) {
@@ -6057,7 +6039,7 @@ async function runCapabilityLoopInner(
         history: selected.history,
         tools: args.tools,
         temperature: args.temperature,
-        env: args.env,
+        defaultMaxTokens: numberEnv(args.env.DEFAULT_MAX_TOKENS, 4096),
         signal,
         usedUserKey: selected.usedUserKey,
       });
@@ -6083,229 +6065,6 @@ async function runCapabilityLoopInner(
   } finally {
     await selected.lease.release();
   }
-}
-
-function createToolProviderHistory(route: ResolvedProviderRoute, messages: ChatMessage[]): ToolProviderHistory {
-  if (route.type === "anthropic-messages") {
-    const anthropic = toAnthropicMessages(messages);
-    return { type: route.type, system: anthropic.system, messages: anthropic.messages };
-  }
-  return { type: route.type, messages: messages.map((message) => ({ role: message.role, content: message.content })) };
-}
-
-async function callProviderToolTurn(args: {
-  route: ResolvedProviderRoute;
-  apiKey: string;
-  history: ToolProviderHistory;
-  tools: NormalizedToolDefinition[];
-  temperature: unknown;
-  env: Env;
-  signal: AbortSignal;
-  usedUserKey: boolean;
-}): Promise<ModelTurn> {
-  const response = args.route.type === "anthropic-messages"
-    ? await callAnthropicToolTurn(args)
-    : await callOpenAiToolTurn(args);
-  const text = await response.text();
-  if (!response.ok) {
-    const terminal = isTerminalProviderFailure(response.status, args.usedUserKey);
-    throw new ProviderToolError(response.status, formatUpstreamErrorMessage(text), terminal);
-  }
-  try {
-    const payload = JSON.parse(text) as unknown;
-    return args.route.type === "anthropic-messages"
-      ? parseAnthropicToolTurn(payload, args.tools)
-      : parseOpenAiToolTurn(payload, args.tools);
-  } catch (error) {
-    if (error instanceof CapabilityError) throw error;
-    throw new ProviderToolError(502, "上游返回了无法识别的工具响应", false);
-  }
-}
-
-async function callOpenAiToolTurn(args: {
-  route: ResolvedProviderRoute;
-  apiKey: string;
-  history: ToolProviderHistory;
-  tools: NormalizedToolDefinition[];
-  temperature: unknown;
-  signal: AbortSignal;
-}): Promise<Response> {
-  if (args.history.type !== "openai-chat") throw new CapabilityError("provider_protocol_error", "Provider history mismatch");
-  const headers = buildHeaders(args.route.headers);
-  setAuthHeader(headers, args.route, args.apiKey, "Authorization");
-  headers.set("Content-Type", "application/json");
-  headers.set("Accept", "application/json");
-  return fetch(args.route.directEndpoint ? args.route.baseUrl : routeUrl(args.route, "/chat/completions"), {
-    method: "POST",
-    headers,
-    signal: args.signal,
-    body: JSON.stringify({
-      model: args.route.model,
-      messages: args.history.messages,
-      tools: args.tools.map((tool) => ({
-        type: "function",
-        function: {
-          name: tool.providerName,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        },
-      })),
-      tool_choice: "auto",
-      stream: false,
-      temperature: clampNumber(args.temperature, 0, 2, args.route.temperature ?? 0.7),
-      ...(args.route.maxTokens ? { max_tokens: args.route.maxTokens } : {}),
-    }),
-  });
-}
-
-async function callAnthropicToolTurn(args: {
-  route: ResolvedProviderRoute;
-  apiKey: string;
-  history: ToolProviderHistory;
-  tools: NormalizedToolDefinition[];
-  temperature: unknown;
-  env: Env;
-  signal: AbortSignal;
-}): Promise<Response> {
-  if (args.history.type !== "anthropic-messages") throw new CapabilityError("provider_protocol_error", "Provider history mismatch");
-  const headers = buildHeaders(args.route.headers);
-  setAuthHeader(headers, args.route, args.apiKey, "x-api-key");
-  headers.set("Content-Type", "application/json");
-  headers.set("Accept", "application/json");
-  if (!headers.has("anthropic-version")) headers.set("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
-  return fetch(args.route.directEndpoint ? args.route.baseUrl : routeUrl(args.route, "/v1/messages"), {
-    method: "POST",
-    headers,
-    signal: args.signal,
-    body: JSON.stringify({
-      model: args.route.model,
-      messages: args.history.messages,
-      tools: args.tools.map((tool) => ({
-        name: tool.providerName,
-        description: tool.description,
-        input_schema: tool.inputSchema,
-      })),
-      stream: false,
-      max_tokens: args.route.maxTokens || numberEnv(args.env.DEFAULT_MAX_TOKENS, 4096),
-      temperature: clampNumber(args.temperature, 0, 1, args.route.temperature ?? 0.7),
-      ...(args.history.system ? { system: args.history.system } : {}),
-    }),
-  });
-}
-
-function parseOpenAiToolTurn(value: unknown, tools: NormalizedToolDefinition[]): ModelTurn {
-  if (!isRecord(value) || !Array.isArray(value.choices) || !isRecord(value.choices[0])) {
-    throw new CapabilityError("provider_protocol_error", "OpenAI-compatible 响应缺少 choices");
-  }
-  const choice = value.choices[0];
-  if (!isRecord(choice.message)) throw new CapabilityError("provider_protocol_error", "OpenAI-compatible 响应缺少 message");
-  const message = choice.message;
-  const text = typeof message.content === "string" ? message.content : "";
-  const aliasMap = new Map(tools.map((tool) => [tool.providerName, tool.id]));
-  const toolCalls: NormalizedToolCall[] = [];
-  if (Array.isArray(message.tool_calls)) {
-    for (const rawCall of message.tool_calls) {
-      if (!isRecord(rawCall) || !isRecord(rawCall.function)) {
-        throw new CapabilityError("provider_protocol_error", "OpenAI-compatible tool_call 格式无效");
-      }
-      const providerCallId = typeof rawCall.id === "string" ? rawCall.id : "";
-      const providerName = typeof rawCall.function.name === "string" ? rawCall.function.name : "";
-      const rawArguments = typeof rawCall.function.arguments === "string" ? rawCall.function.arguments : "";
-      if (!providerCallId || !providerName || !aliasMap.has(providerName)) {
-        throw new CapabilityError("tool_not_allowed", "模型请求了未授权的工具");
-      }
-      let parsedArguments: unknown;
-      let argumentsValid = true;
-      try {
-        parsedArguments = JSON.parse(rawArguments);
-      } catch {
-        parsedArguments = null;
-        argumentsValid = false;
-      }
-      toolCalls.push({
-        providerCallId,
-        providerName,
-        toolId: aliasMap.get(providerName) || "",
-        arguments: parsedArguments,
-        argumentsValid,
-      });
-    }
-  }
-  return {
-    text,
-    toolCalls,
-    finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : "",
-    providerTurn: {
-      role: "assistant",
-      content: text || null,
-      ...(Array.isArray(message.tool_calls) ? { tool_calls: message.tool_calls } : {}),
-    },
-  };
-}
-
-function parseAnthropicToolTurn(value: unknown, tools: NormalizedToolDefinition[]): ModelTurn {
-  if (!isRecord(value) || !Array.isArray(value.content)) {
-    throw new CapabilityError("provider_protocol_error", "Anthropic 响应缺少 content");
-  }
-  const aliasMap = new Map(tools.map((tool) => [tool.providerName, tool.id]));
-  const textParts: string[] = [];
-  const toolCalls: NormalizedToolCall[] = [];
-  const providerContent: unknown[] = [];
-  for (const block of value.content) {
-    if (!isRecord(block) || typeof block.type !== "string") {
-      throw new CapabilityError("provider_protocol_error", "Anthropic content block 格式无效");
-    }
-    if (block.type === "text" && typeof block.text === "string") {
-      textParts.push(block.text);
-      providerContent.push({ type: "text", text: block.text });
-      continue;
-    }
-    if (block.type === "tool_use") {
-      const providerCallId = typeof block.id === "string" ? block.id : "";
-      const providerName = typeof block.name === "string" ? block.name : "";
-      if (!providerCallId || !providerName || !aliasMap.has(providerName)) {
-        throw new CapabilityError("tool_not_allowed", "模型请求了未授权的工具");
-      }
-      toolCalls.push({
-        providerCallId,
-        providerName,
-        toolId: aliasMap.get(providerName) || "",
-        arguments: block.input,
-        argumentsValid: true,
-      });
-      providerContent.push({ type: "tool_use", id: providerCallId, name: providerName, input: block.input });
-      continue;
-    }
-    throw new CapabilityError("provider_protocol_error", `Anthropic 返回了不支持的 ${block.type} 内容块`);
-  }
-  return {
-    text: textParts.join(""),
-    toolCalls,
-    finishReason: typeof value.stop_reason === "string" ? value.stop_reason : "",
-    providerTurn: { role: "assistant", content: providerContent },
-  };
-}
-
-function appendProviderTurn(history: ToolProviderHistory, providerTurn: unknown): void {
-  history.messages.push(providerTurn);
-}
-
-function appendProviderToolResults(history: ToolProviderHistory, results: ToolExecutionResult[]): void {
-  if (history.type === "openai-chat") {
-    for (const result of results) {
-      history.messages.push({ role: "tool", tool_call_id: result.providerCallId, content: result.text });
-    }
-    return;
-  }
-  history.messages.push({
-    role: "user",
-    content: results.map((result) => ({
-      type: "tool_result",
-      tool_use_id: result.providerCallId,
-      content: result.text,
-      ...(result.isError ? { is_error: true } : {}),
-    })),
-  });
 }
 
 function validateToolArguments(definition: NormalizedToolDefinition, value: unknown): void {
@@ -6470,19 +6229,6 @@ function toCapabilityError(error: unknown): CapabilityError {
   return new CapabilityError("tool_execution_failed", error instanceof Error ? error.message : "工具执行失败", true);
 }
 
-function formatUpstreamErrorMessage(body: string): string {
-  const trimmed = body.trim();
-  if (!trimmed) return "upstream returned an empty error";
-
-  try {
-    const parsed = JSON.parse(trimmed);
-    const message = findErrorMessage(parsed);
-    return message || trimmed.slice(0, 500);
-  } catch {
-    return trimmed.slice(0, 500);
-  }
-}
-
 function providerErrorStatus(error: unknown): number | undefined {
   if (!isRecord(error)) return undefined;
   return typeof error.statusCode === "number"
@@ -6494,13 +6240,6 @@ function providerErrorStatus(error: unknown): number | undefined {
 
 function upstreamReliabilityOutcome(error: unknown): RouteReliabilityOutcome | undefined {
   return error instanceof UpstreamRequestError ? error.outcome : undefined;
-}
-
-function findErrorMessage(value: unknown): string {
-  if (!isRecord(value)) return "";
-  if (typeof value.message === "string") return value.message;
-  if (isRecord(value.error)) return findErrorMessage(value.error);
-  return "";
 }
 
 async function callOpenAiChat(args: {
@@ -6562,52 +6301,6 @@ async function callAnthropicMessages(args: {
       ...(anthropic.system ? { system: anthropic.system } : {}),
     }),
   });
-}
-
-function toAnthropicMessages(messages: ChatMessage[]): {
-  system: string;
-  messages: Array<{ role: "user" | "assistant"; content: string | AnthropicContentBlock[] }>;
-} {
-  const system: string[] = [];
-  const converted: Array<{ role: "user" | "assistant"; content: string | AnthropicContentBlock[] }> = [];
-
-  for (const message of messages) {
-    if (message.role === "system") {
-      system.push(extractText(message.content));
-      continue;
-    }
-
-    if (typeof message.content === "string") {
-      converted.push({ role: message.role, content: message.content });
-      continue;
-    }
-
-    const content: AnthropicContentBlock[] = [];
-    for (const part of message.content) {
-      if (part.type === "text") {
-        content.push({ type: "text", text: part.text });
-        continue;
-      }
-
-      const dataImage = parseDataImage(part.image_url.url);
-      if (!dataImage.ok) throw new Error(dataImage.error);
-      content.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: dataImage.image.mediaType,
-          data: dataImage.image.data,
-        },
-      });
-    }
-
-    converted.push({ role: message.role, content: content.length ? content : "" });
-  }
-
-  return {
-    system: system.filter(Boolean).join("\n\n"),
-    messages: converted,
-  };
 }
 
 function transformAnthropicStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
@@ -7202,33 +6895,6 @@ async function findAccessLabel(accessCodes: string, code: string): Promise<strin
   return null;
 }
 
-function buildHeaders(input?: Record<string, string>): Headers {
-  const headers = new Headers();
-  for (const [key, value] of Object.entries(input || {})) {
-    headers.set(key, value);
-  }
-  return headers;
-}
-
-function setAuthHeader(
-  headers: Headers,
-  route: RouteConfig | ResolvedProviderRoute,
-  apiKey: string,
-  defaultHeader: string,
-) {
-  const header = route.authHeader || defaultHeader;
-  if (headers.has(header)) return;
-  const lower = header.toLowerCase();
-  const prefix =
-    route.authPrefix !== undefined ? route.authPrefix : lower === "authorization" ? "Bearer " : "";
-  headers.set(header, `${prefix}${apiKey}`);
-}
-
-function routeUrl(route: ResolvedProviderRoute, suffix: string): string {
-  const base = route.baseUrl.trim().replace(/\/+$/, "");
-  return route.directEndpoint ? base : `${base}${suffix}`;
-}
-
 function normalizeStringRecord(value: unknown): Record<string, string> | undefined {
   if (!isRecord(value)) return undefined;
   const output: Record<string, string> = {};
@@ -7680,11 +7346,6 @@ async function sourceIdentityDigest(request: Request): Promise<string> {
     || "unknown";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, value));
 }
 
 function secondsUntilNextUtcDay(nowMs = Date.now()): number {
