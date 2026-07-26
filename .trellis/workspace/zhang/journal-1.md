@@ -801,3 +801,36 @@ Defined the instance backup and restore readiness contract, documented key-custo
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: Complete automatic first-use Skill selection
+
+**Date**: 2026-07-27
+**Task**: Complete automatic first-use Skill selection
+**Branch**: `main`
+
+### Summary
+
+Default new member conversations to up to three enabled assigned Skills in administrator order while preserving explicit empty selection and existing conversation semantics; add frontend and Worker regression coverage.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d60e308` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
