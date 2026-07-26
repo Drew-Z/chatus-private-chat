@@ -89,6 +89,11 @@ import {
   type RouteReliabilityRecord,
 } from "./services/route-reliability";
 import { acquireFirstAvailableProvider, acquireProviderLease, type ProviderLease } from "./services/provider-lease";
+import {
+  createQuotaAdmissionService,
+  type QuotaBucket,
+  type QuotaUsageResult,
+} from "./services/quota-admission";
 import type { ProviderCoordinator } from "./provider-coordinator";
 
 export type { ChatMessage } from "./contracts/chat";
@@ -321,6 +326,7 @@ const ADMIN_COOKIE = "chatus_admin";
 const MAX_MESSAGES = 40;
 const MAX_REQUEST_BYTES = 7_000_000;
 const DEFAULT_DAILY_LIMIT = 500;
+const DEFAULT_MINUTE_LIMIT = 12;
 const DEFAULT_MEMORY_CHARS = 4_000;
 const DEFAULT_SUMMARY_CHARS = 1_200;
 const DEFAULT_CONTEXT_CHARS = 14_000;
@@ -416,20 +422,6 @@ class UpstreamRequestError extends Error {
   }
 }
 
-type UsageResult =
-  | { ok: true; remaining: number }
-  | { ok: false; retryAfter: number; reset: "daily" | "minute"; scope?: "session" | "source" };
-
-type TurnAdmission =
-  | { ok: true; remaining: number; release: () => Promise<void> }
-  | {
-      ok: false;
-      error: "rate_limited" | "concurrent_turn";
-      retryAfter: number;
-      reset?: "daily" | "minute";
-      scope?: "session" | "source";
-    };
-
 type ChatMetric = {
   kind: "success" | "failure" | "route_error" | "rate_limited";
   routeId?: string;
@@ -444,7 +436,7 @@ type UserStats = {
   metrics: Array<{ day: string; kind: string; routeId: string; count: number }>;
 };
 
-export class UserState extends DurableObject<Env> {
+export class UserState extends DurableObject<Env> implements QuotaBucket {
   private readonly runtimeEnv: Env;
   private readonly activeCapabilityRuns = new Map<string, ActiveCapabilityRun>();
   private readonly conversationTrust = new Map<string, { toolIds: Set<string>; lastSeenAt: number }>();
@@ -505,7 +497,7 @@ export class UserState extends DurableObject<Env> {
     minuteLimit: number,
     nowMs: number,
     legacyDayCount = 0,
-  ): Promise<UsageResult> {
+  ): Promise<QuotaUsageResult> {
     const day = new Date(nowMs).toISOString().slice(0, 10);
     const minute = Math.floor(nowMs / 60_000);
     const sql = this.ctx.storage.sql;
@@ -1533,7 +1525,7 @@ async function buildSessionProjection(env: Env, session: Session): Promise<Recor
   const capabilities = getPublicCapabilities(config, access.user);
   const policy = sessionCapabilities(session, access);
   const [usage, routes] = await Promise.all([
-    getUsage(env, session, access.user),
+    quotaAdmissionService(env).getUsage(session, access.user),
     Promise.all(access.routes.map((route) => withPublicRouteHealth(env, route))),
   ]);
   return {
@@ -4224,7 +4216,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     return jsonResponse({ error: hasImages ? "image_not_supported" : "route_not_allowed" }, hasImages ? 400 : 403);
   }
 
-  const admission = await admitTurn(env, session, access);
+  const admission = await quotaAdmissionService(env).admitTurn(session, access);
   if (!admission.ok) {
     if (admission.error === "rate_limited") {
       await recordChatMetric(env, { kind: "rate_limited", label: session.label });
@@ -4555,7 +4547,7 @@ export async function prepareTeamAgentTurn(
     };
   }
 
-  const admission = await admitTurn(env, session, access, input.continuation !== true);
+  const admission = await quotaAdmissionService(env).admitTurn(session, access, input.continuation !== true);
   if (!admission.ok) {
     if (admission.error === "rate_limited") {
       await recordChatMetric(env, { kind: "rate_limited", label: session.label });
@@ -5554,7 +5546,7 @@ async function completeWithUserRoute(
   }
 
   if (args.consumeQuota) {
-    const limitResult = await consumeLimits(env, session, access.user);
+    const limitResult = await quotaAdmissionService(env).consumeLimits(session, access.user);
     if (!limitResult.ok) {
       return {
         ok: false,
@@ -7478,92 +7470,6 @@ async function getAdminSession(request: Request, env: Env): Promise<AdminSession
   }
 }
 
-async function consumeLimits(
-  env: Env,
-  session: Session,
-  user: UserConfig,
-  publicAccess?: PublicAccessConfig,
-): Promise<UsageResult> {
-  const now = Date.now();
-  const day = new Date(now).toISOString().slice(0, 10);
-  const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
-  const minuteLimit = user.minuteMessageLimit || numberEnv(env.MINUTE_MESSAGE_LIMIT, 12);
-  const legacyDayCount = positiveCount(await env.CHAT_STORE.get(usageKey(session.label, day)));
-  const personalState = getUserState(env, session.label);
-  const personal = await personalState.consumeLimits(dailyLimit, minuteLimit, now, legacyDayCount);
-  if (!personal.ok || session.kind === "member") {
-    return personal.ok ? personal : { ...personal, scope: "session" };
-  }
-
-  const policy = publicAccess || normalizePublicAccessConfig(undefined);
-  const sourceState = getUserState(env, session.sourceKey);
-  const source = await sourceState.consumeLimits(
-    policy.sourceDailyMessageLimit,
-    policy.sourceMinuteMessageLimit,
-    now,
-  );
-  if (!source.ok) {
-    await personalState.refundLimits(now);
-    return { ...source, scope: "source" };
-  }
-  return personal;
-}
-
-async function admitTurn(
-  env: Env,
-  session: Session,
-  access: RouteAccess,
-  consumeQuota = true,
-): Promise<TurnAdmission> {
-  const now = Date.now();
-  const limits = consumeQuota
-    ? await consumeLimits(env, session, access.user, access.publicAccess)
-    : { ok: true as const, remaining: (await getUsage(env, session, access.user)).remaining };
-  if (!limits.ok) {
-    return {
-      ok: false,
-      error: "rate_limited",
-      retryAfter: limits.retryAfter,
-      reset: limits.reset === "daily" ? "daily" : "minute",
-      scope: limits.scope,
-    };
-  }
-  if (session.kind === "member") return { ok: true, remaining: limits.remaining, release: async () => undefined };
-
-  const token = randomToken();
-  const state = getUserState(env, session.label);
-  const lease = await state.acquireGuestTurn(token, now, GUEST_TURN_LEASE_MS);
-  if (!lease.ok) {
-    if (consumeQuota) await refundGuestLimits(env, session, now);
-    return { ok: false, error: "concurrent_turn", retryAfter: lease.retryAfter };
-  }
-  let released = false;
-  return {
-    ok: true,
-    remaining: limits.remaining,
-    release: async () => {
-      if (released) return;
-      released = true;
-      await state.releaseGuestTurn(token);
-    },
-  };
-}
-
-async function refundGuestLimits(env: Env, session: GuestSession, nowMs: number): Promise<void> {
-  await Promise.all([
-    getUserState(env, session.label).refundLimits(nowMs),
-    getUserState(env, session.sourceKey).refundLimits(nowMs),
-  ]);
-}
-
-async function getUsage(env: Env, session: Session, user: UserConfig) {
-  const day = new Date().toISOString().slice(0, 10);
-  const dailyLimit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
-  const legacyUsed = positiveCount(await env.CHAT_STORE.get(usageKey(session.label, day)));
-  const used = await getUserState(env, session.label).getUsage(day, legacyUsed);
-  return { used, limit: dailyLimit, remaining: Math.max(0, dailyLimit - used) };
-}
-
 async function countActiveSessionsByLabel(env: Env): Promise<Map<string, number>> {
   const output = new Map<string, number>();
   let cursor: string | undefined;
@@ -8269,6 +8175,22 @@ async function accessCodesFingerprint(value: string): Promise<string> {
 function positiveCount(value: string | null): number {
   const parsed = Number(value || "0");
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function quotaAdmissionService(env: Env) {
+  return createQuotaAdmissionService({
+    getBucket: (label) => getUserState(env, label),
+    readLegacyDayCount: async (label, day) => positiveCount(await env.CHAT_STORE.get(usageKey(label, day))),
+    defaultDailyLimit: numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT),
+    defaultMinuteLimit: numberEnv(env.MINUTE_MESSAGE_LIMIT, DEFAULT_MINUTE_LIMIT),
+    defaultGuestPolicy: {
+      sourceDailyMessageLimit: DEFAULT_GUEST_SOURCE_DAILY_LIMIT,
+      sourceMinuteMessageLimit: DEFAULT_GUEST_SOURCE_MINUTE_LIMIT,
+    },
+    guestTurnLeaseMs: GUEST_TURN_LEASE_MS,
+    now: () => Date.now(),
+    createToken: randomToken,
+  });
 }
 
 function getUserState(env: Env, label: string): DurableObjectStub<UserState> {
