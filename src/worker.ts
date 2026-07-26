@@ -126,6 +126,11 @@ import {
   callProviderStream,
   UpstreamRequestError,
 } from "./services/provider-stream-runtime";
+import {
+  createFeedbackAuditService,
+  isDownFeedbackReason,
+  type FeedbackReason,
+} from "./services/feedback-audit";
 import type { ProviderCoordinator } from "./provider-coordinator";
 
 export type { ChatMessage } from "./contracts/chat";
@@ -345,9 +350,6 @@ const MAX_USER_DATA_EXPORT_CONVERSATION_BYTES = 512_000;
 const USER_DATA_EXPORT_ITEM_HEADROOM_BYTES = 4_096;
 const AGENT_LEGACY_MIGRATION_ID = "legacy-user-state-v1";
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
-const ADMIN_AUDIT_KEY = "config:admin_audit";
-const FEEDBACK_KEY = "feedback:recent";
-const MAX_FEEDBACK_ENTRIES = 100;
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
@@ -1145,16 +1147,15 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/user-data" && request.method === "DELETE") {
-    const [revoked, feedback] = await Promise.all([
+    const [revoked] = await Promise.all([
       revokeSessionsByLabel(env, session.label),
-      loadFeedback(env),
       getUserState(env, session.label).purgeUserData(),
       purgeAgentUserData(env, session.label),
     ]);
     await Promise.all([
       env.CHAT_STORE.delete(memoryKey(session.label)),
       env.CHAT_STORE.delete(chatIndexKey(session.label)),
-      env.CHAT_STORE.put(FEEDBACK_KEY, JSON.stringify(feedback.filter((entry) => entry.label !== session.label))),
+      feedbackAuditService(env).removeFeedbackByLabel(session.label),
       ...Array.from({ length: METRICS_DAYS }, (_, index) =>
         env.CHAT_STORE.delete(usageKey(session.label, utcDayString(index))),
       ),
@@ -1415,10 +1416,10 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
   }
 
   if (url.pathname === "/api/admin/audit" && request.method === "GET") {
-    return jsonResponse({ entries: await loadAdminAudit(env) });
+    return jsonResponse({ entries: await feedbackAuditService(env).listAdminAudit() });
   }
   if (url.pathname === "/api/admin/feedback" && request.method === "GET") {
-    return jsonResponse({ entries: await loadFeedback(env) });
+    return jsonResponse({ entries: await feedbackAuditService(env).listFeedback() });
   }
 
   if (url.pathname === "/api/admin/sessions/revoke" && request.method === "POST") {
@@ -2481,8 +2482,10 @@ async function handleCreateAdminUser(request: Request, env: Env): Promise<Respon
 async function handleFeedback(request: Request, env: Env, session: Session): Promise<Response> {
   const body = await readJson<{ rating?: unknown; reason?: unknown; routeId?: unknown; chatId?: unknown; messageId?: unknown }>(request);
   if (body.rating !== "up" && body.rating !== "down") return jsonResponse({ error: "invalid_rating" }, 400);
-  const allowedReasons = new Set(["inaccurate", "misunderstood", "verbose", "format", "other"]);
-  const reason = body.rating === "down" && typeof body.reason === "string" && allowedReasons.has(body.reason) ? body.reason : "";
+  const reason: FeedbackReason = body.rating === "down"
+    && isDownFeedbackReason(body.reason)
+    ? body.reason
+    : "";
   if (body.rating === "down" && !reason) return jsonResponse({ error: "feedback_reason_required" }, 400);
   const routeId = typeof body.routeId === "string" ? body.routeId.trim().slice(0, 100) : "";
   const chatId = typeof body.chatId === "string" ? body.chatId.trim().slice(0, 100) : "";
@@ -2490,23 +2493,15 @@ async function handleFeedback(request: Request, env: Env, session: Session): Pro
   if (!routeId || !chatId || !messageId) return jsonResponse({ error: "feedback_metadata_required" }, 400);
   const config = await loadAppConfig(env);
   if (!config.routes[routeId]) return jsonResponse({ error: "route_not_found" }, 404);
-  const entries = await loadFeedback(env);
-  const id = `${session.label}:${chatId}:${messageId}`;
-  const entry = { id, label: session.label, rating: body.rating, reason, routeId, chatId, messageId, at: new Date().toISOString() };
-  const next = [entry, ...entries.filter((item) => item.id !== id)].slice(0, MAX_FEEDBACK_ENTRIES);
-  await env.CHAT_STORE.put(FEEDBACK_KEY, JSON.stringify(next));
+  await feedbackAuditService(env).upsertFeedback({
+    label: session.label,
+    rating: body.rating,
+    reason,
+    routeId,
+    chatId,
+    messageId,
+  });
   return jsonResponse({ ok: true, rating: body.rating });
-}
-
-async function loadFeedback(env: Env): Promise<Array<{ id: string; label: string; rating: "up" | "down"; reason?: string; routeId: string; chatId: string; messageId: string; at: string }>> {
-  const raw = await env.CHAT_STORE.get(FEEDBACK_KEY);
-  if (!raw) return [];
-  try {
-    const entries = JSON.parse(raw);
-    return Array.isArray(entries) ? entries.slice(0, MAX_FEEDBACK_ENTRIES) : [];
-  } catch {
-    return [];
-  }
 }
 
 async function handleMemorySuggest(request: Request, env: Env, session: Session): Promise<Response> {
@@ -5075,6 +5070,14 @@ function managedSecretService(env: Env) {
   });
 }
 
+function feedbackAuditService(env: Env) {
+  return createFeedbackAuditService({
+    store: env.CHAT_STORE,
+    nowIso: () => new Date().toISOString(),
+    createId: () => crypto.randomUUID(),
+  });
+}
+
 function mcpRuntime(env: Env) {
   const secrets = managedSecretService(env);
   return createMcpRuntime({
@@ -6764,35 +6767,8 @@ function remoteToolLabel(executor: ToolExecutor): string {
   return executor.type === "builtin" ? "文本统计" : executor.remoteName;
 }
 
-type AdminAuditEntry = {
-  id: string;
-  action: string;
-  target?: string;
-  at: string;
-};
-
-async function loadAdminAudit(env: Env): Promise<AdminAuditEntry[]> {
-  const raw = await env.CHAT_STORE.get(ADMIN_AUDIT_KEY);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((entry): entry is AdminAuditEntry =>
-      isRecord(entry) && typeof entry.id === "string" && typeof entry.action === "string" && typeof entry.at === "string"
-    ).slice(0, 100);
-  } catch {
-    return [];
-  }
-}
-
 async function appendAdminAudit(env: Env, action: string, target?: string): Promise<void> {
-  try {
-    const entries = await loadAdminAudit(env);
-    entries.unshift({ id: crypto.randomUUID(), action, ...(target ? { target: target.slice(0, 100) } : {}), at: new Date().toISOString() });
-    await env.CHAT_STORE.put(ADMIN_AUDIT_KEY, JSON.stringify(entries.slice(0, 100)));
-  } catch {
-    // Audit persistence must not block the requested admin operation.
-  }
+  await feedbackAuditService(env).appendAdminAudit(action, target);
 }
 
 async function revokeSessionsByLabel(env: Env, label: string): Promise<number> {

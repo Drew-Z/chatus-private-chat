@@ -13,4 +13,5 @@
 | [Provider Plan Runtime](./provider-plan-runtime.md) | Passive quality ordering, access/capability filtering, BYOK gating, and credential preparation |
 | [Provider Tool Runtime](./provider-tool-runtime.md) | OpenAI/Anthropic tool-turn adapters, history, parsing, and error contracts |
 | [Provider Stream Runtime](./provider-stream-runtime.md) | OpenAI/Anthropic streaming adapters, pre-output validation, cancellation, and fallback boundary |
+| [Feedback And Administrative Audit Persistence](./feedback-audit-persistence.md) | KV record ownership, exact decoding, privacy, retention, deletion, and failure policies |
 | [Backup, Restore, And Permanent Deletion](./backup-restore.md) | Recovery meanings, data inventory, readiness gates, key custody, and purge invariants |
