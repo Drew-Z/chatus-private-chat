@@ -12,7 +12,7 @@
 - [x] Repair workspace root-index generation or validation and expose a repository-wide consistency CLI.
 - [x] Run `trellis-check` and resolve every finding.
 - [x] Run both browser suites and all five baseline shipping checks.
-- [ ] Update delivery/Trellis specs, record evidence and work commit, commit, open and merge a PR, then archive.
+- [x] Update delivery/Trellis specs, record evidence and work commit, commit, open and merge a PR, then archive.
 
 ## Risky Files
 

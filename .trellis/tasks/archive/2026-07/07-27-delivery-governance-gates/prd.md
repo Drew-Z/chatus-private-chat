@@ -18,7 +18,7 @@ Establish reliable and traceable pull-request gates before code reaches `main`, 
 - R3. Tests use only local fixtures and fake Providers. They must not call a live model, production, or a synthetic production probe.
 - R4. Merges to `main` deploy automatically. Documentation- and Trellis-only commits skip deployment and retain explicit classification evidence.
 - R5. Deployment and production acceptance record the exact SHA and retain non-sensitive build, test, and acceptance artifacts. Production acceptance remains protected and GitHub-Actions-only.
-- R6. Before archive, Trellis validates that no acceptance criterion or `TBD` remains, validation evidence exists, the work commit resolves, all children are complete, parent/child references are consistent, no duplicate/cycle/orphan exists, and the archive destination is free.
+- R6. Before archive, Trellis validates that no acceptance criterion or unresolved placeholder remains, validation evidence exists, the work commit resolves, all children are complete, parent/child references are consistent, no duplicate/cycle/orphan exists, and the archive destination is free.
 - R7. A waiver is structured persisted data with at least a gate ID, reason, approver, and timestamp. Free-form notes cannot bypass a gate.
 - R8. Repair the workspace root-index drift and add repository-wide task/workspace consistency validation.
 - R9. Keep the current 0.x SemVer line and do not present these gates as a 1.0 stability promise.

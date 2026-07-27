@@ -3,7 +3,7 @@
   "name": "delivery-governance-gates",
   "title": "PR, CI, and Trellis delivery gates",
   "description": "PR CI, path-aware browser checks, main deployment traceability, and Trellis archive integrity gates.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-07-27",
-  "completedAt": null,
+  "completedAt": "2026-07-28",
   "branch": "codex/delivery-governance-deploy-fix",
   "base_branch": "main",
   "worktree_path": null,
@@ -83,6 +83,12 @@
         "status": "failed",
         "summary": "Stopped before production mutation because shallow checkout could not resolve merge parent",
         "at": "2026-07-27T17:19:32.466609+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 30289067738",
+        "status": "passed",
+        "summary": "Deployed and verified exact SHA 3cd81e6196ae9ceffc642449bc4865a502135ca2 with retained path and deployment artifacts",
+        "at": "2026-07-27T17:27:53.579984+00:00"
       }
     ]
   }
