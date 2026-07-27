@@ -114,6 +114,8 @@ describe("pull-request delivery workflow", () => {
   it("retains caller-owned fake-Provider Playwright output without retaining runtime state", () => {
     expect(agentRunnerSource).toContain("CHATUS_E2E_ARTIFACT_DIR");
     expect(agentRunnerSource).toContain("callerOwnsOutputDirectory");
+    expect(agentRunnerSource).toContain('join(outputDirectory, "agent-summary.json")');
+    expect(agentRunnerSource).toContain("providerCounters: providerState || null");
     expect(agentRunnerSource).toContain("removeTemporaryDirectory(temporaryDirectory)");
     expect(agentRunnerSource).not.toContain("removeTemporaryDirectory(outputDirectory)");
   });
