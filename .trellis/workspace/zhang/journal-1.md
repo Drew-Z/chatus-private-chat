@@ -867,3 +867,38 @@ Completed parent integration acceptance after all twelve child tasks, verified t
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Delivery governance gates
+
+**Date**: 2026-07-28
+**Task**: Delivery governance gates
+**Branch**: `main`
+
+### Summary
+
+Added PR quality gates, path-aware browser checks, exact-SHA deployment artifacts, fail-before-mutate Trellis archival, and fixed CI artifact and deploy checkout failures discovered by GitHub Actions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bccae22` | (see git log) |
+| `5e3fc07` | (see git log) |
+| `f250f58` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
-- **Last Active**: 2026-07-27
+- **Total Sessions**: 21
+- **Last Active**: 2026-07-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~869 | Active |
+| `journal-1.md` | ~904 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-07-28 | Delivery governance gates | `bccae22`, `5e3fc07`, `f250f58` | `main` |
 | 20 | 2026-07-27 | Close team Agent productization | `396a8bc` | `main` |
 | 19 | 2026-07-27 | Complete automatic first-use Skill selection | `d60e308` | `main` |
 | 18 | 2026-07-26 | Backup restore contract and purge cleanup | `2e401e3` | `main` |
