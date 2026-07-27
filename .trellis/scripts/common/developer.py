@@ -24,6 +24,7 @@ from .paths import (
     get_developer,
     check_developer,
 )
+from .workspace_index import sync_workspace_root_index
 
 
 # =============================================================================
@@ -140,6 +141,10 @@ def init_developer(name: str, repo_root: Path | None = None) -> bool:
         except (OSError, IOError) as e:
             print(f"Error: Failed to create index.md: {e}", file=sys.stderr)
             return False
+
+    if not sync_workspace_root_index(repo_root):
+        print("Error: Failed to update workspace root index", file=sys.stderr)
+        return False
 
     print(f"Developer initialized: {name}")
     print(f"  .developer file: {dev_file}")

@@ -23,7 +23,11 @@ try {
 
   temporaryDirectory = await mkdtemp(join(tmpdir(), "chatus-agent-e2e-"));
   const persistDirectory = join(temporaryDirectory, "wrangler-state");
-  const outputDirectory = join(temporaryDirectory, "playwright-output");
+  const configuredOutputDirectory = process.env.CHATUS_E2E_ARTIFACT_DIR?.trim();
+  const callerOwnsOutputDirectory = Boolean(configuredOutputDirectory);
+  const outputDirectory = callerOwnsOutputDirectory
+    ? resolve(repoRoot, configuredOutputDirectory)
+    : join(temporaryDirectory, "playwright-output");
   await Promise.all([
     mkdir(persistDirectory, { recursive: true }),
     mkdir(outputDirectory, { recursive: true }),

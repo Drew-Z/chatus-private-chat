@@ -1,18 +1,18 @@
-# Implementation Plan: PR CI 与 Trellis 交付门禁
+# Implementation Plan: PR, CI, and Trellis Delivery Gates
 
 ## Ordered Checklist
 
-- [ ] 激活任务并加载 frontend/platform/spec 与 Trellis workflow 规则。
-- [ ] 为 path classifier、PR CI、deploy skip、artifact/SHA contract 先补契约测试。
-- [ ] 新增 PR workflow，接入五项基础检查和条件 Workspace/Agent Playwright。
-- [ ] 让 browser runners 支持 caller-owned artifact 目录且保持脱敏。
-- [ ] 扩展 deploy/production acceptance 的 code-path gating、manifest 和 artifact retention。
-- [ ] 为 task validation/archive 先写 Python 测试夹具。
-- [ ] 实现结构化 waiver、AC/validation/work commit/child/tree/root-index 校验和 archive fail-before-mutate。
-- [ ] 修复 workspace 根索引生成或验证逻辑，提供全量一致性 CLI。
-- [ ] 运行 `trellis-check`，修复全部发现。
-- [ ] 运行两类浏览器测试和五项全量验证。
-- [ ] 更新 delivery/Trellis spec，记录验证结果和 work commit，提交、PR、合并、归档。
+- [x] Activate the task and load frontend, platform, delivery, and Trellis workflow guidance.
+- [x] Add contract tests for path classification, PR CI, deployment skipping, artifacts, and the SHA contract.
+- [x] Add the PR workflow with five baseline checks and conditional Workspace/Agent Playwright suites.
+- [x] Make browser runners retain caller-owned artifact directories while preserving redaction.
+- [x] Extend deployment and production acceptance with code-path gating, manifests, and artifact retention.
+- [x] Add Python fixtures and tests for task validation and archive behavior.
+- [x] Implement structured waivers, acceptance/validation/work-commit/child/tree/root-index checks, and fail-before-mutate archival.
+- [x] Repair workspace root-index generation or validation and expose a repository-wide consistency CLI.
+- [x] Run `trellis-check` and resolve every finding.
+- [x] Run both browser suites and all five baseline shipping checks.
+- [ ] Update delivery/Trellis specs, record evidence and work commit, commit, open and merge a PR, then archive.
 
 ## Risky Files
 
@@ -37,6 +37,5 @@ git diff --check
 
 ## Rollback Points
 
-- workflow/runner 与 Trellis archive 分成独立 commits，便于单独回滚。
-- archive 测试未证明 fail-before-mutate 前不得在真实任务上试归档。
-
+- Keep workflow/runner changes separate from Trellis archive changes so either can be reverted independently.
+- Do not exercise archive on a real task until tests prove fail-before-mutate behavior.

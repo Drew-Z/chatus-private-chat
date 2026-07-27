@@ -1,41 +1,40 @@
-# PR CI 与 Trellis 交付门禁
+# PR, CI, and Trellis Delivery Gates
 
 ## Goal
 
-在代码进入 `main` 前建立稳定、可追踪的 PR 门禁，并让部署、生产验收和 Trellis 归档都能证明准确的 commit、验证与任务状态。
+Establish reliable and traceable pull-request gates before code reaches `main`, and make deployment, production acceptance, and Trellis archival prove the exact commit, validation results, and task state.
 
 ## Background
 
-- `.github/workflows/` 目前只有 main 部署和手工生产验收，没有 `pull_request` workflow。
-- main 部署已有 stale SHA 防护、release metadata 和 production smoke，但没有可保留的构建/验收 artifact。
-- `task.py archive` 当前不校验 AC、验证、work commit、waiver、未完成子任务或全量父子索引一致性。
-- `.trellis/workspace/index.md` 与实际开发者索引漂移。
+- `.github/workflows/` currently has a main deployment workflow and a manual production-acceptance workflow, but no `pull_request` workflow.
+- Main deployment already has stale-SHA guards, release metadata, and production smoke, but it retains no build or acceptance artifact.
+- `task.py archive` does not validate acceptance criteria, validation evidence, a work commit, waivers, unfinished children, or repository-wide parent/child consistency.
+- `.trellis/workspace/index.md` has drifted from the real developer indexes.
 
 ## Requirements
 
-- R1. 新增稳定命名的 PR CI，执行 frontend check、Vitest、typecheck、Wrangler dry-run 和 diff check。
-- R2. 基于影响路径运行 Workspace Playwright 和本地 fake Provider Agent；稳定 job 不因条件跳过而从 branch protection 消失。
-- R3. 测试仅使用本地 fixture/fake Provider，不调用 live model、production 或 synthetic production probe。
-- R4. main 合并后自动部署；docs/Trellis-only commit 明确跳过部署并留下判定证据。
-- R5. 部署和生产验收记录准确 SHA，保留不含 secret 的 build/test/acceptance artifacts；production acceptance 继续受保护且只在 GitHub Actions 运行。
-- R6. Trellis archive 前校验：无未完成 AC/TBD、验证记录存在、work commit 可解析、children 已完成、父子引用一致、无重复/循环/孤儿、归档目标不冲突。
-- R7. waiver 是结构化持久字段，至少包含 gate id、reason、approver 和时间；无 waiver 不得绕过门禁。
-- R8. 修复 workspace 根索引漂移并新增全量 task/workspace 一致性验证。
-- R9. 保持当前 0.x SemVer，不把门禁变更宣称为 1.0 稳定发布。
+- R1. Add a stable PR CI workflow that runs the frontend check, Vitest, type-check, Wrangler dry-run, and diff check.
+- R2. Run Workspace Playwright and the local fake-Provider Agent suite based on affected paths. Stable required checks must remain present when a conditional suite is skipped.
+- R3. Tests use only local fixtures and fake Providers. They must not call a live model, production, or a synthetic production probe.
+- R4. Merges to `main` deploy automatically. Documentation- and Trellis-only commits skip deployment and retain explicit classification evidence.
+- R5. Deployment and production acceptance record the exact SHA and retain non-sensitive build, test, and acceptance artifacts. Production acceptance remains protected and GitHub-Actions-only.
+- R6. Before archive, Trellis validates that no acceptance criterion or `TBD` remains, validation evidence exists, the work commit resolves, all children are complete, parent/child references are consistent, no duplicate/cycle/orphan exists, and the archive destination is free.
+- R7. A waiver is structured persisted data with at least a gate ID, reason, approver, and timestamp. Free-form notes cannot bypass a gate.
+- R8. Repair the workspace root-index drift and add repository-wide task/workspace consistency validation.
+- R9. Keep the current 0.x SemVer line and do not present these gates as a 1.0 stability promise.
 
 ## Acceptance Criteria
 
-- [ ] AC1. `pull_request` 触发的 CI 有稳定基础 job，五项命令失败会阻断 PR。
-- [ ] AC2. 路径分类单测覆盖 frontend/workspace、Agent/provider、共享配置和 docs/Trellis-only；两类 Playwright 只在对应影响路径运行。
-- [ ] AC3. main workflow 对 code merge 自动部署，对 docs/Trellis-only 清晰跳过；部署仍保留 stale-main 和串行保护。
-- [ ] AC4. workflow artifacts 含 commit SHA、lockfile/bundle 摘要、测试或生产验收摘要与失败诊断，不含凭据、Wrangler state 或用户内容。
-- [ ] AC5. archive 对每个 R6 条件都有通过与拒绝测试，失败不会移动任务目录或写 completed 状态。
-- [ ] AC6. 结构化 waiver 被 task 元数据持久化、校验并进入审计输出；自由文本不能绕过门禁。
-- [ ] AC7. 全量一致性命令能发现父子反向引用、重复/循环、active/archive 冲突和 workspace 根索引漂移。
-- [ ] AC8. 相关 deployment contract、Trellis Python 测试和五项全量验证全部通过。
+- [x] AC1. A `pull_request` workflow has a stable base-quality job, and any of the five baseline commands can block a PR.
+- [x] AC2. Path-classification tests cover frontend/workspace, Agent/provider, shared configuration, and docs/Trellis-only changes; each Playwright suite runs only for its affected paths.
+- [x] AC3. The main workflow deploys code merges, clearly skips docs/Trellis-only changes, and preserves stale-main and serialized-production guards.
+- [x] AC4. Workflow artifacts contain the commit SHA, lockfile/bundle digests, test or acceptance summaries, and bounded failure diagnostics without credentials, Wrangler state, or user content.
+- [x] AC5. Archive has allow/deny tests for every R6 condition, and a rejection does not move the task directory or write completed state.
+- [x] AC6. Structured waivers are persisted, validated, and included in audit output; free-form text cannot bypass a gate.
+- [x] AC7. A repository-wide consistency command detects reverse-reference errors, duplicates/cycles, active/archive conflicts, and workspace root-index drift.
+- [x] AC8. Deployment-contract tests, Trellis Python tests, and all five baseline shipping checks pass.
 
 ## Out of Scope
 
-- 不从本机部署生产，不自动运行 live production acceptance。
-- 不在此任务实现其他季度产品功能。
-
+- Do not deploy production from this machine or automatically run live production acceptance.
+- Do not implement other quarterly product features in this task.

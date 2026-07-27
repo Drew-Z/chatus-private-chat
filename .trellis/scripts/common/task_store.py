@@ -53,6 +53,7 @@ from .task_utils import (
     resolve_task_dir,
     run_task_hooks,
 )
+from .task_validation import validate_task_for_archive
 
 
 # =============================================================================
@@ -398,6 +399,13 @@ def cmd_archive(args: argparse.Namespace) -> int:
 
     dir_name = task_dir.name
     task_json_path = task_dir / FILE_TASK_JSON
+
+    validation_issues = validate_task_for_archive(task_dir, repo_root)
+    if validation_issues:
+        print(colored(f"Archive validation failed: {dir_name}", Colors.RED), file=sys.stderr)
+        for issue in validation_issues:
+            print(f"  - [{issue.gate}] {issue.message}", file=sys.stderr)
+        return 1
 
     # Update status before archiving
     today = datetime.now().strftime("%Y-%m-%d")

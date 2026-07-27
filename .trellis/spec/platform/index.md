@@ -15,3 +15,4 @@
 | [Provider Stream Runtime](./provider-stream-runtime.md) | OpenAI/Anthropic streaming adapters, pre-output validation, cancellation, and fallback boundary |
 | [Feedback And Administrative Audit Persistence](./feedback-audit-persistence.md) | KV record ownership, exact decoding, privacy, retention, deletion, and failure policies |
 | [Backup, Restore, And Permanent Deletion](./backup-restore.md) | Recovery meanings, data inventory, readiness gates, key custody, and purge invariants |
+| [Delivery Governance](./delivery-governance.md) | Pull-request checks, path-aware browser suites, SHA artifacts, deployment skipping, and Trellis archive evidence gates |

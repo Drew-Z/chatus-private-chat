@@ -44,6 +44,7 @@ from common.safe_commit import (
     safe_trellis_paths_to_add,
 )
 from common.tasks import load_task
+from common.workspace_index import sync_workspace_root_index
 from common.config import (
     get_packages,
     get_session_auto_commit,
@@ -473,6 +474,9 @@ def add_session(
         today,
         branch,
     ):
+        return 1
+    if not sync_workspace_root_index(repo_root):
+        print("Error: Failed to update workspace root index", file=sys.stderr)
         return 1
 
     print("", file=sys.stderr)

@@ -61,6 +61,13 @@ from common.task_context import (
     cmd_validate,
     cmd_list_context,
 )
+from common.task_validation import (
+    cmd_add_waiver,
+    cmd_record_validation,
+    cmd_set_pr_url,
+    cmd_set_work_commit,
+    cmd_validate_all,
+)
 
 
 # =============================================================================
@@ -309,6 +316,11 @@ Usage:
   python task.py create <title> --parent <dir>      Create task as child of parent
   python task.py add-context <dir> <jsonl> <path> [reason]  Add entry to jsonl
   python task.py validate <dir>                     Validate jsonl files
+  python task.py validate-all [--fix-workspace-index] Validate task/workspace consistency
+  python task.py record-validation <dir> <command> <status> <summary>
+  python task.py set-work-commit <dir> <commit>      Record the task work commit
+  python task.py set-pr-url <dir> <url>              Record the task pull request
+  python task.py add-waiver <dir> <gate> <approver> <reason>
   python task.py list-context <dir>                 List jsonl entries
   python task.py start <dir>                        Set active task
   python task.py current [--source]                 Show active task
@@ -410,6 +422,29 @@ def main() -> int:
     p_validate = subparsers.add_parser("validate", help="Validate context files")
     p_validate.add_argument("dir", help="Task directory")
 
+    p_validate_all = subparsers.add_parser("validate-all", help="Validate task and workspace consistency")
+    p_validate_all.add_argument("--fix-workspace-index", action="store_true", help="Repair the root workspace index before validation")
+
+    p_record = subparsers.add_parser("record-validation", help="Record a task validation result")
+    p_record.add_argument("dir", help="Task directory")
+    p_record.add_argument("validation_command", help="Exact validation command")
+    p_record.add_argument("status", choices=("passed", "failed"), help="Validation status")
+    p_record.add_argument("summary", help="Non-sensitive validation summary")
+
+    p_work_commit = subparsers.add_parser("set-work-commit", help="Record a task work commit")
+    p_work_commit.add_argument("dir", help="Task directory")
+    p_work_commit.add_argument("commit", help="Commit or revision resolving to a commit")
+
+    p_pr_url = subparsers.add_parser("set-pr-url", help="Record a task pull-request URL")
+    p_pr_url.add_argument("dir", help="Task directory")
+    p_pr_url.add_argument("url", help="HTTPS pull-request URL")
+
+    p_waiver = subparsers.add_parser("add-waiver", help="Persist a structured archive-gate waiver")
+    p_waiver.add_argument("dir", help="Task directory")
+    p_waiver.add_argument("gate", help="Exact gate identifier")
+    p_waiver.add_argument("approver", help="Approver identity")
+    p_waiver.add_argument("reason", help="Waiver reason")
+
     # list-context
     p_listctx = subparsers.add_parser("list-context", help="List context entries")
     p_listctx.add_argument("dir", help="Task directory")
@@ -475,6 +510,11 @@ def main() -> int:
         "create": cmd_create,
         "add-context": cmd_add_context,
         "validate": cmd_validate,
+        "validate-all": cmd_validate_all,
+        "record-validation": cmd_record_validation,
+        "set-work-commit": cmd_set_work_commit,
+        "set-pr-url": cmd_set_pr_url,
+        "add-waiver": cmd_add_waiver,
         "list-context": cmd_list_context,
         "start": cmd_start,
         "current": cmd_current,
