@@ -31,7 +31,7 @@ Documentation-only deployment skipping is narrow. `docs/**`, Markdown files, and
 
 Delivery artifacts are non-sensitive JSON plus bounded Playwright output. A delivery manifest contains only `schemaVersion`, `kind`, `status`, `commit`, `generatedAt`, `packageLockSha256`, and `publicBundleSha256`. Never retain runtime credentials, dotenv files, Wrangler persistence, access codes, conversation content, or stored memory. The fake-Provider runner may retain a caller-owned Playwright output directory, but its temporary env and Wrangler state remain in a separately deleted directory. The runner always writes `agent-summary.json` into that directory with only schema version, kind, pass/fail status, commit, generation time, and bounded fake-Provider counters; a successful test must not leave the artifact directory empty.
 
-Main deployment preserves the early and late remote-main SHA guards and the non-canceling production-mutation concurrency group. Documentation/Trellis-record-only commits publish explicit path-classification evidence and a skip summary. A real deploy and manual production acceptance each retain an exact-SHA manifest.
+Main deployment preserves the early and late remote-main SHA guards and the non-canceling production-mutation concurrency group. The deploy job checks out full history before comparing `GITHUB_SHA^` to `GITHUB_SHA`; the default one-commit checkout makes the parent revision ambiguous and must not be used with this gate. Documentation/Trellis-record-only commits publish explicit path-classification evidence and a skip summary. A real deploy and manual production acceptance each retain an exact-SHA manifest.
 
 Trellis archive validates before any state or directory mutation. A code task requires checked acceptance criteria with no `TBD`, passed records for the five baseline commands, a resolving `task.json.commit`, a valid HTTPS `task.json.pr_url`, completed children, a free archive destination, repository-wide parent/child consistency, and a current workspace root index.
 
@@ -61,6 +61,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 | Main commit changes only docs/Trellis records | Skip Worker deploy and retain classification evidence |
 | Change includes `.trellis/scripts/**` | Treat as code, not a record-only skip |
 | PR has whitespace errors in committed diff | Base-to-head `git diff --check` fails |
+| Deploy checkout cannot resolve `GITHUB_SHA^` | Deployment stops before preparing secrets or mutating production |
 | Browser suite fails | Upload retained trace/screenshot output without runtime secrets |
 | Task has unchecked AC or `TBD` | Archive rejects before mutation |
 | Validation command is missing or failed | Archive rejects unless the exact `validation` gate has a valid waiver |
@@ -81,7 +82,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 ## 6. Tests Required
 
 - Unit-test path classification for frontend, Agent, shared runtime, docs/Trellis records, mixed changes, and executable Trellis scripts.
-- Parse all workflow YAML and statically assert stable PR jobs, the five baseline commands, base-to-head diff checking, conditional browser commands, upload-artifact steps, main skip classification, stale-SHA guards, and production-acceptance SHA restrictions.
+- Parse all workflow YAML and statically assert stable PR jobs, the five baseline commands, base-to-head diff checking, conditional browser commands, upload-artifact steps, main skip classification, full-history deploy checkout, stale-SHA guards, and production-acceptance SHA restrictions.
 - Run the manifest writer under Node and assert a 0.x package line, exact commit, SHA-256 lockfile/bundle fields, and the bounded key set. Assert the fake-Provider runner writes a bounded summary into its caller-owned artifact directory even when Playwright produces no screenshot or trace.
 - Run `.trellis/tests` for checked/unchecked AC, missing validation, missing work commit, missing PR URL, incomplete children, occupied archive target, structured waiver scope, duplicates, cycles, orphans, fail-before-mutate, and workspace-index repair.
 - Run `python ./.trellis/scripts/task.py validate-all` against the real repository.
@@ -92,10 +93,11 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 ### Wrong
 
 ```yaml
+- uses: actions/checkout@v5
 - run: git diff --check
 ```
 
-On a clean PR checkout this ignores whitespace errors already stored in commits.
+On a clean PR checkout this ignores whitespace errors already stored in commits. Even with explicit revisions, the default shallow checkout cannot resolve a merge commit's parent.
 
 ```python
 data["status"] = "completed"
@@ -108,6 +110,9 @@ The validator runs after the evidence and source path have already changed.
 ### Correct
 
 ```yaml
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0
 - run: git diff --check "$BASE_SHA" "$HEAD_SHA"
 ```
 

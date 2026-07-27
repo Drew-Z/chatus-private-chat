@@ -65,8 +65,10 @@ jobs:
       CHATUS_KV_NAMESPACE_ID: ${{ vars.CHATUS_KV_NAMESPACE_ID }}
       CHATUS_PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
     steps:
-      - name: Checkout
+      - name: Checkout deployment revision
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Refuse a stale main revision
         shell: bash

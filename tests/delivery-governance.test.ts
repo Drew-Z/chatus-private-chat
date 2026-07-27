@@ -128,6 +128,10 @@ describe("main deployment governance", () => {
     expect(deployWorkflow).toContain("needs.changes.outputs.deploy");
     expect(deployWorkflow).toContain("write-delivery-manifest.mjs");
     expect(deployWorkflow).toContain("actions/upload-artifact@v4");
+    expect(deployWorkflow).toContain("Checkout deployment revision");
+    expect(deployWorkflow).toContain(
+      "- name: Checkout deployment revision\n        uses: actions/checkout@v5\n        with:\n          fetch-depth: 0",
+    );
     expect(deployWorkflow.match(/git ls-remote origin refs\/heads\/main/g)).toHaveLength(2);
   });
 
