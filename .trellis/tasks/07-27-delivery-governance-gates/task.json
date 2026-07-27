@@ -15,7 +15,7 @@
   "branch": "codex/delivery-governance-gates",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "bccae229aabb2db6fbb50e3cd14f1d87265b67ff",
   "pr_url": null,
   "subtasks": [],
   "children": [],
