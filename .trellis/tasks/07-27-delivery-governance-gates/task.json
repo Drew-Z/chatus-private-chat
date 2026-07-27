@@ -15,7 +15,7 @@
   "branch": "codex/delivery-governance-gates",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "bccae229aabb2db6fbb50e3cd14f1d87265b67ff",
+  "commit": "5e3fc07d3498878c66db0946ddb44b7eb3809976",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/13",
   "subtasks": [],
   "children": [],
