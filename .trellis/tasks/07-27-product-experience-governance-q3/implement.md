@@ -36,4 +36,3 @@ npm run test:browser:agent       # Agent/provider 影响路径
 - 每个子任务以独立工作 commit/PR 为回滚单元。
 - 发现跨任务设计缺陷时回到对应子任务规划，不在后续子任务偷偷修补契约。
 - 外部生产状态只能由 GitHub Actions workflow 改变。
-

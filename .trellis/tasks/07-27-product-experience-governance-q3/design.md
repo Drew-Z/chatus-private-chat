@@ -30,4 +30,3 @@
 - R2、Queue、schema 改动采用 additive migration 和 feature-disabled fallback；回滚代码不得删除已上传对象或破坏 tombstone。
 - Automatic Skill 和 OAuth MCP 均有 manual/disabled 回退，旧会话和未授权成员保持原行为。
 - 设计型文档只改变决策记录，不改变运行时。
-

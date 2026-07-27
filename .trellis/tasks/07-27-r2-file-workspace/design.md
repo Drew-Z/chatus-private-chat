@@ -36,4 +36,3 @@ Root TeamAgent 是单成员串行 mutation owner。新增：
 ## Compatibility and Rollback
 
 现有 inline attachment 保留。R2 feature 可在 UI 隐藏，但元数据和对象不做破坏性回滚。代码回滚后对象仍安全留存，后续版本可 reconciliation。
-

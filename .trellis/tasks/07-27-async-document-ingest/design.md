@@ -27,4 +27,3 @@ send 时读取 fixed version 的 ready extracted text，重新应用 authorizati
 ## Rollback
 
 关闭 producer/consumer 后保留 queued/failed 元数据和 R2 originals；代码回滚不删对象。新版本可从 generation/state 继续或人工 retry。
-

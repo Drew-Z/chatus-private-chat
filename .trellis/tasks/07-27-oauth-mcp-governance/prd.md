@@ -31,4 +31,3 @@
 ## Out of Scope
 
 - 不对真实企业 OAuth issuer 做线上验收，不实现组织级共享 token。
-

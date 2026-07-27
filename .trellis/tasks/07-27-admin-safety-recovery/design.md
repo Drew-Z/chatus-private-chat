@@ -23,4 +23,3 @@ AdminWorkspace 和 operations 各自使用判别联合：`loading`、`ready(data
 ## Rollback
 
 API 错误契约和共享 Dialog 可独立回滚；服务端 session 数据格式不变化。
-

@@ -27,4 +27,3 @@
 ## No-Code Guard
 
 本任务变更路径只允许 `.trellis/tasks/**`、`.trellis/spec/**` 和必要 `docs/**`。任何 `src/`、`client/`、workflow、wrangler 或 package 变化都视为范围失败。
-

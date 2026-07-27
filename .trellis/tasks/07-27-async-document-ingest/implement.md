@@ -25,4 +25,3 @@
 
 - binding/state machine、parser、UI 分开提交。
 - 未完成 Workers 与恶意文档 gate 不安装 parser 依赖，不把格式标成 supported。
-

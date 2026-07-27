@@ -31,4 +31,3 @@ Missing new fields decode as empty legacy values. Historical archived tasks rema
 ## Rollback
 
 The PR workflow can be reverted as an isolated commit. Archive validation rejects before mutation. Any mutation-phase failure restores the original task path and metadata. Production deployment remains unavailable as a local command.
-

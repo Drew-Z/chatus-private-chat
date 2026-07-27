@@ -26,4 +26,3 @@
 
 - config migration、OAuth flow、drift/side-effects 分开提交。
 - 任何异常默认 disabled/reconnect，不回退成匿名或静态共享 token。
-

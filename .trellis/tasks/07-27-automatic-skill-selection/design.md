@@ -25,4 +25,3 @@ Agent response metadata 和会话 UI 展示本轮 `mode`、selected public skill
 ## Compatibility and Rollback
 
 旧客户端缺 mode 时服务端按既有会话值；manual 行为不变。功能回滚可将新会话默认恢复 manual，既有 automatic 会话可由 schema 继续读取并按 manual fallback 安全降级。
-

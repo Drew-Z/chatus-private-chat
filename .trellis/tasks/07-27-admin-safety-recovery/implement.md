@@ -24,4 +24,3 @@
 
 - logout 契约、状态机、列表与 Dialog 分成可审阅 commits。
 - 如果 Dialog 回归影响破坏性动作，保留动作 API 不变并仅回滚共享 UI 层。
-

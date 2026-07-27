@@ -30,4 +30,3 @@ read-only 可 first-per-conversation。write/destructive 只有管理员明确�
 ## Rollback
 
 旧静态 auth 分支独立保留。关闭 OAuth 不删除密文；成员 connection fail closed。side-effect 工具可统一禁用作为紧急回滚。
-

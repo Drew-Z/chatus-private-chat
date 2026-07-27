@@ -26,4 +26,3 @@ AdminApp 认证后先取 setup status。未 ready 显示 `AdminSetupGuide`；rea
 ## Rollback
 
 setup API additive；移除 React legacy 链接可单独回滚。引导错误时管理员仍可直接进入已存在的 `/admin.html`。
-

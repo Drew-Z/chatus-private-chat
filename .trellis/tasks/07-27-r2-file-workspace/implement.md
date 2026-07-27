@@ -27,4 +27,3 @@
 
 - binding/schema、backend lifecycle、frontend 分开提交。
 - 不通过代码回滚删除 R2 数据；使用 tombstone/reconciliation 恢复。
-
