@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-07-27",
   "completedAt": null,
-  "branch": "codex/delivery-governance-gates",
+  "branch": "codex/delivery-governance-deploy-fix",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "5e3fc07d3498878c66db0946ddb44b7eb3809976",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/13",
+  "commit": "f250f585b25872c2fefd1b7b1e7ed6d2820b45cd",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/14",
   "subtasks": [],
   "children": [],
   "parent": "07-27-product-experience-governance-q3",
@@ -31,52 +31,58 @@
         "at": "2026-07-27T16:09:46.846893+00:00"
       },
       {
-        "command": "npm run check:frontend",
-        "status": "passed",
-        "summary": "Vite build and frontend structure checks passed after CI artifact fix",
-        "at": "2026-07-27T16:22:05.762276+00:00"
-      },
-      {
-        "command": "npm test",
-        "status": "passed",
-        "summary": "32 files and 380 tests passed after CI artifact fix",
-        "at": "2026-07-27T16:22:06.450860+00:00"
-      },
-      {
-        "command": "npm run typecheck",
-        "status": "passed",
-        "summary": "Worker client and browser TypeScript checks passed after CI artifact fix",
-        "at": "2026-07-27T16:22:07.122670+00:00"
-      },
-      {
-        "command": "npx wrangler deploy --dry-run",
-        "status": "passed",
-        "summary": "Worker bundle dry-run passed after CI artifact fix",
-        "at": "2026-07-27T16:22:07.782124+00:00"
-      },
-      {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "No whitespace errors after CI artifact fix",
-        "at": "2026-07-27T16:22:08.447010+00:00"
-      },
-      {
-        "command": "python -m unittest discover .trellis/tests",
-        "status": "passed",
-        "summary": "7 Trellis governance tests passed after CI artifact fix",
-        "at": "2026-07-27T16:22:09.120629+00:00"
-      },
-      {
-        "command": "python ./.trellis/scripts/task.py validate-all",
-        "status": "passed",
-        "summary": "Repository task and workspace consistency passed after CI artifact fix",
-        "at": "2026-07-27T16:22:09.788216+00:00"
-      },
-      {
         "command": "npm run test:browser:agent",
         "status": "passed",
         "summary": "1 local fake-Provider Agent acceptance passed and wrote bounded summary artifact",
         "at": "2026-07-27T16:22:10.457080+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite build and frontend structure checks passed after deploy-history fix",
+        "at": "2026-07-27T17:19:27.099321+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "32 files and 380 tests passed after deploy-history fix",
+        "at": "2026-07-27T17:19:27.760235+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker client and browser TypeScript checks passed after deploy-history fix",
+        "at": "2026-07-27T17:19:28.525079+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker bundle dry-run passed after deploy-history fix",
+        "at": "2026-07-27T17:19:29.350724+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Origin-main-to-worktree diff has no whitespace errors",
+        "at": "2026-07-27T17:19:30.124372+00:00"
+      },
+      {
+        "command": "python -m unittest discover .trellis/tests",
+        "status": "passed",
+        "summary": "7 Trellis governance tests passed after deploy-history fix",
+        "at": "2026-07-27T17:19:30.847457+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task and workspace consistency passed after deploy-history fix",
+        "at": "2026-07-27T17:19:31.674241+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 30284967984",
+        "status": "failed",
+        "summary": "Stopped before production mutation because shallow checkout could not resolve merge parent",
+        "at": "2026-07-27T17:19:32.466609+00:00"
       }
     ]
   }
