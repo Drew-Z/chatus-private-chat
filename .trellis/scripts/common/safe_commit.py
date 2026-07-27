@@ -71,6 +71,7 @@ def safe_trellis_paths_to_add(
     Included:
       - .trellis/workspace/<developer>/journal-*.md
       - .trellis/workspace/<developer>/index.md
+      - .trellis/workspace/index.md
       - .trellis/tasks/<task_name>/   (ONLY the current task dir when
         ``task_name`` is passed; plus its archive location if the task
         already lives under archive/)
@@ -106,6 +107,9 @@ def safe_trellis_paths_to_add(
                 paths.append(
                     f"{DIR_WORKFLOW}/{DIR_WORKSPACE}/{developer}/index.md"
                 )
+    root_workspace_index = repo_root / DIR_WORKFLOW / DIR_WORKSPACE / "index.md"
+    if root_workspace_index.is_file():
+        paths.append(f"{DIR_WORKFLOW}/{DIR_WORKSPACE}/index.md")
 
     tasks_dir = repo_root / DIR_WORKFLOW / DIR_TASKS
     if not tasks_dir.is_dir():

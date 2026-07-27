@@ -1,0 +1,150 @@
+name: Pull request quality
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      workspace: ${{ steps.classify.outputs.workspace }}
+      agent: ${{ steps.classify.outputs.agent }}
+      deploy: ${{ steps.classify.outputs.deploy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Classify affected paths
+        id: classify
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p artifacts/path-classification
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            node scripts/classify-ci-paths.mjs --all --github-output "$GITHUB_OUTPUT" --manifest artifacts/path-classification/paths.json
+          else
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" | node scripts/classify-ci-paths.mjs --github-output "$GITHUB_OUTPUT" --manifest artifacts/path-classification/paths.json
+          fi
+
+      - name: Retain path classification
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-path-classification-${{ github.sha }}
+          path: artifacts/path-classification/paths.json
+          retention-days: 14
+
+  quality:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check frontend
+        run: npm run check:frontend
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Validate Worker bundle
+        run: npx wrangler deploy --dry-run
+
+      - name: Check whitespace
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git diff --check "$BASE_SHA" "$HEAD_SHA"
+          else
+            git diff --check
+          fi
+
+      - name: Write quality manifest
+        if: always()
+        env:
+          DELIVERY_STATUS: ${{ job.status }}
+        run: |
+          mkdir -p artifacts/quality
+          node scripts/write-delivery-manifest.mjs --kind pr-quality --status "$DELIVERY_STATUS" --output artifacts/quality/manifest.json
+
+      - name: Retain quality manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-quality-${{ github.sha }}
+          path: artifacts/quality/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  workspace-browser:
+    needs: changes
+    if: needs.changes.outputs.workspace == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser:workspace
+      - name: Retain Workspace Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-playwright-${{ github.sha }}
+          path: test-results/workspace-visual
+          if-no-files-found: error
+          retention-days: 14
+
+  agent-browser:
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run local fake-Provider Agent acceptance
+        env:
+          CHATUS_E2E_ARTIFACT_DIR: test-results/agent-e2e-ci
+        run: npm run test:browser:agent
+      - name: Retain fake-Provider Agent artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-playwright-${{ github.sha }}
+          path: test-results/agent-e2e-ci
+          if-no-files-found: error
+          retention-days: 14

@@ -25,9 +25,11 @@ workspace/
 
 ## Active Developers
 
+<!-- @@@auto:developers -->
 | Developer | Last Active | Sessions | Active File |
 |-----------|-------------|----------|-------------|
-| (none yet) | - | - | - |
+| zhang | 2026-07-27 | 20 | `journal-1.md` |
+<!-- @@@/auto:developers -->
 
 ---
 

@@ -17,13 +17,20 @@ const wranglerBin = join(repoRoot, "node_modules", "wrangler", "bin", "wrangler.
 let temporaryDirectory;
 let providerServer;
 let wranglerProcess;
+let outputDirectory;
+let providerState;
+let artifactStatus = "failed";
 
 try {
   await runCommand(process.execPath, [viteBin, "build", "--config", "client/vite.config.ts"], { cwd: repoRoot });
 
   temporaryDirectory = await mkdtemp(join(tmpdir(), "chatus-agent-e2e-"));
   const persistDirectory = join(temporaryDirectory, "wrangler-state");
-  const outputDirectory = join(temporaryDirectory, "playwright-output");
+  const configuredOutputDirectory = process.env.CHATUS_E2E_ARTIFACT_DIR?.trim();
+  const callerOwnsOutputDirectory = Boolean(configuredOutputDirectory);
+  outputDirectory = callerOwnsOutputDirectory
+    ? resolve(repoRoot, configuredOutputDirectory)
+    : join(temporaryDirectory, "playwright-output");
   await Promise.all([
     mkdir(persistDirectory, { recursive: true }),
     mkdir(outputDirectory, { recursive: true }),
@@ -35,6 +42,7 @@ try {
   const secrets = [accessCode, adminToken, providerKey];
 
   const provider = createFakeProvider(providerKey);
+  providerState = provider.state;
   providerServer = provider.server;
   const providerPort = await listenOnRandomPort(providerServer);
   const providerURL = `http://127.0.0.1:${providerPort}`;
@@ -127,6 +135,7 @@ try {
         secrets,
       },
     );
+    artifactStatus = "passed";
   } catch (error) {
     const message = error instanceof Error ? error.message : "Playwright failed";
     throw new Error(`${message}\nProvider counters: ${JSON.stringify(provider.state)}`);
@@ -134,6 +143,20 @@ try {
 } finally {
   await stopChildProcess(wranglerProcess);
   await closeServer(providerServer);
+  if (outputDirectory) {
+    await writeFile(
+      join(outputDirectory, "agent-summary.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        kind: "fake-provider-agent-e2e",
+        status: artifactStatus,
+        commit: process.env.GITHUB_SHA || null,
+        generatedAt: new Date().toISOString(),
+        providerCounters: providerState || null,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+  }
   if (temporaryDirectory) {
     await removeTemporaryDirectory(temporaryDirectory);
   }
