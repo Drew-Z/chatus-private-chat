@@ -60,6 +60,7 @@ import { CapabilityAdminPanel } from "./CapabilityAdminPanel";
 import { ProviderAdminPanel } from "./ProviderAdminPanel";
 import { PublicAccessAdminPanel } from "./PublicAccessAdminPanel";
 import { ReliabilityAdminPanel } from "./ReliabilityAdminPanel";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type AdminData = {
   snapshot: AdminConfigSnapshot;
@@ -68,7 +69,7 @@ type AdminData = {
   accessSource: "kv" | "secret" | "managed";
 };
 
-type Notice = { kind: "success" | "warning" | "error"; text: string };
+type Notice = { kind: "success" | "warning" | "error"; text: string; action?: "retry-logout" };
 
 type SessionRetryNotice = {
   kind: "warning" | "error";
@@ -77,6 +78,18 @@ type SessionRetryNotice = {
 };
 
 type AdminView = "members" | "providers" | "models" | "capabilities" | "public" | "reliability" | "operations";
+
+type AdminWorkspaceViewState =
+  | { status: "loading" }
+  | { status: "ready"; data: AdminData; refreshing: boolean }
+  | { status: "error"; message: string };
+
+type AdminWorkspaceConfirmation =
+  | { kind: "select-member"; label: string }
+  | { kind: "switch-view"; view: AdminView; discardPool: boolean }
+  | { kind: "refresh" }
+  | { kind: "logout" }
+  | { kind: "remove-config"; member: AdminMemberProjection };
 
 type MemberAccessDialogState =
   | { kind: "create"; label: string; existingMember: boolean }
@@ -100,13 +113,12 @@ export function AdminWorkspace({
   onSessionExpired: () => void;
   onLogout: () => void;
 }) {
-  const [data, setData] = useState<AdminData | null>(null);
+  const [viewState, setViewState] = useState<AdminWorkspaceViewState>({ status: "loading" });
   const [selectedMember, setSelectedMember] = useState(DEFAULT_ADMIN_MEMBER);
   const [draft, setDraft] = useState<CapabilityAssignmentDraft | null>(null);
   const [search, setSearch] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [sessionRetryNotice, setSessionRetryNotice] = useState<SessionRetryNotice | null>(null);
@@ -116,6 +128,19 @@ export function AdminWorkspace({
   const [activeView, setActiveView] = useState<AdminView>("members");
   const [poolDirty, setPoolDirty] = useState(false);
   const [panelResetKey, setPanelResetKey] = useState(0);
+  const [confirmation, setConfirmation] = useState<AdminWorkspaceConfirmation | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const loadGeneration = useRef(0);
+  const data = viewState.status === "ready" ? viewState.data : null;
+  const loading = viewState.status === "loading" || (viewState.status === "ready" && viewState.refreshing);
+
+  function updateAdminData(update: AdminData | ((current: AdminData) => AdminData)) {
+    setViewState((current) => {
+      if (current.status !== "ready") return current;
+      const data = typeof update === "function" ? update(current.data) : update;
+      return { ...current, data };
+    });
+  }
 
   useEffect(() => {
     void loadAdminData(false);
@@ -155,13 +180,20 @@ export function AdminWorkspace({
   );
 
   async function loadAdminData(preserveDraft: boolean): Promise<boolean> {
-    setLoading(true);
+    const generation = loadGeneration.current + 1;
+    loadGeneration.current = generation;
+    const previousData = data;
+    setViewState(previousData
+      ? { status: "ready", data: previousData, refreshing: true }
+      : { status: "loading" });
     try {
       const [snapshot, memberSnapshot] = await Promise.all([fetchAdminConfig(), fetchAdminMembers()]);
+      if (generation !== loadGeneration.current) return false;
       const stillExists = selectedMember === DEFAULT_ADMIN_MEMBER
         || memberSnapshot.members.some((member) => member.label === selectedMember);
       const nextMember = preserveDraft ? selectedMember : stillExists ? selectedMember : DEFAULT_ADMIN_MEMBER;
-      setData({ snapshot, ...memberSnapshot });
+      const nextData = { snapshot, ...memberSnapshot };
+      setViewState({ status: "ready", data: nextData, refreshing: false });
       setSelectedMember(nextMember);
       if (!preserveDraft) {
         setDraft(createCapabilityAssignmentDraft(snapshot.config, nextMember));
@@ -175,21 +207,34 @@ export function AdminWorkspace({
       }
       return true;
     } catch (error) {
+      if (generation !== loadGeneration.current) return false;
       if (error instanceof ApiError && error.status === 401) {
         onSessionExpired();
         return false;
       }
-      setNotice({ kind: "error", text: getAdminErrorMessage(error) });
+      const message = getAdminErrorMessage(error);
+      if (previousData) {
+        setViewState({ status: "ready", data: previousData, refreshing: false });
+        setNotice({ kind: "error", text: message });
+      } else {
+        setViewState({ status: "error", message });
+        setNotice(null);
+      }
       return false;
-    } finally {
-      setLoading(false);
     }
   }
 
   function selectMember(label: string) {
     if (saving || loading || memberActionBusy) return;
     if (label === selectedMember) return;
-    if (dirty && !window.confirm("放弃当前成员的未保存分配？")) return;
+    if (dirty) {
+      setConfirmation({ kind: "select-member", label });
+      return;
+    }
+    applyMemberSelection(label);
+  }
+
+  function applyMemberSelection(label: string) {
     setSelectedMember(label);
     if (data) setDraft(createCapabilityAssignmentDraft(data.snapshot.config, label));
     setDirty(false);
@@ -219,7 +264,7 @@ export function AdminWorkspace({
       const members = data.members.map((member) => (
         member.label === selectedMember ? { ...member, configured: selectedMember === DEFAULT_ADMIN_MEMBER || Boolean(snapshot.config.users[selectedMember]) } : member
       ));
-      setData({ ...data, snapshot, members });
+      updateAdminData({ ...data, snapshot, members });
       setDraft(createCapabilityAssignmentDraft(snapshot.config, selectedMember));
       setDirty(false);
       setConflict(false);
@@ -248,7 +293,7 @@ export function AdminWorkspace({
   }
 
   function applyPoolSnapshot(snapshot: AdminConfigSnapshot) {
-    setData((current) => current ? { ...current, snapshot } : current);
+    updateAdminData((current) => ({ ...current, snapshot }));
     if (dirty && draft) {
       setDraft((current) => current ? rebaseCapabilityAssignmentDraft(snapshot.config, selectedMember, current) : current);
       setConflict(true);
@@ -267,28 +312,64 @@ export function AdminWorkspace({
     if (view === activeView) return;
     const leavingPoolEditor = activeView === "providers" || activeView === "models" || activeView === "capabilities" || activeView === "public";
     if (leavingPoolEditor && poolDirty) {
-      if (!window.confirm("当前配置有未保存修改，切换视图会放弃这些修改，继续吗？")) return;
-      setPoolDirty(false);
+      setConfirmation({ kind: "switch-view", view, discardPool: true });
+      return;
     }
-    if (activeView === "members" && dirty && !window.confirm("当前成员分配草稿会保留，切换视图后仍可继续编辑，继续吗？")) return;
+    if (activeView === "members" && dirty) {
+      setConfirmation({ kind: "switch-view", view, discardPool: false });
+      return;
+    }
+    applyViewSelection(view, false);
+  }
+
+  function applyViewSelection(view: AdminView, discardPool: boolean) {
+    if (discardPool) setPoolDirty(false);
     setActiveView(view);
     setNotice(null);
   }
 
-  async function refresh() {
-    if ((dirty || poolDirty) && !window.confirm("刷新会丢弃当前未保存修改，继续吗？")) return;
-    if (await loadAdminData(false)) {
+  function requestRefresh() {
+    if (dirty || poolDirty) {
+      setConfirmation({ kind: "refresh" });
+      return;
+    }
+    void refreshAdminData(false);
+  }
+
+  async function refreshAdminData(throwOnFailure: boolean) {
+    const refreshed = await loadAdminData(false);
+    if (refreshed) {
       setPanelResetKey((value) => value + 1);
       setNotice({ kind: "success", text: "配置已刷新。" });
+    } else if (throwOnFailure) {
+      throw new Error("配置刷新失败，请根据页面提示重试。");
     }
   }
 
-  async function logout() {
-    if ((dirty || poolDirty) && !window.confirm("当前有未保存修改，仍要退出吗？")) return;
-    setMemberDialog(null);
-    setMemberDialogError("");
-    await adminLogout();
-    onLogout();
+  function requestLogout() {
+    if (dirty || poolDirty) {
+      setConfirmation({ kind: "logout" });
+      return;
+    }
+    void performLogout(false);
+  }
+
+  async function performLogout(throwOnFailure: boolean) {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setNotice(null);
+    try {
+      await adminLogout();
+      setMemberDialog(null);
+      setMemberDialogError("");
+      onLogout();
+    } catch (error) {
+      const message = getAdminErrorMessage(error);
+      setNotice({ kind: "error", text: message, action: "retry-logout" });
+      if (throwOnFailure) throw new Error(message);
+    } finally {
+      setLoggingOut(false);
+    }
   }
 
   function openCreateMember(label = "") {
@@ -298,10 +379,36 @@ export function AdminWorkspace({
 
   function openMemberConfirmation(kind: "rotate" | "revoke" | "remove-config" | "sessions" | "usage", member: AdminMemberProjection) {
     if (kind === "remove-config" && dirty && selectedMember === member.label) {
-      if (!window.confirm("恢复默认配置会丢弃当前成员尚未保存的分配，继续吗？")) return;
+      setConfirmation({ kind: "remove-config", member });
+      return;
     }
+    showMemberConfirmation(kind, member);
+  }
+
+  function showMemberConfirmation(kind: "rotate" | "revoke" | "remove-config" | "sessions" | "usage", member: AdminMemberProjection) {
     setMemberDialogError("");
     setMemberDialog({ kind, member });
+  }
+
+  async function confirmWorkspaceAction() {
+    if (!confirmation) return;
+    switch (confirmation.kind) {
+      case "select-member":
+        applyMemberSelection(confirmation.label);
+        return;
+      case "switch-view":
+        applyViewSelection(confirmation.view, confirmation.discardPool);
+        return;
+      case "refresh":
+        await refreshAdminData(true);
+        return;
+      case "logout":
+        await performLogout(true);
+        return;
+      case "remove-config":
+        showMemberConfirmation("remove-config", confirmation.member);
+        return;
+    }
   }
 
   function closeMemberDialog() {
@@ -344,12 +451,12 @@ export function AdminWorkspace({
     setMemberDialogError("");
     try {
       const result = await revokeAdminMemberAccess(member.label, data.accessRevision);
-      setData((current) => current ? {
+      updateAdminData((current) => ({
         ...current,
         members: mergeAdminMemberProjection(current.members, member.label, result.member),
         accessRevision: result.accessRevision,
         accessSource: "kv",
-      } : current);
+      }));
       if (!result.member && selectedMember === member.label && !dirty && data) {
         setSelectedMember(DEFAULT_ADMIN_MEMBER);
         setDraft(createCapabilityAssignmentDraft(data.snapshot.config, DEFAULT_ADMIN_MEMBER));
@@ -413,12 +520,12 @@ export function AdminWorkspace({
   }
 
   function applyCredentialResult(result: AdminMemberCredentialResponse, action: "create" | "rotate") {
-    setData((current) => current ? {
+    updateAdminData((current) => ({
       ...current,
       members: mergeAdminMemberProjection(current.members, result.member.label, result.member),
       accessRevision: result.accessRevision,
       accessSource: "kv",
-    } : current);
+    }));
     if (action === "create" && !dirty && data) {
       setSelectedMember(result.member.label);
       setDraft(createCapabilityAssignmentDraft(data.snapshot.config, result.member.label));
@@ -441,7 +548,7 @@ export function AdminWorkspace({
   }
 
   function applyConfigRemovalResult(result: AdminMemberConfigRemovalResponse, label: string) {
-    setData((current) => current ? {
+    updateAdminData((current) => ({
       ...current,
       snapshot: {
         config: result.config,
@@ -449,7 +556,7 @@ export function AdminWorkspace({
         revision: result.revision,
       },
       members: mergeAdminMemberProjection(current.members, label, result.member),
-    } : current);
+    }));
 
     const wasSelected = selectedMember === label;
     if (wasSelected) {
@@ -553,7 +660,7 @@ export function AdminWorkspace({
   async function refreshMemberSnapshot(): Promise<boolean> {
     try {
       const memberSnapshot = await fetchAdminMembers();
-      setData((current) => current ? { ...current, ...memberSnapshot } : current);
+      updateAdminData((current) => ({ ...current, ...memberSnapshot }));
       return true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onSessionExpired();
@@ -618,12 +725,12 @@ export function AdminWorkspace({
             <ExternalLink size={15} />
             <span>完整后台</span>
           </a>
-          <button className="icon-button" type="button" onClick={() => void refresh()} disabled={loading || saving || memberActionBusy} aria-label="刷新配置" title="刷新配置">
+          <button className="icon-button" type="button" onClick={requestRefresh} disabled={loading || saving || memberActionBusy || loggingOut} aria-label="刷新配置" title="刷新配置">
             <RefreshCw size={17} />
           </button>
-          <button className="quiet-button icon-text-button" type="button" onClick={() => void logout()} disabled={saving || memberActionBusy}>
+          <button className="quiet-button icon-text-button" type="button" onClick={requestLogout} disabled={saving || memberActionBusy || loggingOut}>
             <LogOut size={15} />
-            <span>退出</span>
+            <span>{loggingOut ? "退出中..." : "退出"}</span>
           </button>
         </div>
       </header>
@@ -632,6 +739,11 @@ export function AdminWorkspace({
         <div className={`admin-react-notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
           <span>{notice.text}</span>
           {conflict && <button className="quiet-button" type="button" onClick={resetDraft}>使用服务器版本</button>}
+          {notice.action === "retry-logout" && (
+            <button className="quiet-button icon-text-button" type="button" onClick={() => void performLogout(false)} disabled={loggingOut}>
+              <RefreshCw size={15} /><span>{loggingOut ? "重试中..." : "重试退出"}</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -650,7 +762,17 @@ export function AdminWorkspace({
         </div>
       )}
 
-      {activeView === "members" ? (
+      {viewState.status === "loading" ? (
+        <div className="typed-admin-panel-state" role="status" aria-live="polite">正在读取配置...</div>
+      ) : viewState.status === "error" ? (
+        <div className="typed-admin-panel-state admin-load-error" role="alert">
+          <h2>无法读取管理配置</h2>
+          <p>{viewState.message}</p>
+          <button className="primary-button icon-text-button" type="button" onClick={() => void loadAdminData(false)}>
+            <RefreshCw size={15} /><span>重试读取配置</span>
+          </button>
+        </div>
+      ) : activeView === "members" ? (
       <div className="typed-admin-layout">
         <aside className="typed-admin-members" aria-label="成员列表">
           <label className="typed-admin-search">
@@ -734,7 +856,7 @@ export function AdminWorkspace({
             </div>
           </div>
 
-          {loading || !data || !draft ? (
+          {!data || !draft ? (
             <div className="typed-admin-panel-state" aria-live="polite">正在读取配置...</div>
           ) : (
             <>
@@ -1064,9 +1186,7 @@ export function AdminWorkspace({
             refreshKey={panelResetKey}
           />
         )
-      ) : (
-        <div className="typed-admin-panel-state" aria-live="polite">正在读取配置...</div>
-      )}
+      ) : null}
 
       {memberDialog && (
         <MemberAccessDialog
@@ -1081,6 +1201,14 @@ export function AdminWorkspace({
           onRemoveConfig={(member) => void removeMemberConfig(member)}
           onRevokeSessions={(member) => void revokeMemberSessions(member)}
           onResetUsage={(member) => void resetMemberUsage(member)}
+        />
+      )}
+      {confirmation && (
+        <ConfirmDialog
+          key={workspaceConfirmationKey(confirmation)}
+          {...workspaceConfirmationCopy(confirmation, selectedMember)}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={confirmWorkspaceAction}
         />
       )}
     </main>
@@ -1098,6 +1226,61 @@ function adminViewLabel(view: AdminView): string {
     operations: "运营",
   };
   return labels[view];
+}
+
+function workspaceConfirmationKey(state: AdminWorkspaceConfirmation): string {
+  if (state.kind === "select-member") return `${state.kind}:${state.label}`;
+  if (state.kind === "switch-view") return `${state.kind}:${state.view}:${state.discardPool}`;
+  if (state.kind === "remove-config") return `${state.kind}:${state.member.label}`;
+  return state.kind;
+}
+
+function workspaceConfirmationCopy(state: AdminWorkspaceConfirmation, selectedMember: string) {
+  switch (state.kind) {
+    case "select-member":
+      return {
+        title: "放弃当前成员草稿？",
+        description: `目标：${selectedMember || "默认配置"}。未保存的成员分配会被丢弃，然后切换到 ${state.label || "默认配置"}。`,
+        confirmLabel: "放弃并切换",
+        tone: "danger" as const,
+      };
+    case "switch-view":
+      return state.discardPool
+        ? {
+            title: "放弃当前配置草稿？",
+            description: `目标：${adminViewLabel(state.view)}。当前未保存的配置会被丢弃。`,
+            confirmLabel: "放弃并切换",
+            tone: "danger" as const,
+          }
+        : {
+            title: "切换管理视图？",
+            description: `目标：${adminViewLabel(state.view)}。${selectedMember || "默认配置"} 的成员草稿会保留，返回后可继续编辑。`,
+            confirmLabel: "继续切换",
+            tone: "default" as const,
+          };
+    case "refresh":
+      return {
+        title: "刷新并放弃未保存修改？",
+        description: "目标：当前管理配置。刷新会重新读取服务器版本并丢弃本地未保存修改。",
+        confirmLabel: "放弃并刷新",
+        tone: "danger" as const,
+      };
+    case "logout":
+      return {
+        title: "退出管理员会话？",
+        description: "目标：当前管理员会话。未保存修改会丢失；只有服务端确认撤销成功后才会退出。",
+        confirmLabel: "确认退出",
+        pendingLabel: "正在撤销会话...",
+        tone: "danger" as const,
+      };
+    case "remove-config":
+      return {
+        title: `恢复 ${state.member.displayName} 的默认配置？`,
+        description: `目标：${state.member.label}。当前未保存分配会被丢弃，成员的独立配置将恢复为默认值。`,
+        confirmLabel: "继续恢复默认",
+        tone: "danger" as const,
+      };
+  }
 }
 
 function MemberAccessDialog({

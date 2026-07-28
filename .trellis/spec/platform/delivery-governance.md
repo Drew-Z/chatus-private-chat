@@ -83,6 +83,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 
 - Unit-test path classification for frontend, Agent, shared runtime, docs/Trellis records, mixed changes, and executable Trellis scripts.
 - Parse all workflow YAML and statically assert stable PR jobs, the five baseline commands, base-to-head diff checking, conditional browser commands, upload-artifact steps, main skip classification, full-history deploy checkout, stale-SHA guards, and production-acceptance SHA restrictions.
+- Normalize imported workflow and source text from CRLF or CR to LF at the test read boundary before exact multi-line structural assertions. Do not normalize files that are read for byte-exact hashing.
 - Run the manifest writer under Node and assert a 0.x package line, exact commit, SHA-256 lockfile/bundle fields, and the bounded key set. Assert the fake-Provider runner writes a bounded summary into its caller-owned artifact directory even when Playwright produces no screenshot or trace.
 - Run `.trellis/tests` for checked/unchecked AC, missing validation, missing work commit, missing PR URL, incomplete children, occupied archive target, structured waiver scope, duplicates, cycles, orphans, fail-before-mutate, and workspace-index repair.
 - Run `python ./.trellis/scripts/task.py validate-all` against the real repository.

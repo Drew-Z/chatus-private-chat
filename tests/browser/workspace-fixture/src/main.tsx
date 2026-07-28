@@ -4,8 +4,9 @@ import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
 import { MessageComposer } from "../../../../client/src/components/MessageComposer";
 import { MessageView, type MessageAction } from "../../../../client/src/components/MessageView";
-import { AdminOperationsContent } from "../../../../client/src/components/AdminOperationsPanel";
+import { AdminOperationsContent, AdminOperationsPanel } from "../../../../client/src/components/AdminOperationsPanel";
 import { AdminWorkspace } from "../../../../client/src/components/AdminWorkspace";
+import { ConfirmDialog } from "../../../../client/src/components/ConfirmDialog";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import {
@@ -229,6 +230,66 @@ const reliabilityProviders: AdminReliabilityProvider[] = [{
   }],
 }];
 
+const operationRouteStats: AdminOperationsSnapshot["stats"]["routeStats"] = Array.from({ length: 21 }, (_, index) => {
+  const position = index + 1;
+  return {
+    id: `route-${String(position).padStart(2, "0")}`,
+    label: position === 21 ? "第 21 条逻辑模型" : `逻辑模型 ${String(position).padStart(2, "0")}`,
+    model: `synthetic-operation-model-${position}`,
+    ok7d: position,
+    error7d: index % 3,
+    errorRate7d: index % 3,
+    days: [{ day: "2026-07-26", ok: position, error: index % 3 }],
+  };
+});
+
+const operationUsers: AdminOperationsSnapshot["stats"]["users"] = Array.from({ length: 21 }, (_, index) => {
+  const position = index + 1;
+  return {
+    label: `synthetic-member-${String(position).padStart(2, "0")}`,
+    enabled: true,
+    displayName: position === 21 ? "第 21 位运营成员" : `合成运营成员 ${String(position).padStart(2, "0")}`,
+    used: position,
+    dailyLimit: 100,
+    remaining: 100 - position,
+    defaultRoute: "route-01",
+    allowedRoutes: ["route-01"],
+    allowBringYourOwnKey: false,
+    hasSystemPrompt: false,
+    systemPromptChars: 0,
+    activeSessions: index % 4,
+    memoryChars: position * 10,
+    requests7d: position,
+    errors7d: index % 3,
+    errorRate7d: index % 3,
+    usageByDay: [{ day: "2026-07-26", used: position }],
+  };
+});
+
+const operationAudit: AdminOperationsSnapshot["audit"] = Array.from({ length: 21 }, (_, index) => {
+  const position = index + 1;
+  return {
+    id: `audit-${position}`,
+    action: position === 21 ? "synthetic.last.audit" : "config.update",
+    target: position === 21 ? "第 21 条管理审计" : `route-${String(position).padStart(2, "0")}`,
+    at: `2026-07-26T08:${String(index).padStart(2, "0")}:00.000Z`,
+  };
+});
+
+const operationFeedback: AdminOperationsSnapshot["feedback"] = Array.from({ length: 21 }, (_, index) => {
+  const position = index + 1;
+  return {
+    id: `feedback-${position}`,
+    label: position === 21 ? "第 21 条成员反馈" : `synthetic-member-${String(position).padStart(2, "0")}`,
+    rating: position % 2 ? "down" : "up",
+    reason: position % 2 ? "inaccurate" : undefined,
+    routeId: "route-01",
+    chatId: `chat-${position}`,
+    messageId: `message-${position}`,
+    at: `2026-07-26T09:${String(index).padStart(2, "0")}:00.000Z`,
+  };
+});
+
 const operationsSnapshot: AdminOperationsSnapshot = {
   stats: {
     day: "2026-07-26",
@@ -238,40 +299,8 @@ const operationsSnapshot: AdminOperationsSnapshot = {
       { day: "2026-07-26", requests: 5, errors: 1, fallbacks: 1, rateLimited: 1, errorRate: 20 },
       { day: "2026-07-25", requests: 3, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 },
     ],
-    routeStats: [{
-      id: "reasoning",
-      label: "高质量推理逻辑模型",
-      model: "synthetic-operation-model-with-a-long-name",
-      ok7d: 7,
-      error7d: 1,
-      errorRate7d: 12.5,
-      days: [
-        { day: "2026-07-26", ok: 4, error: 1 },
-        { day: "2026-07-25", ok: 3, error: 0 },
-      ],
-    }],
-    users: [{
-      label: "synthetic-operations-member",
-      enabled: true,
-      displayName: "合成运营成员名称用于验证窄屏容器",
-      used: 5,
-      dailyLimit: 10,
-      remaining: 5,
-      defaultRoute: "reasoning",
-      allowedRoutes: ["reasoning"],
-      allowBringYourOwnKey: false,
-      hasSystemPrompt: false,
-      systemPromptChars: 0,
-      activeSessions: 2,
-      memoryChars: 120,
-      requests7d: 8,
-      errors7d: 1,
-      errorRate7d: 12.5,
-      usageByDay: [
-        { day: "2026-07-26", used: 5 },
-        { day: "2026-07-25", used: 3 },
-      ],
-    }],
+    routeStats: operationRouteStats,
+    users: operationUsers,
     routes: [{
       id: "reasoning",
       enabled: true,
@@ -283,17 +312,8 @@ const operationsSnapshot: AdminOperationsSnapshot = {
     configSource: "kv",
     accessCodeSource: "managed",
   },
-  audit: [{ id: "audit-1", action: "config.update", target: "reasoning", at: "2026-07-26T08:00:00.000Z" }],
-  feedback: [{
-    id: "feedback-1",
-    label: "synthetic-operations-member",
-    rating: "down",
-    reason: "inaccurate",
-    routeId: "reasoning",
-    chatId: "chat-1",
-    messageId: "message-1",
-    at: "2026-07-26T08:10:00.000Z",
-  }],
+  audit: operationAudit,
+  feedback: operationFeedback,
 };
 
 const fixturePixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -357,6 +377,8 @@ function WorkspaceFixture() {
   const [input, setInput] = useState(params.get("draft") === "long" ? "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行" : "准备发送的合成消息");
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
+  const [operationsFilter, setOperationsFilter] = useState("");
+  const [adminLoggedOut, setAdminLoggedOut] = useState(false);
   const forcedPhase = readTurnPhase(params.get("phase"));
   const turnPhase = forcedPhase || (busy ? "waiting-first-output" : "completed");
   const turnBusy = isActiveTurnPhase(turnPhase);
@@ -404,15 +426,27 @@ function WorkspaceFixture() {
   if (params.get("view") === "operations") {
     return (
       <main data-visual-fixture="true" style={{ height: "100dvh", overflowX: "hidden", overflowY: "auto", background: "var(--surface)" }}>
-        <AdminOperationsContent snapshot={operationsSnapshot} />
+        <label className="admin-operations-head">筛选运营数据<input aria-label="筛选运营数据" value={operationsFilter} onChange={(event) => setOperationsFilter(event.target.value)} /></label>
+        <AdminOperationsContent snapshot={operationsSnapshot} filter={operationsFilter} />
       </main>
     );
   }
 
+  if (params.get("view") === "operations-panel") {
+    return (
+      <main data-visual-fixture="true" style={{ height: "100dvh", display: "flex", overflow: "hidden", background: "var(--surface)" }}>
+        <AdminOperationsPanel onSessionExpired={() => undefined} onNotice={() => undefined} onDirtyChange={() => undefined} />
+      </main>
+    );
+  }
+
+  if (params.get("view") === "confirm-dialog") return <ConfirmDialogFixture />;
+
   if (params.get("view") === "admin-members") {
+    if (adminLoggedOut) return <main data-visual-fixture="true"><p role="status">管理员 fixture 已退出。</p></main>;
     return (
       <div data-visual-fixture="true">
-        <AdminWorkspace onSessionExpired={() => undefined} onLogout={() => undefined} />
+        <AdminWorkspace onSessionExpired={() => undefined} onLogout={() => setAdminLoggedOut(true)} />
       </div>
     );
   }
@@ -520,6 +554,39 @@ function WorkspaceFixture() {
           </div>
         </section>
       </div>
+    </main>
+  );
+}
+
+function ConfirmDialogFixture() {
+  const [open, setOpen] = useState(false);
+  const [attempts, setAttempts] = useState(0);
+  const [status, setStatus] = useState("");
+  const [openerRemoved, setOpenerRemoved] = useState(false);
+  return (
+    <main data-visual-fixture="true" style={{ minHeight: "100dvh", padding: 24 }}>
+      {!openerRemoved && <button type="button" onClick={() => { setStatus(""); setOpen(true); }}>打开合成确认</button>}
+      <button data-confirm-fallback type="button">后续焦点</button>
+      {status && <p role="status">{status}</p>}
+      {open && (
+        <ConfirmDialog
+          title="确认合成危险操作？"
+          description="目标：synthetic-target"
+          confirmLabel="确认执行"
+          tone="danger"
+          fallbackFocus={() => document.querySelector<HTMLElement>("[data-confirm-fallback]")}
+          onCancel={() => setOpen(false)}
+          onConfirm={async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 80));
+            if (attempts === 0) {
+              setAttempts(1);
+              throw new Error("合成提交失败，请重试。");
+            }
+            setStatus("合成操作已完成。");
+            setOpenerRemoved(true);
+          }}
+        />
+      )}
     </main>
   );
 }

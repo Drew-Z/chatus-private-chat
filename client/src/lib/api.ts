@@ -584,7 +584,10 @@ export async function adminLogin(token: string): Promise<{ ok: true } | { ok: fa
 }
 
 export async function adminLogout(): Promise<void> {
-  await fetch("/api/admin/logout", { method: "POST", credentials: "include" }).catch(() => undefined);
+  const data = await requestJson("/api/admin/logout", { method: "POST" });
+  if (!isRecord(data) || !hasExactKeys(data, ["ok"]) || data.ok !== true) {
+    throw new ApiError("invalid_admin_logout_response", "服务器返回了无法识别的退出结果。", 502);
+  }
 }
 
 export async function fetchAdminConfig(): Promise<AdminConfigSnapshot> {

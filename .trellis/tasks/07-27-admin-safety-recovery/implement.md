@@ -1,16 +1,17 @@
-# Implementation Plan: 管理员安全与错误恢复
+# Implementation Plan: Admin Safety and Error Recovery
 
 ## Ordered Checklist
 
-- [ ] 加载 frontend/platform specs 与任务文档。
-- [ ] 添加 logout 成功/失败服务端与客户端行为测试。
-- [ ] 修正 `adminLogout`、AdminWorkspace 和服务端 logout 契约。
-- [ ] 为 AdminWorkspace/operations 建立显式初始状态与 retry。
-- [ ] 增加运营列表分页/展开和 N/总数显示，覆盖 21 条边界。
-- [ ] 新增共享 ConfirmDialog，替换 AdminWorkspace、Provider、LogicalModel、Memory 中全部 `window.confirm`。
-- [ ] 增加焦点、键盘、busy/error 和原危险动作回归测试。
-- [ ] 运行 `trellis-check`、Workspace Playwright 和五项全量验证。
-- [ ] 更新管理员 frontend/platform spec，记录验证、提交、PR、合并并归档。
+- [x] Load the frontend/platform specs and task artifacts.
+- [x] Add server and client behavior tests for successful and failed logout.
+- [x] Fix the `adminLogout`, AdminWorkspace, and server logout contract.
+- [x] Establish explicit initial state and retry behavior for AdminWorkspace and operations.
+- [x] Add operations pagination and displayed/total counts, covering the 21-item boundary.
+- [x] Add a shared ConfirmDialog and replace every `window.confirm` in AdminWorkspace, ProviderAdminPanel, and LogicalModelAdminPanel.
+- [x] Add focus, keyboard, pending/error, and prior dangerous-action regression coverage.
+- [x] Run `trellis-check`, Workspace Playwright, and all full validation commands.
+- [x] Update the admin frontend/platform specs and record validation evidence.
+- [ ] Commit, open and merge the PR, record deployment evidence, and archive the task.
 
 ## Risky Files
 
@@ -22,5 +23,5 @@
 
 ## Rollback Points
 
-- logout 契约、状态机、列表与 Dialog 分成可审阅 commits。
-- 如果 Dialog 回归影响破坏性动作，保留动作 API 不变并仅回滚共享 UI 层。
+- Keep the logout contract, view state, lists, and dialog reviewable as separate commits.
+- If the dialog causes a destructive-action regression, preserve the action APIs and roll back only the shared UI layer.

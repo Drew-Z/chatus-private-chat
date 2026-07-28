@@ -1,25 +1,25 @@
-# Design: 管理员安全与错误恢复
+# Design: Admin Safety and Error Recovery
 
 ## Logout Contract
 
-`adminLogout()` 不吞异常，返回明确成功或抛结构化 API 错误。服务端只有在 session KV 删除成功后返回 2xx；客户端成功后才调用 `onLogout()`。失败保留当前页面并展示 notice。清 cookie 与撤销语义保持一致，避免“UI 已退出、服务端仍有效”。
+`adminLogout()` does not swallow failures. It returns explicit success or throws a structured API error. The server returns 2xx only after deleting the session from KV, and the client calls `onLogout()` only after that success. Failure keeps the current page open and displays a notice. Cookie clearing and revocation stay atomic from the client's perspective, avoiding a logged-out UI with a still-valid server session.
 
 ## Async View State
 
-AdminWorkspace 和 operations 各自使用判别联合：`loading`、`ready(data)`、`error(message)`。refresh 可保留旧 data 并显示非阻塞 busy，但首次加载 error 不渲染 ready 内容或无限 loading。
+AdminWorkspace and operations each use a discriminated union: `loading`, `ready(data)`, or `error(message)`. Refresh may retain old data with a non-blocking busy state, but an initial load error renders neither ready content nor indefinite loading.
 
 ## Long Lists
 
-使用稳定页大小 20。状态包含 query/page；先过滤后分页。标题显示当前页或已展开项目数 N 与过滤后总数。提供上一页/下一页或“显示更多”，第 21 条有键盘可达入口。
+Use a stable page size of 20. State contains query and page, with filtering before pagination. Each heading shows the currently displayed count and filtered total. Previous/next controls make item 21 keyboard-accessible.
 
 ## Confirmation Dialog
 
-新增共享 `ConfirmDialog`，由调用方提供 title、description、confirm label、tone、pending 和错误。组件用 React 管理的 `<dialog>`，统一焦点与关闭约束。各面板只持有待执行 action，不复制 DOM/focus 逻辑。
+Add a shared `ConfirmDialog`. Callers provide the title, description, confirm label, tone, focus fallback, and an asynchronous confirmation action. The dialog owns the pending and error state for each confirmation attempt; callers communicate mutation success or failure by resolving or rejecting the action. A React-managed `<dialog>` centralizes focus and close constraints. Panels hold only the pending action and do not duplicate DOM, mutation-state, or focus logic.
 
 ## Tests
 
-优先行为测试覆盖状态转换和 Dialog；现有 visual fixture 扩展 21+ 条和 error/retry。Worker logout 测试模拟 KV delete failure，确认 status/cookie/session 契约。
+Behavior-first tests cover state transitions and the dialog. The visual fixture grows to 21+ items and covers error/retry. Worker logout tests simulate KV delete failure and verify status, cookie, and session semantics.
 
 ## Rollback
 
-API 错误契约和共享 Dialog 可独立回滚；服务端 session 数据格式不变化。
+The API error contract and shared dialog can be rolled back independently. The server session data format does not change.
