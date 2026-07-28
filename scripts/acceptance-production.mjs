@@ -4,8 +4,10 @@ const productionUrl = process.env.PRODUCTION_URL?.trim() || process.argv[2] || "
 const adminToken = process.env.ADMIN_TOKEN?.trim() || "";
 const expectedReleaseSha = process.env.EXPECTED_RELEASE_SHA?.trim() || process.env.GITHUB_SHA?.trim() || process.argv[3] || "";
 const requestTimeoutMs = 15_000;
-const loginAttempts = 3;
-const loginRetryDelayMs = 8_000;
+// KV-backed access updates may need close to a minute to reach another edge.
+// Keep attempts below the per-source eight-failure throttle while covering that window.
+const loginAttempts = 5;
+const loginRetryDelayMs = 15_000;
 
 if (!productionUrl) {
   throw new Error("PRODUCTION_URL is required");
@@ -385,7 +387,7 @@ let primaryError;
 try {
   await putAccessCodes(adminCookie, augmentedAccessCodes, originalAccess.revision);
   await sleep(2_000);
-  await Promise.all(members.map(loginMember));
+  for (const member of members) await loginMember(member);
   const sessions = await Promise.all(members.map(sessionProjection));
   assert(sessions[0].agent.instance !== sessions[1].agent.instance, "member isolation: Agent instances are shared");
   console.log("Authentication and per-member Agent identity passed");
@@ -424,7 +426,7 @@ try {
   await assertDeletedConversation(members[0]);
   assert((await listConversations(members[0])).length === 0, "conversation deletion: member A list is not empty");
   assert((await listConversations(members[1])).length === 0, "conversation deletion: member B list is not empty");
-  await Promise.all(members.map(purgeMember));
+  for (const member of members) await purgeMember(member);
   console.log("Conversation tombstones and user-data deletion passed");
 } catch (error) {
   primaryError = error;

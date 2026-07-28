@@ -19,6 +19,8 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Log in through `POST /api/admin/login`; keep the returned admin cookie in memory only.
 - Read `GET /api/admin/access-codes` and retain `accessCodes`, `source`, and `revision` without logging them. `source` may be `kv`, `secret`, or `managed`; a managed empty source is the supported first-deployment bootstrap state.
 - Generate two random labels and access codes before mutation, append them with `PUT /api/admin/access-codes`, and pass `expectedRevision`.
+- Treat temporary access-code visibility as a bounded KV-propagation check. Space retries so the final attempt is at least 60 seconds after the first while keeping the maximum invalid attempts below the Worker's eight-failure per-source throttle.
+- Run temporary-member login and delete-then-login checks sequentially. GitHub Actions requests share one source identity, so concurrent retries can consume the same login-failure budget and obscure which member has observed the KV update.
 - Verify member login, `/api/session`, opaque per-member Agent identities, conversation and memory isolation, `409` stale writes, cookie-authenticated `/agent` WebSockets, tombstones, and `DELETE /api/user-data`.
 - Do not send a chat turn, completion request, route probe, or any other model request.
 - Always purge temporary member data and remove both access-code entries in `finally`.
@@ -35,7 +37,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 | Non-local HTTP target | Reject before authentication |
 | `ADMIN_TOKEN` missing or invalid | Exit before access-code mutation |
 | Access-code revision changed before write | Receive `409`; do not overwrite |
-| Temporary code is not visible after bounded retries | Fail and enter cleanup |
+| Temporary code is not visible after the 60-second propagation window | Fail and enter cleanup without exhausting the eight-failure source throttle |
 | Member Agent identity is shared or exposes a label | Fail and enter cleanup |
 | Stale conversation or memory write does not return `409` | Fail and enter cleanup |
 | WebSocket does not emit `cf_agent_identity` | Fail on timeout and enter cleanup |
@@ -55,7 +57,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 
 - Run the acceptance script against local Wrangler with dummy `ADMIN_TOKEN`, both a legacy access-code fixture and an empty managed bootstrap fixture; assert every milestone completes and the original source is restored afterward.
 - Parse the workflow YAML and assert the job is restricted to `refs/heads/main`, shares the production mutation concurrency group with deployment, and does not cancel in-progress cleanup.
-- Statically assert the acceptance script checks release SHA before mutation and after cleanup and checks admin logout status.
+- Statically assert the acceptance script checks release SHA before mutation and after cleanup, checks admin logout status, uses a 60-second-class propagation window with fewer than eight attempts, and runs temporary-member login/purge sequentially.
 - Run `node --check scripts/acceptance-production.mjs`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 - After deployment through GitHub Actions, manually run `Production member acceptance` and retain only the run URL/result, never generated credentials or response bodies.

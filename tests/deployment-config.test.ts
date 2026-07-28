@@ -308,6 +308,15 @@ describe("repository deployment contract", () => {
     expect(acceptanceProductionSource).toContain("await expectStatus(logout, 200, \"admin logout\")");
   });
 
+  it("allows KV access updates to propagate without tripping the shared login throttle", () => {
+    expect(acceptanceProductionSource).toContain("const loginAttempts = 5");
+    expect(acceptanceProductionSource).toContain("const loginRetryDelayMs = 15_000");
+    expect(acceptanceProductionSource).toContain("for (const member of members) await loginMember(member)");
+    expect(acceptanceProductionSource).toContain("for (const member of members) await purgeMember(member)");
+    expect(acceptanceProductionSource).not.toContain("Promise.all(members.map(loginMember))");
+    expect(acceptanceProductionSource).not.toContain("Promise.all(members.map(purgeMember))");
+  });
+
   it("does not expose a local production deploy script", () => {
     const packageJson = JSON.parse(packageSource);
     expect(packageJson.scripts).not.toHaveProperty("deploy");
