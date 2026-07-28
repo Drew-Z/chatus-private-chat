@@ -1,9 +1,9 @@
 {
   "id": "admin-safety-recovery",
   "name": "admin-safety-recovery",
-  "title": "管理员安全与错误恢复",
-  "description": "安全 logout、后台状态机、运营列表可达性和统一 React Dialog。",
-  "status": "planning",
+  "title": "Admin safety and error recovery",
+  "description": "Fail-closed logout, explicit admin view state, reachable operations lists, and a shared React dialog.",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,15 +12,66 @@
   "assignee": "zhang",
   "createdAt": "2026-07-27",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/admin-safety-recovery",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "b522130989da091d32ec7e2c4e0bb0f8f85f5036",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/15",
   "subtasks": [],
   "children": [],
   "parent": "07-27-product-experience-governance-q3",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite production build and frontend structure checks passed.",
+        "at": "2026-07-28T13:01:26.091222+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "33 test files passed; 387 tests passed.",
+        "at": "2026-07-28T13:01:26.856576+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture TypeScript checks passed.",
+        "at": "2026-07-28T13:01:28.096146+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler packaged the Worker and 22 asset files without deployment.",
+        "at": "2026-07-28T13:01:29.185897+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-07-28T13:01:30.409025+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "60 passed and 30 project-conditional skips; no failures.",
+        "at": "2026-07-28T13:01:31.620620+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-Provider Agent browser acceptance passed 1 test.",
+        "at": "2026-07-28T13:01:32.939666+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency OK.",
+        "at": "2026-07-28T13:01:33.840623+00:00"
+      }
+    ]
+  }
 }

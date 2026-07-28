@@ -51,6 +51,92 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Use an unframed, scannable operations layout. Summary metrics form one full-width band; sections use restrained separators rather than nested cards. The eight-column member table scrolls inside its own wrapper on narrow screens and must never widen the admin page.
 - Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model.
 
+## Scenario: Recoverable React Admin Safety
+
+### 1. Scope / Trigger
+
+- Trigger: changing administrator logout, initial admin data loading, Operations list reachability, or destructive confirmation behavior in the composed React admin workspace.
+
+### 2. Signatures
+
+```text
+POST /api/admin/logout -> { ok: true }
+```
+
+```typescript
+type AdminViewState<T> =
+  | { status: "loading" }
+  | { status: "ready"; data: T; refreshing: boolean }
+  | { status: "error"; message: string };
+
+type ConfirmDialogProps = {
+  title: string;
+  description: ReactNode;
+  confirmLabel: string;
+  fallbackFocus?: () => HTMLElement | null;
+  onCancel: () => void;
+  onConfirm: () => void | Promise<void>;
+};
+
+paginateOperations<T>(items: T[], requestedPage: number, pageSize = 20)
+```
+
+### 3. Contracts
+
+- Admin logout is fail-closed. The Worker awaits deletion of `admin:<token>` before returning `200`, `{ ok: true }`, and the clearing cookie. A deletion failure returns a non-2xx response without `Set-Cookie`; the existing session remains usable for retry.
+- The browser accepts only the exact logout envelope `{ ok: true }`. Network errors, non-2xx responses, empty bodies, non-JSON bodies, `ok !== true`, and unknown keys reject. `AdminWorkspace` calls `onLogout()` only after this decoder succeeds; otherwise it keeps the workspace mounted and exposes a retry action.
+- AdminWorkspace and Operations initial loads use mutually exclusive `loading | ready | error` states. An initial failure shows an error and retry instead of ready content or an indefinite spinner. A refresh may retain the last ready snapshot with `refreshing: true`.
+- Each load owns a monotonically increasing generation. Success and failure may update state only when their generation is still current, so an older request cannot overwrite a newer snapshot or error.
+- Operations routes, feedback, audit, and member usage filter before pagination, use a stable page size of 20, and display `current page item count / filtered total`. Previous/next controls expose item 21 and later to keyboard and touch users.
+- The shared React `ConfirmDialog` owns pending and error state for one confirmation attempt. While pending, confirmation cannot repeat and Escape/backdrop/cancel cannot close the dialog. Rejection keeps the dialog open with an inline alert; success closes it.
+- The dialog receives initial focus, contains forward and reverse Tab navigation, closes on Escape when idle, and restores the connected opener. A destructive mutation that removes its opener supplies a connected fallback target, normally the next active entity or the add button.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Admin-session KV deletion rejects | Logout returns non-2xx, sends no clearing cookie, and preserves the session |
+| Logout response is not exact `{ ok: true }` | Browser rejects it and keeps the authenticated workspace |
+| Initial admin request fails | Render only the error/retry state |
+| Older admin request completes last | Ignore both its success and its failure |
+| Filter leaves 21 Operations items | Show 20 / 21 on page one and expose item 21 on page two |
+| Confirmation mutation rejects | Keep the dialog open, clear pending, and render an alert |
+| Confirmation is pending | Ignore repeat confirmation, Escape, backdrop, and cancel |
+| Successful deletion removes the opener | Restore focus to the supplied connected fallback |
+
+### 5. Good / Base / Bad Cases
+
+- Good: logout KV deletion succeeds, the exact response validates, and only then does the React session gate return to login.
+- Base: an Operations refresh fails after a ready snapshot; the snapshot remains visible, refreshing ends, and a retryable notice explains the failure.
+- Bad: the client swallows a logout `500`, clears its local session, or accepts `{ ok: true, token: "..." }` as success.
+- Bad: a long Operations list uses `slice(0, 20)` without navigation, or a dialog closes on mutation rejection and drops the only retry context.
+
+### 6. Tests Required
+
+- Worker tests assert successful logout deletes KV and clears the cookie, deletion failure returns `500` with no `Set-Cookie` and preserves the session, and cross-origin logout has no session or cookie side effect.
+- Browser API tests assert network, HTTP, empty/non-JSON, false, and unknown-key logout responses reject; exact `{ ok: true }` succeeds.
+- Workspace browser tests assert loading, ready, initial error, successful retry, fail-closed logout, dialog focus/Tab/Escape/pending/error/retry/fallback focus, and the 20/21 boundary for all four Operations lists.
+- Pagination helper tests assert empty, 20, 21, and stale-page clamping behavior. Fixtures remain synthetic and must not authenticate, call a model, or contact production.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await fetch("/api/admin/logout", { method: "POST" }).catch(() => undefined);
+onLogout();
+const visible = filtered.slice(0, 20);
+```
+
+#### Correct
+
+```typescript
+await adminLogout(); // exact response decoder; throws on every failure
+onLogout();
+
+const page = paginateOperations(filtered, requestedPage, 20);
+```
+
 ## Scenario: Logical Model And Provider Pool Administration
 
 ### 1. Scope / Trigger

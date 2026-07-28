@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import ciWorkflow from "../.github/workflows/ci.yml?raw";
-import deployWorkflow from "../.github/workflows/deploy.yml?raw";
-import acceptanceWorkflow from "../.github/workflows/production-acceptance.yml?raw";
-import agentRunnerSource from "../scripts/run-browser-agent-e2e.mjs?raw";
-import packageSource from "../package.json?raw";
+import ciWorkflowRaw from "../.github/workflows/ci.yml?raw";
+import deployWorkflowRaw from "../.github/workflows/deploy.yml?raw";
+import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.yml?raw";
+import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
+import packageSourceRaw from "../package.json?raw";
 import { classifyChangedPaths } from "../scripts/classify-ci-paths.mjs";
 import { createDeliveryManifest } from "../scripts/write-delivery-manifest.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const normalizeText = (source: string) => source.replace(/\r\n?/gu, "\n");
+const ciWorkflow = normalizeText(ciWorkflowRaw);
+const deployWorkflow = normalizeText(deployWorkflowRaw);
+const acceptanceWorkflow = normalizeText(acceptanceWorkflowRaw);
+const agentRunnerSource = normalizeText(agentRunnerSourceRaw);
+const packageSource = normalizeText(packageSourceRaw);
 
 describe("delivery path classification", () => {
   it("runs Workspace Playwright only for workspace-facing paths", () => {

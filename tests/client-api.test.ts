@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  adminLogout,
+  ApiError,
   exportUserData,
   isAdminConfigSnapshot,
   isAdminAuditSnapshot,
@@ -173,6 +175,60 @@ const validOperationsStats = {
   configSource: "kv",
   accessCodeSource: "managed",
 };
+
+describe("admin logout client contract", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("accepts only an exact successful revocation response", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    await expect(adminLogout()).resolves.toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("/api/admin/logout");
+    expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ method: "POST", credentials: "include", cache: "no-store" });
+  });
+
+  it("rejects network failures without pretending the session was revoked", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("offline"));
+
+    await expect(adminLogout()).rejects.toMatchObject<ApiError>({ code: "network_unavailable", status: 0 });
+  });
+
+  it("rejects server failures with the structured API error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      error: "internal_error",
+      message: "管理员会话撤销失败。",
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    await expect(adminLogout()).rejects.toMatchObject<ApiError>({
+      code: "internal_error",
+      message: "管理员会话撤销失败。",
+      status: 500,
+    });
+  });
+
+  it("rejects false, non-exact, and non-JSON 2xx responses", async () => {
+    const responses = [
+      new Response(JSON.stringify({ ok: false }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(JSON.stringify({ ok: true, extra: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response("", { status: 200 }),
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => responses.shift()!);
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect(adminLogout()).rejects.toMatchObject<ApiError>({
+        code: "invalid_admin_logout_response",
+        status: 502,
+      });
+    }
+  });
+});
 
 describe("React client runtime validation", () => {
   it("validates the admin session and capability configuration boundary", () => {

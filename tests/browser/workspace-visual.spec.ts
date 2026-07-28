@@ -412,9 +412,24 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "管理审计" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "成员用量" })).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "2026-07-26 请求 5" })).toBeVisible();
-  await expect(page.getByText("更新配置", { exact: true })).toBeVisible();
-  await expect(page.getByText(/不准确/)).toBeVisible();
-  await expect(page.getByText("合成运营成员名称用于验证窄屏容器", { exact: true })).toBeVisible();
+  await expect(page.getByText("更新配置", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/不准确/).first()).toBeVisible();
+  await expect(page.getByText("合成运营成员 01", { exact: true })).toBeVisible();
+  await expect(page.getByText(/当前显示 20 \/ 21/)).toHaveCount(4);
+  await expect(page.getByText("第 21 条逻辑模型", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "逻辑模型结果：下一页" }).click();
+  await expect(page.getByText("第 21 条逻辑模型", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "成员反馈：下一页" }).click();
+  await expect(page.getByText("第 21 条成员反馈", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "管理审计：下一页" }).click();
+  await expect(page.getByText(/第 21 条管理审计/)).toBeVisible();
+  await page.getByRole("button", { name: "成员用量：下一页" }).click();
+  await expect(page.getByText("第 21 位运营成员", { exact: true })).toBeVisible();
+
+  await page.getByLabel("筛选运营数据").fill("第 21 条逻辑模型");
+  await expect(page.getByText("当前显示 1 / 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("第 21 条逻辑模型", { exact: true })).toBeVisible();
 
   const geometry = await page.evaluate(() => {
     const content = document.querySelector<HTMLElement>(".admin-operations-content");
@@ -439,6 +454,152 @@ test("operations data stays scannable with local table overflow", async ({ page 
   expect(geometry.wrapperFits).toBe(true);
   if (testInfo.project.name === "touch-390") expect(geometry.localOverflow).toBe(true);
   await attachScreenshot(page, testInfo, "operations");
+});
+
+test("shared confirmation dialog traps and restores focus while keeping failures retryable", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "dialog behavior needs one desktop browser pass");
+  await page.goto("/?view=confirm-dialog");
+  const opener = page.getByRole("button", { name: "打开合成确认" });
+  await opener.click();
+  let dialog = page.getByRole("dialog", { name: "确认合成危险操作？" });
+  const cancel = dialog.getByRole("button", { name: "取消" });
+  const confirm = dialog.getByRole("button", { name: "确认执行" });
+  const close = dialog.getByRole("button", { name: "关闭确认窗口" });
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+
+  await opener.click();
+  dialog = page.getByRole("dialog", { name: "确认合成危险操作？" });
+  await dialog.getByRole("button", { name: "确认执行" }).click();
+  await expect(dialog.getByRole("button", { name: "处理中..." })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveText("合成提交失败，请重试。");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "确认执行" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "后续焦点" })).toBeFocused();
+  await expect(page.getByText("合成操作已完成。", { exact: true })).toBeVisible();
+});
+
+test("admin workspace initial error is distinct from loading and retryable", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "state transition coverage needs one desktop browser pass");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let allowSuccess = false;
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() !== "GET" || !["/api/admin/config", "/api/admin/members"].includes(url.pathname)) {
+      throw new Error(`unexpected admin state request: ${request.method()} ${url.pathname}`);
+    }
+    await gate;
+    if (!allowSuccess) {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "fixture_unavailable", message: "合成后台读取失败。" }) });
+      return;
+    }
+    if (url.pathname === "/api/admin/config") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ config: adminMemberConfig, source: "kv", revision: "a".repeat(64) }) });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }], accessRevision: "c".repeat(64), accessSource: "managed" }) });
+    }
+  });
+
+  await page.goto("/?view=admin-members");
+  await expect(page.getByText("正在读取配置...", { exact: true }).first()).toBeVisible();
+  release();
+  await expect(page.getByRole("heading", { name: "无法读取管理配置" })).toBeVisible();
+  await expect(page.getByText("正在读取配置...", { exact: true })).toHaveCount(0);
+  allowSuccess = true;
+  await page.getByRole("button", { name: "重试读取配置" }).click();
+  await expect(page.getByRole("heading", { name: "默认配置" })).toBeVisible();
+});
+
+test("admin logout keeps the workspace until server revocation succeeds", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "logout transition coverage needs one desktop browser pass");
+  let logoutAttempts = 0;
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      await json({ config: adminMemberConfig, source: "kv", revision: "a".repeat(64) });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({ members: [], accessRevision: "c".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/logout" && request.method() === "POST") {
+      logoutAttempts += 1;
+      await json(logoutAttempts === 1
+        ? { error: "internal_error", message: "合成会话撤销失败，请重试。" }
+        : { ok: true }, logoutAttempts === 1 ? 500 : 200);
+      return;
+    }
+    throw new Error(`unexpected logout fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  await expect(page.getByRole("heading", { name: "默认配置" })).toBeVisible();
+  await page.getByRole("button", { name: "退出" }).click();
+  await expect(page.getByRole("alert")).toContainText("合成会话撤销失败，请重试。");
+  await expect(page.getByRole("heading", { name: "默认配置" })).toBeVisible();
+  await expect(page.getByText("管理员 fixture 已退出。", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "重试退出" }).click();
+  await expect(page.getByText("管理员 fixture 已退出。", { exact: true })).toBeVisible();
+  expect(logoutAttempts).toBe(2);
+});
+
+test("operations initial error is distinct from loading and retryable", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "state transition coverage needs one desktop browser pass");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let allowSuccess = false;
+  await page.route("**/api/admin/**", async (route) => {
+    const url = new URL(route.request().url());
+    await gate;
+    if (!allowSuccess) {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "fixture_unavailable", message: "合成运营读取失败。" }) });
+      return;
+    }
+    const body = url.pathname === "/api/admin/stats"
+      ? {
+          day: "2026-07-26",
+          days: ["2026-07-26"],
+          totals: { requests: 0, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 },
+          trend: [{ day: "2026-07-26", requests: 0, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 }],
+          routeStats: [],
+          users: [],
+          routes: [],
+          configSource: "kv",
+          accessCodeSource: "managed",
+        }
+      : { entries: [] };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+
+  await page.goto("/?view=operations-panel");
+  await expect(page.getByText("正在读取运营数据...", { exact: true })).toBeVisible();
+  release();
+  await expect(page.getByRole("heading", { name: "无法读取运营数据" })).toBeVisible();
+  await expect(page.getByText("正在读取运营数据...", { exact: true })).toHaveCount(0);
+  allowSuccess = true;
+  await page.getByRole("button", { name: "重试读取运营数据" }).click();
+  await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
 });
 
 test("member policy editing and usage reset stay usable on desktop and touch", async ({ page }, testInfo) => {

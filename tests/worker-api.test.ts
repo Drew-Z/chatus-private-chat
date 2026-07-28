@@ -787,12 +787,17 @@ describe("Worker API", () => {
 
   it("rejects cross-origin authenticated mutations before admin or user dispatch", async () => {
     const adminCookie = await adminLogin();
+    const adminSessionKey = `admin:${adminCookie.slice("chatus_admin=".length)}`;
     const currentConfig = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
     const currentMembers = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
     await env.CHAT_STORE.put(`${ROUTE_SECRET_PREFIX}BLOCKED_ROUTE`, "sentinel-route");
     await env.CHAT_STORE.put(`${MCP_SECRET_PREFIX}BLOCKED_MCP`, "sentinel-mcp");
 
     const attempts: Array<{ path: string; init: RequestInit }> = [
+      {
+        path: "/api/admin/logout",
+        init: { method: "POST" },
+      },
       {
         path: "/api/admin/config",
         init: {
@@ -857,7 +862,11 @@ describe("Worker API", () => {
       const response = await apiRequest(attempt.path, adminCookie, { ...attempt.init, headers });
       expect(response.status, attempt.path).toBe(403);
       await expect(response.json(), attempt.path).resolves.toMatchObject({ error: "invalid_origin" });
+      if (attempt.path === "/api/admin/logout") expect(response.headers.get("Set-Cookie")).toBeNull();
     }
+
+    await expect(env.CHAT_STORE.get(adminSessionKey)).resolves.not.toBeNull();
+    expect((await apiRequest("/api/admin/session", adminCookie)).status).toBe(200);
 
     await expect(env.CHAT_STORE.get(ACCESS_CODES_KEY)).resolves.toBeNull();
 
@@ -877,6 +886,44 @@ describe("Worker API", () => {
     await expect(env.CHAT_STORE.get(`${ROUTE_SECRET_PREFIX}BLOCKED_ROUTE`)).resolves.toBe("sentinel-route");
     await expect(env.CHAT_STORE.get(`${MCP_SECRET_PREFIX}BLOCKED_MCP`)).resolves.toBe("sentinel-mcp");
     await expect(env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).resolves.toBeNull();
+  });
+
+  it("revokes an admin session before clearing the cookie and fails closed when KV deletion fails", async () => {
+    const adminCookie = await adminLogin();
+    const adminToken = adminCookie.slice("chatus_admin=".length);
+    const adminKey = `admin:${adminToken}`;
+    await expect(env.CHAT_STORE.get(adminKey)).resolves.not.toBeNull();
+
+    const failingStore = new Proxy(env.CHAT_STORE, {
+      get(target, property) {
+        if (property === "delete") {
+          return async (key: string) => {
+            if (key === adminKey) throw new Error("synthetic_admin_delete_failure");
+            return target.delete(key);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const failed = await worker.fetch(new Request("https://example.test/api/admin/logout", {
+      method: "POST",
+      headers: { Cookie: adminCookie },
+    }), { ...env, CHAT_STORE: failingStore });
+    expect(failed.status).toBe(500);
+    expect(failed.headers.get("Set-Cookie")).toBeNull();
+    await expect(env.CHAT_STORE.get(adminKey)).resolves.not.toBeNull();
+    expect((await apiRequest("/api/admin/session", adminCookie)).status).toBe(200);
+
+    const revoked = await apiRequest("/api/admin/logout", adminCookie, { method: "POST" });
+    expect(revoked.status).toBe(200);
+    await expect(revoked.json()).resolves.toEqual({ ok: true });
+    expect(revoked.headers.get("Set-Cookie")).toContain("chatus_admin=");
+    expect(revoked.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    await expect(env.CHAT_STORE.get(adminKey)).resolves.toBeNull();
+    expect((await apiRequest("/api/admin/session", adminCookie)).status).toBe(401);
   });
 
   it("restores private TeamAgent identity after Durable Object eviction", async () => {

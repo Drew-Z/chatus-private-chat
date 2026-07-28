@@ -22,8 +22,14 @@ import {
   validateProviderDraft,
   type ProviderDraft,
 } from "../lib/admin-provider";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
+
+type ProviderConfirmation =
+  | { kind: "select"; id: string }
+  | { kind: "delete-provider"; id: string; label: string }
+  | { kind: "delete-secret"; ref: string };
 
 type ProviderAdminPanelProps = {
   snapshot: AdminConfigSnapshot;
@@ -56,6 +62,7 @@ export function ProviderAdminPanel({
   const [discoverySearch, setDiscoverySearch] = useState("");
   const [discoveryRouteId, setDiscoveryRouteId] = useState("");
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
+  const [confirmation, setConfirmation] = useState<ProviderConfirmation | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const providers = useMemo(() => projectAdminProviders(snapshot.config, secrets?.items || []), [snapshot.config, secrets]);
@@ -121,7 +128,14 @@ export function ProviderAdminPanel({
 
   function selectProvider(id: string) {
     if (busy || discoveryBusy) return;
-    if (dirty && !window.confirm("放弃当前未保存的服务商修改？")) return;
+    if (dirty) {
+      setConfirmation({ kind: "select", id });
+      return;
+    }
+    applyProviderSelection(id);
+  }
+
+  function applyProviderSelection(id: string) {
     if (id === "__new__") {
       setSelectedId("__new__");
       setDraft(createProviderDraft(undefined, ""));
@@ -178,18 +192,23 @@ export function ProviderAdminPanel({
     }
   }
 
-  async function deleteProvider() {
+  function requestDeleteProvider() {
     if (!selectedProvider || busy) return;
     const guard = canDeleteProvider(snapshot.config, selectedProvider.id);
     if (!guard.ok) {
       onNotice({ kind: "warning", text: `不能删除，仍被逻辑模型引用：${guard.referencedBy.join("、")}` });
       return;
     }
-    if (!window.confirm(`删除服务商「${selectedProvider.label}」？`)) return;
+    setConfirmation({ kind: "delete-provider", id: selectedProvider.id, label: selectedProvider.label });
+  }
+
+  async function deleteProvider(id: string) {
+    const provider = snapshot.config.providers[id];
+    if (!provider || busy) return;
     setBusy(true);
     try {
       const providers = { ...snapshot.config.providers };
-      delete providers[selectedProvider.id];
+      delete providers[id];
       const next = await putAdminConfig({ ...snapshot.config, providers }, snapshot.revision);
       onSnapshot(next);
       const nextId = Object.keys(next.config.providers).sort()[0] || null;
@@ -200,6 +219,7 @@ export function ProviderAdminPanel({
       onNotice({ kind: "success", text: "服务商已删除。" });
     } catch (error) {
       await handleConfigError(error);
+      throw new Error(getErrorMessage(error, "服务商删除失败。"));
     } finally {
       setBusy(false);
     }
@@ -226,10 +246,14 @@ export function ProviderAdminPanel({
     }
   }
 
-  async function removeSecret() {
+  function requestRemoveSecret() {
     const ref = secretRef;
     if (!secretCanEdit || busy || !selectedSecret?.managed) return;
-    if (!window.confirm("删除这个托管密钥？")) return;
+    setConfirmation({ kind: "delete-secret", ref });
+  }
+
+  async function removeSecret(ref: string) {
+    if (!secretCanEdit || busy || !selectedSecret?.managed || secretRef !== ref) return;
     setBusy(true);
     try {
       const result = await deleteAdminRouteSecret(ref, selectedSecret.revision);
@@ -243,9 +267,23 @@ export function ProviderAdminPanel({
       setSecretValue("");
       if (error instanceof ApiError && error.status === 401) onSessionExpired();
       else onNotice({ kind: "error", text: getErrorMessage(error, "密钥删除失败。") });
+      throw new Error(getErrorMessage(error, "密钥删除失败。"));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function confirmProviderAction() {
+    if (!confirmation) return;
+    if (confirmation.kind === "select") {
+      applyProviderSelection(confirmation.id);
+      return;
+    }
+    if (confirmation.kind === "delete-provider") {
+      await deleteProvider(confirmation.id);
+      return;
+    }
+    await removeSecret(confirmation.ref);
   }
 
   async function openDiscovery() {
@@ -331,7 +369,7 @@ export function ProviderAdminPanel({
             <p className="eyebrow">PROVIDER POOL</p>
             <h1 id="provider-admin-title">服务商</h1>
           </div>
-          <button className="icon-button" type="button" onClick={() => selectProvider("__new__")} disabled={busy} aria-label="新增服务商" title="新增服务商"><Plus size={17} /></button>
+          <button id="provider-admin-add" className="icon-button" type="button" onClick={() => selectProvider("__new__")} disabled={busy} aria-label="新增服务商" title="新增服务商"><Plus size={17} /></button>
         </div>
         <div className="admin-pool-list" role="listbox" aria-label="服务商列表">
           {providers.map((provider) => (
@@ -354,7 +392,7 @@ export function ProviderAdminPanel({
               <div className="admin-pool-actions">
                 {conflict && <button className="quiet-button icon-text-button" type="button" onClick={useServerVersion}><RotateCcw size={15} /><span>使用服务器版本</span></button>}
                 {selectedProvider && <button className="quiet-button icon-text-button" type="button" onClick={() => void openDiscovery()} disabled={!canEdit}><WandSparkles size={15} /><span>发现模型</span></button>}
-                {selectedProvider && <button className="quiet-button danger icon-text-button" type="button" onClick={() => void deleteProvider()} disabled={!canEdit}><Trash2 size={15} /><span>删除</span></button>}
+                {selectedProvider && <button className="quiet-button danger icon-text-button" type="button" onClick={requestDeleteProvider} disabled={!canEdit}><Trash2 size={15} /><span>删除</span></button>}
                 <button className="primary-button icon-text-button" type="button" onClick={() => void saveProvider()} disabled={!canEdit || !dirty}><Save size={15} /><span>{busy ? "保存中..." : "保存服务商"}</span></button>
               </div>
             </div>
@@ -375,13 +413,23 @@ export function ProviderAdminPanel({
 
             <section className="admin-secret-box" aria-labelledby="provider-secret-title">
               <div><p className="eyebrow">CREDENTIAL VAULT</p><h3 id="provider-secret-title">密钥状态</h3><p>{selectedSecret ? `${selectedSecret.source === "managed" ? "托管密钥" : "Worker Secret"} · ${selectedSecret.status}` : draft.apiKeyRef ? "尚未读取到此 Ref 的状态" : "先填写 API Key Ref，再保存服务商配置"}</p></div>
-              <div className="admin-secret-actions"><input type="password" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder={secretCanEdit ? "只写入，不会回显" : "先保存服务商和 API Key Ref"} autoComplete="new-password" disabled={!secretCanEdit || busy} /><button className="quiet-button icon-text-button" type="button" onClick={() => void saveSecret()} disabled={!secretCanEdit || !secretValue.trim() || busy}><KeyRound size={15} /><span>保存密钥</span></button>{selectedSecret?.managed && <button className="quiet-button danger icon-text-button" type="button" onClick={() => void removeSecret()} disabled={!secretCanEdit || busy}><Trash2 size={15} /><span>删除托管密钥</span></button>}</div>
+              <div className="admin-secret-actions"><input type="password" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder={secretCanEdit ? "只写入，不会回显" : "先保存服务商和 API Key Ref"} autoComplete="new-password" disabled={!secretCanEdit || busy} /><button className="quiet-button icon-text-button" type="button" onClick={() => void saveSecret()} disabled={!secretCanEdit || !secretValue.trim() || busy}><KeyRound size={15} /><span>保存密钥</span></button>{selectedSecret?.managed && <button className="quiet-button danger icon-text-button" type="button" onClick={requestRemoveSecret} disabled={!secretCanEdit || busy}><Trash2 size={15} /><span>删除托管密钥</span></button>}</div>
             </section>
 
             <section className="admin-reference-box"><h3>已被逻辑模型引用</h3><div className="admin-reference-list">{selectedProvider?.referencedBy.length ? selectedProvider.referencedBy.map((routeId) => <span key={routeId}>{routeId}</span>) : <span className="muted">尚未引用</span>}</div></section>
           </>
         )}
       </div>
+
+      {confirmation && (
+        <ConfirmDialog
+          key={providerConfirmationKey(confirmation)}
+          {...providerConfirmationCopy(confirmation)}
+          fallbackFocus={confirmation.kind === "delete-provider" ? providerFallbackFocus : undefined}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={confirmProviderAction}
+        />
+      )}
 
       <dialog ref={dialogRef} className="admin-discovery-dialog" onCancel={() => setDiscoveryOpen(false)}>
         <div className="admin-dialog-head"><div><p className="eyebrow">MODEL DISCOVERY</p><h2>从 {discoveryProviderId} 发现模型</h2></div><button className="icon-button" type="button" onClick={() => setDiscoveryOpen(false)} aria-label="关闭模型发现" title="关闭"><X size={17} /></button></div>
@@ -392,6 +440,40 @@ export function ProviderAdminPanel({
       </dialog>
     </section>
   );
+}
+
+function providerConfirmationKey(state: ProviderConfirmation): string {
+  return state.kind === "select" ? `${state.kind}:${state.id}` : state.kind === "delete-provider" ? `${state.kind}:${state.id}` : `${state.kind}:${state.ref}`;
+}
+
+function providerConfirmationCopy(state: ProviderConfirmation) {
+  if (state.kind === "select") {
+    return {
+      title: "放弃当前服务商草稿？",
+      description: `目标：${state.id === "__new__" ? "新增服务商" : state.id}。当前未保存修改会被丢弃。`,
+      confirmLabel: "放弃并切换",
+      tone: "danger" as const,
+    };
+  }
+  if (state.kind === "delete-provider") {
+    return {
+      title: `删除服务商「${state.label}」？`,
+      description: `目标：${state.id}。该服务商配置将被永久删除。`,
+      confirmLabel: "删除服务商",
+      tone: "danger" as const,
+    };
+  }
+  return {
+    title: `删除托管密钥 ${state.ref}？`,
+    description: `目标：${state.ref}。服务商配置会保留，但使用该引用的请求将无法认证。`,
+    confirmLabel: "删除托管密钥",
+    tone: "danger" as const,
+  };
+}
+
+function providerFallbackFocus(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[aria-label="服务商列表"] .admin-pool-list-item.active')
+    || document.getElementById("provider-admin-add");
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
