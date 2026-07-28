@@ -15,7 +15,7 @@
   "branch": "codex/admin-safety-recovery",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "b522130989da091d32ec7e2c4e0bb0f8f85f5036",
   "pr_url": null,
   "subtasks": [],
   "children": [],
