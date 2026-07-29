@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-07-27",
   "completedAt": null,
-  "branch": "codex/admin-safety-recovery",
+  "branch": "codex/admin-safety-acceptance-fix",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "b522130989da091d32ec7e2c4e0bb0f8f85f5036",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/15",
+  "commit": "e19876276194a921e0883a2ebc6c6de7b40c5789",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/16",
   "subtasks": [],
   "children": [],
   "parent": "07-27-product-experience-governance-q3",
@@ -25,52 +25,76 @@
   "meta": {
     "validation": [
       {
+        "command": "node --check scripts/acceptance-production.mjs",
+        "status": "passed",
+        "summary": "Production acceptance script syntax passed.",
+        "at": "2026-07-29T02:05:47.859395+00:00"
+      },
+      {
+        "command": "npx vitest run tests/deployment-config.test.ts",
+        "status": "passed",
+        "summary": "Deployment configuration regression suite passed 35 tests.",
+        "at": "2026-07-29T02:05:48.542025+00:00"
+      },
+      {
+        "command": "node --check scripts/check-frontend.mjs",
+        "status": "passed",
+        "summary": "Frontend structure checker syntax passed.",
+        "at": "2026-07-29T02:05:49.180354+00:00"
+      },
+      {
+        "command": "npx vitest run tests/delivery-governance.test.ts",
+        "status": "passed",
+        "summary": "Delivery governance regression suite passed 13 tests.",
+        "at": "2026-07-29T02:05:49.808557+00:00"
+      },
+      {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Vite production build and frontend structure checks passed.",
-        "at": "2026-07-28T13:01:26.091222+00:00"
+        "summary": "Vite production build and EOL-safe frontend structure checks passed.",
+        "at": "2026-07-29T02:05:50.450399+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "33 test files passed; 387 tests passed.",
-        "at": "2026-07-28T13:01:26.856576+00:00"
-      },
-      {
-        "command": "npm run typecheck",
-        "status": "passed",
-        "summary": "Worker, React client, and browser fixture TypeScript checks passed.",
-        "at": "2026-07-28T13:01:28.096146+00:00"
-      },
-      {
-        "command": "npx wrangler deploy --dry-run",
-        "status": "passed",
-        "summary": "Wrangler packaged the Worker and 22 asset files without deployment.",
-        "at": "2026-07-28T13:01:29.185897+00:00"
-      },
-      {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "No whitespace errors.",
-        "at": "2026-07-28T13:01:30.409025+00:00"
+        "summary": "Full Vitest suite passed; dependency sourcemap warnings only.",
+        "at": "2026-07-29T02:05:51.105002+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
-        "summary": "60 passed and 30 project-conditional skips; no failures.",
-        "at": "2026-07-28T13:01:31.620620+00:00"
+        "summary": "Workspace Playwright passed 60 tests with 30 project-conditional skips.",
+        "at": "2026-07-29T02:05:51.751724+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
         "summary": "Local fake-Provider Agent browser acceptance passed 1 test.",
-        "at": "2026-07-28T13:01:32.939666+00:00"
+        "at": "2026-07-29T02:05:52.503942+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture TypeScript checks passed.",
+        "at": "2026-07-29T02:05:53.162420+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaged the Worker and 22 asset files without deployment.",
+        "at": "2026-07-29T02:05:53.810242+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-07-29T02:05:54.462563+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
         "summary": "Repository consistency OK.",
-        "at": "2026-07-28T13:01:33.840623+00:00"
+        "at": "2026-07-29T02:05:55.137694+00:00"
       }
     ]
   }

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import ciWorkflowRaw from "../.github/workflows/ci.yml?raw";
 import deployWorkflowRaw from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.yml?raw";
+import checkFrontendSourceRaw from "../scripts/check-frontend.mjs?raw";
 import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
 import packageSourceRaw from "../package.json?raw";
 import { classifyChangedPaths } from "../scripts/classify-ci-paths.mjs";
@@ -14,6 +15,7 @@ const normalizeText = (source: string) => source.replace(/\r\n?/gu, "\n");
 const ciWorkflow = normalizeText(ciWorkflowRaw);
 const deployWorkflow = normalizeText(deployWorkflowRaw);
 const acceptanceWorkflow = normalizeText(acceptanceWorkflowRaw);
+const checkFrontendSource = normalizeText(checkFrontendSourceRaw);
 const agentRunnerSource = normalizeText(agentRunnerSourceRaw);
 const packageSource = normalizeText(packageSourceRaw);
 
@@ -88,6 +90,13 @@ describe("pull-request delivery workflow", () => {
     expect(ciWorkflow).toContain("actions/upload-artifact@v4");
     expect(ciWorkflow).not.toContain("acceptance:production");
     expect(ciWorkflow).not.toContain("smoke:production");
+  });
+
+  it("normalizes frontend structure-check text before multi-line assertions", () => {
+    expect(checkFrontendSource).toContain('readFile(file, "utf8")).replace(/\\r\\n?/gu, "\\n")');
+    expect(checkFrontendSource).toContain("readText(path.join(root,");
+    expect(checkFrontendSource).not.toContain("readFile(path.join(root,");
+    expect(checkFrontendSource.match(/readFile\(/gu)).toHaveLength(1);
   });
 
   it("writes a bounded exact-SHA manifest without secret or user-content fields", async () => {
