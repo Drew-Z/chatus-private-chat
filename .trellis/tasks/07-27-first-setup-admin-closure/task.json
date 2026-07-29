@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "d341d3643b2f0edec245f1240154d0ecb9258585",
-  "pr_url": null,
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/17",
   "subtasks": [],
   "children": [],
   "parent": "07-27-product-experience-governance-q3",
