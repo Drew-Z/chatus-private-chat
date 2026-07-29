@@ -937,3 +937,37 @@ Delivered fail-closed admin recovery and accessible operations UX through PR #15
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: 首次配置与单后台闭环
+
+**Date**: 2026-07-29
+**Task**: 首次配置与单后台闭环
+**Branch**: `main`
+
+### Summary
+
+完成无敏感 setup status、本地无模型 smoke、React 六步引导与单后台闭环；PR #17 全门禁通过并合并，精确 SHA 部署和无模型生产验收成功，任务已归档。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d341d36` | (see git log) |
+| `59efb4b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
