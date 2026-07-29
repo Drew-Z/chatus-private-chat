@@ -902,3 +902,38 @@ Added PR quality gates, path-aware browser checks, exact-SHA deployment artifact
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: Admin safety and production acceptance
+
+**Date**: 2026-07-29
+**Task**: Admin safety and production acceptance
+**Branch**: `main`
+
+### Summary
+
+Delivered fail-closed admin recovery and accessible operations UX through PR #15, then stabilized KV propagation and Windows EOL checks through PR #16; exact-SHA deployment and model-free production acceptance passed with retained artifacts.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b522130` | (see git log) |
+| `986d9d9` | (see git log) |
+| `e198762` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
