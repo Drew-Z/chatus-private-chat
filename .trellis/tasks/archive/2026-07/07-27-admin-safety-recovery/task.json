@@ -3,7 +3,7 @@
   "name": "admin-safety-recovery",
   "title": "Admin safety and error recovery",
   "description": "Fail-closed logout, explicit admin view state, reachable operations lists, and a shared React dialog.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-07-27",
-  "completedAt": null,
+  "completedAt": "2026-07-29",
   "branch": "codex/admin-safety-acceptance-fix",
   "base_branch": "main",
   "worktree_path": null,
@@ -95,6 +95,24 @@
         "status": "passed",
         "summary": "Repository consistency OK.",
         "at": "2026-07-29T02:05:55.137694+00:00"
+      },
+      {
+        "command": "GitHub Actions PR CI run 30416070750",
+        "status": "passed",
+        "summary": "PR #16 checks passed: changes, quality, and Workspace Playwright; Agent job was path-skipped after local fake-Provider acceptance passed.",
+        "at": "2026-07-29T03:30:32.441501+00:00"
+      },
+      {
+        "command": "GitHub Actions deployment run 30416290481",
+        "status": "passed",
+        "summary": "Merged SHA 84b640e3fe24b3ad0dcf831268a0ce256e6afbe6 deployed and production smoke passed; deployment and path artifacts retained.",
+        "at": "2026-07-29T03:30:33.047178+00:00"
+      },
+      {
+        "command": "GitHub Actions production acceptance run 30416456956",
+        "status": "passed",
+        "summary": "Exact deployed SHA passed temporary-member acceptance and cleanup; production-acceptance artifact retained.",
+        "at": "2026-07-29T03:30:33.718658+00:00"
       }
     ]
   }

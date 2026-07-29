@@ -11,7 +11,7 @@
 - [x] Add focus, keyboard, pending/error, and prior dangerous-action regression coverage.
 - [x] Run `trellis-check`, Workspace Playwright, and all full validation commands.
 - [x] Update the admin frontend/platform specs and record validation evidence.
-- [ ] Commit, open and merge the PR, record deployment evidence, and archive the task.
+- [x] Commit, open and merge the PR, record deployment evidence, and archive the task.
 
 ## Risky Files
 
