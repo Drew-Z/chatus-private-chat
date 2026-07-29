@@ -10,7 +10,7 @@
 - [x] 补齐 React admin 日常动作入口，移除常规 `/admin.html` 导航。
 - [x] 保留 legacy URL 和返回新版入口，更新契约测试。
 - [x] 运行 `trellis-check`、Workspace Playwright 和五项全量验证。
-- [ ] 更新 setup/admin specs，记录验证、提交、PR、合并并归档。
+- [x] 更新 setup/admin specs，记录验证、提交、PR、合并并归档。
 
 ## Risky Files
 
