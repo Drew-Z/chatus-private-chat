@@ -20,6 +20,7 @@ The Worker, tests, and default React client use strict TypeScript. Legacy module
 - Access codes belong only to the create/rotate mutation response type. They must not be added to `AdminMemberProjection`, member-list snapshots, revoke responses, configuration snapshots, or error details.
 - Member configuration-removal and standalone session-revocation responses also use exact envelopes. The former validates the full sanitized config projection; the latter requires `{ ok, label, revoked, complete }` and accepts no token or credential fields.
 - Current-day usage reset uses the exact `{ ok: true, label, day }` envelope. Reject unknown fields, blank labels, non-true `ok`, and non-canonical or nonexistent `YYYY-MM-DD` UTC dates before the component reports success.
+- Setup status and setup smoke use the same exact `AdminSetupStatus` decoder. Accept only `ready`, `configSource`, and the fixed six-step object; each step accepts only `ready`, `status`, and a non-negative safe-integer `count`. Reject unknown keys, invalid finite enums, or any `ready`/`status` inconsistency so a server regression cannot smuggle a credential reference, endpoint, model name, member label, or access code into browser state.
 - User-data export responses use an exact `chatus-user-data` v1 envelope with bounded conversation/message/file metadata and explicit truncation flags. Parse and validate the JSON body before creating a browser download; do not treat a MIME type or a Blob size alone as proof of the contract.
 
 ## Validation

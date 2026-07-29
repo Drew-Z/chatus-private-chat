@@ -16,13 +16,13 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 未认证 setup-status 返回 401；认证响应只有允许的键/计数/枚举，敏感字段扫描为零。
-- [ ] AC2. default/secret/KV 配置、缺凭据、缺 offering、无成员、权限未就绪和 ready 状态有 Worker API 测试。
-- [ ] AC3. setup-status 和 smoke 测试证明上游 fetch 调用次数为 0。
-- [ ] AC4. React 引导按六步顺序展示，保存各配置后状态刷新且可进入目标面板。
-- [ ] AC5. React admin 覆盖日常 Provider、模型、成员、权限和运营动作后，不再显示 `/admin.html` 常规入口。
-- [ ] AC6. `/admin.html` 可直接访问，legacy 明确保留回新版入口；相关回归测试通过。
-- [ ] AC7. Workspace Playwright、Worker API 和五项全量验证通过。
+- [x] AC1. 未认证 setup-status 返回 401；认证响应只有允许的键/计数/枚举，敏感字段扫描为零。
+- [x] AC2. default/secret/KV 配置、缺凭据、缺 offering、无成员、权限未就绪和 ready 状态有 Worker API 测试。
+- [x] AC3. setup-status 和 smoke 测试证明上游 fetch 调用次数为 0。
+- [x] AC4. React 引导按六步顺序展示，保存各配置后状态刷新且可进入目标面板。
+- [x] AC5. React admin 覆盖日常 Provider、模型、成员、权限和运营动作后，不再显示 `/admin.html` 常规入口。
+- [x] AC6. `/admin.html` 可直接访问，legacy 明确保留回新版入口；相关回归测试通过。
+- [x] AC7. Workspace Playwright、Worker API 和五项全量验证通过。
 
 ## Out of Scope
 

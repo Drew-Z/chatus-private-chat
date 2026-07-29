@@ -137,6 +137,109 @@ onLogout();
 const page = paginateOperations(filtered, requestedPage, 20);
 ```
 
+## Scenario: Model-Free First Setup Closure
+
+### 1. Scope / Trigger
+
+- Trigger: changing the authenticated setup projection, local setup smoke, first-use React admin routing, or the typed/legacy administration navigation boundary.
+
+### 2. Signatures
+
+```text
+GET  /api/admin/setup-status -> AdminSetupStatus
+POST /api/admin/setup-smoke  -> AdminSetupStatus | 409 setup_incomplete
+```
+
+```typescript
+type AdminSetupStepStatus = "ready" | "incomplete" | "blocked" | "not_run" | "stale";
+
+type AdminSetupStatus = {
+  ready: boolean;
+  configSource: "kv" | "secret" | "default";
+  steps: {
+    health: AdminSetupStep;
+    provider: AdminSetupStep;
+    model: AdminSetupStep;
+    member: AdminSetupStep;
+    permission: AdminSetupStep;
+    smoke: AdminSetupStep;
+  };
+};
+
+type AdminSetupStep = {
+  ready: boolean;
+  status: AdminSetupStepStatus;
+  count: number;
+};
+```
+
+### 3. Contracts
+
+- Both endpoints are behind the existing admin-session guard. `POST /api/admin/setup-smoke` also inherits the same-origin mutation guard. A missing `ADMIN_TOKEN` never creates an anonymous setup path.
+- The response has exactly `ready`, `configSource`, and `steps`. Each step has exactly `ready`, `status`, and `count`; the order is `health`, `provider`, `model`, `member`, `permission`, then `smoke`.
+- The projection must never contain a credential, credential reference, endpoint or URL, upstream model name, member label, access code, custom header, or other sensitive identifier.
+- The generated default placeholder is not explicit setup. Provider readiness requires an enabled provider with a usable server credential; `user_key_required` is not ready. Model readiness requires an explicit enabled logical route with at least one resolvable enabled candidate. Member readiness counts valid access-code members. Permission readiness requires a persisted enabled user with an explicit allowed enabled route.
+- Health and smoke may inspect KV, Durable Object storage, normalized configuration, route-candidate resolution, credential availability, access membership, and permission projection. They must not call provider discovery, a completion endpoint, a live model, or any other upstream service.
+- A successful smoke stores only an internal version, fingerprint, and completion time. Configuration or access revision changes make it stale; a missing prerequisite blocks it. The browser never receives the fingerprint or completion time.
+- `AdminWorkspace` loads setup status with config and members. An incomplete instance initially opens the setup view; a ready instance initially opens members. The setup view remains available for re-checking and reuses the existing provider, logical-model, member, and permission editors rather than duplicating forms.
+- Successful provider/config/member/permission mutations refresh setup status. The React admin has no regular `/admin.html` link; `/admin.html` remains directly reachable as a rollback address and keeps an explicit link back to `/react-chat/admin`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Setup endpoint has no valid admin session | `401 unauthorized`; no setup projection |
+| Setup smoke has a present cross-origin `Origin` | `403 invalid_origin`; no storage mutation |
+| Any prerequisite is incomplete | `POST /api/admin/setup-smoke` returns `409 setup_incomplete` and writes no smoke record |
+| Default placeholder is the only config | Provider and model remain incomplete |
+| Provider is BYOK-only or its credential is missing/unavailable | Provider remains incomplete without exposing the reason's identifier |
+| Smoke fingerprint matches current local state | Smoke is `ready` with count `1` |
+| A smoke record exists but current local state differs | Smoke is `stale` with count `0` |
+| Browser response has an unknown key, invalid enum, inconsistent ready/status, or invalid count | Reject as an invalid setup response before rendering |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an authenticated administrator configures a server credential, offering, first member, and explicit permission, runs the local smoke, and reaches a ready React admin without contacting a provider.
+- Base: setup is ready and daily administration opens on members; the administrator can still open the setup view and re-check it.
+- Bad: setup smoke sends a small completion prompt, returns `apiKeyRef` or an upstream model name, treats the generated default route as configured, or relies on `/admin.html` as ordinary React navigation.
+
+### 6. Tests Required
+
+- Worker tests cover unauthenticated access, default/Secret/KV config sources, missing credential/offering/member/permission, the ready transition, stale configuration/access revisions, exact keys, sensitive-string scans, and zero upstream `fetch` calls for both status and smoke.
+- Browser API tests accept only the exact finite envelope and reject unknown top-level or step keys, invalid statuses, inconsistent readiness, and malformed counts.
+- Workspace browser tests prove the six-step order, target-panel navigation, setup refresh after mutations, smoke execution, desktop and 390px containment, absence of a React `/admin.html` link, and continued direct legacy access with a return-to-React link.
+- Run the frontend structure check, full Vitest suite, Workspace Playwright, local fake-provider Agent Playwright, typecheck, Wrangler dry-run, and diff check. Tests must never use a live provider or production deployment.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+return jsonResponse({
+  ready: true,
+  provider: { apiKeyRef: provider.apiKeyRef, baseUrl: provider.baseUrl },
+  model: route.model,
+});
+await fetch(provider.baseUrl, { method: "POST", body: JSON.stringify({ prompt: "ping" }) });
+```
+
+#### Correct
+
+```typescript
+return jsonResponse({
+  ready: prerequisitesReady && smokeReady,
+  configSource,
+  steps: {
+    health: { ready: true, status: "ready", count: 3 },
+    provider: { ready: true, status: "ready", count: 1 },
+    model: { ready: true, status: "ready", count: 1 },
+    member: { ready: true, status: "ready", count: 1 },
+    permission: { ready: true, status: "ready", count: 1 },
+    smoke: { ready: smokeReady, status: smokeReady ? "ready" : "not_run", count: smokeReady ? 1 : 0 },
+  },
+});
+```
+
 ## Scenario: Logical Model And Provider Pool Administration
 
 ### 1. Scope / Trigger
