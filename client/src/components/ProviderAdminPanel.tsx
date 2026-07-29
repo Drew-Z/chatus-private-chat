@@ -37,6 +37,7 @@ type ProviderAdminPanelProps = {
   onSessionExpired: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onNotice: (notice: Notice | null) => void;
+  onSetupChanged: () => void;
   resetKey?: number;
 };
 
@@ -46,6 +47,7 @@ export function ProviderAdminPanel({
   onSessionExpired,
   onDirtyChange,
   onNotice,
+  onSetupChanged,
   resetKey = 0,
 }: ProviderAdminPanelProps) {
   const [secrets, setSecrets] = useState<AdminRouteSecretsSnapshot | null>(null);
@@ -236,6 +238,7 @@ export function ProviderAdminPanel({
         items: [...current.items.filter((item) => item.apiKeyRef !== ref), result.item].sort((a, b) => a.apiKeyRef.localeCompare(b.apiKeyRef)),
       } : current);
       setSecretValue("");
+      onSetupChanged();
       onNotice({ kind: "success", text: "密钥已保存，输入框已清空。" });
     } catch (error) {
       setSecretValue("");
@@ -262,6 +265,7 @@ export function ProviderAdminPanel({
         items: [...current.items.filter((item) => item.apiKeyRef !== ref), result.item],
       } : current);
       setSecretValue("");
+      onSetupChanged();
       onNotice({ kind: "success", text: "托管密钥已删除。" });
     } catch (error) {
       setSecretValue("");

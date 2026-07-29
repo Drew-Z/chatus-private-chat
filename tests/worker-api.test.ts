@@ -13,6 +13,7 @@ import wranglerConfig from "../wrangler.jsonc?raw";
 
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
+const SETUP_SMOKE_KEY = "config:setup_smoke";
 const ADMIN_AUDIT_KEY = "config:admin_audit";
 const FEEDBACK_KEY = "feedback:recent";
 const ROUTE_SECRET_PREFIX = "route-secret:";
@@ -209,6 +210,43 @@ async function configurePublicAccess(options: {
   return config;
 }
 
+function setupReadyConfig(options: {
+  apiKeyRef?: string;
+  includeOffering?: boolean;
+  includeMember?: boolean;
+  memberEnabled?: boolean;
+  allowedRoutes?: string[];
+} = {}) {
+  const includeOffering = options.includeOffering !== false;
+  const includeMember = options.includeMember !== false;
+  return {
+    providers: {
+      setup: {
+        label: "Setup provider",
+        type: "openai-chat",
+        baseUrl: "https://setup-provider.example/v1",
+        apiKeyRef: options.apiKeyRef || "TEST_ROUTE_KEY",
+      },
+    },
+    routes: {
+      setup: {
+        label: "Setup model",
+        ...(includeOffering ? { offerings: [{ providerId: "setup", model: "setup-upstream-model" }] } : {}),
+      },
+    },
+    defaults: { defaultRoute: "setup", allowedRoutes: ["setup"] },
+    ...(includeMember ? {
+      users: {
+        member: {
+          enabled: options.memberEnabled !== false,
+          defaultRoute: "setup",
+          allowedRoutes: options.allowedRoutes || ["setup"],
+        },
+      },
+    } : {}),
+  };
+}
+
 async function createGuestSession(source: string, cookie?: string) {
   const headers = new Headers({ "CF-Connecting-IP": source });
   if (cookie) headers.set("Cookie", cookie);
@@ -264,6 +302,7 @@ describe("Worker API", () => {
     await Promise.all([
       env.CHAT_STORE.delete(ACCESS_CODES_KEY),
       env.CHAT_STORE.delete(ROUTES_CONFIG_KEY),
+      env.CHAT_STORE.delete(SETUP_SMOKE_KEY),
       env.CHAT_STORE.delete(ADMIN_AUDIT_KEY),
       env.CHAT_STORE.delete(FEEDBACK_KEY),
       clearRouteSecrets(),
@@ -2249,6 +2288,177 @@ describe("Worker API", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("projects default setup state with exact secret-free keys and no upstream request", async () => {
+    const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await apiRequest("/api/admin/setup-status", cookie);
+    expect(response.status).toBe(200);
+    const payload = await response.json() as any;
+
+    expect(Object.keys(payload).sort()).toEqual(["configSource", "ready", "steps"]);
+    expect(Object.keys(payload.steps)).toEqual(["health", "provider", "model", "member", "permission", "smoke"]);
+    for (const step of Object.values(payload.steps) as any[]) {
+      expect(Object.keys(step).sort()).toEqual(["count", "ready", "status"]);
+      expect(typeof step.ready).toBe("boolean");
+      expect(Number.isInteger(step.count)).toBe(true);
+      expect(["ready", "incomplete", "blocked", "not_run", "stale"]).toContain(step.status);
+    }
+    expect(payload).toMatchObject({
+      ready: false,
+      configSource: "default",
+      steps: {
+        health: { ready: true, status: "ready" },
+        provider: { ready: false, status: "incomplete", count: 0 },
+        model: { ready: false, status: "incomplete", count: 0 },
+        member: { ready: false, status: "incomplete", count: 0 },
+        permission: { ready: false, status: "incomplete", count: 0 },
+        smoke: { ready: false, status: "blocked", count: 0 },
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const serialized = JSON.stringify(payload);
+    for (const forbidden of [
+      "setup-provider.example",
+      "setup-upstream-model",
+      "test-admin-token",
+      "TEST_ROUTE_KEY",
+      "accessCode",
+      "baseUrl",
+      "apiKey",
+      "modelName",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it("supports Secret and KV setup sources without model calls", async () => {
+    const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const secretEnv = {
+      ...env,
+      ROUTES_CONFIG: JSON.stringify(setupReadyConfig()),
+      ACCESS_CODES: "member:secret-member-code",
+    } as any;
+    const secretResponse = await worker.fetch(new Request("https://example.test/api/admin/setup-status", {
+      headers: { Cookie: cookie },
+    }), secretEnv);
+    expect(secretResponse.status).toBe(200);
+    await expect(secretResponse.json()).resolves.toMatchObject({
+      ready: false,
+      configSource: "secret",
+      steps: {
+        provider: { ready: true, count: 1 },
+        model: { ready: true, count: 1 },
+        member: { ready: true, count: 1 },
+        permission: { ready: true, count: 1 },
+        smoke: { ready: false, status: "not_run" },
+      },
+    });
+
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(setupReadyConfig()));
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "member:kv-member-code");
+    const kvResponse = await apiRequest("/api/admin/setup-status", cookie);
+    expect(kvResponse.status).toBe(200);
+    await expect(kvResponse.json()).resolves.toMatchObject({
+      ready: false,
+      configSource: "kv",
+      steps: {
+        provider: { ready: true, count: 1 },
+        model: { ready: true, count: 1 },
+        member: { ready: true, count: 1 },
+        permission: { ready: true, count: 1 },
+        smoke: { ready: false, status: "not_run" },
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports missing credential, offering, member, and explicit permission setup states", async () => {
+    const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const cases = [
+      {
+        config: setupReadyConfig({ apiKeyRef: "MISSING_SETUP_KEY" }),
+        accessCodes: "member:member-code",
+        expected: { provider: { ready: false, count: 0 }, model: { ready: true, count: 1 } },
+      },
+      {
+        config: setupReadyConfig({ includeOffering: false }),
+        accessCodes: "member:member-code",
+        expected: { model: { ready: false, count: 0 } },
+      },
+      {
+        config: setupReadyConfig({ includeMember: false }),
+        accessCodes: "",
+        expected: { member: { ready: false, count: 0 }, permission: { ready: false, count: 0 } },
+      },
+      {
+        config: setupReadyConfig({ memberEnabled: false }),
+        accessCodes: "member:member-code",
+        expected: { member: { ready: true, count: 1 }, permission: { ready: false, count: 0 } },
+      },
+    ];
+
+    for (const item of cases) {
+      await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(item.config));
+      if (item.accessCodes) await env.CHAT_STORE.put(ACCESS_CODES_KEY, item.accessCodes);
+      else await env.CHAT_STORE.delete(ACCESS_CODES_KEY);
+      const response = await apiRequest("/api/admin/setup-status", cookie);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ ready: false, steps: item.expected });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("runs local setup smoke and marks it stale after a relevant mutation", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(setupReadyConfig()));
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "member:member-code");
+    const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const smokeResponse = await apiRequest("/api/admin/setup-smoke", cookie, { method: "POST" });
+    expect(smokeResponse.status).toBe(200);
+    await expect(smokeResponse.json()).resolves.toMatchObject({
+      ready: true,
+      steps: { smoke: { ready: true, status: "ready", count: 1 } },
+    });
+    expect(await env.CHAT_STORE.get(SETUP_SMOKE_KEY)).toContain("fingerprint");
+
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "member:rotated-member-code");
+    const staleResponse = await apiRequest("/api/admin/setup-status", cookie);
+    expect(staleResponse.status).toBe(200);
+    await expect(staleResponse.json()).resolves.toMatchObject({
+      ready: false,
+      steps: { smoke: { ready: false, status: "stale", count: 0 } },
+    });
+
+    const rerunResponse = await apiRequest("/api/admin/setup-smoke", cookie, { method: "POST" });
+    expect(rerunResponse.status).toBe(200);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      ...setupReadyConfig(),
+      defaults: { defaultRoute: "setup", allowedRoutes: ["setup"], dailyMessageLimit: 321 },
+    }));
+    const configStaleResponse = await apiRequest("/api/admin/setup-status", cookie);
+    await expect(configStaleResponse.json()).resolves.toMatchObject({
+      ready: false,
+      steps: { smoke: { ready: false, status: "stale", count: 0 } },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses setup smoke until every local prerequisite is ready", async () => {
+    const cookie = await adminLogin();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await apiRequest("/api/admin/setup-smoke", cookie, { method: "POST" });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "setup_incomplete",
+      message: "请先完成无模型 smoke 之前的配置步骤",
+    });
+    await expect(env.CHAT_STORE.get(SETUP_SMOKE_KEY)).resolves.toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("returns a display name without changing the stable user label", async () => {
     const label = `named-${crypto.randomUUID()}`;
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
@@ -3419,6 +3629,10 @@ describe("Worker API", () => {
   });
 
   it("requires an admin session for managed route-secret APIs", async () => {
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/setup-status"))).status).toBe(401);
+    expect((await exports.default.fetch(new Request("https://example.test/api/admin/setup-smoke", {
+      method: "POST",
+    }))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets"))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/reliability"))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {

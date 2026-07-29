@@ -3,7 +3,7 @@
   "name": "first-setup-admin-closure",
   "title": "首次配置与单后台闭环",
   "description": "无敏感 setup-status、首次配置引导和 React admin 日常闭环。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,15 +12,66 @@
   "assignee": "zhang",
   "createdAt": "2026-07-27",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/first-setup-admin-closure",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "d341d3643b2f0edec245f1240154d0ecb9258585",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/17",
   "subtasks": [],
   "children": [],
   "parent": "07-27-product-experience-governance-q3",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite build and frontend structure checks passed",
+        "at": "2026-07-29T04:54:18.042566+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "33 files and 397 tests passed",
+        "at": "2026-07-29T04:54:18.200531+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "62 passed and 33 matrix cases skipped as configured",
+        "at": "2026-07-29T04:54:18.366325+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "1 local fake-provider Agent acceptance test passed",
+        "at": "2026-07-29T04:54:18.520672+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker client and browser TypeScript checks passed",
+        "at": "2026-07-29T04:54:18.687455+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaging dry-run passed without deployment",
+        "at": "2026-07-29T04:54:18.844871+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Diff whitespace check passed with line-ending notices only",
+        "at": "2026-07-29T04:54:19.002251+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task and workspace consistency passed",
+        "at": "2026-07-29T04:54:19.181645+00:00"
+      }
+    ]
+  }
 }

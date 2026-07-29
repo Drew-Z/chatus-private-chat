@@ -423,6 +423,27 @@ export type AdminConfigSnapshot = {
   revision: string;
 };
 
+export type AdminSetupStepStatus = "ready" | "incomplete" | "blocked" | "not_run" | "stale";
+
+export type AdminSetupStep = {
+  ready: boolean;
+  status: AdminSetupStepStatus;
+  count: number;
+};
+
+export type AdminSetupStatus = {
+  ready: boolean;
+  configSource: "kv" | "secret" | "default";
+  steps: {
+    health: AdminSetupStep;
+    provider: AdminSetupStep;
+    model: AdminSetupStep;
+    member: AdminSetupStep;
+    permission: AdminSetupStep;
+    smoke: AdminSetupStep;
+  };
+};
+
 export type AdminMemberProjection = {
   label: string;
   displayName: string;
@@ -594,6 +615,22 @@ export async function fetchAdminConfig(): Promise<AdminConfigSnapshot> {
   const data = await requestJson("/api/admin/config");
   if (!isAdminConfigSnapshot(data)) {
     throw new ApiError("invalid_admin_config_response", "管理配置格式无效。", 502);
+  }
+  return data;
+}
+
+export async function fetchAdminSetupStatus(): Promise<AdminSetupStatus> {
+  const data = await requestJson("/api/admin/setup-status");
+  if (!isAdminSetupStatus(data)) {
+    throw new ApiError("invalid_admin_setup_status_response", "首次配置状态格式无效。", 502);
+  }
+  return data;
+}
+
+export async function runAdminSetupSmoke(): Promise<AdminSetupStatus> {
+  const data = await requestJson("/api/admin/setup-smoke", { method: "POST" });
+  if (!isAdminSetupStatus(data)) {
+    throw new ApiError("invalid_admin_setup_smoke_response", "首次配置检查结果格式无效。", 502);
   }
   return data;
 }
@@ -1082,6 +1119,44 @@ export function isAdminConfigSnapshot(value: unknown): value is AdminConfigSnaps
     && isAdminConfig(value.config)
     && (value.source === "kv" || value.source === "secret" || value.source === "default")
     && isNonEmptyString(value.revision);
+}
+
+export function isAdminSetupStatus(value: unknown): value is AdminSetupStatus {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["ready", "configSource", "steps"])
+    || typeof value.ready !== "boolean"
+    || (value.configSource !== "kv" && value.configSource !== "secret" && value.configSource !== "default")
+    || !isRecord(value.steps)
+    || !hasExactKeys(value.steps, ["health", "provider", "model", "member", "permission", "smoke"])) {
+    return false;
+  }
+  const steps = value.steps;
+  const prerequisiteNames = ["health", "provider", "model", "member", "permission"] as const;
+  if (!prerequisiteNames.every((name) => isAdminSetupStep(steps[name], ["ready", "incomplete"]))) {
+    return false;
+  }
+  if (!isAdminSetupStep(steps.smoke, ["ready", "blocked", "not_run", "stale"])) return false;
+  const validatedSteps = [
+    ...prerequisiteNames.map((name) => steps[name] as AdminSetupStep),
+    steps.smoke as AdminSetupStep,
+  ];
+  return value.ready === validatedSteps
+    .every((step) => step.ready);
+}
+
+function isAdminSetupStep(value: unknown, statuses: readonly AdminSetupStepStatus[]): value is AdminSetupStep {
+  return isRecord(value)
+    && hasExactKeys(value, ["ready", "status", "count"])
+    && typeof value.ready === "boolean"
+    && typeof value.status === "string"
+    && statuses.includes(value.status as AdminSetupStepStatus)
+    && value.ready === (value.status === "ready")
+    && isNonNegativeInteger(value.count)
+    && value.count <= 10_000
+    && (value.status !== "ready" || value.count > 0)
+    && (value.status !== "blocked" || value.count === 0)
+    && (value.status !== "not_run" || value.count === 0)
+    && (value.status !== "stale" || value.count === 0);
 }
 
 export function isAdminRouteSecretsSnapshot(value: unknown): value is AdminRouteSecretsSnapshot {

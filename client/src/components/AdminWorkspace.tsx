@@ -23,18 +23,21 @@ import {
   createAdminMemberAccess,
   fetchAdminConfig,
   fetchAdminMembers,
+  fetchAdminSetupStatus,
   putAdminConfig,
   removeAdminMemberConfig,
   resetAdminMemberUsage,
   revokeAdminMemberAccess,
   revokeAdminMemberSessions,
   rotateAdminMemberAccess,
+  runAdminSetupSmoke,
   type AdminConfigSnapshot,
   type AdminMemberConfigRemovalResponse,
   type AdminMemberCredentialResponse,
   type AdminMemberProjection,
   type AdminMemberSessionsResponse,
   type AdminSessionRevocation,
+  type AdminSetupStatus,
   type AdminUsageResetResponse,
 } from "../lib/api";
 import {
@@ -56,6 +59,7 @@ import {
 import { mergeAdminMemberProjection } from "../lib/admin-members";
 import { LogicalModelAdminPanel } from "./LogicalModelAdminPanel";
 import { AdminOperationsPanel } from "./AdminOperationsPanel";
+import { AdminSetupGuide, type AdminSetupTarget } from "./AdminSetupGuide";
 import { CapabilityAdminPanel } from "./CapabilityAdminPanel";
 import { ProviderAdminPanel } from "./ProviderAdminPanel";
 import { PublicAccessAdminPanel } from "./PublicAccessAdminPanel";
@@ -67,6 +71,7 @@ type AdminData = {
   members: AdminMemberProjection[];
   accessRevision: string;
   accessSource: "kv" | "secret" | "managed";
+  setup: AdminSetupStatus;
 };
 
 type Notice = { kind: "success" | "warning" | "error"; text: string; action?: "retry-logout" };
@@ -77,7 +82,7 @@ type SessionRetryNotice = {
   text: string;
 };
 
-type AdminView = "members" | "providers" | "models" | "capabilities" | "public" | "reliability" | "operations";
+type AdminView = "setup" | "members" | "providers" | "models" | "capabilities" | "public" | "reliability" | "operations";
 
 type AdminWorkspaceViewState =
   | { status: "loading" }
@@ -130,6 +135,7 @@ export function AdminWorkspace({
   const [panelResetKey, setPanelResetKey] = useState(0);
   const [confirmation, setConfirmation] = useState<AdminWorkspaceConfirmation | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [setupChecking, setSetupChecking] = useState(false);
   const loadGeneration = useRef(0);
   const data = viewState.status === "ready" ? viewState.data : null;
   const loading = viewState.status === "loading" || (viewState.status === "ready" && viewState.refreshing);
@@ -187,13 +193,18 @@ export function AdminWorkspace({
       ? { status: "ready", data: previousData, refreshing: true }
       : { status: "loading" });
     try {
-      const [snapshot, memberSnapshot] = await Promise.all([fetchAdminConfig(), fetchAdminMembers()]);
+      const [snapshot, memberSnapshot, setup] = await Promise.all([
+        fetchAdminConfig(),
+        fetchAdminMembers(),
+        fetchAdminSetupStatus(),
+      ]);
       if (generation !== loadGeneration.current) return false;
       const stillExists = selectedMember === DEFAULT_ADMIN_MEMBER
         || memberSnapshot.members.some((member) => member.label === selectedMember);
       const nextMember = preserveDraft ? selectedMember : stillExists ? selectedMember : DEFAULT_ADMIN_MEMBER;
-      const nextData = { snapshot, ...memberSnapshot };
+      const nextData = { snapshot, ...memberSnapshot, setup };
       setViewState({ status: "ready", data: nextData, refreshing: false });
+      if (!previousData) setActiveView(setup.ready ? "members" : "setup");
       setSelectedMember(nextMember);
       if (!preserveDraft) {
         setDraft(createCapabilityAssignmentDraft(snapshot.config, nextMember));
@@ -265,6 +276,7 @@ export function AdminWorkspace({
         member.label === selectedMember ? { ...member, configured: selectedMember === DEFAULT_ADMIN_MEMBER || Boolean(snapshot.config.users[selectedMember]) } : member
       ));
       updateAdminData({ ...data, snapshot, members });
+      void refreshSetupStatus();
       setDraft(createCapabilityAssignmentDraft(snapshot.config, selectedMember));
       setDirty(false);
       setConflict(false);
@@ -302,6 +314,45 @@ export function AdminWorkspace({
       setConflict(false);
     }
     setPanelResetKey((value) => value + 1);
+    void refreshSetupStatus();
+  }
+
+  async function refreshSetupStatus(): Promise<boolean> {
+    try {
+      const setup = await fetchAdminSetupStatus();
+      updateAdminData((current) => ({ ...current, setup }));
+      return true;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onSessionExpired();
+        return false;
+      }
+      setNotice({ kind: "error", text: getAdminErrorMessage(error) });
+      return false;
+    }
+  }
+
+  async function runSetupSmoke() {
+    if (setupChecking) return;
+    setSetupChecking(true);
+    setNotice(null);
+    try {
+      const setup = await runAdminSetupSmoke();
+      updateAdminData((current) => ({ ...current, setup }));
+      setNotice({ kind: "success", text: "无模型 smoke 已通过，首次配置闭环就绪。" });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onSessionExpired();
+        return;
+      }
+      setNotice({ kind: "error", text: getAdminErrorMessage(error) });
+    } finally {
+      setSetupChecking(false);
+    }
+  }
+
+  function navigateFromSetup(target: AdminSetupTarget) {
+    selectView(target);
   }
 
   function setPanelNotice(panelNotice: Notice | null) {
@@ -457,6 +508,7 @@ export function AdminWorkspace({
         accessRevision: result.accessRevision,
         accessSource: "kv",
       }));
+      void refreshSetupStatus();
       if (!result.member && selectedMember === member.label && !dirty && data) {
         setSelectedMember(DEFAULT_ADMIN_MEMBER);
         setDraft(createCapabilityAssignmentDraft(data.snapshot.config, DEFAULT_ADMIN_MEMBER));
@@ -526,6 +578,7 @@ export function AdminWorkspace({
       accessRevision: result.accessRevision,
       accessSource: "kv",
     }));
+    void refreshSetupStatus();
     if (action === "create" && !dirty && data) {
       setSelectedMember(result.member.label);
       setDraft(createCapabilityAssignmentDraft(data.snapshot.config, result.member.label));
@@ -557,6 +610,7 @@ export function AdminWorkspace({
       },
       members: mergeAdminMemberProjection(current.members, label, result.member),
     }));
+    void refreshSetupStatus();
 
     const wasSelected = selectedMember === label;
     if (wasSelected) {
@@ -697,6 +751,7 @@ export function AdminWorkspace({
           </div>
         </div>
         <nav className="typed-admin-nav" aria-label="管理视图">
+          <button className={activeView === "setup" ? "active" : ""} type="button" onClick={() => selectView("setup")} aria-pressed={activeView === "setup"}>首次配置</button>
           <button className={activeView === "members" ? "active" : ""} type="button" onClick={() => selectView("members")} aria-pressed={activeView === "members"}>成员访问</button>
           <button className={activeView === "providers" ? "active" : ""} type="button" onClick={() => selectView("providers")} aria-pressed={activeView === "providers"}>服务商</button>
           <button className={activeView === "models" ? "active" : ""} type="button" onClick={() => selectView("models")} aria-pressed={activeView === "models"}>逻辑模型</button>
@@ -720,10 +775,6 @@ export function AdminWorkspace({
           <a className="quiet-button icon-text-button" href="/" aria-label="返回聊天" title="返回聊天">
             <ExternalLink size={15} />
             <span>返回聊天</span>
-          </a>
-          <a className="quiet-button icon-text-button" href="/admin.html" aria-label="打开完整后台" title="打开完整后台">
-            <ExternalLink size={15} />
-            <span>完整后台</span>
           </a>
           <button className="icon-button" type="button" onClick={requestRefresh} disabled={loading || saving || memberActionBusy || loggingOut} aria-label="刷新配置" title="刷新配置">
             <RefreshCw size={17} />
@@ -772,6 +823,14 @@ export function AdminWorkspace({
             <RefreshCw size={15} /><span>重试读取配置</span>
           </button>
         </div>
+      ) : activeView === "setup" && data ? (
+        <AdminSetupGuide
+          status={data.setup}
+          checking={setupChecking}
+          onNavigate={navigateFromSetup}
+          onRefresh={() => void refreshSetupStatus()}
+          onRunSmoke={() => void runSetupSmoke()}
+        />
       ) : activeView === "members" ? (
       <div className="typed-admin-layout">
         <aside className="typed-admin-members" aria-label="成员列表">
@@ -1142,6 +1201,7 @@ export function AdminWorkspace({
             onSessionExpired={onSessionExpired}
             onDirtyChange={setPoolDirty}
             onNotice={setPanelNotice}
+            onSetupChanged={() => void refreshSetupStatus()}
             resetKey={panelResetKey}
           />
         ) : activeView === "models" ? (
@@ -1217,6 +1277,7 @@ export function AdminWorkspace({
 
 function adminViewLabel(view: AdminView): string {
   const labels: Record<AdminView, string> = {
+    setup: "首次配置",
     members: "成员分配",
     providers: "服务商池",
     models: "逻辑模型",

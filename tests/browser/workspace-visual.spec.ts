@@ -80,6 +80,19 @@ const adminMemberConfig: AdminConfig = {
   },
 };
 
+const adminSetupReady = {
+  ready: true,
+  configSource: "kv",
+  steps: {
+    health: { ready: true, status: "ready", count: 3 },
+    provider: { ready: true, status: "ready", count: 1 },
+    model: { ready: true, status: "ready", count: 1 },
+    member: { ready: true, status: "ready", count: 1 },
+    permission: { ready: true, status: "ready", count: 1 },
+    smoke: { ready: true, status: "ready", count: 1 },
+  },
+} as const;
+
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const blocked: string[] = [];
@@ -490,6 +503,72 @@ test("shared confirmation dialog traps and restores focus while keeping failures
   await expect(page.getByText("合成操作已完成。", { exact: true })).toBeVisible();
 });
 
+test("admin setup guide keeps the six-step order and runs model-free smoke", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "setup coverage targets desktop and 390px");
+  let setupStatus = {
+    ...adminSetupReady,
+    ready: false,
+    steps: {
+      ...adminSetupReady.steps,
+      smoke: { ready: false, status: "not_run", count: 0 },
+    },
+  };
+  let smokeRuns = 0;
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      await json({ config: adminMemberConfig, source: "kv", revision: "a".repeat(64) });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({ members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }], accessRevision: "c".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      await json(setupStatus);
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-smoke" && request.method() === "POST") {
+      smokeRuns += 1;
+      setupStatus = adminSetupReady;
+      await json(setupStatus);
+      return;
+    }
+    throw new Error(`unexpected setup fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  await expect(page.getByRole("heading", { name: "首次配置" })).toBeVisible();
+  await expect(page.locator(".typed-admin-setup-copy strong")).toHaveText([
+    "运行健康",
+    "Provider 密钥",
+    "Logical model / offering",
+    "首位成员",
+    "成员权限",
+    "无模型 smoke",
+  ]);
+  await expect(page.locator('a[href="/admin.html"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "运行 smoke" }).click();
+  await expect(page.getByText("全部就绪", { exact: true })).toBeVisible();
+  expect(smokeRuns).toBe(1);
+
+  await page.getByRole("button", { name: "配置权限" }).click();
+  await expect(page.getByRole("heading", { name: "默认配置" })).toBeVisible();
+  const geometry = await page.evaluate(() => ({
+    documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+  }));
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.bodyFits).toBe(true);
+  await attachScreenshot(page, testInfo, "admin-setup-guide");
+});
+
 test("admin workspace initial error is distinct from loading and retryable", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-1440", "state transition coverage needs one desktop browser pass");
   let release!: () => void;
@@ -498,7 +577,7 @@ test("admin workspace initial error is distinct from loading and retryable", asy
   await page.route("**/api/admin/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
-    if (request.method() !== "GET" || !["/api/admin/config", "/api/admin/members"].includes(url.pathname)) {
+    if (request.method() !== "GET" || !["/api/admin/config", "/api/admin/members", "/api/admin/setup-status"].includes(url.pathname)) {
       throw new Error(`unexpected admin state request: ${request.method()} ${url.pathname}`);
     }
     await gate;
@@ -508,6 +587,8 @@ test("admin workspace initial error is distinct from loading and retryable", asy
     }
     if (url.pathname === "/api/admin/config") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ config: adminMemberConfig, source: "kv", revision: "a".repeat(64) }) });
+    } else if (url.pathname === "/api/admin/setup-status") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(adminSetupReady) });
     } else {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }], accessRevision: "c".repeat(64), accessSource: "managed" }) });
     }
@@ -540,6 +621,10 @@ test("admin logout keeps the workspace until server revocation succeeds", async 
     }
     if (url.pathname === "/api/admin/members" && request.method() === "GET") {
       await json({ members: [], accessRevision: "c".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      await json(adminSetupReady);
       return;
     }
     if (url.pathname === "/api/admin/logout" && request.method() === "POST") {
@@ -608,6 +693,7 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
   let revision = "a".repeat(64);
   const savedConfigs: AdminConfig[] = [];
   let sessionRetryCount = 0;
+  let setupStatusReads = 0;
 
   await page.route("**/api/admin/**", async (route) => {
     const request = route.request();
@@ -628,6 +714,11 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
         accessRevision: "c".repeat(64),
         accessSource: "managed",
       });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      setupStatusReads += 1;
+      await json(adminSetupReady);
       return;
     }
     if (url.pathname === "/api/admin/config" && request.method() === "PUT") {
@@ -688,6 +779,7 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
   await page.getByRole("button", { name: "保存分配" }).click();
   await expect(page.getByText("成员分配与使用策略已保存。", { exact: true })).toBeVisible();
   expect(savedConfigs).toHaveLength(1);
+  expect(setupStatusReads).toBeGreaterThanOrEqual(2);
   expect(savedConfigs[0].users.bill).toMatchObject({ displayName: "Bill", enabled: false, dailyMessageLimit: 250 });
   expect(savedConfigs[0].users.bill.minuteMessageLimit).toBeUndefined();
 
@@ -751,6 +843,10 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
     }
     if (url.pathname === "/api/admin/members" && request.method() === "GET") {
       await json({ members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }], accessRevision: "c".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      await json(adminSetupReady);
       return;
     }
     if (url.pathname === "/api/admin/mcp-secrets" && request.method() === "GET") {

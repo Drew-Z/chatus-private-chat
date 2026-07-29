@@ -76,6 +76,7 @@ const reactComposer = await readText(path.join(root, "client/src/components/Mess
 const reactWorkspaceHeader = await readText(path.join(root, "client/src/components/WorkspaceHeader.tsx"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
 const reactAdminWorkspace = await readText(path.join(root, "client/src/components/AdminWorkspace.tsx"));
+const reactAdminSetup = await readText(path.join(root, "client/src/components/AdminSetupGuide.tsx"));
 const reactProviderAdmin = await readText(path.join(root, "client/src/components/ProviderAdminPanel.tsx"));
 const reactLogicalModelAdmin = await readText(path.join(root, "client/src/components/LogicalModelAdminPanel.tsx"));
 const reactReliabilityAdmin = await readText(path.join(root, "client/src/components/ReliabilityAdminPanel.tsx"));
@@ -149,7 +150,9 @@ assert(reactAdminWorkspace.includes("putAdminConfig(config, data.snapshot.revisi
 assert(reactAdminWorkspace.includes('error.code === "config_conflict"') && reactAdminWorkspace.includes("loadAdminData(true)"), "React admin: config conflicts must retain the draft while loading the latest revision");
 assert(reactAdminWorkspace.includes('window.addEventListener("beforeunload"'), "React admin: unsaved capability assignments need a page-leave warning");
 assert(!reactAdminWorkspace.includes("apiKey") && !reactAdminWorkspace.includes("inputSchema") && !reactAdminWorkspace.includes("endpoint"), "React admin: capability assignment must not render provider credentials or tool schemas");
-assert(reactAdminWorkspace.includes('href="/admin.html"'), "React admin: full administration link must target the deployed legacy admin asset");
+assert(!reactAdminWorkspace.includes('href="/admin.html"'), "React admin: regular navigation must not expose the legacy admin asset");
+assert(reactAdminWorkspace.includes("AdminSetupGuide") && reactAdminWorkspace.includes("fetchAdminSetupStatus()") && reactAdminWorkspace.includes("runAdminSetupSmoke()"), "React admin: first-use setup status and smoke are not connected");
+assert(["health", "provider", "model", "member", "permission", "smoke"].every((step) => reactAdminSetup.includes(`key: "${step}"`)), "React admin: setup guide must retain the fixed six-step order");
 assert(reactAdminWorkspace.includes('id="routes"') && reactAdminWorkspace.includes("<legend>允许线路</legend>"), "React admin: semantic member route assignment is missing");
 assert(reactAdminWorkspace.includes("inheritDefaultRoute") && reactAdminWorkspace.includes("setRouteAllowed("), "React admin: route and default-route inheritance controls are missing");
 assert(reactAdminWorkspace.includes("createAdminMemberAccess(") && reactAdminWorkspace.includes("rotateAdminMemberAccess(") && reactAdminWorkspace.includes("revokeAdminMemberAccess("), "React admin: typed member lifecycle actions are missing");
@@ -171,6 +174,7 @@ assert(reactAdminWorkspace.includes('status: "loading"') && reactAdminWorkspace.
 assert(reactAdminWorkspace.includes("await adminLogout()") && reactAdminWorkspace.indexOf("await adminLogout()") < reactAdminWorkspace.indexOf("onLogout();"), "React admin: logout must leave authenticated state only after server revocation succeeds");
 assert(reactProviderAdmin.includes("createProviderDraft") && reactProviderAdmin.includes("使用服务器版本"), "React admin: provider drafts need shared normalization and an explicit conflict reset");
 assert(reactProviderAdmin.includes('type="password"') && (reactProviderAdmin.match(/setSecretValue\(\"\"\)/g) || []).length >= 2, "React admin: provider credentials must be write-only and cleared after mutations");
+assert(reactAdminWorkspace.includes("onSetupChanged={() => void refreshSetupStatus()}") && (reactProviderAdmin.match(/onSetupChanged\(\);/g) || []).length >= 2, "React admin: provider credential writes and deletes must refresh setup status");
 assert(reactProviderAdmin.includes("secretCanEdit") && reactProviderAdmin.includes("hasProviderIdConflict"), "React admin: provider key writes and renames must stay scoped and collision-safe");
 assert(reactLogicalModelAdmin.includes("createLogicalModelDraft") && reactLogicalModelAdmin.includes("使用服务器版本"), "React admin: logical-model drafts need shared normalization and an explicit conflict reset");
 assert(reactLogicalModelAdmin.includes("hasLogicalModelIdConflict") && reactLogicalModelAdmin.includes("图片能力") && reactLogicalModelAdmin.includes("工具能力"), "React admin: logical-model offering edits need collision guards and capability overrides");
@@ -194,6 +198,7 @@ assert(reactApi.includes("fetchAdminReliability") && reactApi.includes('"/api/ad
 assert(reactApi.includes("hasValidAdminStreamEvidence") && reactApi.includes('"single_chunk"') && reactApi.includes('"progressive"'), "React admin: stream evidence decoder contract is missing");
 assert(reactApi.includes("fetchAdminOperations") && reactApi.includes('"/api/admin/stats"') && reactApi.includes('"/api/admin/audit"') && reactApi.includes('"/api/admin/feedback"'), "React admin: operations API wrapper is incomplete");
 assert(reactApi.includes('requestJson("/api/admin/logout"') && reactApi.includes('hasExactKeys(data, ["ok"])') && reactApi.includes("invalid_admin_logout_response"), "React admin: logout must reject network, HTTP, and malformed-success responses");
+assert(reactApi.includes("isAdminSetupStatus") && reactApi.includes('hasExactKeys(value, ["ready", "configSource", "steps"])') && reactApi.includes('requestJson("/api/admin/setup-smoke"'), "React admin: setup responses need exact finite decoders");
 assert(reactApi.includes("fetchAdminMcpSecrets") && reactApi.includes("putAdminMcpSecret") && reactApi.includes("deleteAdminMcpSecret") && reactApi.includes("discoverAdminMcpTools"), "React admin: MCP secret and discovery API wrappers are incomplete");
 assert(reactApi.includes("isAdminMcpDiscoveryResponse") && reactApi.includes("isAdminMcpSecretMutationResponse") && reactApi.includes("isAdminMcpSecretsSnapshot"), "React admin: MCP responses need strict secret-aware decoders");
 assert(reactApi.includes("isAdminOperationsStats") && reactApi.includes("isAdminAuditSnapshot") && reactApi.includes("isAdminFeedbackSnapshot"), "React admin: operations responses need strict secret-aware decoders");
@@ -222,6 +227,7 @@ assert(workerScript.includes('fetchRewrittenAsset(request, env, url, "/legacy/")
 assert(workerScript.includes('env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html"'), "Worker: React default and legacy rollback selection is missing");
 assert(workerScript.includes('url.pathname === "/react-chat/admin"') && workerScript.includes('fetchRewrittenAsset(request, env, url, "/react-chat/")'), "Worker: typed admin shell fallback must preserve the admin pathname without an Assets index redirect");
 assert(workerScript.includes('url.pathname === "/api/admin/members"'), "Worker: typed admin member projection is missing");
+assert(workerScript.includes('url.pathname === "/api/admin/setup-status"') && workerScript.includes('url.pathname === "/api/admin/setup-smoke"'), "Worker: authenticated setup status and local smoke endpoints are missing");
 assert(workerScript.includes('url.pathname === "/api/admin/reliability"') && workerScript.includes("isRecentProviderRouteReliability"), "Worker: typed reliability must expose only recent passive provider-pair records");
 assert(workerScript.includes("firstVisibleLatencyMs: event.firstVisibleLatencyMs") && workerScript.includes("lastFirstVisibleLatencyMs"), "Worker: provider stream evidence is not connected to passive reliability");
 assert(workerScript.includes("handleCreateAdminMemberAccess") && workerScript.includes("handleRotateAdminMemberAccess") && workerScript.includes("handleRevokeAdminMemberAccess"), "Worker: narrow member lifecycle endpoints are missing");
