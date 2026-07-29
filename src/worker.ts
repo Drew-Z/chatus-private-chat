@@ -161,6 +161,27 @@ type AccessCodeSnapshot = {
   revision: string;
 };
 
+type AdminSetupStepStatus = "ready" | "incomplete" | "blocked" | "not_run" | "stale";
+
+type AdminSetupStepProjection = {
+  ready: boolean;
+  status: AdminSetupStepStatus;
+  count: number;
+};
+
+type AdminSetupStatusProjection = {
+  ready: boolean;
+  configSource: "kv" | "secret" | "default";
+  steps: {
+    health: AdminSetupStepProjection;
+    provider: AdminSetupStepProjection;
+    model: AdminSetupStepProjection;
+    member: AdminSetupStepProjection;
+    permission: AdminSetupStepProjection;
+    smoke: AdminSetupStepProjection;
+  };
+};
+
 type CapabilityChatRpcArgs = Omit<CapabilityChatArgs, "env" | "requestSignal"> & { chatId: string };
 
 type PendingToolApproval = {
@@ -353,6 +374,7 @@ const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
+const SETUP_SMOKE_KEY = "config:setup_smoke";
 const MAX_SKILLS = 50;
 const MAX_TOOLS = 200;
 const MAX_MCP_SERVERS = 20;
@@ -1320,6 +1342,14 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleGetAdminConfig(env);
   }
 
+  if (url.pathname === "/api/admin/setup-status" && request.method === "GET") {
+    return handleGetAdminSetupStatus(env);
+  }
+
+  if (url.pathname === "/api/admin/setup-smoke" && request.method === "POST") {
+    return handleAdminSetupSmoke(env);
+  }
+
   if (url.pathname === "/api/admin/members" && request.method === "GET") {
     return handleGetAdminMembers(env);
   }
@@ -1461,6 +1491,167 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 async function handleGetAdminConfig(env: Env): Promise<Response> {
   const { config, source } = await loadEditableConfig(env);
   return jsonResponse({ config: sanitizeAdminConfig(config), source, revision: await configRevision(config) });
+}
+
+async function handleGetAdminSetupStatus(env: Env): Promise<Response> {
+  const setup = await buildAdminSetupStatus(env);
+  return jsonResponse(setup.projection);
+}
+
+async function handleAdminSetupSmoke(env: Env): Promise<Response> {
+  const setup = await buildAdminSetupStatus(env);
+  if (!setup.prerequisitesReady) {
+    return jsonResponse({
+      error: "setup_incomplete",
+      message: "请先完成无模型 smoke 之前的配置步骤",
+    }, 409);
+  }
+
+  await env.CHAT_STORE.put(SETUP_SMOKE_KEY, JSON.stringify({
+    version: 1,
+    fingerprint: setup.fingerprint,
+    completedAt: new Date().toISOString(),
+  }));
+  return jsonResponse((await buildAdminSetupStatus(env)).projection);
+}
+
+async function buildAdminSetupStatus(env: Env): Promise<{
+  projection: AdminSetupStatusProjection;
+  prerequisitesReady: boolean;
+  fingerprint: string;
+}> {
+  const [{ config, source: configSource }, accessSnapshot, health] = await Promise.all([
+    loadEditableConfig(env),
+    loadAccessCodeSnapshot(env),
+    inspectAdminSetupHealth(env),
+  ]);
+  const explicitConfig = configSource !== "default";
+  const enabledRoutes = Object.entries(config.routes)
+    .filter(([, route]) => route.enabled !== false);
+  const modelCount = explicitConfig
+    ? enabledRoutes.filter(([routeId, route]) => (
+        resolveProviderRouteCandidates(routeId, route, config.providers).length > 0
+      )).length
+    : 0;
+
+  const providerStatuses = await Promise.all([
+    ...Object.entries(config.providers)
+      .filter(([, provider]) => provider.enabled !== false)
+      .map(([providerId, provider]) => inspectAdminProviderCredential(env, providerId, provider)),
+    ...enabledRoutes.flatMap(([routeId, route]) => (
+      route.offerings?.length
+        ? []
+        : resolveProviderRouteCandidates(routeId, route, config.providers)
+            .map((candidate) => inspectResolvedProviderCredential(env, candidate))
+    )),
+  ]);
+  const providerCount = explicitConfig
+    ? providerStatuses.filter((status) => status === "configured").length
+    : 0;
+
+  const accessLabels = [...new Set(accessSnapshot.entries
+    .map((entry) => entry.label.trim())
+    .filter(isValidMemberLabel))];
+  const memberCount = accessLabels.length;
+  const permissionCount = accessLabels.filter((label) => {
+    const configuredLabel = Object.keys(config.users || {}).find((rawLabel) => rawLabel.trim() === label);
+    if (configuredLabel === undefined) return false;
+    const user = config.users?.[configuredLabel];
+    if (!user || user.enabled === false || !user.allowedRoutes?.length) return false;
+    return user.allowedRoutes.some((routeId) => config.routes[routeId]?.enabled !== false);
+  }).length;
+
+  const healthStep = setupStep(health.ready, health.count);
+  const providerStep = setupStep(providerCount > 0, providerCount);
+  const modelStep = setupStep(modelCount > 0, modelCount);
+  const memberStep = setupStep(memberCount > 0, memberCount);
+  const permissionStep = setupStep(permissionCount > 0, permissionCount);
+  const prerequisitesReady = healthStep.ready
+    && providerStep.ready
+    && modelStep.ready
+    && memberStep.ready
+    && permissionStep.ready
+    && validateAppConfig(config).ok;
+  const fingerprint = await secretFingerprint(JSON.stringify({
+    version: 1,
+    configSource,
+    configRevision: await configRevision(config),
+    accessRevision: accessSnapshot.revision,
+    healthReady: health.ready,
+    providerStatuses,
+    modelCount,
+    memberCount,
+    permissionCount,
+  }));
+  const smokeRecord = await loadAdminSetupSmoke(env);
+  const smokeReady = prerequisitesReady && smokeRecord?.fingerprint === fingerprint;
+  const smokeStatus: AdminSetupStepStatus = !prerequisitesReady
+    ? "blocked"
+    : !smokeRecord ? "not_run"
+      : smokeReady ? "ready" : "stale";
+  const smokeStep: AdminSetupStepProjection = {
+    ready: smokeReady,
+    status: smokeStatus,
+    count: smokeReady ? 1 : 0,
+  };
+  const projection: AdminSetupStatusProjection = {
+    ready: prerequisitesReady && smokeReady,
+    configSource,
+    steps: {
+      health: healthStep,
+      provider: providerStep,
+      model: modelStep,
+      member: memberStep,
+      permission: permissionStep,
+      smoke: smokeStep,
+    },
+  };
+  return { projection, prerequisitesReady, fingerprint };
+}
+
+function setupStep(ready: boolean, count: number): AdminSetupStepProjection {
+  return { ready, status: ready ? "ready" : "incomplete", count };
+}
+
+async function inspectAdminSetupHealth(env: Env): Promise<{ ready: boolean; count: number }> {
+  const checks = await Promise.allSettled([
+    env.CHAT_STORE.get("health:setup-probe"),
+    getUserState(env, "health:setup-probe").healthCheck(),
+    getTeamAgent(env, "health:setup-probe").then((agent) => agent.healthCheck()),
+  ]);
+  const kvReady = checks[0].status === "fulfilled";
+  const legacyReady = checks[1].status === "fulfilled" && Boolean(checks[1].value);
+  const teamReady = checks[2].status === "fulfilled"
+    && checks[2].value.ok === true
+    && checks[2].value.storage === true;
+  const count = [kvReady, legacyReady, teamReady].filter(Boolean).length;
+  return { ready: count === 3, count };
+}
+
+async function inspectResolvedProviderCredential(
+  env: Env,
+  candidate: ResolvedProviderRoute,
+): Promise<AdminReliabilityProviderProjection["credentialStatus"]> {
+  if (candidate.requiresUserKey) return "user_key_required";
+  try {
+    return await resolveRouteKey(candidate, env, "") ? "configured" : "missing";
+  } catch {
+    return "unavailable";
+  }
+}
+
+async function loadAdminSetupSmoke(env: Env): Promise<{ fingerprint: string } | null> {
+  const stored = await env.CHAT_STORE.get(SETUP_SMOKE_KEY);
+  if (!stored) return null;
+  try {
+    const value = JSON.parse(stored) as unknown;
+    if (!isRecord(value) || value.version !== 1 || typeof value.fingerprint !== "string" || !value.fingerprint) {
+      return null;
+    }
+    return { fingerprint: value.fingerprint };
+  } catch {
+    return null;
+  }
 }
 
 async function handleGuestSession(request: Request, env: Env, url: URL): Promise<Response> {

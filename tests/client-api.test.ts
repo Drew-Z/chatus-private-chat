@@ -3,6 +3,7 @@ import {
   adminLogout,
   ApiError,
   exportUserData,
+  fetchAdminSetupStatus,
   isAdminConfigSnapshot,
   isAdminAuditSnapshot,
   isAdminFeedbackSnapshot,
@@ -18,6 +19,7 @@ import {
   isAdminOperationsStats,
   isAdminReliabilitySnapshot,
   isAdminSessionProjection,
+  isAdminSetupStatus,
   isAgentConversation,
   isAgentConversationBranchResult,
   isAgentMemory,
@@ -25,6 +27,7 @@ import {
   submitFeedback,
   isUserDataExport,
   isUserDataMutationResponse,
+  runAdminSetupSmoke,
 } from "../client/src/lib/api";
 import { DEFAULT_FILE_INPUT_POLICY } from "../src/contracts/file";
 
@@ -176,6 +179,19 @@ const validOperationsStats = {
   accessCodeSource: "managed",
 };
 
+const validSetupStatus = {
+  ready: false,
+  configSource: "kv",
+  steps: {
+    health: { ready: true, status: "ready", count: 3 },
+    provider: { ready: true, status: "ready", count: 1 },
+    model: { ready: true, status: "ready", count: 1 },
+    member: { ready: true, status: "ready", count: 1 },
+    permission: { ready: true, status: "ready", count: 1 },
+    smoke: { ready: false, status: "not_run", count: 0 },
+  },
+};
+
 describe("admin logout client contract", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -227,6 +243,80 @@ describe("admin logout client contract", () => {
         status: 502,
       });
     }
+  });
+});
+
+describe("admin setup client contract", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("accepts only the exact finite setup projection", () => {
+    expect(isAdminSetupStatus(validSetupStatus)).toBe(true);
+    expect(isAdminSetupStatus({ ...validSetupStatus, secret: "leak" })).toBe(false);
+    expect(isAdminSetupStatus({
+      ...validSetupStatus,
+      steps: {
+        ...validSetupStatus.steps,
+        provider: { ...validSetupStatus.steps.provider, apiKeyRef: "PRIVATE_KEY" },
+      },
+    })).toBe(false);
+    expect(isAdminSetupStatus({
+      ...validSetupStatus,
+      steps: {
+        ...validSetupStatus.steps,
+        smoke: { ready: false, status: "pending", count: 0 },
+      },
+    })).toBe(false);
+    expect(isAdminSetupStatus({ ...validSetupStatus, ready: true })).toBe(false);
+    expect(isAdminSetupStatus({
+      ...validSetupStatus,
+      steps: {
+        ...validSetupStatus.steps,
+        model: { ready: true, status: "ready", count: "1" },
+      },
+    })).toBe(false);
+  });
+
+  it("loads setup status and runs smoke through credentialed no-store requests", async () => {
+    const completed = {
+      ...validSetupStatus,
+      ready: true,
+      steps: {
+        ...validSetupStatus.steps,
+        smoke: { ready: true, status: "ready", count: 1 },
+      },
+    };
+    const responses = [validSetupStatus, completed];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      JSON.stringify(responses.shift()),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+
+    await expect(fetchAdminSetupStatus()).resolves.toEqual(validSetupStatus);
+    await expect(runAdminSetupSmoke()).resolves.toEqual(completed);
+    expect(fetchSpy.mock.calls[0]).toEqual([
+      "/api/admin/setup-status",
+      expect.objectContaining({ credentials: "include", cache: "no-store" }),
+    ]);
+    expect(fetchSpy.mock.calls[1]).toEqual([
+      "/api/admin/setup-smoke",
+      expect.objectContaining({ method: "POST", credentials: "include", cache: "no-store" }),
+    ]);
+  });
+
+  it("rejects malformed status and smoke responses", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify({ ...validSetupStatus, model: "private-model-name" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    await expect(fetchAdminSetupStatus()).rejects.toMatchObject<ApiError>({
+      code: "invalid_admin_setup_status_response",
+      status: 502,
+    });
+    await expect(runAdminSetupSmoke()).rejects.toMatchObject<ApiError>({
+      code: "invalid_admin_setup_smoke_response",
+      status: 502,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });
 
