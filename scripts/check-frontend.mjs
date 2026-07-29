@@ -4,6 +4,11 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 
 const root = process.cwd();
+
+async function readText(file) {
+  return (await readFile(file, "utf8")).replace(/\r\n?/gu, "\n");
+}
+
 const pages = [
   { html: "public/index.html", script: "public/app.js" },
   { html: "public/admin.html", script: "public/admin.js" },
@@ -15,8 +20,8 @@ for (const file of ["public/app.js", "public/admin.js", "public/admin-report.js"
 
 for (const page of pages) {
   const [html, script] = await Promise.all([
-    readFile(path.join(root, page.html), "utf8"),
-    readFile(path.join(root, page.script), "utf8"),
+    readText(path.join(root, page.html)),
+    readText(path.join(root, page.script)),
   ]);
   const ids = [...html.matchAll(/\bid=["']([^"']+)["']/g)].map((match) => match[1]);
   const duplicateIds = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
@@ -38,8 +43,8 @@ for (const page of pages) {
 }
 
 const [pwaScript, serviceWorker] = await Promise.all([
-  readFile(path.join(root, "public/pwa.js"), "utf8"),
-  readFile(path.join(root, "public/sw.js"), "utf8"),
+  readText(path.join(root, "public/pwa.js")),
+  readText(path.join(root, "public/sw.js")),
 ]);
 assert(pwaScript.includes('postMessage({ type: "SKIP_WAITING" })'), "pwa.js: missing explicit update activation");
 assert(pwaScript.includes("fetchReleaseCommit"), "pwa.js: releases must be detected even when the service worker is unchanged");
@@ -55,39 +60,39 @@ assert(!navigationFetch.includes("response.status === 401") && !navigationFetch.
 const installHandler = serviceWorker.match(/addEventListener\("install",[\s\S]*?\n\}\);/)?.[0] || "";
 assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: updates must not activate during install");
 
-const chatScript = await readFile(path.join(root, "public/app.js"), "utf8");
-const chatHtml = await readFile(path.join(root, "public/index.html"), "utf8");
-const adminScript = await readFile(path.join(root, "public/admin.js"), "utf8");
-const adminHtml = await readFile(path.join(root, "public/admin.html"), "utf8");
-const styles = await readFile(path.join(root, "public/styles.css"), "utf8");
-const icons = await readFile(path.join(root, "public/icons.svg"), "utf8");
-const workerScript = await readFile(path.join(root, "src/worker.ts"), "utf8");
-const reactStyles = await readFile(path.join(root, "client/src/styles.css"), "utf8");
-const reactClient = await readFile(path.join(root, "client/src/components/ChatWorkspace.tsx"), "utf8");
-const reactSidebar = await readFile(path.join(root, "client/src/components/ConversationSidebar.tsx"), "utf8");
-const reactMemoryPanel = await readFile(path.join(root, "client/src/components/MemoryPanel.tsx"), "utf8");
-const reactMessageView = await readFile(path.join(root, "client/src/components/MessageView.tsx"), "utf8");
-const reactComposer = await readFile(path.join(root, "client/src/components/MessageComposer.tsx"), "utf8");
-const reactWorkspaceHeader = await readFile(path.join(root, "client/src/components/WorkspaceHeader.tsx"), "utf8");
-const reactAdminApp = await readFile(path.join(root, "client/src/components/AdminApp.tsx"), "utf8");
-const reactAdminWorkspace = await readFile(path.join(root, "client/src/components/AdminWorkspace.tsx"), "utf8");
-const reactProviderAdmin = await readFile(path.join(root, "client/src/components/ProviderAdminPanel.tsx"), "utf8");
-const reactLogicalModelAdmin = await readFile(path.join(root, "client/src/components/LogicalModelAdminPanel.tsx"), "utf8");
-const reactReliabilityAdmin = await readFile(path.join(root, "client/src/components/ReliabilityAdminPanel.tsx"), "utf8");
-const reactOperationsAdmin = await readFile(path.join(root, "client/src/components/AdminOperationsPanel.tsx"), "utf8");
-const reactCapabilityAdmin = await readFile(path.join(root, "client/src/components/CapabilityAdminPanel.tsx"), "utf8");
-const reactConfirmDialog = await readFile(path.join(root, "client/src/components/ConfirmDialog.tsx"), "utf8");
-const reactAdminProvider = await readFile(path.join(root, "client/src/lib/admin-provider.ts"), "utf8");
-const reactAdminConfig = await readFile(path.join(root, "client/src/lib/admin-config.ts"), "utf8");
-const reactAdminCapabilities = await readFile(path.join(root, "client/src/lib/admin-capabilities.ts"), "utf8");
-const reactApi = await readFile(path.join(root, "client/src/lib/api.ts"), "utf8");
-const reactApp = await readFile(path.join(root, "client/src/App.tsx"), "utf8");
-const reactMain = await readFile(path.join(root, "client/src/main.tsx"), "utf8");
-const reactBuild = await readFile(path.join(root, "public/react-chat/index.html"), "utf8");
-const legacyBuild = await readFile(path.join(root, "public/legacy/index.html"), "utf8");
-const reactSourceHtml = await readFile(path.join(root, "client/index.html"), "utf8");
-const deployWorkflow = await readFile(path.join(root, ".github/workflows/deploy.yml"), "utf8");
-const wranglerConfig = await readFile(path.join(root, "wrangler.jsonc"), "utf8");
+const chatScript = await readText(path.join(root, "public/app.js"));
+const chatHtml = await readText(path.join(root, "public/index.html"));
+const adminScript = await readText(path.join(root, "public/admin.js"));
+const adminHtml = await readText(path.join(root, "public/admin.html"));
+const styles = await readText(path.join(root, "public/styles.css"));
+const icons = await readText(path.join(root, "public/icons.svg"));
+const workerScript = await readText(path.join(root, "src/worker.ts"));
+const reactStyles = await readText(path.join(root, "client/src/styles.css"));
+const reactClient = await readText(path.join(root, "client/src/components/ChatWorkspace.tsx"));
+const reactSidebar = await readText(path.join(root, "client/src/components/ConversationSidebar.tsx"));
+const reactMemoryPanel = await readText(path.join(root, "client/src/components/MemoryPanel.tsx"));
+const reactMessageView = await readText(path.join(root, "client/src/components/MessageView.tsx"));
+const reactComposer = await readText(path.join(root, "client/src/components/MessageComposer.tsx"));
+const reactWorkspaceHeader = await readText(path.join(root, "client/src/components/WorkspaceHeader.tsx"));
+const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
+const reactAdminWorkspace = await readText(path.join(root, "client/src/components/AdminWorkspace.tsx"));
+const reactProviderAdmin = await readText(path.join(root, "client/src/components/ProviderAdminPanel.tsx"));
+const reactLogicalModelAdmin = await readText(path.join(root, "client/src/components/LogicalModelAdminPanel.tsx"));
+const reactReliabilityAdmin = await readText(path.join(root, "client/src/components/ReliabilityAdminPanel.tsx"));
+const reactOperationsAdmin = await readText(path.join(root, "client/src/components/AdminOperationsPanel.tsx"));
+const reactCapabilityAdmin = await readText(path.join(root, "client/src/components/CapabilityAdminPanel.tsx"));
+const reactConfirmDialog = await readText(path.join(root, "client/src/components/ConfirmDialog.tsx"));
+const reactAdminProvider = await readText(path.join(root, "client/src/lib/admin-provider.ts"));
+const reactAdminConfig = await readText(path.join(root, "client/src/lib/admin-config.ts"));
+const reactAdminCapabilities = await readText(path.join(root, "client/src/lib/admin-capabilities.ts"));
+const reactApi = await readText(path.join(root, "client/src/lib/api.ts"));
+const reactApp = await readText(path.join(root, "client/src/App.tsx"));
+const reactMain = await readText(path.join(root, "client/src/main.tsx"));
+const reactBuild = await readText(path.join(root, "public/react-chat/index.html"));
+const legacyBuild = await readText(path.join(root, "public/legacy/index.html"));
+const reactSourceHtml = await readText(path.join(root, "client/index.html"));
+const deployWorkflow = await readText(path.join(root, ".github/workflows/deploy.yml"));
+const wranglerConfig = await readText(path.join(root, "wrangler.jsonc"));
 assert(reactClient.includes('basePath: session.agent.basePath'), "React client: Agent base path must come from the authenticated session");
 assert(reactClient.includes('name: conversationAgentClientName(session.agent.instance, conversation.id)'), "React client: each conversation must have an isolated SDK client identity");
 assert(reactClient.includes('resume: true'), "React client: resumable Agent chat must stay enabled");
@@ -335,7 +340,7 @@ assert(!diagnosticSource.includes("userApiKey"), "app.js: diagnostics must not i
 assert(styles.includes("button:focus-visible"), "styles.css: keyboard controls need a visible focus ring");
 assert(styles.includes("@media (prefers-reduced-motion: reduce)"), "styles.css: motion needs an accessibility fallback");
 for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
-  const source = await readFile(path.join(root, file), "utf8");
+  const source = await readText(path.join(root, file));
   assert(!source.includes(".style."), `${file}: inline styles weaken the CSP`);
 }
 assert(adminScript.includes('window.addEventListener("beforeunload"'), "admin.js: unsaved configuration needs a page-leave warning");

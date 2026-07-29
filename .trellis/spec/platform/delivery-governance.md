@@ -27,6 +27,8 @@ python ./.trellis/scripts/task.py add-waiver <task> <gate> <approver> <reason>
 
 PR quality always runs, in order, `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and a base-to-head `git diff --check`. The Workspace and fake-Provider Agent Playwright jobs keep stable job names and are gated by the shared path classifier. Frontend paths affect both browser suites; Agent/runtime paths affect Agent acceptance; `package.json`, `package-lock.json`, `tsconfig.json`, and `wrangler.jsonc` affect both.
 
+Structural source checks normalize CRLF and bare CR to LF at the text-read boundary before exact multi-line assertions. This applies to executable check scripts as well as Vitest raw imports so a Windows checkout cannot fail a source contract that is semantically unchanged. Byte-exact hashing paths must keep the original bytes.
+
 Documentation-only deployment skipping is narrow. `docs/**`, Markdown files, and tracked Trellis task/spec/workspace records may skip Worker deployment. Executable `.trellis/scripts/**`, workflows, runtime configuration, and application code are code changes even though they live near documentation.
 
 Delivery artifacts are non-sensitive JSON plus bounded Playwright output. A delivery manifest contains only `schemaVersion`, `kind`, `status`, `commit`, `generatedAt`, `packageLockSha256`, and `publicBundleSha256`. Never retain runtime credentials, dotenv files, Wrangler persistence, access codes, conversation content, or stored memory. The fake-Provider runner may retain a caller-owned Playwright output directory, but its temporary env and Wrangler state remain in a separately deleted directory. The runner always writes `agent-summary.json` into that directory with only schema version, kind, pass/fail status, commit, generation time, and bounded fake-Provider counters; a successful test must not leave the artifact directory empty.
@@ -83,7 +85,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 
 - Unit-test path classification for frontend, Agent, shared runtime, docs/Trellis records, mixed changes, and executable Trellis scripts.
 - Parse all workflow YAML and statically assert stable PR jobs, the five baseline commands, base-to-head diff checking, conditional browser commands, upload-artifact steps, main skip classification, full-history deploy checkout, stale-SHA guards, and production-acceptance SHA restrictions.
-- Normalize imported workflow and source text from CRLF or CR to LF at the test read boundary before exact multi-line structural assertions. Do not normalize files that are read for byte-exact hashing.
+- Statically assert `scripts/check-frontend.mjs` normalizes every structural text read from CRLF or CR to LF before exact multi-line assertions, and normalize workflow/source raw imports at the Vitest read boundary. Do not normalize files that are read for byte-exact hashing.
 - Run the manifest writer under Node and assert a 0.x package line, exact commit, SHA-256 lockfile/bundle fields, and the bounded key set. Assert the fake-Provider runner writes a bounded summary into its caller-owned artifact directory even when Playwright produces no screenshot or trace.
 - Run `.trellis/tests` for checked/unchecked AC, missing validation, missing work commit, missing PR URL, incomplete children, occupied archive target, structured waiver scope, duplicates, cycles, orphans, fail-before-mutate, and workspace-index repair.
 - Run `python ./.trellis/scripts/task.py validate-all` against the real repository.
