@@ -12,7 +12,7 @@
 - [x] 新增 frontend 文件 workspace、搜索、目录上传、rename/pin/delete/download/retry 和 composer picker。
 - [x] 覆盖越权、并发、tombstone、版本漂移与 R2 partial failure。
 - [x] 运行 `trellis-check`、两类浏览器测试和五项全量验证。
-- [ ] 更新 file/persistence/deployment specs，记录验证、提交、PR、合并并归档。
+- [x] 更新 file/persistence/deployment specs，记录验证、提交、PR、合并并归档。
 
 ## Risky Files
 

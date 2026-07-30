@@ -72,6 +72,8 @@ The checked-in Wrangler baseline defines exactly one ID-free `WORKSPACE_FILES` R
 
 Production deploy and production member acceptance share the `chatus-production-mutation` concurrency group with `cancel-in-progress: false`. New production mutations wait instead of canceling an upload, smoke, generated-file cleanup, or temporary-member cleanup. Deploy checks that `GITHUB_SHA` is still the remote `main` tip early for fast failure and again immediately before the real Wrangler upload.
 
+If Wrangler upload succeeds but the post-deploy smoke still observes an older release marker, the attempt remains failed and its manifest artifact remains authoritative evidence. Recovery may rerun the failed deploy job only through GitHub Actions and only while remote `main` is still the same `GITHUB_SHA`; the rerun must repeat provisioning, upload, exact-SHA smoke, and artifact retention. Task closure additionally requires a successful `Production member acceptance` run checked out at that exact SHA. A local production probe, a newer SHA, or the successful upload step alone cannot replace these gates.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Required result |
@@ -91,6 +93,7 @@ Production deploy and production member acceptance share the `chatus-production-
 | Checked-out SHA is no longer the `main` tip | Fail before deployment, including the late pre-upload guard |
 | Generated Wrangler config fails current Wrangler validation | Fail dry-run before deployment |
 | Post-deploy SHA smoke fails | Fail the workflow; do not report release success |
+| Upload succeeds but smoke temporarily observes an older release marker | Retain the failed manifest; rerun the failed deploy job through Actions only while `main` remains the same SHA, then require exact-SHA smoke and member acceptance to pass |
 | Managed KV key is absent (`null`) | Allow a non-blank same-name Worker Secret fallback |
 | Managed KV key exists but is empty or malformed | Return `invalid_record`; never read the Worker fallback |
 | Managed record cannot decrypt or the master key is unavailable | Return `decrypt_failed` or `master_key_unavailable`; never read the Worker fallback |
@@ -106,6 +109,7 @@ Production deploy and production member acceptance share the `chatus-production-
 ## 5. Good / Base / Bad Cases
 
 - Good: an installer configures three non-secret Variables plus GitHub Secrets, Actions generates the target config, dry-run validates the exact bindings/routes, deploy uses the same config, and exact-SHA smoke passes.
+- Good recovery: the first post-upload smoke observes an older release marker, the failed manifest is retained, remote `main` is confirmed unchanged, the same Actions run is retried at the same SHA, and both exact-SHA smoke and production member acceptance pass with new artifacts.
 - Base: `wrangler.jsonc` has a generic name, an ID-free `CHAT_STORE` binding, and an ID-free `WORKSPACE_FILES` R2 binding, so Vitest, local dev, and default dry-run work without any production identifiers.
 - Bad: commit an account/KV/domain value, interpolate shell text into JSONC, place a generated config under `.wrangler/` without rebasing relative paths, deploy without a stale-SHA guard, or assume removing a GitHub Secret deletes its remote Worker value.
 - Good managed secret: the KV read returns `null`, so a trimmed Worker binding may satisfy the credential.
@@ -125,6 +129,7 @@ Production deploy and production member acceptance share the `chatus-production-
 - Run `node --check` for both deployment scripts.
 - Execute the generator with dummy values and run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, default `npx wrangler deploy --dry-run`, and `git diff --check`.
+- For a post-upload release-visibility failure, retain both the failed and successful same-SHA deployment manifests and require the production-acceptance manifest to report `release=success,acceptance=success` for that SHA.
 - Unit-test route and MCP namespaces symmetrically: valid encryption, exact-`null` fallback, empty/malformed records, master-key rotation, namespace/ref AAD isolation, blank Worker bindings, revision retention, and deletion.
 - Keep provider-router tests for BYOK/legacy/managed/Worker precedence and assert Worker bindings are trimmed.
 - Keep Worker API tests proving write-only responses, route/MCP namespace isolation, revision conflicts, deletion projection, model discovery, and MCP discovery/execution.

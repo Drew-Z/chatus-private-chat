@@ -21,7 +21,7 @@
   "children": [],
   "parent": "07-27-product-experience-governance-q3",
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Follow-up provisioning fix: work commit 716e319, evidence commit 0ca2358, PR #19, merge 275003e112588c4ce1cc0cdcbab71e78849ec7ea; deploy run 30545861073 and production acceptance run 30548060937 retained exact-SHA artifacts.",
   "meta": {
     "validation": [
       {
@@ -95,6 +95,30 @@
         "status": "passed",
         "summary": "Repository Variable resolves to the approved non-sensitive stable workspace bucket name",
         "at": "2026-07-30T12:35:48.862587+00:00"
+      },
+      {
+        "command": "gh pr checks 19",
+        "status": "passed",
+        "summary": "PR 19 changes and quality gates passed; workspace and Agent browser jobs skipped under the approved impact-path classifier",
+        "at": "2026-07-30T13:11:54.000000+00:00"
+      },
+      {
+        "command": "gh run view 30545861073 --attempt 1 --log-failed",
+        "status": "failed",
+        "summary": "R2 bucket creation and Worker upload succeeded for merge SHA 275003e, but the first exact-SHA smoke observed an older release marker; failure artifact 8760765323 was retained",
+        "at": "2026-07-30T13:16:06.493887+00:00"
+      },
+      {
+        "command": "gh run view 30545861073 --attempt 2 --log",
+        "status": "passed",
+        "summary": "Same-SHA Actions retry found the R2 bucket unchanged, deployed Worker version f7b29081-21ed-4c9d-9d9e-6d329311e57b, passed production smoke, and retained deployment artifact 8761388102",
+        "at": "2026-07-30T13:35:54.132603+00:00"
+      },
+      {
+        "command": "gh run view 30548060937 --log",
+        "status": "passed",
+        "summary": "Exact merge SHA production acceptance passed smoke, authentication, member Agent identity, conversation revision and memory isolation, WebSocket, tombstone and user-data deletion; temporary members and access codes were restored and artifact 8761593984 retained",
+        "at": "2026-07-30T13:42:13.850569+00:00"
       }
     ]
   }
