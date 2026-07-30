@@ -495,7 +495,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   overflow: hidden;
 }
 .sidebar-topbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 14px 10px; }
-.sidebar-tabs { width: 100%; display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-strong); }
+.sidebar-tabs { width: 100%; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-strong); }
 .sidebar-tabs button { min-height: 31px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-size: 13px; font-weight: 700; }
 .sidebar-tabs button[aria-pressed="true"] { color: var(--ink); background: var(--surface); box-shadow: 0 1px 3px rgba(31, 47, 40, .08); }
 .new-conversation { margin: 3px 14px 10px; display: flex; align-items: center; justify-content: center; gap: 8px; }
@@ -518,6 +518,31 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .conversation-actions .icon-button:hover:not(:disabled), .conversation-row:focus-within .conversation-actions .icon-button { color: var(--ink); background: var(--surface-strong); }
 .conversation-row form { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 4px; align-items: center; padding: 6px; }
 .conversation-row form input { min-height: 34px; }
+
+.file-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.file-workspace-actions { min-height: 40px; display: flex; align-items: center; gap: 4px; padding: 0 14px 8px; }
+.file-workspace-actions .icon-button { width: 34px; height: 34px; flex-basis: 34px; color: var(--accent-hover); background: var(--surface); border: 1px solid var(--line); }
+.file-workspace-actions > span { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.file-search { flex: 0 0 38px; }
+.file-workspace-error { display: flex; align-items: center; gap: 6px; margin: 0 8px 8px; padding: 8px 9px; color: var(--danger); background: var(--danger-soft); font-size: 11px; line-height: 1.45; }
+.file-workspace-error > span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.file-workspace-error .icon-button { width: 28px; height: 28px; flex-basis: 28px; }
+.file-workspace-list { min-height: 0; flex: 1; overflow-y: auto; padding: 0 8px 14px; }
+.file-workspace-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 4px; padding: 8px 5px; border-bottom: 1px solid var(--line); }
+.file-workspace-row.selected { background: var(--accent-soft); }
+.file-workspace-select { min-width: 0; display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 7px; align-items: center; }
+.file-workspace-select input { width: 16px; min-height: 16px; margin: 0; accent-color: var(--accent); }
+.file-workspace-select span, .file-workspace-select strong, .file-workspace-select small { min-width: 0; display: block; }
+.file-workspace-select strong, .file-workspace-select small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-workspace-select strong { color: var(--ink); font-size: 12px; }
+.file-workspace-select small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.file-workspace-row-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 1px; }
+.file-workspace-row-actions .icon-button { width: 29px; height: 29px; flex: 0 0 29px; color: var(--muted); }
+.file-workspace-row-actions .icon-button:hover:not(:disabled) { color: var(--ink); background: var(--surface-strong); }
+.file-version-select { grid-column: 1 / -1; min-height: 32px; padding-block: 4px; font-size: 11px; }
+.file-rename { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) 32px 32px; gap: 4px; }
+.file-rename input { min-width: 0; min-height: 34px; }
+.file-load-more { width: calc(100% - 12px); margin: 10px 6px 0; }
 
 .conversation-delete-dialog { width: min(440px, calc(100% - 24px)); max-height: min(520px, calc(100dvh - 24px)); padding: 0; overflow: auto; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--surface); box-shadow: 0 24px 70px rgba(24, 38, 31, .24); }
 .conversation-delete-dialog::backdrop { background: rgba(25, 36, 31, .42); }

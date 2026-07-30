@@ -18,6 +18,7 @@ const baseConfig = {
   main: "src/index.ts",
   workers_dev: false,
   kv_namespaces: [{ binding: "CHAT_STORE" }],
+  r2_buckets: [{ binding: "WORKSPACE_FILES" }],
   durable_objects: {
     bindings: [
       { name: "USER_STATE", class_name: "UserState" },
@@ -35,6 +36,7 @@ const baseConfig = {
 const validEnvironment = {
   CHATUS_WORKER_NAME: "chatus-team",
   CHATUS_KV_NAMESPACE_ID: "0123456789abcdef0123456789abcdef",
+  CHATUS_R2_BUCKET_NAME: "chatus-team-workspace-files",
   CHATUS_PRODUCTION_URL: "https://chat.example.test",
   CLOUDFLARE_API_TOKEN: "test-cloudflare-token",
   CLOUDFLARE_ACCOUNT_ID: "abcdef0123456789abcdef0123456789",
@@ -55,9 +57,11 @@ describe("deployment configuration", () => {
       workers_dev: false,
       routes: [{ pattern: "chat.example.test", custom_domain: true }],
       kv_namespaces: [{ binding: "CHAT_STORE", id: "0123456789abcdef0123456789abcdef" }],
+      r2_buckets: [{ binding: "WORKSPACE_FILES", bucket_name: "chatus-team-workspace-files" }],
       vars: { ACCESS_CODES_MODE: "managed" },
     });
     expect(baseConfig).toEqual(expect.objectContaining({ name: "chatus", kv_namespaces: [{ binding: "CHAT_STORE" }] }));
+    expect(baseConfig.r2_buckets).toEqual([{ binding: "WORKSPACE_FILES" }]);
   });
 
   it("uses workers.dev without adding a custom-domain route", () => {
@@ -91,6 +95,7 @@ describe("deployment configuration", () => {
   it.each([
     ["CHATUS_WORKER_NAME", "Chatus Team", /CHATUS_WORKER_NAME/],
     ["CHATUS_KV_NAMESPACE_ID", "not-a-namespace", /CHATUS_KV_NAMESPACE_ID/],
+    ["CHATUS_R2_BUCKET_NAME", "Bad_Bucket", /CHATUS_R2_BUCKET_NAME/],
     ["CHATUS_PRODUCTION_URL", "http://chat.example.test", /HTTPS/],
     ["CHATUS_PRODUCTION_URL", "https://chat.example.test/admin", /path/],
   ])("rejects invalid %s", (name, value, expected) => {
@@ -100,6 +105,11 @@ describe("deployment configuration", () => {
   it("requires exactly one CHAT_STORE binding", () => {
     const instance = readInstanceConfiguration(validEnvironment);
     expect(() => buildDeploymentConfig({ ...baseConfig, kv_namespaces: [] }, instance)).toThrow(/CHAT_STORE/);
+  });
+
+  it("requires exactly one WORKSPACE_FILES binding", () => {
+    const instance = readInstanceConfiguration(validEnvironment);
+    expect(() => buildDeploymentConfig({ ...baseConfig, r2_buckets: [] }, instance)).toThrow(/WORKSPACE_FILES/);
   });
 });
 
@@ -253,6 +263,7 @@ describe("repository deployment contract", () => {
     const config = JSON.parse(wranglerSource);
     expect(config.name).toBe("chatus");
     expect(config.kv_namespaces).toEqual([{ binding: "CHAT_STORE" }]);
+    expect(config.r2_buckets).toEqual([{ binding: "WORKSPACE_FILES" }]);
   });
 
   it("keeps the local ROUTES_CONFIG example parseable after dotenv quote removal", () => {
@@ -276,6 +287,7 @@ describe("repository deployment contract", () => {
   it("prepares and deploys only with the generated Wrangler config", () => {
     expect(deployWorkflow).toContain("vars.CHATUS_WORKER_NAME");
     expect(deployWorkflow).toContain("vars.CHATUS_KV_NAMESPACE_ID");
+    expect(deployWorkflow).toContain("vars.CHATUS_R2_BUCKET_NAME");
     expect(deployWorkflow).toContain("vars.CHATUS_PRODUCTION_URL");
     expect(deployWorkflow).toContain("group: chatus-production-mutation");
     expect(acceptanceWorkflow).toContain("group: chatus-production-mutation");
@@ -325,5 +337,7 @@ describe("repository deployment contract", () => {
 
   it("documents the additive Worker Secret deletion boundary", () => {
     expect(selfHostingGuide).toContain("不会从 Cloudflare Worker 删除");
+    expect(selfHostingGuide).toContain("CHATUS_R2_BUCKET_NAME");
+    expect(selfHostingGuide).toContain("R2 bucket");
   });
 });

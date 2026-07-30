@@ -54,10 +54,37 @@ import {
 } from "../contracts/image";
 import {
   emptyTextFileValidationState,
+  formatAttachedFileContext,
+  isSupportedTextFileDescriptor,
   parseDataTextFile,
   type FileInputPolicy,
   type FileValidationErrorCode,
 } from "../contracts/file";
+import {
+  MAX_WORKSPACE_FILES_PER_CONVERSATION,
+  MAX_WORKSPACE_FILE_BYTES,
+  MAX_WORKSPACE_LIST_LIMIT,
+  type WorkspaceAccountPurgeReservation,
+  type WorkspaceAccountPurgeReservationResult,
+  type WorkspaceConversationFileRef,
+  type WorkspaceDeleteReservationResult,
+  type WorkspaceFileListResult,
+  type WorkspaceFileProjection,
+  type WorkspaceFileVersionProjection,
+  type WorkspaceFileVersionListResult,
+  type WorkspaceMutationResult,
+  type WorkspacePendingOperation,
+  type WorkspaceResolvedFileVersion,
+  type WorkspaceUploadReservation,
+  type WorkspaceUploadReservationInput,
+  type WorkspaceUploadReservationResult,
+  normalizeWorkspaceChecksum,
+  normalizeWorkspaceEntityId,
+  normalizeWorkspaceMediaType,
+  normalizeWorkspaceOperationId,
+  normalizeWorkspacePath,
+  normalizeWorkspaceSearchQuery,
+} from "../contracts/workspace-file";
 import type { Session } from "../contracts/session";
 import { createAgentToolSet } from "../services/agent-tools";
 import {
@@ -134,6 +161,66 @@ type ConversationBranchLaunchRow = {
   body_json: string;
 };
 
+type WorkspaceFileRow = {
+  id: string;
+  path: string;
+  path_key: string;
+  name: string;
+  current_version_id: string;
+  pinned: number;
+  state: string;
+  generation: number;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number;
+};
+
+type WorkspaceFileVersionRow = {
+  id: string;
+  file_id: string;
+  object_key: string;
+  size: number;
+  media_type: string;
+  checksum: string;
+  state: string;
+  generation: number;
+  error: string;
+  created_at: number;
+  updated_at: number;
+};
+
+type WorkspaceFileOperationRow = {
+  id: string;
+  kind: string;
+  file_id: string;
+  version_id: string;
+  generation: number;
+  state: string;
+  fingerprint: string;
+  object_keys_json: string;
+  size: number;
+  checksum: string;
+  attempts: number;
+  last_error: string;
+  created_at: number;
+  updated_at: number;
+};
+
+type WorkspaceConversationRefRow = {
+  conversation_id: string;
+  file_id: string;
+  version_id: string;
+  path: string;
+  name: string;
+  size: number;
+  media_type: string;
+  checksum: string;
+  object_key: string;
+  generation: number;
+};
+
+type WorkspaceCursor = { pinned: number; updatedAt: number; id: string };
+
 export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> {
   initialState: TeamAgentState = {
     version: 1,
@@ -156,15 +243,30 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   async onStart(props?: TeamAgentProps): Promise<void> {
     await super.onStart(props);
     await this.initializeIdentity(props);
-    this.sql`
+    this.applySchemaMigrations();
+  }
+
+  private applySchemaMigrations(): void {
+    this.ctx.storage.transactionSync(() => {
+      this.sql`
+        CREATE TABLE IF NOT EXISTS _sql_schema_migrations (
+          id INTEGER PRIMARY KEY,
+          applied_at INTEGER NOT NULL
+        )
+      `;
+      const version = this.sql<{ version: number }>`
+        SELECT COALESCE(MAX(id), 0) AS version FROM _sql_schema_migrations
+      `[0]?.version || 0;
+      if (version < 1) {
+        this.sql`
       CREATE TABLE IF NOT EXISTS capability_tool_trust (
         conversation_id TEXT NOT NULL,
         tool_id TEXT NOT NULL,
         approved_at INTEGER NOT NULL,
         PRIMARY KEY (conversation_id, tool_id)
       )
-    `;
-    this.sql`
+        `;
+        this.sql`
       CREATE TABLE IF NOT EXISTS chatus_conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -178,30 +280,30 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         message_count INTEGER NOT NULL DEFAULT 0,
         deleted_at INTEGER NOT NULL DEFAULT 0
       )
-    `;
-    this.sql`CREATE INDEX IF NOT EXISTS chatus_conversations_updated_at ON chatus_conversations(updated_at DESC)`;
-    this.sql`
+        `;
+        this.sql`CREATE INDEX IF NOT EXISTS chatus_conversations_updated_at ON chatus_conversations(updated_at DESC)`;
+        this.sql`
       CREATE TABLE IF NOT EXISTS chatus_memory (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         content TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       )
-    `;
-    this.sql`
+        `;
+        this.sql`
       CREATE TABLE IF NOT EXISTS chatus_migrations (
         id TEXT PRIMARY KEY,
         completed_at INTEGER NOT NULL
       )
-    `;
-    this.sql`
+        `;
+        this.sql`
       CREATE TABLE IF NOT EXISTS chatus_conversation_cleanup (
         chat_id TEXT PRIMARY KEY,
         requested_at INTEGER NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         last_attempt_at INTEGER NOT NULL DEFAULT 0
       )
-    `;
-    this.sql`
+        `;
+        this.sql`
       CREATE TABLE IF NOT EXISTS chatus_conversation_branches (
         request_id TEXT PRIMARY KEY,
         fingerprint TEXT NOT NULL,
@@ -215,8 +317,8 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
-    `;
-    this.sql`
+        `;
+        this.sql`
       CREATE TABLE IF NOT EXISTS chatus_conversation_branch_launches (
         request_id TEXT PRIMARY KEY,
         fingerprint TEXT NOT NULL,
@@ -225,7 +327,82 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
-    `;
+        `;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (1, ${Date.now()})`;
+      }
+      if (version < 2) {
+        this.sql`
+          CREATE TABLE IF NOT EXISTS workspace_files (
+            id TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
+            path_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            current_version_id TEXT NOT NULL DEFAULT '',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            deleted_at INTEGER NOT NULL DEFAULT 0
+          )
+        `;
+        this.sql`
+          CREATE UNIQUE INDEX IF NOT EXISTS workspace_files_active_path_key
+          ON workspace_files(path_key) WHERE deleted_at = 0
+        `;
+        this.sql`
+          CREATE INDEX IF NOT EXISTS workspace_files_list_order
+          ON workspace_files(pinned DESC, updated_at DESC, id DESC)
+        `;
+        this.sql`
+          CREATE TABLE IF NOT EXISTS workspace_file_versions (
+            id TEXT PRIMARY KEY,
+            file_id TEXT NOT NULL,
+            object_key TEXT NOT NULL UNIQUE,
+            size INTEGER NOT NULL,
+            media_type TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            state TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            error TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `;
+        this.sql`CREATE INDEX IF NOT EXISTS workspace_file_versions_file ON workspace_file_versions(file_id, created_at DESC)`;
+        this.sql`
+          CREATE TABLE IF NOT EXISTS conversation_file_refs (
+            conversation_id TEXT NOT NULL,
+            file_id TEXT NOT NULL,
+            version_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (conversation_id, file_id)
+          )
+        `;
+        this.sql`CREATE INDEX IF NOT EXISTS conversation_file_refs_version ON conversation_file_refs(version_id)`;
+        this.sql`
+          CREATE TABLE IF NOT EXISTS workspace_file_operations (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            file_id TEXT NOT NULL DEFAULT '',
+            version_id TEXT NOT NULL DEFAULT '',
+            generation INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            object_keys_json TEXT NOT NULL DEFAULT '[]',
+            size INTEGER NOT NULL DEFAULT 0,
+            checksum TEXT NOT NULL DEFAULT '',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `;
+        this.sql`CREATE INDEX IF NOT EXISTS workspace_file_operations_pending ON workspace_file_operations(state, updated_at)`;
+        this.sql`CREATE INDEX IF NOT EXISTS workspace_file_operations_file ON workspace_file_operations(file_id, created_at DESC)`;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (2, ${Date.now()})`;
+      }
+    });
   }
 
   async ensureIdentity(props: TeamAgentProps): Promise<TeamAgentIdentityResult> {
@@ -263,7 +440,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       WHERE deleted_at = 0
       ORDER BY pinned DESC, updated_at DESC
       LIMIT ${MAX_AGENT_CONVERSATIONS}
-    `.map(conversationRowToSummary);
+    `.map((row) => this.conversationSummary(row));
   }
 
   async createConversation(input: AgentConversationInput): Promise<AgentConversationMutationResult> {
@@ -272,7 +449,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (!normalized) return { ok: false, error: "conversation_not_found" };
     const existing = this.getConversationRow(normalized.id);
     if (existing && existing.deleted_at === 0) {
-      return { ok: true, conversation: conversationRowToSummary(existing), created: false };
+      return { ok: true, conversation: this.conversationSummary(existing), created: false };
     }
     if (existing) return { ok: false, error: "conversation_deleted" };
     const activeCount = this.sql<{ count: number }>`
@@ -284,7 +461,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.writeConversation(normalized, 0);
     const created = this.getConversationRow(normalized.id);
     if (!created) return { ok: false, error: "conversation_not_found" };
-    return { ok: true, conversation: conversationRowToSummary(created), created: true };
+    return { ok: true, conversation: this.conversationSummary(created), created: true };
   }
 
   async reserveConversationBranch(
@@ -309,7 +486,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (!source) return { ok: false, error: "conversation_not_found" };
     if (source.deleted_at !== 0) return { ok: false, error: "conversation_deleted" };
     if (source.updated_at !== normalized.expectedUpdatedAt) {
-      return { ok: false, error: "conversation_conflict", current: conversationRowToSummary(source) };
+      return { ok: false, error: "conversation_conflict", current: this.conversationSummary(source) };
     }
     if (this.getConversationRow(normalized.destinationId)) {
       return { ok: false, error: "branch_request_conflict" };
@@ -322,28 +499,35 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     }
 
     const now = monotonicNow(source.updated_at);
-    this.sql`
-      INSERT INTO chatus_conversation_branches(
-        request_id, fingerprint, source_chat_id, source_message_id, source_message_count, destination_id,
-        launch, anchor_message_id, state, created_at, updated_at
-      ) VALUES (
-        ${normalized.requestId}, ${normalized.fingerprint}, ${normalized.sourceId},
-        ${normalized.sourceMessageId}, ${normalized.sourceMessageCount}, ${normalized.destinationId}, ${normalized.launch},
-        '', 'reserved', ${now}, ${now}
-      )
-    `;
-    this.writeConversation({
-      id: normalized.destinationId,
-      title: normalized.title,
-      createdAt: now,
-      updatedAt: now,
-      summary: "",
-      pinned: false,
-      routeId: normalized.routeId,
-      parentChatId: normalized.sourceId,
-      skillIds: normalized.skillIds || [],
-      messageCount: 0,
-    }, 0);
+    this.ctx.storage.transactionSync(() => {
+      this.sql`
+        INSERT INTO chatus_conversation_branches(
+          request_id, fingerprint, source_chat_id, source_message_id, source_message_count, destination_id,
+          launch, anchor_message_id, state, created_at, updated_at
+        ) VALUES (
+          ${normalized.requestId}, ${normalized.fingerprint}, ${normalized.sourceId},
+          ${normalized.sourceMessageId}, ${normalized.sourceMessageCount}, ${normalized.destinationId}, ${normalized.launch},
+          '', 'reserved', ${now}, ${now}
+        )
+      `;
+      this.writeConversation({
+        id: normalized.destinationId,
+        title: normalized.title,
+        createdAt: now,
+        updatedAt: now,
+        summary: "",
+        pinned: false,
+        routeId: normalized.routeId,
+        parentChatId: normalized.sourceId,
+        skillIds: normalized.skillIds || [],
+        messageCount: 0,
+      }, 0);
+      this.sql`
+        INSERT INTO conversation_file_refs(conversation_id, file_id, version_id, created_at)
+        SELECT ${normalized.destinationId}, file_id, version_id, ${now}
+        FROM conversation_file_refs WHERE conversation_id = ${normalized.sourceId}
+      `;
+    });
     const created = this.getConversationBranchRow(normalized.requestId);
     const operation = created ? this.conversationBranchOperation(created) : undefined;
     return operation
@@ -406,7 +590,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const current = id ? this.getConversationRow(id) : undefined;
     if (!current || current.deleted_at !== 0) return { ok: false, error: "conversation_not_found" };
     if (patch.expectedUpdatedAt > 0 && patch.expectedUpdatedAt !== current.updated_at) {
-      return { ok: false, error: "conversation_conflict", current: conversationRowToSummary(current) };
+      return { ok: false, error: "conversation_conflict", current: this.conversationSummary(current) };
     }
 
     const title = patch.title === undefined
@@ -426,7 +610,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     `;
     const updated = this.getConversationRow(id);
     if (!updated) return { ok: false, error: "conversation_not_found" };
-    return { ok: true, conversation: conversationRowToSummary(updated) };
+    return { ok: true, conversation: this.conversationSummary(updated) };
   }
 
   async recordConversationActivity(activity: AgentConversationActivity): Promise<void> {
@@ -470,15 +654,18 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (!current) return { ok: false, error: "conversation_not_found" };
     if (current.deleted_at !== 0) return { ok: false, error: "conversation_deleted" };
     if (expectedUpdatedAt > 0 && expectedUpdatedAt !== current.updated_at) {
-      return { ok: false, error: "conversation_conflict", current: conversationRowToSummary(current) };
+      return { ok: false, error: "conversation_conflict", current: this.conversationSummary(current) };
     }
     const deletedAt = monotonicNow(current.updated_at);
-    this.sql`
-      UPDATE chatus_conversations SET deleted_at = ${deletedAt}, updated_at = ${deletedAt}
-      WHERE id = ${id}
-    `;
-    this.queueConversationCleanupRecord(id, deletedAt);
-    return { ok: true, conversation: { ...conversationRowToSummary(current), updatedAt: deletedAt }, deleted: true };
+    this.ctx.storage.transactionSync(() => {
+      this.sql`
+        UPDATE chatus_conversations SET deleted_at = ${deletedAt}, updated_at = ${deletedAt}
+        WHERE id = ${id}
+      `;
+      this.sql`DELETE FROM conversation_file_refs WHERE conversation_id = ${id}`;
+      this.queueConversationCleanupRecord(id, deletedAt);
+    });
+    return { ok: true, conversation: { ...this.conversationSummary(current), updatedAt: deletedAt, workspaceFiles: [] }, deleted: true };
   }
 
   async listPendingConversationCleanups(limitValue = 3): Promise<AgentConversationCleanupRecord[]> {
@@ -520,18 +707,761 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     return this.sql<{ id: string }>`SELECT id FROM chatus_conversations`.map((row) => row.id);
   }
 
+  async listWorkspaceFiles(
+    queryValue = "",
+    cursorValue = "",
+    limitValue = 30,
+  ): Promise<WorkspaceFileListResult> {
+    this.requireRootScope();
+    const query = normalizeWorkspaceSearchQuery(queryValue);
+    const cursor = decodeWorkspaceCursor(cursorValue);
+    const limit = Math.max(1, Math.min(MAX_WORKSPACE_LIST_LIMIT, Math.floor(limitValue) || 30));
+    const pattern = `%${escapeWorkspaceLike(query)}%`;
+    const columns = `
+      id, path, path_key, name, current_version_id, pinned, state,
+      generation, created_at, updated_at, deleted_at
+    `;
+    const order = "ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?";
+    let rows: WorkspaceFileRow[];
+    if (query && cursor) {
+      rows = this.ctx.storage.sql.exec<WorkspaceFileRow>(`
+        SELECT ${columns} FROM workspace_files
+        WHERE deleted_at = 0 AND path_key LIKE ? ESCAPE '\\'
+          AND (pinned < ? OR (pinned = ? AND (updated_at < ? OR (updated_at = ? AND id < ?))))
+        ${order}
+      `, pattern, cursor.pinned, cursor.pinned, cursor.updatedAt, cursor.updatedAt, cursor.id, limit + 1).toArray();
+    } else if (query) {
+      rows = this.ctx.storage.sql.exec<WorkspaceFileRow>(`
+        SELECT ${columns} FROM workspace_files
+        WHERE deleted_at = 0 AND path_key LIKE ? ESCAPE '\\'
+        ${order}
+      `, pattern, limit + 1).toArray();
+    } else if (cursor) {
+      rows = this.ctx.storage.sql.exec<WorkspaceFileRow>(`
+        SELECT ${columns} FROM workspace_files
+        WHERE deleted_at = 0
+          AND (pinned < ? OR (pinned = ? AND (updated_at < ? OR (updated_at = ? AND id < ?))))
+        ${order}
+      `, cursor.pinned, cursor.pinned, cursor.updatedAt, cursor.updatedAt, cursor.id, limit + 1).toArray();
+    } else {
+      rows = this.ctx.storage.sql.exec<WorkspaceFileRow>(`
+        SELECT ${columns} FROM workspace_files
+        WHERE deleted_at = 0
+        ${order}
+      `, limit + 1).toArray();
+    }
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+    return {
+      files: visible.map((row) => this.workspaceFileProjection(row)),
+      ...(rows.length > limit && last
+        ? { nextCursor: encodeWorkspaceCursor({ pinned: last.pinned, updatedAt: last.updated_at, id: last.id }) }
+        : {}),
+    };
+  }
+
+  async listWorkspaceFileVersions(fileIdValue: string): Promise<WorkspaceFileVersionListResult | undefined> {
+    this.requireRootScope();
+    const fileId = normalizeWorkspaceEntityId(fileIdValue);
+    const file = fileId ? this.getWorkspaceFileRow(fileId) : undefined;
+    if (!file || file.deleted_at !== 0) return undefined;
+    const versions = this.sql<WorkspaceFileVersionRow>`
+      SELECT id, file_id, object_key, size, media_type, checksum, state,
+        generation, error, created_at, updated_at
+      FROM workspace_file_versions
+      WHERE file_id = ${file.id}
+      ORDER BY created_at DESC, id DESC
+    `.flatMap((row) => {
+      const state = normalizeWorkspaceFileVersionState(row.state);
+      return state
+        ? [{
+            id: row.id,
+            fileId: row.file_id,
+            size: Math.max(0, row.size),
+            mediaType: normalizeWorkspaceMediaType(row.media_type),
+            checksum: normalizeWorkspaceChecksum(row.checksum),
+            state,
+            createdAt: row.created_at,
+          }]
+        : [];
+    });
+    return { file: this.workspaceFileProjection(file), versions };
+  }
+
+  async getWorkspaceFileVersion(
+    fileIdValue: string,
+    versionIdValue: string,
+  ): Promise<WorkspaceResolvedFileVersion | undefined> {
+    this.requireRootScope();
+    const fileId = normalizeWorkspaceEntityId(fileIdValue);
+    const versionId = normalizeWorkspaceEntityId(versionIdValue);
+    return fileId && versionId ? this.getWorkspaceResolvedVersion(fileId, versionId) : undefined;
+  }
+
+  async reserveWorkspaceUpload(input: WorkspaceUploadReservationInput): Promise<WorkspaceUploadReservationResult> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(input.operationId);
+    const pathResult = normalizeWorkspacePath(input.relativePath);
+    const checksum = normalizeWorkspaceChecksum(input.checksum);
+    const size = Number.isSafeInteger(input.size) && input.size > 0 && input.size <= MAX_WORKSPACE_FILE_BYTES
+      ? input.size
+      : 0;
+    if (!operationId || !pathResult.ok || !checksum || !size) {
+      return { ok: false, error: pathResult.ok ? "workspace_upload_invalid" : pathResult.error };
+    }
+    const mediaType = normalizeWorkspaceMediaType(input.mediaType);
+    const requestedFileId = input.fileId === undefined ? "" : normalizeWorkspaceEntityId(input.fileId);
+    if (input.fileId !== undefined && !requestedFileId) return { ok: false, error: "workspace_file_not_found" };
+    const expectedUpdatedAt = finiteTimestamp(input.expectedUpdatedAt, 0);
+    const fingerprint = await contentFingerprint(JSON.stringify({
+      path: pathResult.value.path,
+      checksum,
+      size,
+      mediaType,
+      fileId: requestedFileId,
+      expectedUpdatedAt,
+    }));
+    const ownerHash = (await contentFingerprint(`workspace-owner:${this.userLabel}`)).slice(0, 32);
+    if (this.hasWorkspaceAccountPurgeLock()) {
+      return { ok: false, error: "workspace_account_purge_in_progress" };
+    }
+    const existingOperation = this.getWorkspaceOperationRow(operationId);
+    if (existingOperation) {
+      if (existingOperation.kind !== "upload" || existingOperation.fingerprint !== fingerprint) {
+        return { ok: false, error: "workspace_operation_conflict" };
+      }
+      if (existingOperation.state === "failed") {
+        const current = this.getWorkspaceFileRow(existingOperation.file_id);
+        return {
+          ok: false,
+          error: "workspace_operation_failed",
+          ...(current ? { current: this.workspaceFileProjection(current) } : {}),
+        };
+      }
+      const reservation = this.workspaceUploadReservation(existingOperation, true);
+      return reservation
+        ? { ok: true, reservation }
+        : { ok: false, error: "workspace_operation_failed" };
+    }
+
+    let file = requestedFileId ? this.getWorkspaceFileRow(requestedFileId) : undefined;
+    if (requestedFileId) {
+      if (!file) return { ok: false, error: "workspace_file_not_found" };
+      if (file.deleted_at !== 0) return { ok: false, error: "workspace_file_deleted" };
+      if (file.state === "uploading") {
+        return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(file) };
+      }
+      if (!expectedUpdatedAt || expectedUpdatedAt !== file.updated_at) {
+        return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(file) };
+      }
+      if (file.path_key !== pathResult.value.conflictKey) {
+        return { ok: false, error: "workspace_path_conflict", current: this.workspaceFileProjection(file) };
+      }
+    } else {
+      const conflict = this.getWorkspaceFileByPathKey(pathResult.value.conflictKey);
+      if (conflict) {
+        return { ok: false, error: "workspace_path_conflict", current: this.workspaceFileProjection(conflict) };
+      }
+    }
+
+    const now = Date.now();
+    const fileId = file?.id || crypto.randomUUID();
+    const versionId = crypto.randomUUID();
+    const generation = (file?.generation || 0) + 1;
+    const updatedAt = file ? monotonicNow(file.updated_at) : now;
+    const objectKey = `workspace/v1/${ownerHash}/${fileId}/${versionId}`;
+    let reserved = false;
+    let purgeLocked = false;
+    this.ctx.storage.transactionSync(() => {
+      if (this.hasWorkspaceAccountPurgeLock()) {
+        purgeLocked = true;
+        return;
+      }
+      if (file) {
+        this.sql`
+          UPDATE workspace_files
+          SET state = 'uploading', generation = ${generation}, updated_at = ${updatedAt}
+          WHERE id = ${fileId}
+            AND deleted_at = 0
+            AND state <> 'uploading'
+            AND path_key = ${pathResult.value.conflictKey}
+            AND updated_at = ${expectedUpdatedAt}
+        `;
+        reserved = this.lastSqlChangeCount() === 1;
+      } else {
+        this.sql`
+          INSERT INTO workspace_files(
+            id, path, path_key, name, current_version_id, pinned, state,
+            generation, created_at, updated_at, deleted_at
+          ) VALUES (
+            ${fileId}, ${pathResult.value.path}, ${pathResult.value.conflictKey}, ${pathResult.value.name},
+            '', 0, 'uploading', ${generation}, ${now}, ${updatedAt}, 0
+          )
+        `;
+        reserved = true;
+      }
+      if (!reserved) return;
+      this.sql`
+        INSERT INTO workspace_file_versions(
+          id, file_id, object_key, size, media_type, checksum, state,
+          generation, error, created_at, updated_at
+        ) VALUES (
+          ${versionId}, ${fileId}, ${objectKey}, ${size}, ${mediaType}, ${checksum},
+          'pending', ${generation}, '', ${now}, ${now}
+        )
+      `;
+      this.sql`
+        INSERT INTO workspace_file_operations(
+          id, kind, file_id, version_id, generation, state, fingerprint,
+          object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+        ) VALUES (
+          ${operationId}, 'upload', ${fileId}, ${versionId}, ${generation}, 'pending', ${fingerprint},
+          ${JSON.stringify([objectKey])}, ${size}, ${checksum}, 0, '', ${now}, ${now}
+        )
+      `;
+    });
+    if (purgeLocked) return { ok: false, error: "workspace_account_purge_in_progress" };
+    if (!reserved) {
+      const current = this.getWorkspaceFileRow(fileId);
+      return { ok: false, error: "workspace_file_conflict", ...(current ? { current: this.workspaceFileProjection(current) } : {}) };
+    }
+    file = this.getWorkspaceFileRow(fileId);
+    const operation = this.getWorkspaceOperationRow(operationId);
+    const reservation = operation ? this.workspaceUploadReservation(operation, false) : undefined;
+    return file && reservation
+      ? { ok: true, reservation }
+      : { ok: false, error: "workspace_operation_failed" };
+  }
+
+  async completeWorkspaceUpload(operationIdValue: string, generationValue: number): Promise<WorkspaceMutationResult> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const generation = finitePositiveInteger(generationValue);
+    const operation = operationId ? this.getWorkspaceOperationRow(operationId) : undefined;
+    if (!operation || operation.kind !== "upload") return { ok: false, error: "workspace_file_not_found" };
+    const file = this.getWorkspaceFileRow(operation.file_id);
+    if (!file) return { ok: false, error: "workspace_file_not_found" };
+    if (operation.state === "completed") return { ok: true, file: this.workspaceFileProjection(file) };
+    if (file.deleted_at !== 0) return { ok: false, error: "workspace_file_deleted" };
+    if (operation.generation !== generation || file.generation !== generation) {
+      return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(file) };
+    }
+    const version = this.getWorkspaceVersionRow(operation.version_id);
+    if (!version || version.file_id !== file.id || version.generation !== generation || version.state !== "pending") {
+      return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(file) };
+    }
+    const now = monotonicNow(file.updated_at);
+    this.ctx.storage.transactionSync(() => {
+      this.sql`
+        UPDATE workspace_file_versions SET state = 'ready', error = '', updated_at = ${now}
+        WHERE id = ${version.id} AND state = 'pending' AND generation = ${generation}
+      `;
+      this.sql`
+        UPDATE workspace_files
+        SET current_version_id = ${version.id}, state = 'ready', updated_at = ${now}
+        WHERE id = ${file.id} AND deleted_at = 0 AND generation = ${generation}
+      `;
+      this.sql`
+        UPDATE workspace_file_operations SET state = 'completed', last_error = '', updated_at = ${now}
+        WHERE id = ${operationId} AND generation = ${generation}
+      `;
+    });
+    const completed = this.getWorkspaceFileRow(file.id);
+    return completed
+      ? { ok: true, file: this.workspaceFileProjection(completed) }
+      : { ok: false, error: "workspace_file_not_found" };
+  }
+
+  async recordWorkspaceOperationFailure(
+    operationIdValue: string,
+    generationValue: number,
+    errorValue = "workspace_operation_failed",
+  ): Promise<boolean> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const generation = finitePositiveInteger(generationValue);
+    const operation = operationId ? this.getWorkspaceOperationRow(operationId) : undefined;
+    if (!operation || operation.generation !== generation || operation.state === "completed") return false;
+    const error = boundedString(errorValue, 80) || "workspace_operation_failed";
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.sql`
+        UPDATE workspace_file_operations
+        SET state = 'failed', attempts = attempts + 1, last_error = ${error}, updated_at = ${now}
+        WHERE id = ${operationId} AND generation = ${generation}
+      `;
+      if (operation.kind === "upload") {
+        this.sql`
+          UPDATE workspace_file_versions SET state = 'failed', error = ${error}, updated_at = ${now}
+          WHERE id = ${operation.version_id} AND generation = ${generation} AND state = 'pending'
+        `;
+        this.sql`
+          UPDATE workspace_files SET state = 'failed', updated_at = ${now}
+          WHERE id = ${operation.file_id} AND deleted_at = 0 AND generation = ${generation}
+        `;
+      }
+    });
+    return true;
+  }
+
+  async abandonWorkspaceUpload(operationIdValue: string, generationValue: number): Promise<void> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const generation = finitePositiveInteger(generationValue);
+    const operation = operationId ? this.getWorkspaceOperationRow(operationId) : undefined;
+    if (!operation || operation.kind !== "upload" || operation.generation !== generation) return;
+    const file = this.getWorkspaceFileRow(operation.file_id);
+    this.ctx.storage.transactionSync(() => {
+      this.sql`DELETE FROM workspace_file_versions WHERE id = ${operation.version_id} AND generation = ${generation}`;
+      this.sql`DELETE FROM workspace_file_operations WHERE id = ${operationId} AND generation = ${generation}`;
+      if (file && file.deleted_at === 0 && file.generation === generation) {
+        this.sql`
+          UPDATE workspace_files
+          SET state = ${file.current_version_id ? "ready" : "failed"}, updated_at = ${monotonicNow(file.updated_at)}
+          WHERE id = ${file.id}
+        `;
+      }
+    });
+  }
+
+  async updateWorkspaceFile(
+    fileIdValue: string,
+    expectedUpdatedAtValue: number,
+    patch: { relativePath?: unknown; pinned?: unknown },
+  ): Promise<WorkspaceMutationResult> {
+    this.requireRootScope();
+    if (this.hasWorkspaceAccountPurgeLock()) {
+      return { ok: false, error: "workspace_account_purge_in_progress" };
+    }
+    const fileId = normalizeWorkspaceEntityId(fileIdValue);
+    const expectedUpdatedAt = finitePositiveInteger(expectedUpdatedAtValue);
+    const current = fileId ? this.getWorkspaceFileRow(fileId) : undefined;
+    if (!current) return { ok: false, error: "workspace_file_not_found" };
+    if (current.deleted_at !== 0) return { ok: false, error: "workspace_file_deleted" };
+    if (
+      (patch.relativePath === undefined && patch.pinned === undefined)
+      || (patch.pinned !== undefined && typeof patch.pinned !== "boolean")
+    ) {
+      return { ok: false, error: "workspace_update_invalid" };
+    }
+    if (current.state === "uploading") {
+      return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(current) };
+    }
+    if (!expectedUpdatedAt || current.updated_at !== expectedUpdatedAt) {
+      return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(current) };
+    }
+    const pathResult = patch.relativePath === undefined ? undefined : normalizeWorkspacePath(patch.relativePath);
+    if (pathResult && !pathResult.ok) return { ok: false, error: pathResult.error };
+    if (pathResult) {
+      const conflict = this.getWorkspaceFileByPathKey(pathResult.value.conflictKey);
+      if (conflict && conflict.id !== current.id) {
+        return { ok: false, error: "workspace_path_conflict", current: this.workspaceFileProjection(conflict) };
+      }
+    }
+    const pinned = patch.pinned === undefined ? current.pinned === 1 : patch.pinned === true;
+    const updatedAt = monotonicNow(current.updated_at);
+    this.sql`
+      UPDATE workspace_files
+      SET path = ${pathResult?.value.path || current.path},
+        path_key = ${pathResult?.value.conflictKey || current.path_key},
+        name = ${pathResult?.value.name || current.name},
+        pinned = ${pinned ? 1 : 0}, updated_at = ${updatedAt}
+      WHERE id = ${current.id} AND deleted_at = 0 AND updated_at = ${expectedUpdatedAt}
+    `;
+    if (this.lastSqlChangeCount() !== 1) {
+      const latest = this.getWorkspaceFileRow(current.id);
+      return { ok: false, error: "workspace_file_conflict", ...(latest ? { current: this.workspaceFileProjection(latest) } : {}) };
+    }
+    const updated = this.getWorkspaceFileRow(current.id);
+    return updated
+      ? { ok: true, file: this.workspaceFileProjection(updated) }
+      : { ok: false, error: "workspace_file_not_found" };
+  }
+
+  async reserveWorkspaceFileDelete(
+    fileIdValue: string,
+    expectedUpdatedAtValue: number,
+    operationIdValue: string,
+  ): Promise<WorkspaceDeleteReservationResult> {
+    this.requireRootScope();
+    const fileId = normalizeWorkspaceEntityId(fileIdValue);
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const expectedUpdatedAt = finitePositiveInteger(expectedUpdatedAtValue);
+    const fingerprint = fileId && expectedUpdatedAt
+      ? await contentFingerprint(JSON.stringify({ fileId, expectedUpdatedAt }))
+      : "";
+    if (this.hasWorkspaceAccountPurgeLock()) {
+      return { ok: false, error: "workspace_account_purge_in_progress" };
+    }
+    const current = fileId ? this.getWorkspaceFileRow(fileId) : undefined;
+    if (!current) return { ok: false, error: "workspace_file_not_found" };
+    const requestedOperation = operationId ? this.getWorkspaceOperationRow(operationId) : undefined;
+    if (requestedOperation && (requestedOperation.kind !== "delete_file" || requestedOperation.file_id !== current.id)) {
+      return { ok: false, error: "workspace_operation_conflict" };
+    }
+    const activeDelete = this.getWorkspaceDeleteOperation(current.id);
+    if (current.deleted_at !== 0) {
+      return {
+        ok: true,
+        reservation: activeDelete
+          ? this.workspaceDeleteReservation(activeDelete, true)
+          : {
+              operationId,
+              fileId: current.id,
+              generation: current.generation,
+              objectKeys: [],
+              existing: true,
+              completed: true,
+            },
+      };
+    }
+    if (current.state === "uploading") {
+      return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(current) };
+    }
+    if (!operationId) return { ok: false, error: "workspace_operation_conflict" };
+    if (!expectedUpdatedAt || current.updated_at !== expectedUpdatedAt) {
+      return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(current) };
+    }
+    if (requestedOperation) return { ok: true, reservation: this.workspaceDeleteReservation(requestedOperation, true) };
+    const objectKeys = this.sql<{ object_key: string }>`
+      SELECT object_key FROM workspace_file_versions WHERE file_id = ${current.id}
+    `.map((row) => row.object_key);
+    const generation = current.generation + 1;
+    const now = monotonicNow(current.updated_at);
+    let reserved = false;
+    let purgeLocked = false;
+    this.ctx.storage.transactionSync(() => {
+      if (this.hasWorkspaceAccountPurgeLock()) {
+        purgeLocked = true;
+        return;
+      }
+      this.sql`
+        UPDATE workspace_files
+        SET state = 'deleting', generation = ${generation}, deleted_at = ${now}, updated_at = ${now}
+        WHERE id = ${current.id}
+          AND deleted_at = 0
+          AND state <> 'uploading'
+          AND updated_at = ${expectedUpdatedAt}
+      `;
+      reserved = this.lastSqlChangeCount() === 1;
+      if (!reserved) return;
+      this.sql`DELETE FROM conversation_file_refs WHERE file_id = ${current.id}`;
+      this.sql`
+        UPDATE workspace_file_versions SET state = 'deleting', generation = ${generation}, updated_at = ${now}
+        WHERE file_id = ${current.id}
+      `;
+      this.sql`DELETE FROM workspace_file_operations WHERE file_id = ${current.id}`;
+      if (objectKeys.length) {
+        this.sql`
+          INSERT INTO workspace_file_operations(
+            id, kind, file_id, version_id, generation, state, fingerprint,
+            object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+          ) VALUES (
+            ${operationId}, 'delete_file', ${current.id}, '', ${generation}, 'pending', ${fingerprint},
+            ${JSON.stringify(objectKeys)}, 0, '', 0, '', ${now}, ${now}
+          )
+        `;
+      } else {
+        this.sql`
+          UPDATE workspace_files SET state = 'deleted', current_version_id = '' WHERE id = ${current.id}
+        `;
+      }
+    });
+    if (purgeLocked) return { ok: false, error: "workspace_account_purge_in_progress" };
+    if (!reserved) {
+      const latest = this.getWorkspaceFileRow(current.id);
+      return { ok: false, error: "workspace_file_conflict", ...(latest ? { current: this.workspaceFileProjection(latest) } : {}) };
+    }
+    const operation = this.getWorkspaceOperationRow(operationId);
+    return {
+      ok: true,
+      reservation: operation
+        ? this.workspaceDeleteReservation(operation, false)
+        : {
+            operationId,
+            fileId: current.id,
+            generation,
+            objectKeys: [],
+            existing: false,
+            completed: true,
+          },
+    };
+  }
+
+  async getWorkspaceDeleteReservation(fileIdValue: string): Promise<WorkspaceDeleteReservationResult> {
+    this.requireRootScope();
+    const fileId = normalizeWorkspaceEntityId(fileIdValue);
+    const file = fileId ? this.getWorkspaceFileRow(fileId) : undefined;
+    if (!file) return { ok: false, error: "workspace_file_not_found" };
+    const operation = this.getWorkspaceDeleteOperation(file.id);
+    if (!operation) {
+      return {
+        ok: true,
+        reservation: {
+          operationId: "",
+          fileId: file.id,
+          generation: file.generation,
+          objectKeys: [],
+          existing: true,
+          completed: file.state === "deleted",
+        },
+      };
+    }
+    return { ok: true, reservation: this.workspaceDeleteReservation(operation, true) };
+  }
+
+  async completeWorkspaceFileDelete(operationIdValue: string, generationValue: number): Promise<boolean> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const generation = finitePositiveInteger(generationValue);
+    const operation = operationId ? this.getWorkspaceOperationRow(operationId) : undefined;
+    if (!operation || operation.kind !== "delete_file" || operation.generation !== generation) return false;
+    const file = this.getWorkspaceFileRow(operation.file_id);
+    if (!file || file.deleted_at === 0 || file.generation !== generation) return false;
+    this.ctx.storage.transactionSync(() => {
+      this.sql`DELETE FROM conversation_file_refs WHERE file_id = ${file.id}`;
+      this.sql`DELETE FROM workspace_file_versions WHERE file_id = ${file.id}`;
+      this.sql`DELETE FROM workspace_file_operations WHERE file_id = ${file.id}`;
+      this.sql`
+        UPDATE workspace_files SET state = 'deleted', current_version_id = '', updated_at = ${Date.now()}
+        WHERE id = ${file.id} AND deleted_at <> 0 AND generation = ${generation}
+      `;
+    });
+    return true;
+  }
+
+  async listPendingWorkspaceOperations(limitValue = 3): Promise<WorkspacePendingOperation[]> {
+    this.requireRootScope();
+    const limit = Math.max(1, Math.min(10, Math.floor(limitValue) || 3));
+    return this.sql<WorkspaceFileOperationRow>`
+      SELECT id, kind, file_id, version_id, generation, state, fingerprint,
+        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+      FROM workspace_file_operations
+      WHERE state = 'pending' OR state = 'failed'
+      ORDER BY updated_at ASC, created_at ASC
+      LIMIT ${limit}
+    `.flatMap((row) => {
+      if (
+        (row.kind !== "upload" && row.kind !== "delete_file" && row.kind !== "account_purge")
+        || (row.state !== "pending" && row.state !== "failed")
+      ) return [];
+      return [{
+        operationId: row.id,
+        kind: row.kind,
+        fileId: row.file_id,
+        versionId: row.version_id,
+        generation: row.generation,
+        state: row.state,
+        objectKeys: parseWorkspaceObjectKeys(row.object_keys_json),
+        size: Math.max(0, row.size),
+        checksum: normalizeWorkspaceChecksum(row.checksum),
+        attempts: Math.max(0, row.attempts),
+        updatedAt: row.updated_at,
+      }];
+    });
+  }
+
+  async setConversationWorkspaceFiles(
+    conversationIdValue: string,
+    expectedUpdatedAtValue: number,
+    refsValue: Array<{ fileId: string; versionId: string }>,
+  ): Promise<AgentConversationMutationResult> {
+    this.requireRootScope();
+    if (this.hasWorkspaceAccountPurgeLock()) {
+      return { ok: false, error: "workspace_account_purge_in_progress" };
+    }
+    const conversationId = normalizeConversationId(conversationIdValue);
+    const expectedUpdatedAt = finitePositiveInteger(expectedUpdatedAtValue);
+    const current = conversationId ? this.getConversationRow(conversationId) : undefined;
+    if (!current || current.deleted_at !== 0) return { ok: false, error: "conversation_not_found" };
+    if (!expectedUpdatedAt || current.updated_at !== expectedUpdatedAt) {
+      return { ok: false, error: "conversation_conflict", current: this.conversationSummary(current) };
+    }
+    if (!Array.isArray(refsValue) || refsValue.length > MAX_WORKSPACE_FILES_PER_CONVERSATION) {
+      return { ok: false, error: "conversation_conflict", current: this.conversationSummary(current) };
+    }
+    const refs: Array<{ fileId: string; versionId: string }> = [];
+    const seen = new Set<string>();
+    for (const value of refsValue) {
+      const fileId = normalizeWorkspaceEntityId(value?.fileId);
+      const versionId = normalizeWorkspaceEntityId(value?.versionId);
+      if (!fileId || !versionId || seen.has(fileId)) {
+        return { ok: false, error: "conversation_conflict", current: this.conversationSummary(current) };
+      }
+      const resolved = this.getWorkspaceResolvedVersion(fileId, versionId);
+      if (!resolved) return { ok: false, error: "conversation_conflict", current: this.conversationSummary(current) };
+      seen.add(fileId);
+      refs.push({ fileId, versionId });
+    }
+    const updatedAt = monotonicNow(current.updated_at);
+    this.ctx.storage.transactionSync(() => {
+      this.sql`DELETE FROM conversation_file_refs WHERE conversation_id = ${conversationId}`;
+      for (const ref of refs) {
+        this.sql`
+          INSERT INTO conversation_file_refs(conversation_id, file_id, version_id, created_at)
+          VALUES (${conversationId}, ${ref.fileId}, ${ref.versionId}, ${updatedAt})
+        `;
+      }
+      this.sql`
+        UPDATE chatus_conversations SET updated_at = ${updatedAt}
+        WHERE id = ${conversationId} AND deleted_at = 0 AND updated_at = ${expectedUpdatedAt}
+      `;
+    });
+    const updated = this.getConversationRow(conversationId);
+    return updated
+      ? { ok: true, conversation: this.conversationSummary(updated) }
+      : { ok: false, error: "conversation_not_found" };
+  }
+
+  async resolveConversationWorkspaceFiles(conversationIdValue: string): Promise<WorkspaceResolvedFileVersion[]> {
+    this.requireRootScope();
+    const conversationId = normalizeConversationId(conversationIdValue);
+    if (!conversationId) return [];
+    return this.listConversationWorkspaceRows(conversationId).map((row) => ({
+      fileId: row.file_id,
+      versionId: row.version_id,
+      path: row.path,
+      name: row.name,
+      size: row.size,
+      mediaType: row.media_type,
+      checksum: row.checksum,
+      objectKey: row.object_key,
+      generation: row.generation,
+    }));
+  }
+
+  async beginWorkspaceAccountPurge(operationIdValue: string): Promise<WorkspaceAccountPurgeReservationResult> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    if (!operationId) return { error: "workspace_operation_conflict" };
+    const existingRequested = this.getWorkspaceOperationRow(operationId);
+    if (existingRequested) {
+      if (existingRequested.kind !== "account_purge") return { error: "workspace_operation_conflict" };
+      return {
+        operationId: existingRequested.id,
+        generation: existingRequested.generation,
+        objectKeys: parseWorkspaceObjectKeys(existingRequested.object_keys_json),
+        existing: true,
+        completed: existingRequested.state === "completed",
+      };
+    }
+    const existing = this.sql<WorkspaceFileOperationRow>`
+      SELECT id, kind, file_id, version_id, generation, state, fingerprint,
+        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+      FROM workspace_file_operations WHERE kind = 'account_purge' LIMIT 1
+    `[0];
+    if (existing) {
+      return {
+        operationId: existing.id,
+        generation: existing.generation,
+        objectKeys: parseWorkspaceObjectKeys(existing.object_keys_json),
+        existing: true,
+        completed: existing.state === "completed",
+      };
+    }
+    const pendingUploads = this.sql<{ count: number }>`
+      SELECT COUNT(*) AS count FROM workspace_file_operations
+      WHERE kind = 'upload' AND state = 'pending'
+    `[0]?.count || 0;
+    if (pendingUploads > 0) return { error: "workspace_purge_pending_upload" };
+    const objectKeys = this.sql<{ object_key: string }>`SELECT object_key FROM workspace_file_versions`.map((row) => row.object_key);
+    const maximum = this.sql<{ generation: number }>`
+      SELECT COALESCE(MAX(generation), 0) AS generation FROM workspace_files
+    `[0]?.generation || 0;
+    const generation = maximum + 1;
+    const now = Date.now();
+    const fingerprint = `account-purge:${operationId}`;
+    this.ctx.storage.transactionSync(() => {
+      this.sql`
+        UPDATE workspace_files SET state = 'deleting', generation = ${generation}, deleted_at = ${now}, updated_at = ${now}
+        WHERE deleted_at = 0
+      `;
+      this.sql`DELETE FROM conversation_file_refs`;
+      this.sql`
+        UPDATE workspace_file_versions SET state = 'deleting', generation = ${generation}, updated_at = ${now}
+      `;
+      this.sql`DELETE FROM workspace_file_operations`;
+      this.sql`
+        INSERT INTO workspace_file_operations(
+          id, kind, file_id, version_id, generation, state, fingerprint,
+          object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+        ) VALUES (
+          ${operationId}, 'account_purge', '', '', ${generation}, 'pending', ${fingerprint},
+          ${JSON.stringify(objectKeys)}, 0, '', 0, '', ${now}, ${now}
+        )
+      `;
+    });
+    return { operationId, generation, objectKeys, existing: false, completed: false };
+  }
+
+  private lastSqlChangeCount(): number {
+    return this.sql<{ count: number }>`SELECT changes() AS count`[0]?.count || 0;
+  }
+
+  private hasWorkspaceAccountPurgeLock(): boolean {
+    return this.sql<{ present: number }>`
+      SELECT 1 AS present FROM workspace_file_operations WHERE kind = 'account_purge' LIMIT 1
+    `.length > 0;
+  }
+
+  async completeWorkspaceAccountPurge(operationIdValue: string, generationValue: number): Promise<boolean> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const generation = finitePositiveInteger(generationValue);
+    const operation = operationId ? this.getWorkspaceOperationRow(operationId) : undefined;
+    if (!operation) return false;
+    if (operation.kind !== "account_purge" || operation.generation !== generation) return false;
+    const now = Date.now();
+    this.ctx.storage.transactionSync(() => {
+      this.sql`DELETE FROM conversation_file_refs`;
+      this.sql`DELETE FROM workspace_file_versions`;
+      this.sql`DELETE FROM workspace_files`;
+      this.sql`DELETE FROM workspace_file_operations WHERE kind <> 'account_purge'`;
+      this.sql`
+        UPDATE workspace_file_operations
+        SET state = 'completed', last_error = '', updated_at = ${now}
+        WHERE id = ${operationId} AND kind = 'account_purge' AND generation = ${generation}
+      `;
+    });
+    return this.getWorkspaceOperationRow(operationId)?.state === "completed";
+  }
+
   async purgeRootData(): Promise<{ conversationIds: string[] }> {
     this.requireRootScope();
     const conversationIds = await this.getAllConversationIds();
-    this.clearPersistedChatState();
-    this.sql`DELETE FROM chatus_conversations`;
-    this.sql`DELETE FROM chatus_conversation_cleanup`;
-    this.sql`DELETE FROM chatus_conversation_branches`;
-    this.sql`DELETE FROM chatus_memory`;
-    this.sql`DELETE FROM chatus_migrations`;
-    this.sql`DELETE FROM capability_tool_trust`;
+    const workspaceVersionCount = this.sql<{ count: number }>`
+      SELECT COUNT(*) AS count FROM workspace_file_versions
+    `[0]?.count || 0;
+    if (workspaceVersionCount > 0) throw new Error("workspace_purge_required");
+    this.ctx.storage.transactionSync(() => {
+      this.clearPersistedChatState();
+      this.sql`DELETE FROM conversation_file_refs`;
+      this.sql`DELETE FROM workspace_file_operations WHERE kind <> 'account_purge'`;
+      this.sql`DELETE FROM workspace_files`;
+      this.sql`DELETE FROM chatus_conversations`;
+      this.sql`DELETE FROM chatus_conversation_cleanup`;
+      this.sql`DELETE FROM chatus_conversation_branches`;
+      this.sql`DELETE FROM chatus_memory`;
+      this.sql`DELETE FROM chatus_migrations`;
+      this.sql`DELETE FROM capability_tool_trust`;
+    });
     await this.ctx.storage.delete(AGENT_IDENTITY_STORAGE_KEY);
     return { conversationIds };
+  }
+
+  async releaseWorkspaceAccountPurge(operationIdValue: string, generationValue: number): Promise<boolean> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const generation = finitePositiveInteger(generationValue);
+    if (!operationId || !generation) return false;
+    this.sql`
+      DELETE FROM workspace_file_operations
+      WHERE id = ${operationId}
+        AND kind = 'account_purge'
+        AND generation = ${generation}
+        AND state = 'completed'
+    `;
+    return this.lastSqlChangeCount() === 1;
   }
 
   async getMemory(): Promise<AgentMemoryRecord> {
@@ -848,14 +1778,20 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           expiresAt: this.sessionExpiresAt,
         };
     let longTermMemory = "";
+    let workspaceContext = "";
     let memoryRecord: AgentMemoryRecord | undefined;
     if (this.accessKind === "member") {
       try {
         const root = await this.getRootAgent();
-        memoryRecord = await root.getMemory();
+        const [loadedMemory, workspaceFiles] = await Promise.all([
+          root.getMemory(),
+          root.resolveConversationWorkspaceFiles(this.chatId),
+        ]);
+        memoryRecord = loadedMemory;
         longTermMemory = memoryRecord.memory;
+        workspaceContext = await this.loadWorkspaceContext(workspaceFiles);
       } catch {
-        // Conversation execution remains available if the optional memory read is temporarily unavailable.
+        return chatErrorResponse("workspace_context_unavailable", 503);
       }
     }
     const prepared = await prepareTeamAgentTurn(this.env, session, {
@@ -867,6 +1803,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       sessionSummary: boundedString(body.sessionSummary, 1_200),
       temperature: finiteNumber(body.temperature),
       longTermMemory,
+      workspaceContext,
     });
 
     if (!prepared.ok) {
@@ -984,12 +1921,228 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     return root;
   }
 
+  private async loadWorkspaceContext(files: WorkspaceResolvedFileVersion[]): Promise<string> {
+    if (!files.length) return "";
+    const policy = { ...fileInputPolicy(this.env), maxFiles: MAX_WORKSPACE_FILES_PER_CONVERSATION };
+    let validation = emptyTextFileValidationState();
+    const context: string[] = [];
+    for (const file of files) {
+      if (!isSupportedTextFileDescriptor(file.mediaType, file.name, policy)) {
+        context.push(workspaceUnavailableContext(file, "document_ingest_not_ready"));
+        continue;
+      }
+      if (file.size > policy.maxFileBytes || validation.totalBytes + file.size > policy.maxTotalBytes) {
+        context.push(workspaceUnavailableContext(file, "text_file_too_large"));
+        continue;
+      }
+      const object = await this.env.WORKSPACE_FILES.get(file.objectKey);
+      if (!object || object.size !== file.size) throw new Error("workspace_object_unavailable");
+      const bytes = await object.arrayBuffer();
+      if (await contentFingerprintBytes(bytes) !== file.checksum) throw new Error("workspace_object_checksum_mismatch");
+      let text: string;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes).replace(/^\uFEFF/u, "");
+      } catch {
+        context.push(workspaceUnavailableContext(file, "invalid_utf8"));
+        continue;
+      }
+      if (validation.totalChars + text.length > policy.maxExtractedChars) {
+        context.push(workspaceUnavailableContext(file, "text_context_too_large"));
+        continue;
+      }
+      validation = {
+        fileCount: validation.fileCount + 1,
+        totalBytes: validation.totalBytes + bytes.byteLength,
+        totalChars: validation.totalChars + text.length,
+      };
+      context.push(formatAttachedFileContext({
+        filename: file.path,
+        mediaType: file.mediaType,
+        bytes: bytes.byteLength,
+        text,
+      }));
+    }
+    return context.join("\n\n");
+  }
+
   private getConversationRow(id: string): ConversationRow | undefined {
     return this.sql<ConversationRow>`
       SELECT id, title, created_at, updated_at, summary, pinned, route_id,
         parent_chat_id, skill_ids, message_count, deleted_at
       FROM chatus_conversations WHERE id = ${id} LIMIT 1
     `[0];
+  }
+
+  private conversationSummary(row: ConversationRow): AgentConversationSummary {
+    return {
+      ...conversationRowToSummary(row),
+      workspaceFiles: this.listConversationWorkspaceFiles(row.id),
+    };
+  }
+
+  private getWorkspaceFileRow(fileId: string): WorkspaceFileRow | undefined {
+    return this.sql<WorkspaceFileRow>`
+      SELECT id, path, path_key, name, current_version_id, pinned, state,
+        generation, created_at, updated_at, deleted_at
+      FROM workspace_files WHERE id = ${fileId} LIMIT 1
+    `[0];
+  }
+
+  private getWorkspaceFileByPathKey(pathKey: string): WorkspaceFileRow | undefined {
+    return this.sql<WorkspaceFileRow>`
+      SELECT id, path, path_key, name, current_version_id, pinned, state,
+        generation, created_at, updated_at, deleted_at
+      FROM workspace_files WHERE path_key = ${pathKey} AND deleted_at = 0 LIMIT 1
+    `[0];
+  }
+
+  private getWorkspaceVersionRow(versionId: string): WorkspaceFileVersionRow | undefined {
+    return this.sql<WorkspaceFileVersionRow>`
+      SELECT id, file_id, object_key, size, media_type, checksum, state,
+        generation, error, created_at, updated_at
+      FROM workspace_file_versions WHERE id = ${versionId} LIMIT 1
+    `[0];
+  }
+
+  private getWorkspaceOperationRow(operationId: string): WorkspaceFileOperationRow | undefined {
+    return this.sql<WorkspaceFileOperationRow>`
+      SELECT id, kind, file_id, version_id, generation, state, fingerprint,
+        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+      FROM workspace_file_operations WHERE id = ${operationId} LIMIT 1
+    `[0];
+  }
+
+  private getWorkspaceDeleteOperation(fileId: string): WorkspaceFileOperationRow | undefined {
+    return this.sql<WorkspaceFileOperationRow>`
+      SELECT id, kind, file_id, version_id, generation, state, fingerprint,
+        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+      FROM workspace_file_operations
+      WHERE kind = 'delete_file' AND file_id = ${fileId}
+      ORDER BY created_at DESC LIMIT 1
+    `[0];
+  }
+
+  private workspaceFileProjection(row: WorkspaceFileRow): WorkspaceFileProjection {
+    const state = normalizeWorkspaceFileState(row.state);
+    const version = row.current_version_id ? this.getWorkspaceVersionRow(row.current_version_id) : undefined;
+    const versionState = version ? normalizeWorkspaceFileVersionState(version.state) : undefined;
+    const currentVersion: WorkspaceFileVersionProjection | undefined = version && versionState
+      ? {
+          id: version.id,
+          fileId: version.file_id,
+          size: Math.max(0, version.size),
+          mediaType: normalizeWorkspaceMediaType(version.media_type),
+          checksum: normalizeWorkspaceChecksum(version.checksum),
+          state: versionState,
+          createdAt: version.created_at,
+        }
+      : undefined;
+    return {
+      id: row.id,
+      path: row.path,
+      name: row.name,
+      pinned: row.pinned === 1,
+      state,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...(currentVersion ? { currentVersion } : {}),
+      retryAvailable: state === "failed",
+    };
+  }
+
+  private workspaceUploadReservation(
+    operation: WorkspaceFileOperationRow,
+    existing: boolean,
+  ): WorkspaceUploadReservation | undefined {
+    if (operation.kind !== "upload") return undefined;
+    const file = this.getWorkspaceFileRow(operation.file_id);
+    const version = this.getWorkspaceVersionRow(operation.version_id);
+    if (
+      !file
+      || !version
+      || file.deleted_at !== 0
+      || version.file_id !== file.id
+      || version.generation !== operation.generation
+    ) return undefined;
+    return {
+      operationId: operation.id,
+      fileId: file.id,
+      versionId: version.id,
+      objectKey: version.object_key,
+      generation: operation.generation,
+      size: Math.max(0, version.size),
+      mediaType: normalizeWorkspaceMediaType(version.media_type),
+      checksum: normalizeWorkspaceChecksum(version.checksum),
+      existing,
+      completed: operation.state === "completed",
+      file: this.workspaceFileProjection(file),
+    };
+  }
+
+  private workspaceDeleteReservation(
+    operation: WorkspaceFileOperationRow,
+    existing: boolean,
+  ): WorkspaceAccountPurgeReservation & { fileId: string } {
+    return {
+      operationId: operation.id,
+      fileId: operation.file_id,
+      generation: operation.generation,
+      objectKeys: parseWorkspaceObjectKeys(operation.object_keys_json),
+      existing,
+      completed: operation.state === "completed",
+    };
+  }
+
+  private listConversationWorkspaceRows(conversationId: string): WorkspaceConversationRefRow[] {
+    return this.sql<WorkspaceConversationRefRow>`
+      SELECT refs.conversation_id, refs.file_id, refs.version_id,
+        files.path, files.name, versions.size, versions.media_type, versions.checksum,
+        versions.object_key, versions.generation
+      FROM conversation_file_refs AS refs
+      INNER JOIN workspace_files AS files ON files.id = refs.file_id AND files.deleted_at = 0
+      INNER JOIN workspace_file_versions AS versions
+        ON versions.id = refs.version_id AND versions.file_id = refs.file_id AND versions.state = 'ready'
+      WHERE refs.conversation_id = ${conversationId}
+      ORDER BY refs.created_at ASC, refs.file_id ASC
+    `;
+  }
+
+  private listConversationWorkspaceFiles(conversationId: string): WorkspaceConversationFileRef[] {
+    return this.listConversationWorkspaceRows(conversationId).map((row) => ({
+      fileId: row.file_id,
+      versionId: row.version_id,
+      path: row.path,
+      name: row.name,
+      size: Math.max(0, row.size),
+      mediaType: normalizeWorkspaceMediaType(row.media_type),
+      checksum: normalizeWorkspaceChecksum(row.checksum),
+    }));
+  }
+
+  private getWorkspaceResolvedVersion(fileId: string, versionId: string): WorkspaceResolvedFileVersion | undefined {
+    const row = this.sql<WorkspaceConversationRefRow>`
+      SELECT '' AS conversation_id, files.id AS file_id, versions.id AS version_id,
+        files.path, files.name, versions.size, versions.media_type, versions.checksum,
+        versions.object_key, versions.generation
+      FROM workspace_files AS files
+      INNER JOIN workspace_file_versions AS versions ON versions.file_id = files.id
+      WHERE files.id = ${fileId} AND files.deleted_at = 0
+        AND versions.id = ${versionId} AND versions.state = 'ready'
+      LIMIT 1
+    `[0];
+    return row
+      ? {
+          fileId: row.file_id,
+          versionId: row.version_id,
+          path: row.path,
+          name: row.name,
+          size: Math.max(0, row.size),
+          mediaType: normalizeWorkspaceMediaType(row.media_type),
+          checksum: normalizeWorkspaceChecksum(row.checksum),
+          objectKey: row.object_key,
+          generation: row.generation,
+        }
+      : undefined;
   }
 
   private getConversationBranchRow(requestId: string): ConversationBranchRow | undefined {
@@ -1016,7 +2169,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       launch,
       ...(normalizeBranchMessageId(row.anchor_message_id) ? { anchorMessageId: row.anchor_message_id } : {}),
       state,
-      conversation: conversationRowToSummary(conversation),
+      conversation: this.conversationSummary(conversation),
     };
   }
 
@@ -1507,7 +2660,7 @@ function findPreviousUserMessageIndex(messages: UIMessage[], beforeIndex: number
   return -1;
 }
 
-function conversationRowToSummary(row: ConversationRow): AgentConversationSummary {
+function conversationRowToSummary(row: ConversationRow): Omit<AgentConversationSummary, "workspaceFiles"> {
   return {
     id: row.id,
     title: row.title,
@@ -1700,6 +2853,60 @@ function finiteTimestamp(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+function finitePositiveInteger(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function normalizeWorkspaceFileState(value: unknown): WorkspaceFileProjection["state"] {
+  return value === "uploading" || value === "ready" || value === "failed" || value === "deleting" || value === "deleted"
+    ? value
+    : "failed";
+}
+
+function normalizeWorkspaceFileVersionState(value: unknown): WorkspaceFileVersionProjection["state"] | undefined {
+  return value === "pending" || value === "ready" || value === "failed" || value === "deleting"
+    ? value
+    : undefined;
+}
+
+function escapeWorkspaceLike(value: string): string {
+  return value.replace(/[\\%_]/gu, "\\$&");
+}
+
+function encodeWorkspaceCursor(cursor: WorkspaceCursor): string {
+  return btoa(JSON.stringify(cursor)).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/gu, "");
+}
+
+function decodeWorkspaceCursor(value: unknown): WorkspaceCursor | undefined {
+  if (typeof value !== "string" || !value || value.length > 240 || !/^[A-Za-z0-9_-]+$/u.test(value)) return undefined;
+  try {
+    const padded = value.replace(/-/gu, "+").replace(/_/gu, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+    const parsed: unknown = JSON.parse(atob(padded));
+    if (!isRecord(parsed)) return undefined;
+    const pinned = parsed.pinned === 0 || parsed.pinned === 1 ? parsed.pinned : undefined;
+    const updatedAt = finitePositiveInteger(parsed.updatedAt);
+    const id = normalizeWorkspaceEntityId(parsed.id);
+    return pinned !== undefined && updatedAt && id ? { pinned, updatedAt, id } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseWorkspaceObjectKeys(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((item): item is string => (
+      typeof item === "string"
+      && item.length > 0
+      && item.length <= 1_024
+      && !/[\u0000-\u001f\u007f]/u.test(item)
+    )))];
+  } catch {
+    return [];
+  }
+}
+
 function monotonicNow(previous: number): number {
   return Math.max(Date.now(), previous + 1);
 }
@@ -1721,6 +2928,20 @@ async function contentFingerprint(value: string): Promise<string> {
   if (!value) return "";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function contentFingerprintBytes(value: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function workspaceUnavailableContext(
+  file: WorkspaceResolvedFileVersion,
+  reason: "document_ingest_not_ready" | "text_file_too_large" | "invalid_utf8" | "text_context_too_large",
+): string {
+  const name = file.path.replace(/["<>\u0000-\u001f\u007f]/gu, "_").slice(0, 1_024);
+  const mediaType = file.mediaType.replace(/["<>\u0000-\u001f\u007f]/gu, "_").slice(0, 120);
+  return `<attached_file_unavailable name="${name}" mediaType="${mediaType}" reason="${reason}" />`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

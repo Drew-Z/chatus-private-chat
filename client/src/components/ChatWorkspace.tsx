@@ -62,7 +62,7 @@ export function ChatWorkspace({
   const [busy, setBusy] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarView, setSidebarView] = useState<"history" | "settings">("history");
+  const [sidebarView, setSidebarView] = useState<"history" | "files" | "settings">("history");
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const bootstrapped = useRef(false);
@@ -318,6 +318,7 @@ export function ChatWorkspace({
           onCreate={createConversation}
           onRename={renameConversation}
           onDelete={removeConversation}
+          onConversationUpdated={updateConversationInList}
           onRouteChange={(nextRouteId) => { setRouteId(nextRouteId); void persistSettings({ routeId: nextRouteId }); }}
           onSkillChange={(nextSkillIds) => { setSkillIds(nextSkillIds); void persistSettings({ skillIds: nextSkillIds }); }}
           onRevokeAllSessions={handleRevokeAllSessions}

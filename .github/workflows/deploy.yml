@@ -63,6 +63,7 @@ jobs:
     env:
       CHATUS_WORKER_NAME: ${{ vars.CHATUS_WORKER_NAME }}
       CHATUS_KV_NAMESPACE_ID: ${{ vars.CHATUS_KV_NAMESPACE_ID }}
+      CHATUS_R2_BUCKET_NAME: ${{ vars.CHATUS_R2_BUCKET_NAME }}
       CHATUS_PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
     steps:
       - name: Checkout deployment revision

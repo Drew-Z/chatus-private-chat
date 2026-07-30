@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import type { SessionKind } from "./session";
+import type { WorkspaceConversationFileRef } from "./workspace-file";
 
 export const MAX_AGENT_CONVERSATIONS = 50;
 export const AGENT_MEMORY_PROPOSAL_TOOL_NAME = "chatus_update_memory";
@@ -40,6 +41,7 @@ export type AgentConversationSummary = {
   routeId?: string;
   parentChatId?: string;
   skillIds: string[];
+  workspaceFiles: WorkspaceConversationFileRef[];
   messageCount: number;
 };
 
@@ -58,8 +60,9 @@ export type AgentExportMessagesResult = {
   truncated: boolean;
 };
 
-export type AgentConversationInput = Omit<AgentConversationSummary, "messageCount"> & {
+export type AgentConversationInput = Omit<AgentConversationSummary, "messageCount" | "workspaceFiles"> & {
   messageCount?: number;
+  workspaceFiles?: WorkspaceConversationFileRef[];
 };
 
 export type AgentConversationPatch = {
@@ -72,7 +75,12 @@ export type AgentConversationPatch = {
 
 export type AgentConversationMutationResult = {
   ok: boolean;
-  error?: "conversation_not_found" | "conversation_deleted" | "conversation_conflict" | "conversation_limit_reached";
+  error?:
+    | "conversation_not_found"
+    | "conversation_deleted"
+    | "conversation_conflict"
+    | "conversation_limit_reached"
+    | "workspace_account_purge_in_progress";
   conversation?: AgentConversationSummary;
   current?: AgentConversationSummary;
   created?: boolean;

@@ -55,6 +55,16 @@ import type {
 } from "./contracts/provider";
 import type { GuestSession, Session } from "./contracts/session";
 import {
+  MAX_WORKSPACE_FILE_BYTES,
+  MAX_WORKSPACE_FILES_PER_CONVERSATION,
+  MAX_WORKSPACE_LIST_LIMIT,
+  normalizeWorkspaceEntityId,
+  normalizeWorkspaceOperationId,
+  type WorkspaceDeleteReservationResult,
+  type WorkspaceMutationResult,
+  type WorkspaceUploadReservationResult,
+} from "./contracts/workspace-file";
+import {
   buildProviderRoutePlan,
   isTerminalProviderFailure,
   MAX_PROVIDER_CONCURRENCY,
@@ -320,6 +330,7 @@ type McpSecretMetadata = Omit<ManagedSecretMetadata, "namespace" | "ref"> & { se
 export type Env = {
   ASSETS: Fetcher;
   CHAT_STORE: KVNamespace;
+  WORKSPACE_FILES: R2Bucket;
   USER_STATE: DurableObjectNamespace<UserState>;
   TEAM_AGENT: DurableObjectNamespace<TeamAgent>;
   PROVIDER_COORDINATOR: DurableObjectNamespace<ProviderCoordinator>;
@@ -406,6 +417,7 @@ const MAX_TOOL_ROUNDS = 4;
 const MAX_TOOL_CALLS = 8;
 const TOOL_CALL_TIMEOUT_MS = 15_000;
 const TOOL_TOTAL_BUDGET_MS = 45_000;
+const WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS = 60_000;
 const MAX_TOOL_RESULT_BYTES = 32 * 1024;
 const TOOL_SCHEMA_VALIDATOR = new CfWorkerJsonSchemaValidator({ draft: "2020-12", shortcircuit: false });
 
@@ -1108,6 +1120,13 @@ async function handleApi(
   }
   if (
     url.pathname.startsWith("/api/agent/conversations/")
+    && url.pathname.endsWith("/workspace-files")
+    && request.method === "PUT"
+  ) {
+    return handleSetConversationWorkspaceFiles(request, env, session, url);
+  }
+  if (
+    url.pathname.startsWith("/api/agent/conversations/")
     && url.pathname.endsWith("/branches")
     && request.method === "POST"
   ) {
@@ -1124,6 +1143,31 @@ async function handleApi(
   }
   if (url.pathname === "/api/agent/memory" && request.method === "PUT") {
     return handlePutAgentMemory(request, env, session);
+  }
+
+  if (url.pathname === "/api/workspace/files" && request.method === "GET") {
+    return handleListWorkspaceFiles(env, session, url);
+  }
+  if (url.pathname === "/api/workspace/files" && request.method === "POST") {
+    return handleWorkspaceFileUpload(request, env, session);
+  }
+  const workspaceFileRoute = workspaceFileRouteFromUrl(url);
+  if (workspaceFileRoute) {
+    if (workspaceFileRoute.action === "versions" && request.method === "GET") {
+      return handleListWorkspaceFileVersions(env, session, workspaceFileRoute.fileId);
+    }
+    if (workspaceFileRoute.action === "download" && request.method === "GET") {
+      return handleDownloadWorkspaceFile(env, session, url, workspaceFileRoute.fileId);
+    }
+    if (workspaceFileRoute.action === "retry" && request.method === "POST") {
+      return handleWorkspaceFileUpload(request, env, session, workspaceFileRoute.fileId);
+    }
+    if (workspaceFileRoute.action === "file" && request.method === "PATCH") {
+      return handleUpdateWorkspaceFile(request, env, session, workspaceFileRoute.fileId);
+    }
+    if (workspaceFileRoute.action === "file" && request.method === "DELETE") {
+      return handleDeleteWorkspaceFile(env, session, url, workspaceFileRoute.fileId);
+    }
   }
 
   if (url.pathname === "/api/user-data/export" && request.method === "GET") {
@@ -1169,22 +1213,33 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/user-data" && request.method === "DELETE") {
-    const [revoked] = await Promise.all([
-      revokeSessionsByLabel(env, session.label),
-      getUserState(env, session.label).purgeUserData(),
-      purgeAgentUserData(env, session.label),
-    ]);
-    await Promise.all([
-      env.CHAT_STORE.delete(memoryKey(session.label)),
-      env.CHAT_STORE.delete(chatIndexKey(session.label)),
-      feedbackAuditService(env).removeFeedbackByLabel(session.label),
-      ...Array.from({ length: METRICS_DAYS }, (_, index) =>
-        env.CHAT_STORE.delete(usageKey(session.label, utcDayString(index))),
-      ),
-    ]);
-    return jsonResponse({ ok: true, revoked }, 200, {
-      "Set-Cookie": buildSessionCookie("", 0, url.protocol === "https:"),
-    });
+    try {
+      const workspacePurge = await purgeAgentUserData(env, session.label);
+      const [revoked] = await Promise.all([
+        revokeSessionsByLabel(env, session.label),
+        getUserState(env, session.label).purgeUserData(),
+      ]);
+      await Promise.all([
+        env.CHAT_STORE.delete(memoryKey(session.label)),
+        env.CHAT_STORE.delete(chatIndexKey(session.label)),
+        feedbackAuditService(env).removeFeedbackByLabel(session.label),
+        ...Array.from({ length: METRICS_DAYS }, (_, index) =>
+          env.CHAT_STORE.delete(usageKey(session.label, utcDayString(index))),
+        ),
+      ]);
+      const root = await getTeamAgent(env, session.label);
+      if (!(await root.releaseWorkspaceAccountPurge(workspacePurge.operationId, workspacePurge.generation))) {
+        throw new Error("workspace_account_purge_release_failed");
+      }
+      return jsonResponse({ ok: true, revoked }, 200, {
+        "Set-Cookie": buildSessionCookie("", 0, url.protocol === "https:"),
+      });
+    } catch {
+      return jsonResponse({
+        error: "user_data_purge_incomplete",
+        message: "文件对象清理尚未完成，请稍后重试",
+      }, 503);
+    }
   }
 
   return jsonResponse({ error: "not_found" }, 404);
@@ -3003,6 +3058,284 @@ async function handlePutAgentMemory(request: Request, env: Env, session: Session
   return jsonResponse({ ok: true, ...result.record, maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS) });
 }
 
+async function handleListWorkspaceFiles(env: Env, session: Session, url: URL): Promise<Response> {
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label, session);
+  await drainWorkspaceOperations(env, root);
+  const result = await root.listWorkspaceFiles(
+    url.searchParams.get("q") || "",
+    url.searchParams.get("cursor") || "",
+    Math.min(MAX_WORKSPACE_LIST_LIMIT, finitePositiveInteger(url.searchParams.get("limit")) || 30),
+  );
+  return jsonResponse({ ...result, maxFileBytes: MAX_WORKSPACE_FILE_BYTES });
+}
+
+async function handleListWorkspaceFileVersions(env: Env, session: Session, fileId: string): Promise<Response> {
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label, session);
+  await drainWorkspaceOperations(env, root);
+  const result = await root.listWorkspaceFileVersions(fileId);
+  return result
+    ? jsonResponse(result)
+    : jsonResponse({ error: "workspace_file_not_found", message: "文件不存在" }, 404);
+}
+
+async function handleWorkspaceFileUpload(
+  request: Request,
+  env: Env,
+  session: Session,
+  fileId = "",
+): Promise<Response> {
+  const contentLength = finitePositiveInteger(request.headers.get("Content-Length"));
+  if (contentLength > MAX_WORKSPACE_FILE_BYTES + 256_000) {
+    return jsonResponse({ error: "workspace_file_too_large", message: "文件不能超过 10 MB" }, 413);
+  }
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return jsonResponse({ error: "workspace_upload_invalid", message: "上传表单无效" }, 400);
+  }
+  const fileValue = form.get("file");
+  if (!(fileValue instanceof File) || fileValue.size <= 0) {
+    return jsonResponse({ error: "workspace_upload_invalid", message: "请选择要上传的文件" }, 400);
+  }
+  if (fileValue.size > MAX_WORKSPACE_FILE_BYTES) {
+    return jsonResponse({ error: "workspace_file_too_large", message: "文件不能超过 10 MB" }, 413);
+  }
+  const operationId = normalizeWorkspaceOperationId(form.get("operationId"));
+  if (!operationId) {
+    return jsonResponse({ error: "workspace_operation_id_required", message: "缺少幂等操作标识" }, 400);
+  }
+
+  await ensureAgentLegacyImport(env, session.label);
+  const root = await getTeamAgent(env, session.label, session);
+  await drainWorkspaceOperations(env, root);
+  const existing = fileId ? await root.listWorkspaceFileVersions(fileId) : undefined;
+  if (fileId && !existing) return jsonResponse({ error: "workspace_file_not_found", message: "文件不存在" }, 404);
+  const expectedUpdatedAt = fileId ? finitePositiveInteger(form.get("expectedUpdatedAt")) : 0;
+  if (fileId && !expectedUpdatedAt) {
+    return jsonResponse({ error: "expected_updated_at_required", message: "缺少文件版本，请刷新后重试" }, 400);
+  }
+  const relativePathValue = form.get("relativePath");
+  const relativePath = typeof relativePathValue === "string" && relativePathValue
+    ? relativePathValue
+    : existing?.file.path || fileValue.name;
+  const bytes = await fileValue.arrayBuffer();
+  const checksum = await sha256HexBytes(bytes);
+  const reservation = await root.reserveWorkspaceUpload({
+    operationId,
+    relativePath,
+    size: bytes.byteLength,
+    mediaType: fileValue.type || "application/octet-stream",
+    checksum,
+    ...(fileId ? { fileId, expectedUpdatedAt } : {}),
+  });
+  if (!reservation.ok) return workspaceMutationError(reservation);
+  if (reservation.reservation.completed) {
+    return jsonResponse({ ok: true, file: reservation.reservation.file, existing: true });
+  }
+
+  try {
+    await env.WORKSPACE_FILES.put(reservation.reservation.objectKey, bytes, {
+      sha256: checksum,
+      httpMetadata: { contentType: reservation.reservation.mediaType },
+    });
+  } catch {
+    await root.recordWorkspaceOperationFailure(
+      reservation.reservation.operationId,
+      reservation.reservation.generation,
+      "workspace_r2_put_failed",
+    ).catch(() => undefined);
+    return jsonResponse({ error: "workspace_upload_failed", message: "文件写入失败，可重新上传" }, 503);
+  }
+
+  try {
+    const completed = await root.completeWorkspaceUpload(
+      reservation.reservation.operationId,
+      reservation.reservation.generation,
+    );
+    if (!completed.ok) return workspaceMutationError(completed);
+    return jsonResponse({ ok: true, file: completed.file, existing: reservation.reservation.existing }, fileId ? 200 : 201);
+  } catch {
+    return jsonResponse({
+      ok: true,
+      pending: true,
+      file: reservation.reservation.file,
+      message: "文件已写入，元数据正在自动恢复",
+    }, 202);
+  }
+}
+
+async function handleUpdateWorkspaceFile(
+  request: Request,
+  env: Env,
+  session: Session,
+  fileId: string,
+): Promise<Response> {
+  const body = await readJson<unknown>(request);
+  if (
+    !isRecord(body)
+    || Object.keys(body).some((key) => key !== "expectedUpdatedAt" && key !== "relativePath" && key !== "pinned")
+    || (body.relativePath === undefined && body.pinned === undefined)
+    || (body.pinned !== undefined && typeof body.pinned !== "boolean")
+  ) {
+    return jsonResponse({ error: "workspace_update_invalid", message: "文件更新参数无效" }, 400);
+  }
+  const expectedUpdatedAt = finitePositiveInteger(body.expectedUpdatedAt);
+  if (!expectedUpdatedAt) {
+    return jsonResponse({ error: "expected_updated_at_required", message: "缺少文件版本，请刷新后重试" }, 400);
+  }
+  const root = await getTeamAgent(env, session.label, session);
+  const result = await root.updateWorkspaceFile(fileId, expectedUpdatedAt, {
+    ...(body.relativePath === undefined ? {} : { relativePath: body.relativePath }),
+    ...(body.pinned === undefined ? {} : { pinned: body.pinned }),
+  });
+  return result.ok ? jsonResponse({ ok: true, file: result.file }) : workspaceMutationError(result);
+}
+
+async function handleDeleteWorkspaceFile(
+  env: Env,
+  session: Session,
+  url: URL,
+  fileId: string,
+): Promise<Response> {
+  const expectedUpdatedAt = finitePositiveInteger(url.searchParams.get("expectedUpdatedAt"));
+  const operationId = normalizeWorkspaceOperationId(url.searchParams.get("operationId"));
+  if (!expectedUpdatedAt || !operationId) {
+    return jsonResponse({ error: "workspace_delete_invalid", message: "缺少文件版本或幂等操作标识" }, 400);
+  }
+  const root = await getTeamAgent(env, session.label, session);
+  const result = await root.reserveWorkspaceFileDelete(fileId, expectedUpdatedAt, operationId);
+  if (!result.ok) return workspaceMutationError(result);
+  if (result.reservation.completed) {
+    return jsonResponse({ ok: true, deleted: true, existing: result.reservation.existing });
+  }
+  try {
+    await deleteWorkspaceObjects(env.WORKSPACE_FILES, result.reservation.objectKeys);
+    const completed = await root.completeWorkspaceFileDelete(
+      result.reservation.operationId,
+      result.reservation.generation,
+    );
+    if (!completed) throw new Error("workspace_delete_finalize_failed");
+    return jsonResponse({ ok: true, deleted: true, existing: result.reservation.existing });
+  } catch {
+    await root.recordWorkspaceOperationFailure(
+      result.reservation.operationId,
+      result.reservation.generation,
+      "workspace_r2_delete_failed",
+    ).catch(() => undefined);
+    return jsonResponse({ ok: true, deleted: false, pending: true, message: "删除正在自动重试" }, 202);
+  }
+}
+
+async function handleDownloadWorkspaceFile(
+  env: Env,
+  session: Session,
+  url: URL,
+  fileId: string,
+): Promise<Response> {
+  const root = await getTeamAgent(env, session.label, session);
+  const metadata = await root.listWorkspaceFileVersions(fileId);
+  if (!metadata) return jsonResponse({ error: "workspace_file_not_found", message: "文件不存在" }, 404);
+  const requestedVersionId = normalizeWorkspaceEntityId(url.searchParams.get("versionId"));
+  const versionId = requestedVersionId || metadata.file.currentVersion?.id || "";
+  const version = versionId ? await root.getWorkspaceFileVersion(fileId, versionId) : undefined;
+  if (!version) return jsonResponse({ error: "workspace_version_not_found", message: "文件版本不存在" }, 404);
+  const object = await env.WORKSPACE_FILES.get(version.objectKey);
+  if (!object || object.size !== version.size) {
+    return jsonResponse({ error: "workspace_object_unavailable", message: "文件对象暂时不可用" }, 503);
+  }
+  const storedChecksum = object.checksums.sha256;
+  if (!storedChecksum || hexBytes(storedChecksum) !== version.checksum) {
+    return jsonResponse({ error: "workspace_object_invalid", message: "文件完整性校验失败" }, 503);
+  }
+  return new Response(object.body, {
+    status: 200,
+    headers: sensitiveResponseHeaders({
+      "Content-Type": version.mediaType,
+      "Content-Length": String(object.size),
+      "Content-Disposition": workspaceContentDisposition(version.name),
+      ETag: `"sha256-${version.checksum}"`,
+      "X-Content-Type-Options": "nosniff",
+    }),
+  });
+}
+
+async function handleSetConversationWorkspaceFiles(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+): Promise<Response> {
+  const conversationId = agentConversationWorkspaceSourceIdFromPath(url);
+  if (!conversationId) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  const body = await readJson<unknown>(request);
+  if (!isRecord(body) || Object.keys(body).length !== 2 || !("expectedUpdatedAt" in body) || !("files" in body)) {
+    return jsonResponse({ error: "workspace_refs_invalid", message: "会话文件选择无效" }, 400);
+  }
+  const expectedUpdatedAt = finitePositiveInteger(body.expectedUpdatedAt);
+  const files = Array.isArray(body.files) && body.files.every(isWorkspaceConversationRefInput)
+    ? body.files
+    : undefined;
+  if (
+    !expectedUpdatedAt
+    || !files
+    || files.length > MAX_WORKSPACE_FILES_PER_CONVERSATION
+  ) {
+    return jsonResponse({ error: "workspace_refs_invalid", message: "会话文件选择无效" }, 400);
+  }
+  const root = await getTeamAgent(env, session.label, session);
+  const result = await root.setConversationWorkspaceFiles(
+    conversationId,
+    expectedUpdatedAt,
+    files,
+  );
+  if (!result.ok) return agentConversationMutationError(result);
+  return jsonResponse({ ok: true, conversation: result.conversation });
+}
+
+function workspaceMutationError(
+  result: Extract<WorkspaceUploadReservationResult | WorkspaceMutationResult | WorkspaceDeleteReservationResult, { ok: false }>,
+): Response {
+  if (result.error === "workspace_file_not_found") {
+    return jsonResponse({ error: result.error, message: "文件不存在" }, 404);
+  }
+  if (result.error === "workspace_file_deleted") {
+    return jsonResponse({ error: result.error, message: "文件已删除" }, 410);
+  }
+  if (
+    result.error === "workspace_path_invalid"
+    || result.error === "workspace_upload_invalid"
+    || result.error === "workspace_update_invalid"
+  ) {
+    return jsonResponse({ error: result.error, message: "文件路径或上传参数无效" }, 400);
+  }
+  if (result.error === "workspace_account_purge_in_progress") {
+    return jsonResponse({ error: result.error, message: "账户数据正在清理，请稍后重试" }, 409);
+  }
+  return jsonResponse({
+    error: result.error,
+    message: result.error === "workspace_path_conflict"
+      ? "已有同路径文件"
+      : result.error === "workspace_operation_failed"
+        ? "上次文件操作失败，请使用新的操作标识重试"
+        : "文件已更新，请刷新后重试",
+    current: result.current || null,
+  }, 409);
+}
+
+function isWorkspaceConversationRefInput(
+  value: unknown,
+): value is { fileId: string; versionId: string } {
+  return isRecord(value)
+    && Object.keys(value).length === 2
+    && typeof value.fileId === "string"
+    && typeof value.versionId === "string"
+    && Boolean(normalizeWorkspaceEntityId(value.fileId))
+    && Boolean(normalizeWorkspaceEntityId(value.versionId));
+}
+
 async function handleExportUserData(env: Env, session: Session): Promise<Response> {
   try {
     await ensureAgentLegacyImport(env, session.label);
@@ -3012,7 +3345,7 @@ async function handleExportUserData(env: Env, session: Session): Promise<Respons
       root.getMemory(),
       root.listConversations(),
     ]);
-    const exportedConversations: Array<AgentConversationSummary & {
+    const exportedConversations: Array<Omit<AgentConversationSummary, "workspaceFiles"> & {
       messages: AgentExportMessage[];
       messagesTruncated: boolean;
     }> = [];
@@ -3041,8 +3374,9 @@ async function handleExportUserData(env: Env, session: Session): Promise<Respons
       const result = await agent.exportMessages(
         Math.min(remainingBytes, MAX_USER_DATA_EXPORT_CONVERSATION_BYTES),
       );
+      const { workspaceFiles: _workspaceFiles, ...exportableConversation } = conversation;
       const exported = {
-        ...conversation,
+        ...exportableConversation,
         messages: result.messages,
         messagesTruncated: result.truncated,
       };
@@ -3269,6 +3603,9 @@ async function failAgentConversationBranch(
 }
 
 function agentConversationMutationError(result: AgentConversationMutationResult): Response {
+  if (result.error === "workspace_account_purge_in_progress") {
+    return jsonResponse({ error: result.error, message: "账户数据正在清理，请稍后重试" }, 409);
+  }
   if (result.error === "conversation_conflict") {
     return jsonResponse({
       error: result.error,
@@ -4000,14 +4337,98 @@ function dataUrlMediaType(value: string): string {
   return parsed.ok ? parsed.image.mediaType : "";
 }
 
-async function purgeAgentUserData(env: Env, label: string): Promise<void> {
+async function purgeAgentUserData(
+  env: Env,
+  label: string,
+): Promise<{ operationId: string; generation: number }> {
   const root = await getTeamAgent(env, label);
+  const purge = await root.beginWorkspaceAccountPurge(crypto.randomUUID());
+  if ("error" in purge) throw new Error(purge.error);
+  if (!purge.completed) {
+    try {
+      await deleteWorkspaceObjects(env.WORKSPACE_FILES, purge.objectKeys);
+    } catch (error) {
+      await root.recordWorkspaceOperationFailure(
+        purge.operationId,
+        purge.generation,
+        "workspace_account_purge_failed",
+      ).catch(() => undefined);
+      throw error;
+    }
+    if (!(await root.completeWorkspaceAccountPurge(purge.operationId, purge.generation))) {
+      throw new Error("workspace_account_purge_finalize_failed");
+    }
+  }
   const conversationIds = await root.getAllConversationIds();
   await Promise.all(conversationIds.map(async (chatId) => {
     const conversation = await getTeamAgentConversation(env, label, chatId);
     await conversation.clearConversation();
   }));
   await root.purgeRootData();
+  return { operationId: purge.operationId, generation: purge.generation };
+}
+
+async function drainWorkspaceOperations(
+  env: Env,
+  root: DurableObjectStub<TeamAgent>,
+): Promise<void> {
+  const operations = await root.listPendingWorkspaceOperations(3).catch(() => []);
+  for (const operation of operations) {
+    try {
+      if (operation.kind === "upload") {
+        if (operation.state === "failed") {
+          await deleteWorkspaceObjects(env.WORKSPACE_FILES, operation.objectKeys);
+          await root.abandonWorkspaceUpload(operation.operationId, operation.generation);
+          continue;
+        }
+        const objectKey = operation.objectKeys[0];
+        if (!objectKey) continue;
+        const object = await env.WORKSPACE_FILES.get(objectKey);
+        if (!object) {
+          if (Date.now() - operation.updatedAt >= WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS) {
+            await root.recordWorkspaceOperationFailure(
+              operation.operationId,
+              operation.generation,
+              "workspace_object_unavailable",
+            );
+          }
+          continue;
+        }
+        const bytes = await object.arrayBuffer();
+        if (bytes.byteLength !== operation.size || await sha256HexBytes(bytes) !== operation.checksum) {
+          await deleteWorkspaceObjects(env.WORKSPACE_FILES, [objectKey]);
+          await root.recordWorkspaceOperationFailure(
+            operation.operationId,
+            operation.generation,
+            "workspace_object_checksum_mismatch",
+          );
+          continue;
+        }
+        const completed = await root.completeWorkspaceUpload(operation.operationId, operation.generation);
+        if (!completed.ok) throw new Error("workspace_upload_finalize_failed");
+        continue;
+      }
+
+      await deleteWorkspaceObjects(env.WORKSPACE_FILES, operation.objectKeys);
+      const completed = operation.kind === "delete_file"
+        ? await root.completeWorkspaceFileDelete(operation.operationId, operation.generation)
+        : await root.completeWorkspaceAccountPurge(operation.operationId, operation.generation);
+      if (!completed) throw new Error("workspace_operation_finalize_failed");
+    } catch {
+      await root.recordWorkspaceOperationFailure(
+        operation.operationId,
+        operation.generation,
+        "workspace_reconcile_failed",
+      ).catch(() => undefined);
+    }
+  }
+}
+
+async function deleteWorkspaceObjects(bucket: R2Bucket, objectKeys: string[]): Promise<void> {
+  const unique = [...new Set(objectKeys.filter(Boolean))];
+  for (let index = 0; index < unique.length; index += 1_000) {
+    await bucket.delete(unique.slice(index, index + 1_000));
+  }
 }
 
 function agentConversationIdFromPath(url: URL): string {
@@ -4424,6 +4845,7 @@ export type TeamAgentTurnInput = {
   sessionSummary?: string;
   temperature?: number;
   longTermMemory?: string;
+  workspaceContext?: string;
 };
 
 export type PreparedTeamAgentTurn =
@@ -4504,6 +4926,7 @@ export async function prepareTeamAgentTurn(
     access.user,
     selectedSkills,
     input.longTermMemory,
+    input.workspaceContext,
   );
   const systemMessageCount = Math.max(0, messages.length - normalized.length);
   const systemMessages = toProviderModelMessages(messages.slice(0, systemMessageCount));
@@ -5287,6 +5710,7 @@ async function buildMessagesWithSystem(
   userConfig?: UserConfig,
   selectedSkills: Array<{ id: string; skill: SkillConfig }> = [],
   longTermMemory?: string,
+  workspaceContext = "",
 ): Promise<ChatMessage[]> {
   const systemMessages: ChatMessage[] = [];
   const globalPrompt = env.SYSTEM_PROMPT?.trim();
@@ -5330,7 +5754,52 @@ async function buildMessagesWithSystem(
     });
   }
 
+  if (session.kind === "member" && workspaceContext.trim()) {
+    systemMessages.push({
+      role: "system",
+      content: `以下文件来自当前会话固定的 workspace 精确版本。仅把 ready 的文本内容作为上下文；unavailable 标记表示该版本本轮不可解析：\n${workspaceContext.trim()}`,
+    });
+  }
+
   return [...systemMessages, ...normalized];
+}
+
+function agentConversationWorkspaceSourceIdFromPath(url: URL): string {
+  const prefix = "/api/agent/conversations/";
+  const suffix = "/workspace-files";
+  if (!url.pathname.startsWith(prefix) || !url.pathname.endsWith(suffix)) return "";
+  const encoded = url.pathname.slice(prefix.length, -suffix.length);
+  if (!encoded || encoded.includes("/")) return "";
+  try {
+    return normalizeAgentConversationId(decodeURIComponent(encoded));
+  } catch {
+    return "";
+  }
+}
+
+type WorkspaceFileRoute = {
+  fileId: string;
+  action: "file" | "versions" | "download" | "retry";
+};
+
+function workspaceFileRouteFromUrl(url: URL): WorkspaceFileRoute | undefined {
+  const prefix = "/api/workspace/files/";
+  if (!url.pathname.startsWith(prefix)) return undefined;
+  const parts = url.pathname.slice(prefix.length).split("/");
+  if (!parts[0] || parts.length > 2) return undefined;
+  let fileId: string;
+  try {
+    fileId = normalizeWorkspaceEntityId(decodeURIComponent(parts[0]));
+  } catch {
+    return undefined;
+  }
+  if (!fileId) return undefined;
+  const action = parts.length === 1 || !parts[1]
+    ? "file"
+    : parts[1] === "versions" || parts[1] === "download" || parts[1] === "retry"
+      ? parts[1]
+      : undefined;
+  return action ? { fileId, action } : undefined;
 }
 
 async function completeWithUserRoute(
@@ -7030,6 +7499,20 @@ async function secretFingerprint(value: string): Promise<string> {
   if (!value) return "";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256HexBytes(value: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
+  return hexBytes(digest);
+}
+
+function hexBytes(value: ArrayBuffer): string {
+  return [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function workspaceContentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/gu, "_").replace(/["\\]/gu, "_").slice(0, 160) || "download";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
 async function accessCodesFingerprint(value: string): Promise<string> {

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Download, LogOut, MessageSquarePlus, Pencil, Plug, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
+import { FileWorkspacePanel } from "./FileWorkspacePanel";
 
-export type SidebarView = "history" | "settings";
+export type SidebarView = "history" | "files" | "settings";
 
 export function ConversationSidebar({
   open,
@@ -20,6 +21,7 @@ export function ConversationSidebar({
   onCreate,
   onRename,
   onDelete,
+  onConversationUpdated,
   onRouteChange,
   onSkillChange,
   onRevokeAllSessions,
@@ -41,6 +43,7 @@ export function ConversationSidebar({
   onCreate: () => Promise<void>;
   onRename: (conversation: AgentConversation, title: string) => Promise<void>;
   onDelete: (conversation: AgentConversation) => Promise<void>;
+  onConversationUpdated: (conversation: AgentConversation) => void;
   onRouteChange: (routeId: string) => void;
   onSkillChange: (skillIds: string[]) => void;
   onRevokeAllSessions: () => Promise<void>;
@@ -192,6 +195,7 @@ export function ConversationSidebar({
       <div className="sidebar-topbar">
         <div className="sidebar-tabs" role="group" aria-label="侧栏视图">
           <button type="button" aria-pressed={view === "history"} onClick={() => onViewChange("history")}>对话</button>
+          {session.access === "member" && <button type="button" aria-pressed={view === "files"} onClick={() => onViewChange("files")}>文件</button>}
           <button type="button" aria-pressed={view === "settings"} onClick={() => onViewChange("settings")}>设置</button>
         </div>
         <button className="icon-button mobile-only" data-sidebar-initial-focus type="button" onClick={onClose} title="关闭侧栏" aria-label="关闭侧栏"><X size={18} /></button>
@@ -264,6 +268,12 @@ export function ConversationSidebar({
             })}
           </div>
         </>
+      ) : view === "files" && session.access === "member" ? (
+        <FileWorkspacePanel
+          conversation={conversations.find((conversation) => conversation.id === activeId) || null}
+          busy={busy}
+          onConversationUpdated={onConversationUpdated}
+        />
       ) : (
         <div className="settings-view">
           <section className="settings-section">

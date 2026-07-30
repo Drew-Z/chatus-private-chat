@@ -180,6 +180,146 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   await attachScreenshot(page, testInfo, "workspace");
 });
 
+test("file workspace stays contained and exposes exact version selection", async ({ page }, testInfo) => {
+  const fileId = "11111111-1111-4111-8111-111111111111";
+  const currentVersionId = "22222222-2222-4222-8222-222222222222";
+  const oldVersionId = "33333333-3333-4333-8333-333333333333";
+  const checksum = "a".repeat(64);
+  const currentVersion = {
+    id: currentVersionId,
+    fileId,
+    size: 4_096,
+    mediaType: "text/markdown",
+    checksum,
+    state: "ready",
+    createdAt: Date.now(),
+  } as const;
+  const oldVersion = { ...currentVersion, id: oldVersionId, createdAt: Date.now() - 86_400_000 };
+  let updatedAt = Date.now();
+  let deleted = false;
+
+  await page.route("**/api/workspace/files**", async (route) => {
+    const url = new URL(route.request().url());
+    const json = (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+    if (url.pathname === "/api/workspace/files" && route.request().method() === "GET") {
+      await json({
+        files: [...(deleted ? [] : [{
+          id: fileId,
+          path: "quarterly/reviews/release-notes-with-a-deliberately-long-name.md",
+          name: "release-notes-with-a-deliberately-long-name.md",
+          pinned: true,
+          state: "ready",
+          createdAt: updatedAt - 100_000,
+          updatedAt,
+          currentVersion,
+          retryAvailable: false,
+        }]), {
+          id: "44444444-4444-4444-8444-444444444444",
+          path: "source-data/metrics.csv",
+          name: "metrics.csv",
+          pinned: false,
+          state: "failed",
+          createdAt: updatedAt - 200_000,
+          updatedAt: updatedAt - 1_000,
+          retryAvailable: true,
+        }],
+        maxFileBytes: 10 * 1024 * 1024,
+      });
+      return;
+    }
+    if (url.pathname === `/api/workspace/files/${fileId}/versions`) {
+      await json({
+        file: {
+          id: fileId,
+          path: "quarterly/reviews/release-notes-with-a-deliberately-long-name.md",
+          name: "release-notes-with-a-deliberately-long-name.md",
+          pinned: true,
+          state: "ready",
+          createdAt: updatedAt - 100_000,
+          updatedAt,
+          currentVersion,
+          retryAvailable: false,
+        },
+        versions: [currentVersion, oldVersion],
+      });
+      return;
+    }
+    if (url.pathname === `/api/workspace/files/${fileId}` && route.request().method() === "DELETE") {
+      deleted = true;
+      await json({ ok: true, deleted: true, existing: false });
+      return;
+    }
+    throw new Error(`unexpected file workspace request: ${route.request().method()} ${url.pathname}`);
+  });
+  await page.route("**/api/agent/conversations/*/workspace-files", async (route) => {
+    const body = route.request().postDataJSON() as { files: Array<{ fileId: string; versionId: string }> };
+    updatedAt += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        conversation: {
+          id: "visual-long",
+          title: "整理一个很长很长的项目复盘标题，用来确认会话列表和头部不会挤压操作区",
+          createdAt: updatedAt - 86_400_000,
+          updatedAt,
+          summary: "Synthetic visual fixture",
+          pinned: false,
+          routeId: "reasoning",
+          skillIds: ["project"],
+          messageCount: 8,
+          workspaceFiles: body.files.map((ref) => ({
+            ...ref,
+            path: "quarterly/reviews/release-notes-with-a-deliberately-long-name.md",
+            name: "release-notes-with-a-deliberately-long-name.md",
+            size: ref.versionId === oldVersionId ? oldVersion.size : currentVersion.size,
+            mediaType: "text/markdown",
+            checksum,
+          })),
+        },
+      }),
+    });
+  });
+
+  if ((page.viewportSize()?.width || 0) <= 780) await page.getByRole("button", { name: "打开会话" }).click();
+  await page.getByRole("button", { name: "文件", exact: true }).click();
+  const panel = page.locator(".file-workspace");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText("release-notes-with-a-deliberately-long-name.md");
+  const row = panel.locator(".file-workspace-row").filter({ hasText: "release-notes-with-a-deliberately-long-name.md" });
+  const selection = row.getByRole("checkbox");
+  await selection.click();
+  await expect(selection).toBeChecked();
+  await expect(panel.locator(".file-workspace-actions span")).toHaveText("1/10");
+  const selector = row.getByRole("combobox", { name: /会话版本/ });
+  await expect(selector).toBeVisible();
+  await selector.selectOption(oldVersionId);
+  await expect(row.getByRole("link", { name: "下载文件" })).toHaveAttribute("href", new RegExp(oldVersionId));
+  await expect(row.getByRole("button", { name: "上传新版本" })).toBeVisible();
+
+  const geometry = await panel.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const rows = [...element.querySelectorAll<HTMLElement>(".file-workspace-row")];
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      panelFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1,
+      rowsFit: rows.every((row) => row.scrollWidth <= row.clientWidth),
+    };
+  });
+  expect(geometry).toEqual({ documentFits: true, panelFits: true, rowsFit: true });
+  await attachScreenshot(page, testInfo, "file-workspace");
+  await row.getByRole("button", { name: "删除文件" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "删除", exact: true }).click();
+  await expect(row).toHaveCount(0);
+  await expect(panel.locator(".file-workspace-actions span")).toHaveText("0/10");
+  await expect(panel.getByRole("button", { name: "上传文件" })).toBeFocused();
+});
+
 test("branch origin hint returns to parent and handles missing parents", async ({ page }, testInfo) => {
   await page.goto("/?branch=present");
   const origin = page.getByRole("button", { name: "返回父会话：第二个会话" });
