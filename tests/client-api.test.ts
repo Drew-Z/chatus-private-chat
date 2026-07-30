@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adminLogout,
   ApiError,
+  deleteWorkspaceFile,
   exportUserData,
   fetchAdminSetupStatus,
   isAdminConfigSnapshot,
@@ -24,10 +25,13 @@ import {
   isAgentConversationBranchResult,
   isAgentMemory,
   isSessionProjection,
+  setConversationWorkspaceFiles,
   submitFeedback,
   isUserDataExport,
   isUserDataMutationResponse,
   runAdminSetupSmoke,
+  updateWorkspaceFile,
+  uploadWorkspaceFile,
 } from "../client/src/lib/api";
 import { DEFAULT_FILE_INPUT_POLICY } from "../src/contracts/file";
 
@@ -320,6 +324,93 @@ describe("admin setup client contract", () => {
   });
 });
 
+describe("workspace file client contract", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const version = {
+    id: "version-1",
+    fileId: "file-1",
+    size: 5,
+    mediaType: "text/plain",
+    checksum: "a".repeat(64),
+    state: "ready" as const,
+    createdAt: 10,
+  };
+  const file = {
+    id: "file-1",
+    path: "notes.txt",
+    name: "notes.txt",
+    pinned: false,
+    state: "ready" as const,
+    createdAt: 10,
+    updatedAt: 20,
+    currentVersion: version,
+    retryAvailable: false,
+  };
+  const conversation = {
+    id: "chat-1",
+    title: "Notes",
+    createdAt: 10,
+    updatedAt: 20,
+    summary: "",
+    pinned: false,
+    skillIds: [],
+    messageCount: 0,
+    workspaceFiles: [],
+  };
+
+  it("accepts every documented workspace mutation envelope", async () => {
+    const responses = [
+      { ok: true, file, existing: false },
+      { ok: true, file },
+      { ok: true, conversation },
+      { ok: true, deleted: false, pending: true, message: "删除正在自动重试" },
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      JSON.stringify(responses.shift()),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+
+    await expect(uploadWorkspaceFile({
+      file: new File(["notes"], "notes.txt", { type: "text/plain" }),
+      relativePath: "notes.txt",
+      operationId: "upload-1",
+    })).resolves.toEqual(file);
+    await expect(updateWorkspaceFile(file, { pinned: true })).resolves.toEqual(file);
+    await expect(setConversationWorkspaceFiles(conversation, [])).resolves.toEqual(conversation);
+    await expect(deleteWorkspaceFile(file, "delete-1")).resolves.toEqual({
+      deleted: false,
+      pending: true,
+      message: "删除正在自动重试",
+    });
+  });
+
+  it("rejects unknown workspace mutation response fields", async () => {
+    const responses = [
+      { ok: true, file, existing: false, objectKey: "private" },
+      { ok: true, file, objectKey: "private" },
+      { ok: true, conversation, token: "private" },
+      { ok: true, deleted: true, existing: false, objectKey: "private" },
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      JSON.stringify(responses.shift()),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+
+    await expect(uploadWorkspaceFile({
+      file: new File(["notes"], "notes.txt", { type: "text/plain" }),
+      relativePath: "notes.txt",
+      operationId: "upload-1",
+    })).rejects.toMatchObject<ApiError>({ code: "invalid_workspace_response", status: 502 });
+    await expect(updateWorkspaceFile(file, { pinned: true }))
+      .rejects.toMatchObject<ApiError>({ code: "invalid_workspace_response", status: 502 });
+    await expect(setConversationWorkspaceFiles(conversation, []))
+      .rejects.toMatchObject<ApiError>({ code: "invalid_conversation_response", status: 502 });
+    await expect(deleteWorkspaceFile(file, "delete-1"))
+      .rejects.toMatchObject<ApiError>({ code: "invalid_workspace_response", status: 502 });
+  });
+});
+
 describe("React client runtime validation", () => {
   it("validates the admin session and capability configuration boundary", () => {
     expect(isAdminSessionProjection({ authenticated: true })).toBe(true);
@@ -608,6 +699,21 @@ describe("React client runtime validation", () => {
     expect(isUserDataExport({ ...exported, account: { label: "bill", token: "secret" } })).toBe(false);
     expect(isUserDataExport({
       ...exported,
+      conversations: [{
+        ...exported.conversations[0],
+        workspaceFiles: [{
+          fileId: "file-1",
+          versionId: "version-1",
+          path: "reference/notes.txt",
+          name: "notes.txt",
+          mediaType: "text/plain",
+          size: 42,
+          checksum: "a".repeat(64),
+        }],
+      }],
+    })).toBe(false);
+    expect(isUserDataExport({
+      ...exported,
       conversations: [{ ...exported.conversations[0], providerCredential: "secret" }],
     })).toBe(false);
     expect(isUserDataExport({
@@ -796,11 +902,13 @@ describe("React client runtime validation", () => {
       routeId: "primary",
       skillIds: ["coding"],
       messageCount: 2,
+      workspaceFiles: [],
     };
     expect(isAgentConversation(conversation)).toBe(true);
     expect(isAgentConversation({ ...conversation, updatedAt: 9 })).toBe(false);
     expect(isAgentConversation({ ...conversation, messageCount: -1 })).toBe(false);
     expect(isAgentConversation({ ...conversation, skillIds: ["coding", "coding"] })).toBe(false);
+    expect(isAgentConversation({ ...conversation, objectKey: "private" })).toBe(false);
   });
 
   it("validates secret-free branch responses and feedback envelopes", async () => {
@@ -815,6 +923,7 @@ describe("React client runtime validation", () => {
       routeId: "primary",
       skillIds: ["coding"],
       messageCount: 2,
+      workspaceFiles: [],
     };
     const branch = {
       ok: true,

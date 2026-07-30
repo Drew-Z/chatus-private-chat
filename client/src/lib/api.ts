@@ -510,7 +510,7 @@ export type UserDataExportMessage = {
   parts: UserDataExportPart[];
 };
 
-export type UserDataExportConversation = AgentConversation & {
+export type UserDataExportConversation = Omit<AgentConversation, "workspaceFiles"> & {
   messages: UserDataExportMessage[];
   messagesTruncated: boolean;
 };
@@ -541,7 +541,55 @@ export type AgentConversation = {
   parentChatId?: string;
   skillIds: string[];
   messageCount: number;
+  workspaceFiles: WorkspaceConversationFileRef[];
 };
+
+export type WorkspaceFileVersion = {
+  id: string;
+  fileId: string;
+  size: number;
+  mediaType: string;
+  checksum: string;
+  state: "pending" | "ready" | "failed" | "deleting";
+  createdAt: number;
+};
+
+export type WorkspaceFile = {
+  id: string;
+  path: string;
+  name: string;
+  pinned: boolean;
+  state: "uploading" | "ready" | "failed" | "deleting" | "deleted";
+  createdAt: number;
+  updatedAt: number;
+  currentVersion?: WorkspaceFileVersion;
+  retryAvailable: boolean;
+};
+
+export type WorkspaceConversationFileRef = {
+  fileId: string;
+  versionId: string;
+  path: string;
+  name: string;
+  size: number;
+  mediaType: string;
+  checksum: string;
+};
+
+export type WorkspaceFilePage = {
+  files: WorkspaceFile[];
+  nextCursor?: string;
+  maxFileBytes: number;
+};
+
+export type WorkspaceFileVersions = {
+  file: WorkspaceFile;
+  versions: WorkspaceFileVersion[];
+};
+
+export type WorkspaceFileDeleteResult =
+  | { deleted: true; existing: boolean }
+  | { deleted: false; pending: true; message: string };
 
 export type AgentConversationBranchAction = "branch" | "edit" | "resend" | "regenerate" | "continue";
 
@@ -1022,6 +1070,96 @@ export async function createAgentConversationBranch(
   return data;
 }
 
+export async function listWorkspaceFiles(input: {
+  query?: string;
+  cursor?: string;
+  limit?: number;
+} = {}): Promise<WorkspaceFilePage> {
+  const query = new URLSearchParams();
+  if (input.query?.trim()) query.set("q", input.query.trim());
+  if (input.cursor) query.set("cursor", input.cursor);
+  if (input.limit) query.set("limit", String(input.limit));
+  const data = await requestJson(`/api/workspace/files${query.size ? `?${query}` : ""}`);
+  if (!isWorkspaceFilePage(data)) throw new ApiError("invalid_workspace_response", "文件列表格式无效。", 502);
+  return data;
+}
+
+export async function listWorkspaceFileVersions(fileId: string): Promise<WorkspaceFileVersions> {
+  const data = await requestJson(`/api/workspace/files/${encodeURIComponent(fileId)}/versions`);
+  if (!isWorkspaceFileVersions(data)) throw new ApiError("invalid_workspace_response", "文件版本格式无效。", 502);
+  return data;
+}
+
+export async function uploadWorkspaceFile(input: {
+  file: File;
+  relativePath: string;
+  operationId: string;
+  fileId?: string;
+  expectedUpdatedAt?: number;
+}): Promise<WorkspaceFile> {
+  const form = new FormData();
+  form.set("file", input.file);
+  form.set("relativePath", input.relativePath);
+  form.set("operationId", input.operationId);
+  if (input.expectedUpdatedAt) form.set("expectedUpdatedAt", String(input.expectedUpdatedAt));
+  const suffix = input.fileId ? `/${encodeURIComponent(input.fileId)}/retry` : "";
+  const data = await requestFormJson(`/api/workspace/files${suffix}`, form);
+  if (!isWorkspaceUploadResponse(data)) {
+    throw new ApiError("invalid_workspace_response", "文件上传结果格式无效。", 502);
+  }
+  return data.file;
+}
+
+export async function updateWorkspaceFile(
+  file: WorkspaceFile,
+  patch: { relativePath?: string; pinned?: boolean },
+): Promise<WorkspaceFile> {
+  const data = await requestJson(`/api/workspace/files/${encodeURIComponent(file.id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ ...patch, expectedUpdatedAt: file.updatedAt }),
+  });
+  if (!isWorkspaceFileMutationResponse(data)) {
+    throw new ApiError("invalid_workspace_response", "文件更新结果格式无效。", 502);
+  }
+  return data.file;
+}
+
+export async function deleteWorkspaceFile(file: WorkspaceFile, operationId: string): Promise<WorkspaceFileDeleteResult> {
+  const query = new URLSearchParams({
+    expectedUpdatedAt: String(file.updatedAt),
+    operationId,
+  });
+  const data = await requestJson(`/api/workspace/files/${encodeURIComponent(file.id)}?${query}`, { method: "DELETE" });
+  if (!isWorkspaceFileDeleteResponse(data)) {
+    throw new ApiError("invalid_workspace_response", "文件删除结果格式无效。", 502);
+  }
+  return data.deleted
+    ? { deleted: true, existing: data.existing }
+    : { deleted: false, pending: true, message: data.message };
+}
+
+export async function setConversationWorkspaceFiles(
+  conversation: AgentConversation,
+  files: Array<{ fileId: string; versionId: string }>,
+): Promise<AgentConversation> {
+  const data = await requestJson(
+    `/api/agent/conversations/${encodeURIComponent(conversation.id)}/workspace-files`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ expectedUpdatedAt: conversation.updatedAt, files }),
+    },
+  );
+  if (!isWorkspaceConversationMutationResponse(data)) {
+    throw new ApiError("invalid_conversation_response", "会话文件更新格式无效。", 502);
+  }
+  return data.conversation;
+}
+
+export function workspaceFileDownloadUrl(fileId: string, versionId?: string): string {
+  const query = versionId ? `?versionId=${encodeURIComponent(versionId)}` : "";
+  return `/api/workspace/files/${encodeURIComponent(fileId)}/download${query}`;
+}
+
 export async function submitFeedback(input: {
   rating: FeedbackRating;
   routeId: string;
@@ -1451,6 +1589,19 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
 
 export function isAgentConversation(value: unknown): value is AgentConversation {
   return isRecord(value)
+    && hasExactKeys(value, [
+      "id",
+      "title",
+      "createdAt",
+      "updatedAt",
+      "summary",
+      "pinned",
+      "skillIds",
+      "messageCount",
+      "workspaceFiles",
+      ...(value.routeId === undefined ? [] : ["routeId"]),
+      ...(value.parentChatId === undefined ? [] : ["parentChatId"]),
+    ])
     && isNonEmptyString(value.id)
     && isNonEmptyString(value.title)
     && isNonNegativeInteger(value.createdAt)
@@ -1461,7 +1612,114 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
     && (value.routeId === undefined || isNonEmptyString(value.routeId))
     && (value.parentChatId === undefined || isNonEmptyString(value.parentChatId))
     && isUniqueStringIdArray(value.skillIds)
-    && isNonNegativeInteger(value.messageCount);
+    && isNonNegativeInteger(value.messageCount)
+    && Array.isArray(value.workspaceFiles)
+    && value.workspaceFiles.length <= 10
+    && value.workspaceFiles.every(isWorkspaceConversationFileRef);
+}
+
+export function isWorkspaceFileVersion(value: unknown): value is WorkspaceFileVersion {
+  return isRecord(value)
+    && hasExactKeys(value, ["id", "fileId", "size", "mediaType", "checksum", "state", "createdAt"])
+    && isNonEmptyString(value.id)
+    && isNonEmptyString(value.fileId)
+    && isNonNegativeInteger(value.size)
+    && isNonEmptyString(value.mediaType)
+    && /^[0-9a-f]{64}$/u.test(typeof value.checksum === "string" ? value.checksum : "")
+    && (value.state === "pending" || value.state === "ready" || value.state === "failed" || value.state === "deleting")
+    && isNonNegativeInteger(value.createdAt);
+}
+
+export function isWorkspaceFile(value: unknown): value is WorkspaceFile {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      "id",
+      "path",
+      "name",
+      "pinned",
+      "state",
+      "createdAt",
+      "updatedAt",
+      "retryAvailable",
+      ...(value.currentVersion === undefined ? [] : ["currentVersion"]),
+    ])
+    && isNonEmptyString(value.id)
+    && isNonEmptyString(value.path)
+    && isNonEmptyString(value.name)
+    && typeof value.pinned === "boolean"
+    && (value.state === "uploading" || value.state === "ready" || value.state === "failed"
+      || value.state === "deleting" || value.state === "deleted")
+    && isNonNegativeInteger(value.createdAt)
+    && isNonNegativeInteger(value.updatedAt)
+    && value.updatedAt >= value.createdAt
+    && (value.currentVersion === undefined || isWorkspaceFileVersion(value.currentVersion))
+    && typeof value.retryAvailable === "boolean";
+}
+
+function isWorkspaceConversationFileRef(value: unknown): value is WorkspaceConversationFileRef {
+  return isRecord(value)
+    && hasExactKeys(value, ["fileId", "versionId", "path", "name", "size", "mediaType", "checksum"])
+    && isNonEmptyString(value.fileId)
+    && isNonEmptyString(value.versionId)
+    && isNonEmptyString(value.path)
+    && isNonEmptyString(value.name)
+    && isNonNegativeInteger(value.size)
+    && isNonEmptyString(value.mediaType)
+    && /^[0-9a-f]{64}$/u.test(typeof value.checksum === "string" ? value.checksum : "");
+}
+
+function isWorkspaceFilePage(value: unknown): value is WorkspaceFilePage {
+  return isRecord(value)
+    && hasExactKeys(value, ["files", "maxFileBytes", ...(value.nextCursor === undefined ? [] : ["nextCursor"])])
+    && Array.isArray(value.files)
+    && value.files.every(isWorkspaceFile)
+    && (value.nextCursor === undefined || typeof value.nextCursor === "string")
+    && isPositiveInteger(value.maxFileBytes);
+}
+
+function isWorkspaceFileVersions(value: unknown): value is WorkspaceFileVersions {
+  return isRecord(value)
+    && hasExactKeys(value, ["file", "versions"])
+    && isWorkspaceFile(value.file)
+    && Array.isArray(value.versions)
+    && value.versions.every(isWorkspaceFileVersion);
+}
+
+function isWorkspaceUploadResponse(value: unknown): value is { ok: true; file: WorkspaceFile } {
+  if (!isRecord(value) || value.ok !== true || !isWorkspaceFile(value.file)) return false;
+  if (value.pending === true) {
+    return hasExactKeys(value, ["ok", "pending", "file", "message"])
+      && isNonEmptyString(value.message);
+  }
+  return hasExactKeys(value, ["ok", "file", "existing"])
+    && typeof value.existing === "boolean";
+}
+
+function isWorkspaceFileMutationResponse(value: unknown): value is { ok: true; file: WorkspaceFile } {
+  return isRecord(value)
+    && hasExactKeys(value, ["ok", "file"])
+    && value.ok === true
+    && isWorkspaceFile(value.file);
+}
+
+function isWorkspaceFileDeleteResponse(value: unknown): value is WorkspaceFileDeleteResult & { ok: true } {
+  if (!isRecord(value) || value.ok !== true || typeof value.deleted !== "boolean") return false;
+  if (value.deleted) {
+    return hasExactKeys(value, ["ok", "deleted", "existing"])
+      && typeof value.existing === "boolean";
+  }
+  return hasExactKeys(value, ["ok", "deleted", "pending", "message"])
+    && value.pending === true
+    && isNonEmptyString(value.message);
+}
+
+function isWorkspaceConversationMutationResponse(
+  value: unknown,
+): value is { ok: true; conversation: AgentConversation } {
+  return isRecord(value)
+    && hasExactKeys(value, ["ok", "conversation"])
+    && value.ok === true
+    && isAgentConversation(value.conversation);
 }
 
 export function isAgentConversationBranchResult(value: unknown): value is AgentConversationBranchResult {
@@ -1611,7 +1869,7 @@ function isUserDataExportConversation(value: unknown): value is UserDataExportCo
     return false;
   }
   const { messages: _messages, messagesTruncated, ...summary } = value;
-  return isAgentConversation(summary)
+  return isAgentConversation({ ...summary, workspaceFiles: [] })
     && typeof messagesTruncated === "boolean";
 }
 
@@ -2163,6 +2421,24 @@ async function requestJson(path: string, init: RequestInit = {}): Promise<unknow
   }
   const data = await readResponseData(response);
   if (!response.ok) throw apiErrorFromResponse(response, data, "请求暂时失败，请稍后重试。");
+  return data;
+}
+
+async function requestFormJson(path: string, form: FormData): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      body: form,
+      credentials: "include",
+      headers: { "X-Chatus-Client": "web" },
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError("network_unavailable", "网络不可用，请检查连接后重试。", 0);
+  }
+  const data = await readResponseData(response);
+  if (!response.ok) throw apiErrorFromResponse(response, data, "文件操作失败，请稍后重试。");
   return data;
 }
 

@@ -16,6 +16,11 @@
       "binding": "CHAT_STORE"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "WORKSPACE_FILES"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {

@@ -189,15 +189,16 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 
 ## GitHub Actions Secrets
 
-首次部署还需要配置三项非敏感 Repository Variables：
+首次部署还需要配置四项非敏感 Repository Variables：
 
 ```text
 CHATUS_WORKER_NAME       稳定的 Worker 名称，例如 chatus-team
 CHATUS_KV_NAMESPACE_ID  新建 KV namespace 后得到的 32 位 ID
+CHATUS_R2_BUCKET_NAME   新建 R2 bucket 的稳定名称，例如 chatus-team-workspace-files
 CHATUS_PRODUCTION_URL   完整 HTTPS origin，不带路径，例如 https://chat.example.com
 ```
 
-`CHATUS_PRODUCTION_URL` 以 `.workers.dev` 结尾时，部署脚本会启用 Workers.dev；其他域名会生成 Cloudflare Custom Domain 配置。三项值在首次生产部署后都应保持稳定，尤其不要用“改 Worker 名”的方式改品牌，否则会形成新的 Worker/持久化边界。
+`CHATUS_PRODUCTION_URL` 以 `.workers.dev` 结尾时，部署脚本会启用 Workers.dev；其他域名会生成 Cloudflare Custom Domain 配置。四项值在首次生产部署后都应保持稳定，尤其不要用“改 Worker 名或 R2 bucket”的方式改品牌，否则会形成新的 Worker/持久化边界。
 
 仓库 Secrets 需要设置：
 

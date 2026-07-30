@@ -21,6 +21,9 @@ Current Agent purge RPCs:
 ```typescript
 TeamAgent.clearConversation(): Promise<void>
 TeamAgent.purgeRootData(): Promise<{ conversationIds: string[] }>
+TeamAgent.beginWorkspaceAccountPurge(operationId: string): Promise<WorkspaceAccountPurgeReservationResult>
+TeamAgent.completeWorkspaceAccountPurge(operationId: string, generation: number): Promise<boolean>
+TeamAgent.releaseWorkspaceAccountPurge(operationId: string, generation: number): Promise<boolean>
 ```
 
 Exact persisted identifiers owned by the deletion path include:
@@ -51,6 +54,7 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
 - Stable instance identity: Cloudflare account, Worker name, KV namespace, Durable Object bindings/classes, and applied migration history.
 - `CHAT_STORE` configuration and security state: `config:routes_config`, `config:access_codes`, `route-secret:*`, `mcp-secret:*`, administrator audit state, feedback, and any other non-expiring operational records.
 - Root `TeamAgent` state: conversation index, durable memory, migration markers, cleanup queue, branch reservations, and capability trust.
+- Workspace-file state: the `WORKSPACE_FILES` R2 bucket plus root `TeamAgent` file, immutable-version, exact-reference, and operation/outbox tables. A future backup manifest must inventory object keys indirectly, sizes, SHA-256 checksums, version/generation ownership, and include/exclude decisions without exposing keys to users.
 - Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
 - External key material required to decrypt archived ciphertext. In particular, the original `ROUTE_KEYS_MASTER_KEY` must be retained outside the application data archive under operator control.
@@ -95,6 +99,17 @@ Do not promise numeric RPO/RTO until an executable capture schedule and measured
 - delete the exact legacy KV memory, chat-index, and bounded usage keys and remove the member's feedback entries;
 - preserve access codes, provider/logical-model configuration, managed provider/MCP secrets, and instance-level administrator configuration.
 
+Workspace cleanup has an additional admission and ordering invariant:
+
+1. Reject account purge while an upload operation is still pending; retry after the upload is finalized or failed.
+2. Persist one `account_purge` operation before snapshotting R2 keys, including for an empty workspace. This row is the member-wide workspace write lock.
+3. Check the lock again inside upload/delete reservation SQL transactions; transaction-external checks alone have a time-of-check/time-of-use gap.
+4. Tombstone files and exact references, delete the snapshotted R2 objects idempotently, then finalize file/version metadata while retaining the purge row in `completed` state.
+5. Clear conversation Agents, root state, `UserState`, sessions, exact legacy KV keys, and feedback. `purgeRootData()` must preserve the completed purge row.
+6. Release the purge row only after every user-data sub-operation succeeds. Failures keep the lock and exact object snapshot retryable.
+
+Do not clear workspace metadata before object inventory is persisted. Do not release the lock after R2 deletion while other user stores remain live: either ordering can create an unsnapshotted orphan object during concurrent upload.
+
 Any failed sub-operation fails the request. Retrying must be safe because every deletion is exact and idempotent. Never replace exact keys with a broad prefix delete in the request path.
 
 ## 4. Validation & Error Matrix
@@ -107,6 +122,10 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 | Original `ROUTE_KEYS_MASTER_KEY` is unavailable | Old managed provider-key ciphertext is unrecoverable; require keys to be re-entered |
 | Proposed instance backup lacks manifest, consistency, mapping, reconciliation, or drill evidence | Keep full-instance recovery marked unsupported |
 | Any permanent-delete sub-operation fails | Fail the request; a retry repeats exact idempotent deletes |
+| Account purge starts while a workspace upload is pending | Fail with `workspace_purge_pending_upload`; keep the session valid for retry |
+| Workspace mutation races a persisted account purge | Reject with `workspace_account_purge_in_progress`; write no SQLite row or R2 object |
+| Workspace has no objects | Still persist the purge lock; do not use a lock-free completed fast path |
+| R2 objects are gone but another user-data delete fails | Retain the completed purge row and retry remaining exact deletes before release |
 | Permanent deletion sees a missing exact KV/identity key | Treat deletion as successful and continue |
 | Permanent deletion encounters pre-delete local/legacy data later | Retained tombstones reject stale merge/upload; only explicit `restore` may cross the deletion timeline |
 
@@ -122,6 +141,8 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 
 - Prove the user export envelope remains bounded, secret-free, and explicit about truncation.
 - Prove permanent deletion revokes sessions and removes Agent conversations/memory, legacy KV chat/memory, branch launches, and root/conversation identity records.
+- Prove permanent deletion snapshots and deletes every member-owned R2 version before clearing its metadata, leaves no file operation/outbox row after success, and remains idempotent after partial R2 failure.
+- Prove empty and non-empty workspace purges persist the same account lock, block uploads after the object snapshot and root purge, and release only after the complete user-data path succeeds.
 - Prove the anti-resurrection timestamp rejects stale uploads while an explicit user-selected `restore` can recover old backup content.
 - Prove provider/access configuration and encrypted secret records are not deleted with one member's data.
 - Keep tests local and deterministic; do not call a live model or print access codes, credentials, conversations, or memories.

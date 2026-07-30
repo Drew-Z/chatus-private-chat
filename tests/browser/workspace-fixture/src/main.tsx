@@ -38,6 +38,7 @@ const initialConversations: AgentConversation[] = [
     routeId: "reasoning",
     skillIds: ["project"],
     messageCount: 8,
+    workspaceFiles: [],
   },
   {
     id: "visual-second",
@@ -49,6 +50,7 @@ const initialConversations: AgentConversation[] = [
     routeId: "reasoning",
     skillIds: [],
     messageCount: 3,
+    workspaceFiles: [],
   },
   {
     id: "visual-third",
@@ -60,6 +62,7 @@ const initialConversations: AgentConversation[] = [
     routeId: "reasoning",
     skillIds: [],
     messageCount: 12,
+    workspaceFiles: [],
   },
   {
     id: "visual-branch",
@@ -72,6 +75,7 @@ const initialConversations: AgentConversation[] = [
     parentChatId: "visual-second",
     skillIds: ["project"],
     messageCount: 2,
+    workspaceFiles: [],
   },
   {
     id: "visual-orphan",
@@ -84,6 +88,7 @@ const initialConversations: AgentConversation[] = [
     parentChatId: "deleted-parent",
     skillIds: ["project"],
     messageCount: 2,
+    workspaceFiles: [],
   },
 ];
 
@@ -488,6 +493,7 @@ function WorkspaceFixture() {
           onCreate={async () => undefined}
           onRename={async (conversation, title) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, title } : item))}
           onDelete={async (conversation) => setConversations((current) => current.filter((item) => item.id !== conversation.id))}
+          onConversationUpdated={(conversation) => setConversations((current) => current.map((item) => item.id === conversation.id ? conversation : item))}
           onRouteChange={() => undefined}
           onSkillChange={() => undefined}
           onRevokeAllSessions={async () => undefined}

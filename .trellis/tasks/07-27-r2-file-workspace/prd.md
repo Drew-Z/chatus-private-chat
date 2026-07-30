@@ -19,14 +19,14 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. Wrangler、Env、deployment config 和 contract 测试包含 `WORKSPACE_FILES`，docs/Trellis-only 与本地测试不要求生产账号。
-- [ ] AC2. Root SQLite 从旧 schema 幂等升级，文件/版本/引用/操作表及索引完整，重复启动无错误。
-- [ ] AC3. API 和 React UI 完成列表、搜索、目录上传、重命名、固定、删除、下载和重试；权限始终限制为当前成员。
-- [ ] AC4. 同一文件至少两个版本时，会话发送仍使用固定旧 version；重命名/current version 变化不改变历史引用。
-- [ ] AC5. 并发重复上传、R2 put 后 finalize 失败、delete 失败和重复 retry 均幂等，不复活 tombstone，不覆盖其他版本。
-- [ ] AC6. conversation 删除、文件删除和账户永久删除分别证明引用、版本对象、outbox 和 R2 对象无不应残留；部分失败可重试。
-- [ ] AC7. 路径穿越、同形/大小写冲突、越权 file/version ID、任意 object key 和错误 expected version 被拒绝。
-- [ ] AC8. Workspace Playwright、Agent fake Provider（精确版本上下文）和五项全量验证通过。
+- [x] AC1. Wrangler、Env、deployment config 和 contract 测试包含 `WORKSPACE_FILES`，docs/Trellis-only 与本地测试不要求生产账号。
+- [x] AC2. Root SQLite 从旧 schema 幂等升级，文件/版本/引用/操作表及索引完整，重复启动无错误。
+- [x] AC3. API 和 React UI 完成列表、搜索、目录上传、重命名、固定、删除、下载和重试；权限始终限制为当前成员。
+- [x] AC4. 同一文件至少两个版本时，会话发送仍使用固定旧 version；重命名/current version 变化不改变历史引用。
+- [x] AC5. 并发重复上传、R2 put 后 finalize 失败、delete 失败和重复 retry 均幂等，不复活 tombstone，不覆盖其他版本。
+- [x] AC6. conversation 删除、文件删除和账户永久删除分别证明引用、版本对象、outbox 和 R2 对象无不应残留；部分失败可重试。
+- [x] AC7. 路径穿越、同形/大小写冲突、越权 file/version ID、任意 object key 和错误 expected version 被拒绝。
+- [x] AC8. Workspace Playwright、Agent fake Provider（精确版本上下文）和五项全量验证通过。
 
 ## Out of Scope
 

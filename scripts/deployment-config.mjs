@@ -15,6 +15,7 @@ const RESERVED_EXTRA_SECRET_NAMES = new Set([
   "CLOUDFLARE_ACCOUNT_ID",
   "CHATUS_WORKER_NAME",
   "CHATUS_KV_NAMESPACE_ID",
+  "CHATUS_R2_BUCKET_NAME",
   "CHATUS_PRODUCTION_URL",
   "ACCESS_CODES_MODE",
 ]);
@@ -286,6 +287,11 @@ export function readInstanceConfiguration(environment) {
     throw new Error("CHATUS_KV_NAMESPACE_ID must be a 32-character hexadecimal namespace ID");
   }
 
+  const r2BucketName = requireText(environment, "CHATUS_R2_BUCKET_NAME");
+  if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/u.test(r2BucketName)) {
+    throw new Error("CHATUS_R2_BUCKET_NAME must be 3-63 lowercase letters, numbers, or hyphens");
+  }
+
   const production = parseProductionUrl(requireText(environment, "CHATUS_PRODUCTION_URL"));
   if (production.routeMode === "workers_dev") {
     const labels = production.hostname.split(".");
@@ -293,7 +299,7 @@ export function readInstanceConfiguration(environment) {
       throw new Error("A workers.dev CHATUS_PRODUCTION_URL must be <worker>.<account-subdomain>.workers.dev");
     }
   }
-  return { workerName, kvNamespaceId, ...production };
+  return { workerName, kvNamespaceId, r2BucketName, ...production };
 }
 
 export function collectWorkerSecrets(environment) {
@@ -374,6 +380,11 @@ export function buildDeploymentConfig(baseConfig, instance) {
   if (chatStoreBindings.length !== 1) {
     throw new Error("wrangler.jsonc must define exactly one CHAT_STORE KV binding");
   }
+  const r2Buckets = Array.isArray(config.r2_buckets) ? config.r2_buckets : [];
+  const workspaceFileBindings = r2Buckets.filter((bucket) => bucket?.binding === "WORKSPACE_FILES");
+  if (workspaceFileBindings.length !== 1) {
+    throw new Error("wrangler.jsonc must define exactly one WORKSPACE_FILES R2 binding");
+  }
 
   config.name = instance.workerName;
   config.vars = {
@@ -382,6 +393,9 @@ export function buildDeploymentConfig(baseConfig, instance) {
   };
   config.kv_namespaces = namespaces.map((namespace) =>
     namespace?.binding === "CHAT_STORE" ? { ...namespace, id: instance.kvNamespaceId } : namespace,
+  );
+  config.r2_buckets = r2Buckets.map((bucket) =>
+    bucket?.binding === "WORKSPACE_FILES" ? { ...bucket, bucket_name: instance.r2BucketName } : bucket,
   );
   delete config.route;
   delete config.routes;
