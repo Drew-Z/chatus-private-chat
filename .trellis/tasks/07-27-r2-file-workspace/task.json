@@ -31,52 +31,70 @@
         "at": "2026-07-30T10:46:08.810329+00:00"
       },
       {
+        "command": "gh run view 30538733174 --log-failed",
+        "status": "failed",
+        "summary": "Merge SHA 5903a77 deployment stopped before upload because CHATUS_R2_BUCKET_NAME was missing; failure manifest retained",
+        "at": "2026-07-30T12:35:38.059330+00:00"
+      },
+      {
+        "command": "npx vitest run tests/delivery-governance.test.ts tests/deployment-config.test.ts",
+        "status": "passed",
+        "summary": "53 deployment and R2 provision contract tests passed across existing missing authorization network and malformed-response branches",
+        "at": "2026-07-30T12:35:39.231834+00:00"
+      },
+      {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Vite production build and frontend structure checks passed",
-        "at": "2026-07-30T10:46:09.857319+00:00"
+        "summary": "Vite production build and frontend structure checks passed after provisioning workflow update",
+        "at": "2026-07-30T12:35:40.321137+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "34 files and 413 tests passed",
-        "at": "2026-07-30T10:46:10.979905+00:00"
+        "summary": "34 files and 415 tests passed after provisioning workflow update",
+        "at": "2026-07-30T12:35:41.372276+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
-        "summary": "67 workspace Playwright tests passed and 33 matrix cases skipped as configured across five viewports",
-        "at": "2026-07-30T10:46:12.127060+00:00"
+        "summary": "67 workspace Playwright tests passed and 33 matrix cases skipped as configured",
+        "at": "2026-07-30T12:35:42.448076+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
-        "summary": "1 local fake-Provider Agent acceptance test passed with no live model",
-        "at": "2026-07-30T10:46:13.175259+00:00"
+        "summary": "1 local fake-Provider Agent acceptance test passed",
+        "at": "2026-07-30T12:35:43.483811+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
         "summary": "Worker client and browser TypeScript checks passed",
-        "at": "2026-07-30T10:46:14.210567+00:00"
+        "at": "2026-07-30T12:35:44.543895+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
-        "summary": "Wrangler 4.110.0 packaging dry-run passed and listed env.WORKSPACE_FILES without deployment",
-        "at": "2026-07-30T10:46:15.238025+00:00"
+        "summary": "Wrangler dry-run passed and listed env.WORKSPACE_FILES without deployment",
+        "at": "2026-07-30T12:35:45.661379+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
         "summary": "Diff whitespace check passed with line-ending notices only",
-        "at": "2026-07-30T10:46:16.251572+00:00"
+        "at": "2026-07-30T12:35:46.741082+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
         "summary": "Repository task tree and workspace root index consistency passed",
-        "at": "2026-07-30T10:47:38.441551+00:00"
+        "at": "2026-07-30T12:35:47.771781+00:00"
+      },
+      {
+        "command": "gh variable get CHATUS_R2_BUCKET_NAME",
+        "status": "passed",
+        "summary": "Repository Variable resolves to the approved non-sensitive stable workspace bucket name",
+        "at": "2026-07-30T12:35:48.862587+00:00"
       }
     ]
   }
