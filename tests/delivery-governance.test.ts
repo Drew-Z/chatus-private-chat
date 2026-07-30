@@ -9,6 +9,7 @@ import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
 import packageSourceRaw from "../package.json?raw";
 import { classifyChangedPaths } from "../scripts/classify-ci-paths.mjs";
 import { createDeliveryManifest } from "../scripts/write-delivery-manifest.mjs";
+import { provisionR2Bucket } from "../scripts/provision-r2-bucket.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const normalizeText = (source: string) => source.replace(/\r\n?/gu, "\n");
@@ -157,7 +158,76 @@ describe("main deployment governance", () => {
     expect(acceptanceWorkflow).toContain("refs/heads/main");
   });
 
+  it("provisions the R2 bucket only after an exact missing response", async () => {
+    const requests: Array<{ url: string; method: string; body?: string }> = [];
+    const responses = [
+      apiResponse(404, false, null, [{ code: 10006 }]),
+      apiResponse(200, true, { name: "chatus-test-files" }),
+      apiResponse(200, true, { name: "chatus-test-files" }),
+    ];
+    const result = await provisionR2Bucket({
+      accountId: "a".repeat(32),
+      apiToken: "test-token",
+      bucketName: "chatus-test-files",
+      fetchImpl: async (url, init = {}) => {
+        requests.push({
+          url: String(url),
+          method: init.method || "GET",
+          ...(typeof init.body === "string" ? { body: init.body } : {}),
+        });
+        return responses.shift()!;
+      },
+      logger: { log() {} },
+    });
+    expect(result).toEqual({ bucketName: "chatus-test-files", created: true });
+    expect(requests.map((request) => request.method)).toEqual(["GET", "POST", "GET"]);
+    expect(requests[1]?.body).toBe(JSON.stringify({ name: "chatus-test-files" }));
+  });
+
+  it("leaves an existing R2 bucket unchanged", async () => {
+    const requests: string[] = [];
+    await expect(provisionR2Bucket({
+      accountId: "c".repeat(32),
+      apiToken: "test-token",
+      bucketName: "chatus-test-files",
+      fetchImpl: async (_url, init = {}) => {
+        requests.push(init.method || "GET");
+        return apiResponse(200, true, { name: "chatus-test-files" });
+      },
+      logger: { log() {} },
+    })).resolves.toEqual({ bucketName: "chatus-test-files", created: false });
+    expect(requests).toEqual(["GET"]);
+  });
+
+  it("fails closed for R2 authorization, network, and malformed response errors", async () => {
+    const base = {
+      accountId: "b".repeat(32),
+      apiToken: "test-token",
+      bucketName: "chatus-test-files",
+      logger: { log() {} },
+    };
+    await expect(provisionR2Bucket({
+      ...base,
+      fetchImpl: async () => apiResponse(403, false, null, [{ code: 10000 }]),
+    })).rejects.toThrow("lookup failed (status 403, codes 10000)");
+    await expect(provisionR2Bucket({
+      ...base,
+      fetchImpl: async () => { throw new Error("network detail"); },
+    })).rejects.toThrow("failed before receiving a response");
+    await expect(provisionR2Bucket({
+      ...base,
+      fetchImpl: async () => new Response("not-json", { status: 502 }),
+    })).rejects.toThrow("invalid JSON (status 502)");
+  });
+
   it("stays on the approved 0.x version line", () => {
     expect(JSON.parse(packageSource).version).toMatch(/^0\./u);
   });
 });
+
+function apiResponse(status: number, success: boolean, result: unknown, errors: unknown[]) {
+  return new Response(JSON.stringify({ success, result, errors, messages: [] }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}

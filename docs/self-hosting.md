@@ -6,10 +6,10 @@
 
 1. Fork 仓库，并在 fork 的 `main` 分支启用 GitHub Actions。
 2. 在目标 Cloudflare 账号创建一个新的 KV namespace，并记录其 32 位 namespace ID。每个独立实例使用自己的 namespace，不要复制其他实例的 ID。
-3. 在同一账号创建一个新的 R2 bucket，例如 `chatus-team-workspace-files`。该 bucket 只保存此实例的成员工作区对象，不要复用其他实例的 bucket。
+3. 决定一个实例专属的 R2 bucket 名称，例如 `chatus-team-workspace-files`。首次部署的 GitHub Actions 会在缺失时创建；不要复用其他实例的 bucket。
 4. 决定稳定的 Worker 名称，例如 `chatus-team`。首次部署后不要改名；改名会创建另一个 Worker 持久化边界，不是无损品牌重命名。
 5. 决定生产 HTTPS origin：可以是 `https://<worker>.<account-subdomain>.workers.dev`，也可以是账号中可管理的自定义域名，例如 `https://chat.example.com`。不要包含 `/admin`、其他路径、查询或 fragment。
-6. 创建 Cloudflare API Token。可从 Cloudflare 的 **Edit Cloudflare Workers** 模板开始，将 Account Resources 限制到目标账号，并确保它可绑定目标 R2 bucket；使用自定义域名时再把 Zone Resources 限制到目标域名。不要使用 Global API Key。
+6. 创建 Cloudflare API Token。可从 Cloudflare 的 **Edit Cloudflare Workers** 模板开始，将 Account Resources 限制到目标账号，并增加 R2 编辑权限；使用自定义域名时再把 Zone Resources 限制到目标域名。不要使用 Global API Key。
 
 Durable Object namespace 不需要手工创建。工作流中的 Wrangler migrations 会在首次部署时创建 `UserState`、`TeamAgent` 和 `ProviderCoordinator` SQLite classes。
 
@@ -21,10 +21,12 @@ Durable Object namespace 不需要手工创建。工作流中的 Wrangler migrat
 | --- | --- | --- |
 | `CHATUS_WORKER_NAME` | `chatus-team` | 1-63 位小写字母、数字或连字符 |
 | `CHATUS_KV_NAMESPACE_ID` | `0123...cdef` | 新建 namespace 的 32 位十六进制 ID |
-| `CHATUS_R2_BUCKET_NAME` | `chatus-team-workspace-files` | 3-63 位小写字母、数字或连字符；必须是此实例专属的现有 bucket |
+| `CHATUS_R2_BUCKET_NAME` | `chatus-team-workspace-files` | 3-63 位小写字母、数字或连字符；Actions 会在缺失时创建实例专属 bucket |
 | `CHATUS_PRODUCTION_URL` | `https://chat.example.com` | HTTPS origin，不带路径、端口、查询或 fragment |
 
 若 URL 以 `.workers.dev` 结尾，生成配置会设置 `workers_dev: true`；否则会生成 `custom_domain: true` 的 route。变量不包含密钥，不要把 Worker Secret 填到 Variables。
+
+R2 provision 只在精确 bucket 查询返回 Cloudflare 缺失码时创建。认证、网络、限流或异常响应会直接阻止部署，不会被当成“bucket 不存在”。
 
 ## 3. 设置 GitHub Secrets
 

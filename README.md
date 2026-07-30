@@ -194,7 +194,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 ```text
 CHATUS_WORKER_NAME       稳定的 Worker 名称，例如 chatus-team
 CHATUS_KV_NAMESPACE_ID  新建 KV namespace 后得到的 32 位 ID
-CHATUS_R2_BUCKET_NAME   新建 R2 bucket 的稳定名称，例如 chatus-team-workspace-files
+CHATUS_R2_BUCKET_NAME   实例专属 R2 bucket 的稳定名称；Actions 缺失时创建，例如 chatus-team-workspace-files
 CHATUS_PRODUCTION_URL   完整 HTTPS origin，不带路径，例如 https://chat.example.com
 ```
 
