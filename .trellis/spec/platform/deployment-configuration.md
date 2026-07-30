@@ -68,7 +68,7 @@ Wrangler `--secrets-file` is additive. Omitting a previously uploaded name does 
 
 New Durable Object namespaces must use `new_sqlite_classes`; `new_classes` selects the key-value storage backend, which Workers Free cannot create. Never edit a migration tag that reached a successful deployment. If Cloudflare rejects a new tag before applying it, correct that unapplied tag before retrying rather than inventing a follow-up migration for a namespace that does not exist.
 
-The checked-in Wrangler baseline defines exactly one ID-free `WORKSPACE_FILES` R2 binding so local Vitest, Playwright, Wrangler dev, and default dry-run do not need a production account. `prepare:deployment` requires `CHATUS_R2_BUCKET_NAME` and injects it as that binding's `bucket_name` in `.wrangler.deploy.jsonc`; it must reject a missing, duplicate, or malformed binding/name. The generated production config used for dry-run must be the same file uploaded by GitHub Actions. R2 credentials and arbitrary object keys are never Worker Secrets, Repository Variables, or browser configuration.
+The checked-in Wrangler baseline defines exactly one ID-free `WORKSPACE_FILES` R2 binding so local Vitest, Playwright, Wrangler dev, and default dry-run do not need a production account. `prepare:deployment` requires `CHATUS_R2_BUCKET_NAME` and injects it as that binding's `bucket_name` in `.wrangler.deploy.jsonc`; it must reject a missing, duplicate, or malformed binding/name. Before preparing or validating the production config, GitHub Actions runs `scripts/provision-r2-bucket.mjs`: it performs an exact Cloudflare R2 bucket GET, creates only after `404` plus error code `10006`, then repeats the exact GET. Authentication, rate-limit, network, invalid-envelope, and every other API failure stop deployment without attempting creation. The generated production config used for dry-run must be the same file uploaded by GitHub Actions. R2 credentials and arbitrary object keys are never Worker Secrets, Repository Variables, or browser configuration.
 
 Production deploy and production member acceptance share the `chatus-production-mutation` concurrency group with `cancel-in-progress: false`. New production mutations wait instead of canceling an upload, smoke, generated-file cleanup, or temporary-member cleanup. Deploy checks that `GITHUB_SHA` is still the remote `main` tip early for fast failure and again immediately before the real Wrangler upload.
 
@@ -80,6 +80,8 @@ Production deploy and production member acceptance share the `chatus-production-
 | Worker name or KV/account ID malformed | Fail preflight |
 | R2 bucket name is missing or malformed | Fail preflight before generating deployment files |
 | Checked-in Wrangler config lacks exactly one `WORKSPACE_FILES` R2 binding | Fail preflight; do not invent a second binding |
+| Exact R2 lookup returns `404` with code `10006` | Create the configured bucket through GitHub Actions, then verify it with another exact lookup |
+| Exact R2 lookup returns auth, rate-limit, network, malformed, or any other error | Fail closed; do not reinterpret it as a missing bucket |
 | Production URL uses HTTP or contains a path | Fail preflight |
 | workers.dev hostname does not match Worker name | Fail preflight |
 | `ROUTES_CONFIG` is not an object or has no valid enabled route | Fail preflight |
@@ -115,7 +117,7 @@ Production deploy and production member acceptance share the `chatus-production-
 
 ## 6. Tests Required
 
-- Unit-test custom-domain and workers.dev projections, input immutability, KV and R2 binding injection, and removal of stale routes.
+- Unit-test custom-domain and workers.dev projections, input immutability, KV and R2 binding injection, R2 provision existing/missing/error branches, and removal of stale routes.
 - Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
 - Assert every newly introduced Durable Object uses a SQLite-backed migration and reject `new_classes` in the checked-in Wrangler contract.
 - Import workflow/config files as raw fixtures and assert Repository Variables including `CHATUS_R2_BUCKET_NAME`, generated `--config`, shared non-canceling production concurrency, early and late stale-SHA checks, parameterized production URL, generic Wrangler baseline with exactly one `WORKSPACE_FILES` binding, and absence of a local `deploy` script.

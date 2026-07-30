@@ -296,6 +296,11 @@ describe("repository deployment contract", () => {
     expect(deployWorkflow).not.toContain("cancel-in-progress: true");
     expect(acceptanceWorkflow).not.toContain("cancel-in-progress: true");
     expect(deployWorkflow).toContain("npm run prepare:deployment");
+    expect(deployWorkflow).toContain("Provision workspace R2 bucket");
+    expect(deployWorkflow).toContain("node scripts/provision-r2-bucket.mjs");
+    expect(deployWorkflow.indexOf("Provision workspace R2 bucket")).toBeLessThan(
+      deployWorkflow.indexOf("Prepare deployment configuration and Worker secrets"),
+    );
     expect(deployWorkflow).toContain("--config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json");
     expect(deployWorkflow).toContain("git ls-remote origin refs/heads/main");
     expect(deployWorkflow.match(/git ls-remote origin refs\/heads\/main/g)).toHaveLength(2);
