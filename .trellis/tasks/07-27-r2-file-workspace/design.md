@@ -9,7 +9,7 @@ Root TeamAgent 是单成员串行 mutation owner。新增：
 - `conversation_file_refs`: chat/message/file/version 精确引用。
 - `workspace_file_operations`: upload/delete/reconcile outbox、operation id、attempt/error。
 
-应用级 schema upgrader 用显式 version/PRAGMA 检查增加表和索引；旧行不迁移为 workspace 文件。
+应用级 schema upgrader 使用专用 `_sql_schema_migrations` 表记录版本并幂等增加表和索引；Durable Objects SQLite 不支持 `PRAGMA user_version`。相关 SQL 迁移在同步事务内连续执行，旧行不迁移为 workspace 文件。
 
 ## Object Layout
 
@@ -31,7 +31,7 @@ Root TeamAgent 是单成员串行 mutation owner。新增：
 
 ## Deletion
 
-逻辑 delete 先 tombstone，随后 outbox 删除 R2 versions。conversation delete 只删 refs；file delete 删除 versions；account purge 在清 Root 表前快照 object keys 并逐项确认。任何延迟消息看到 tombstone/generation mismatch 都 ack/忽略，不能复活。
+逻辑 delete 先 tombstone，随后 outbox 删除 R2 versions。conversation delete 只删 refs；file delete 删除 versions；account purge 在清 Root 表前快照 object keys 并逐项确认。账户清理总是持久化 `account_purge` 锁（包括空 workspace），workspace reservation 在同一 SQL transaction 内检查该锁；R2、conversation Agent、Root、UserState、session、legacy KV 和 feedback 全部清理成功后才释放。任何延迟消息看到 tombstone/generation mismatch 都 ack/忽略，不能复活。
 
 ## Compatibility and Rollback
 

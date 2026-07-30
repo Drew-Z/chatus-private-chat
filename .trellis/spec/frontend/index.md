@@ -23,6 +23,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 | [Agent Streaming And Fallback](./agent-streaming.md) | AIChat streaming, route commitment, fallback and telemetry | Ready |
 | [Multimodal Image Input](./multimodal-image-input.md) | Capability-aware image drafts, strict normalization, Agent persistence, provider conversion, and privacy | Ready |
 | [Text File Attachments](./file-attachments.md) | Member-only UTF-8 file context uploads, mixed attachment drafts, deterministic provider text, and guest denial | Ready |
+| [R2 Workspace Files](./workspace-files.md) | R2 immutable versions, Root SQLite metadata, exact conversation references, reconciliation, React workspace, and purge locking | Ready |
 | [Member And Registry Capabilities](./capability-assignment.md) | Per-member assignment plus typed Skill, tool, MCP, secret, and discovery administration contracts | Ready |
 | [Public Guest Access](./public-guest-access.md) | Restricted anonymous sessions, single public route enforcement, guest capability denial, quotas, cleanup, and workspace projection | Ready |
 
@@ -38,6 +39,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 - Read `agent-streaming.md` for AIChat, provider routing, fallback, cancellation, or stream telemetry changes.
 - Read `multimodal-image-input.md` for image policy, composer attachments, Agent file parts, provider image conversion, or image export/deletion changes.
 - Read `file-attachments.md` for generic file upload, `fileInput` policy, mixed attachment drafts, deterministic attached-file text, Agent persistence, or guest file denial changes.
+- Read `workspace-files.md` for R2 storage, workspace file/version APIs, conversation workspace references, file UI, reconciliation, or account object cleanup changes.
 - Read `component-guidelines.md` and `type-safety.md` for provider registry, model discovery, logical model, or offering editor changes.
 - Always read `quality-guidelines.md` before implementation and review.
 
