@@ -1009,3 +1009,43 @@ Delivered fail-closed admin recovery and accessible operations UX through PR #15
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: Complete async document ingest
+
+**Date**: 2026-08-01
+**Task**: Complete async document ingest
+**Branch**: `main`
+
+### Summary
+
+Implemented safe asynchronous text/PDF/Office ingestion, workspace UI and exact-version Provider context; fixed Cloudflare Queue provisioning against production response behavior and transient lookups; verified PR CI, exact-SHA deployment, retained artifacts, and production member acceptance; archived the child task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `58c4a5c` | (see git log) |
+| `9b18785` | (see git log) |
+| `e1389bf` | (see git log) |
+| `b1a8a40` | (see git log) |
+| `22e5faf` | (see git log) |
+| `1f9f436` | (see git log) |
+| `2fff8c2` | (see git log) |
+| `4085cb2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
