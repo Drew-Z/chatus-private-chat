@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
+const MAX_QUEUE_LIST_PAGES = 1_000;
 
 export async function provisionDocumentIngestQueues({
   accountId,
@@ -55,21 +56,50 @@ async function ensureQueue(context, queueName) {
 }
 
 async function lookupQueue(context, queueName) {
-  const url = new URL(context.collectionUrl);
-  url.searchParams.set("page", "1");
-  url.searchParams.set("name", queueName);
-  const response = await requestEnvelope(context.fetchImpl, url, { method: "GET", headers: context.headers });
-  if (!isSuccessfulEnvelope(response)) throw apiFailure("lookup", response);
-  if (!Array.isArray(response.payload.result)) {
-    throw new Error(`Cloudflare Queues API returned an invalid queue list (status ${response.status})`);
-  }
-  const exactMatches = response.payload.result.filter(
-    (queue) => isRecord(queue) && queue.queue_name === queueName,
-  );
+  const exactMatches = [];
+  let page = 1;
+  let response;
+
+  do {
+    const url = new URL(context.collectionUrl);
+    url.searchParams.set("page", String(page));
+    response = await requestEnvelope(context.fetchImpl, url, { method: "GET", headers: context.headers });
+    if (!isSuccessfulEnvelope(response)) throw apiFailure("lookup", response);
+    if (!Array.isArray(response.payload.result)) {
+      throw new Error(`Cloudflare Queues API returned an invalid queue list (status ${response.status})`);
+    }
+    exactMatches.push(...response.payload.result.filter(
+      (queue) => isRecord(queue) && queue.queue_name === queueName,
+    ));
+    page = nextQueueListPage(response.payload.result_info, page, response.status);
+  } while (page !== null);
+
   if (exactMatches.length > 1) {
     throw new Error(`Cloudflare Queues API returned multiple exact matches for Queue "${queueName}"`);
   }
   return { queue: exactMatches[0] || null, response };
+}
+
+function nextQueueListPage(resultInfo, requestedPage, status) {
+  if (resultInfo === undefined) return null;
+  if (!isRecord(resultInfo)) {
+    throw new Error(`Cloudflare Queues API returned invalid pagination (status ${status})`);
+  }
+
+  const page = resultInfo.page;
+  const totalPages = resultInfo.total_pages;
+  if (page === undefined && totalPages === undefined) return null;
+  if (
+    !Number.isInteger(page)
+    || page !== requestedPage
+    || !Number.isInteger(totalPages)
+    || totalPages < 0
+    || totalPages > MAX_QUEUE_LIST_PAGES
+    || (totalPages === 0 ? page !== 1 : totalPages < page)
+  ) {
+    throw new Error(`Cloudflare Queues API returned invalid pagination (status ${status})`);
+  }
+  return page < totalPages ? page + 1 : null;
 }
 
 function validateInputs({ accountId, apiToken, queueName, deadLetterQueueName }) {
@@ -116,7 +146,7 @@ async function requestEnvelope(fetchImpl, url, init) {
   }
   if (
     !isRecord(payload)
-    || typeof payload.success !== "boolean"
+    || (payload.success !== undefined && typeof payload.success !== "boolean")
     || (payload.errors !== undefined && !Array.isArray(payload.errors))
   ) {
     throw new Error(`Cloudflare Queues API returned an invalid envelope (status ${response.status})`);
@@ -126,7 +156,7 @@ async function requestEnvelope(fetchImpl, url, init) {
 }
 
 function isSuccessfulEnvelope(response) {
-  return response.ok && response.payload.success === true;
+  return response.ok && response.payload.success !== false;
 }
 
 function apiFailure(action, response) {
