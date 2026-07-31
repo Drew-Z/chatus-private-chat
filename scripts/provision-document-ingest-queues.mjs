@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isTransientCloudflareStatus,
+  RetryableCloudflareLookupError,
+  withCloudflareLookupRetry,
+} from "./cloudflare-api-retry.mjs";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const MAX_QUEUE_LIST_PAGES = 1_000;
@@ -11,6 +16,8 @@ export async function provisionDocumentIngestQueues({
   deadLetterQueueName,
   fetchImpl = fetch,
   logger = console,
+  sleepImpl,
+  retryDelaysMs,
 }) {
   const normalized = validateInputs({ accountId, apiToken, queueName, deadLetterQueueName });
   const context = {
@@ -21,6 +28,8 @@ export async function provisionDocumentIngestQueues({
       "Content-Type": "application/json",
     },
     logger,
+    sleepImpl,
+    retryDelaysMs,
   };
 
   const deadLetterQueue = await ensureQueue(context, normalized.deadLetterQueueName);
@@ -35,11 +44,22 @@ async function ensureQueue(context, queueName) {
     return { queueName, created: false };
   }
 
-  const created = await requestEnvelope(context.fetchImpl, context.collectionUrl, {
-    method: "POST",
-    headers: context.headers,
-    body: JSON.stringify({ queue_name: queueName }),
-  });
+  let created;
+  try {
+    created = await requestEnvelope(context.fetchImpl, context.collectionUrl, {
+      method: "POST",
+      headers: context.headers,
+      body: JSON.stringify({ queue_name: queueName }),
+    });
+  } catch (error) {
+    if (!(error instanceof RetryableCloudflareLookupError)) throw error;
+    const raced = await lookupQueue(context, queueName);
+    if (raced.queue) {
+      context.logger.log(`Queue "${queueName}" was created concurrently`);
+      return { queueName, created: false };
+    }
+    throw error;
+  }
   if (!isSuccessfulEnvelope(created)) {
     const raced = await lookupQueue(context, queueName);
     if (raced.queue) {
@@ -63,7 +83,23 @@ async function lookupQueue(context, queueName) {
   do {
     const url = new URL(context.collectionUrl);
     url.searchParams.set("page", String(page));
-    response = await requestEnvelope(context.fetchImpl, url, { method: "GET", headers: context.headers });
+    response = await withCloudflareLookupRetry({
+      apiName: "Cloudflare Queues API",
+      logger: context.logger,
+      sleepImpl: context.sleepImpl,
+      retryDelaysMs: context.retryDelaysMs,
+      request: async () => {
+        const pageResponse = await requestEnvelope(
+          context.fetchImpl,
+          url,
+          { method: "GET", headers: context.headers },
+        );
+        if (isTransientCloudflareStatus(pageResponse.status)) {
+          throw new RetryableCloudflareLookupError(apiFailure("lookup", pageResponse).message);
+        }
+        return pageResponse;
+      },
+    });
     if (!isSuccessfulEnvelope(response)) throw apiFailure("lookup", response);
     if (!Array.isArray(response.payload.result)) {
       throw new Error(`Cloudflare Queues API returned an invalid queue list (status ${response.status})`);
@@ -136,13 +172,17 @@ async function requestEnvelope(fetchImpl, url, init) {
   try {
     response = await fetchImpl(url, init);
   } catch {
-    throw new Error("Cloudflare Queues API request failed before receiving a response");
+    throw new RetryableCloudflareLookupError(
+      "Cloudflare Queues API request failed before receiving a response",
+    );
   }
   let payload;
   try {
     payload = JSON.parse(await response.text());
   } catch {
-    throw new Error(`Cloudflare Queues API returned invalid JSON (status ${response.status})`);
+    const message = `Cloudflare Queues API returned invalid JSON (status ${response.status})`;
+    if (isTransientCloudflareStatus(response.status)) throw new RetryableCloudflareLookupError(message);
+    throw new Error(message);
   }
   if (
     !isRecord(payload)

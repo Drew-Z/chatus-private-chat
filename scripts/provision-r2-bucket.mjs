@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isTransientCloudflareStatus,
+  RetryableCloudflareLookupError,
+  withCloudflareLookupRetry,
+} from "./cloudflare-api-retry.mjs";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const R2_BUCKET_MISSING_CODE = 10006;
@@ -10,6 +15,8 @@ export async function provisionR2Bucket({
   bucketName,
   fetchImpl = fetch,
   logger = console,
+  sleepImpl,
+  retryDelaysMs,
 }) {
   const normalized = validateInputs({ accountId, apiToken, bucketName });
   const collectionUrl = `${CLOUDFLARE_API_BASE}/accounts/${normalized.accountId}/r2/buckets`;
@@ -19,20 +26,45 @@ export async function provisionR2Bucket({
     "Content-Type": "application/json",
   };
 
-  const existing = await requestEnvelope(fetchImpl, bucketUrl, { method: "GET", headers });
+  const lookup = (url) => withCloudflareLookupRetry({
+    apiName: "Cloudflare R2 API",
+    logger,
+    sleepImpl,
+    retryDelaysMs,
+    request: async () => {
+      const response = await requestEnvelope(fetchImpl, url, { method: "GET", headers });
+      if (isTransientCloudflareStatus(response.status)) {
+        throw new RetryableCloudflareLookupError(apiFailure("lookup", response).message);
+      }
+      return response;
+    },
+  });
+
+  const existing = await lookup(bucketUrl);
   if (isSuccessfulBucketResponse(existing, normalized.bucketName)) {
     logger.log(`R2 bucket "${normalized.bucketName}" already exists`);
     return { bucketName: normalized.bucketName, created: false };
   }
   if (!isMissingBucketResponse(existing)) throw apiFailure("lookup", existing);
 
-  const created = await requestEnvelope(fetchImpl, collectionUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ name: normalized.bucketName }),
-  });
+  let created;
+  try {
+    created = await requestEnvelope(fetchImpl, collectionUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: normalized.bucketName }),
+    });
+  } catch (error) {
+    if (!(error instanceof RetryableCloudflareLookupError)) throw error;
+    const raced = await lookup(bucketUrl);
+    if (isSuccessfulBucketResponse(raced, normalized.bucketName)) {
+      logger.log(`R2 bucket "${normalized.bucketName}" was created concurrently`);
+      return { bucketName: normalized.bucketName, created: false };
+    }
+    throw error;
+  }
   if (!isSuccessfulEnvelope(created)) {
-    const raced = await requestEnvelope(fetchImpl, bucketUrl, { method: "GET", headers });
+    const raced = await lookup(bucketUrl);
     if (isSuccessfulBucketResponse(raced, normalized.bucketName)) {
       logger.log(`R2 bucket "${normalized.bucketName}" was created concurrently`);
       return { bucketName: normalized.bucketName, created: false };
@@ -40,7 +72,7 @@ export async function provisionR2Bucket({
     throw apiFailure("create", created);
   }
 
-  const verified = await requestEnvelope(fetchImpl, bucketUrl, { method: "GET", headers });
+  const verified = await lookup(bucketUrl);
   if (!isSuccessfulBucketResponse(verified, normalized.bucketName)) {
     throw apiFailure("post-create verification", verified);
   }
@@ -69,13 +101,15 @@ async function requestEnvelope(fetchImpl, url, init) {
   try {
     response = await fetchImpl(url, init);
   } catch {
-    throw new Error("Cloudflare R2 API request failed before receiving a response");
+    throw new RetryableCloudflareLookupError("Cloudflare R2 API request failed before receiving a response");
   }
   let payload;
   try {
     payload = JSON.parse(await response.text());
   } catch {
-    throw new Error(`Cloudflare R2 API returned invalid JSON (status ${response.status})`);
+    const message = `Cloudflare R2 API returned invalid JSON (status ${response.status})`;
+    if (isTransientCloudflareStatus(response.status)) throw new RetryableCloudflareLookupError(message);
+    throw new Error(message);
   }
   if (
     !isRecord(payload)
