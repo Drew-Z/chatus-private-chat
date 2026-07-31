@@ -11,7 +11,7 @@
 - [x] 接入 workspace 状态 UI、retry 及 turn exact-version text resolver。
 - [x] 扩展账户/文件删除，覆盖 queued/extracting 竞态。
 - [x] 运行恶意 fixture suite、`trellis-check`、两类浏览器测试和五项全量验证。
-- [ ] 更新 document security/queue specs，记录验证、提交、PR、合并并归档。
+- [x] 更新 document security/queue specs，记录验证、提交、PR、合并并归档。最终部署 `0260c99679b7c54bfb68d19338f05e90e80c44f5` 的 R2/Queue provisioning、Worker upload、exact-SHA smoke 和 deployment manifest 均成功；Production member acceptance 同 SHA 成功并保留 manifest。实现经 PR #20、#22、#23、#24、#25 合并，Queue 生产 envelope/null 字段、分页精确匹配和瞬时 Cloudflare lookup 重试均已固化到部署规范。
 
 ## Validation Evidence
 

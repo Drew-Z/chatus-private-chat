@@ -15,8 +15,8 @@
   "branch": "codex/async-document-ingest",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "0260c99679b7c54bfb68d19338f05e90e80c44f5",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/25",
   "subtasks": [],
   "children": [],
   "parent": "07-27-product-experience-governance-q3",
@@ -27,50 +27,62 @@
       {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Vite production client and structural checks passed",
-        "at": "2026-07-31T08:33:49.581579+00:00"
+        "summary": "Final main validation passed; Vite client and structural checks succeeded",
+        "at": "2026-07-31T13:02:42.439977+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "38 files and 467 tests passed",
-        "at": "2026-07-31T08:33:50.296811+00:00"
+        "summary": "Final main validation passed; 38 files and 472 tests",
+        "at": "2026-07-31T13:03:28.705374+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
-        "summary": "Worker, React client, and browser TypeScript checks passed",
-        "at": "2026-07-31T08:33:51.016482+00:00"
+        "summary": "Final main validation passed; Worker, React client, and browser TypeScript checks",
+        "at": "2026-07-31T13:04:07.564073+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
-        "summary": "6373.10 KiB upload, 1293.30 KiB gzip; Queue and R2 bindings validated",
-        "at": "2026-07-31T08:33:51.748328+00:00"
+        "summary": "Final main validation passed; 6373.10 KiB upload and 1293.30 KiB gzip",
+        "at": "2026-07-31T13:05:04.923250+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
-        "summary": "No whitespace errors",
-        "at": "2026-07-31T08:33:52.532615+00:00"
-      },
-      {
-        "command": "npm run test:browser:workspace",
-        "status": "passed",
-        "summary": "67 passed and 33 skipped across five viewports",
-        "at": "2026-07-31T08:33:53.370705+00:00"
-      },
-      {
-        "command": "npm run test:browser:agent",
-        "status": "passed",
-        "summary": "1 local fake-Provider Agent acceptance test passed",
-        "at": "2026-07-31T08:33:54.004516+00:00"
+        "summary": "Final main validation passed; no whitespace errors",
+        "at": "2026-07-31T13:06:37.793124+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
-        "summary": "Repository consistency OK",
-        "at": "2026-07-31T08:33:54.655713+00:00"
+        "summary": "Final main validation passed; repository consistency OK",
+        "at": "2026-07-31T13:08:13.337286+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Earlier final document-ingest integration validation: 67 passed and 33 skipped across five viewports",
+        "at": "2026-07-31T13:10:26.741948+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Earlier final document-ingest integration validation: 1 local fake-Provider Agent acceptance test",
+        "at": "2026-07-31T13:12:48.415180+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 30631930762",
+        "status": "passed",
+        "summary": "Exact SHA 0260c99679b7c54bfb68d19338f05e90e80c44f5 provisioned R2 and Queues, deployed, passed production smoke, and retained manifest",
+        "at": "2026-07-31T13:13:45.907318+00:00"
+      },
+      {
+        "command": "GitHub Actions production acceptance run 30632367740",
+        "status": "passed",
+        "summary": "Exact SHA 0260c99679b7c54bfb68d19338f05e90e80c44f5 passed release verification and temporary-member acceptance; manifest retained",
+        "at": "2026-07-31T13:16:54.822158+00:00"
       }
     ]
   }
