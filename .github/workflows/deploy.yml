@@ -64,6 +64,8 @@ jobs:
       CHATUS_WORKER_NAME: ${{ vars.CHATUS_WORKER_NAME }}
       CHATUS_KV_NAMESPACE_ID: ${{ vars.CHATUS_KV_NAMESPACE_ID }}
       CHATUS_R2_BUCKET_NAME: ${{ vars.CHATUS_R2_BUCKET_NAME }}
+      CHATUS_DOCUMENT_INGEST_QUEUE_NAME: ${{ vars.CHATUS_DOCUMENT_INGEST_QUEUE_NAME }}
+      CHATUS_DOCUMENT_INGEST_DLQ_NAME: ${{ vars.CHATUS_DOCUMENT_INGEST_DLQ_NAME }}
       CHATUS_PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
     steps:
       - name: Checkout deployment revision
@@ -106,6 +108,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/provision-r2-bucket.mjs
+
+      - name: Provision document ingest Queues
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/provision-document-ingest-queues.mjs
 
       - name: Prepare deployment configuration and Worker secrets
         env:

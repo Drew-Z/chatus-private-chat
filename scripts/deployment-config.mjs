@@ -16,6 +16,10 @@ const RESERVED_EXTRA_SECRET_NAMES = new Set([
   "CHATUS_WORKER_NAME",
   "CHATUS_KV_NAMESPACE_ID",
   "CHATUS_R2_BUCKET_NAME",
+  "CHATUS_DOCUMENT_INGEST_QUEUE_NAME",
+  "CHATUS_DOCUMENT_INGEST_DLQ_NAME",
+  "DOCUMENT_INGEST_QUEUE_NAME",
+  "DOCUMENT_INGEST_DLQ_NAME",
   "CHATUS_PRODUCTION_URL",
   "ACCESS_CODES_MODE",
 ]);
@@ -292,6 +296,12 @@ export function readInstanceConfiguration(environment) {
     throw new Error("CHATUS_R2_BUCKET_NAME must be 3-63 lowercase letters, numbers, or hyphens");
   }
 
+  const documentIngestQueueName = validateQueueName(environment, "CHATUS_DOCUMENT_INGEST_QUEUE_NAME");
+  const documentIngestDlqName = validateQueueName(environment, "CHATUS_DOCUMENT_INGEST_DLQ_NAME");
+  if (documentIngestQueueName === documentIngestDlqName) {
+    throw new Error("CHATUS_DOCUMENT_INGEST_QUEUE_NAME and CHATUS_DOCUMENT_INGEST_DLQ_NAME must be different");
+  }
+
   const production = parseProductionUrl(requireText(environment, "CHATUS_PRODUCTION_URL"));
   if (production.routeMode === "workers_dev") {
     const labels = production.hostname.split(".");
@@ -299,7 +309,22 @@ export function readInstanceConfiguration(environment) {
       throw new Error("A workers.dev CHATUS_PRODUCTION_URL must be <worker>.<account-subdomain>.workers.dev");
     }
   }
-  return { workerName, kvNamespaceId, r2BucketName, ...production };
+  return {
+    workerName,
+    kvNamespaceId,
+    r2BucketName,
+    documentIngestQueueName,
+    documentIngestDlqName,
+    ...production,
+  };
+}
+
+function validateQueueName(environment, name) {
+  const value = requireText(environment, name);
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(value)) {
+    throw new Error(`${name} must be 1-63 letters, numbers, or hyphens and start and end with a letter or number`);
+  }
+  return value;
 }
 
 export function collectWorkerSecrets(environment) {
@@ -385,11 +410,46 @@ export function buildDeploymentConfig(baseConfig, instance) {
   if (workspaceFileBindings.length !== 1) {
     throw new Error("wrangler.jsonc must define exactly one WORKSPACE_FILES R2 binding");
   }
+  const queues = isRecord(config.queues) ? config.queues : {};
+  const producers = Array.isArray(queues.producers) ? queues.producers : [];
+  const documentIngestProducers = producers.filter((producer) => producer?.binding === "DOCUMENT_INGEST");
+  if (documentIngestProducers.length !== 1) {
+    throw new Error("wrangler.jsonc must define exactly one DOCUMENT_INGEST producer");
+  }
+  const localQueueName = documentIngestProducers[0]?.queue;
+  if (!hasText(localQueueName)) {
+    throw new Error("wrangler.jsonc DOCUMENT_INGEST producer must name its local Queue");
+  }
+  const consumers = Array.isArray(queues.consumers) ? queues.consumers : [];
+  const mainConsumers = consumers.filter((consumer) => consumer?.queue === localQueueName);
+  if (mainConsumers.length !== 1) {
+    throw new Error("wrangler.jsonc must define exactly one document ingest main consumer linked to DOCUMENT_INGEST");
+  }
+  const mainConsumer = mainConsumers[0];
+  if (mainConsumer.max_batch_size !== 1) {
+    throw new Error("wrangler.jsonc document ingest main consumer max_batch_size must be 1");
+  }
+  if (mainConsumer.max_retries !== 3) {
+    throw new Error("wrangler.jsonc document ingest main consumer max_retries must be 3");
+  }
+  if (mainConsumer.max_concurrency !== 1) {
+    throw new Error("wrangler.jsonc document ingest main consumer max_concurrency must be 1");
+  }
+  const localDlqName = mainConsumer.dead_letter_queue;
+  if (!hasText(localDlqName) || localDlqName === localQueueName) {
+    throw new Error("wrangler.jsonc document ingest main consumer must name a distinct dead_letter_queue");
+  }
+  const dlqConsumers = consumers.filter((consumer) => consumer?.queue === localDlqName);
+  if (dlqConsumers.length !== 1) {
+    throw new Error("wrangler.jsonc must define exactly one document ingest DLQ consumer");
+  }
 
   config.name = instance.workerName;
   config.vars = {
     ...(isRecord(config.vars) ? config.vars : {}),
     ACCESS_CODES_MODE: "managed",
+    DOCUMENT_INGEST_QUEUE_NAME: instance.documentIngestQueueName,
+    DOCUMENT_INGEST_DLQ_NAME: instance.documentIngestDlqName,
   };
   config.kv_namespaces = namespaces.map((namespace) =>
     namespace?.binding === "CHAT_STORE" ? { ...namespace, id: instance.kvNamespaceId } : namespace,
@@ -397,6 +457,26 @@ export function buildDeploymentConfig(baseConfig, instance) {
   config.r2_buckets = r2Buckets.map((bucket) =>
     bucket?.binding === "WORKSPACE_FILES" ? { ...bucket, bucket_name: instance.r2BucketName } : bucket,
   );
+  config.queues = {
+    ...queues,
+    producers: producers.map((producer) =>
+      producer?.binding === "DOCUMENT_INGEST"
+        ? { ...producer, queue: instance.documentIngestQueueName }
+        : producer,
+    ),
+    consumers: consumers.map((consumer) => {
+      if (consumer === mainConsumer) {
+        return {
+          ...consumer,
+          queue: instance.documentIngestQueueName,
+          dead_letter_queue: instance.documentIngestDlqName,
+        };
+      }
+      return consumer === dlqConsumers[0]
+        ? { ...consumer, queue: instance.documentIngestDlqName }
+        : consumer;
+    }),
+  };
   delete config.route;
   delete config.routes;
 

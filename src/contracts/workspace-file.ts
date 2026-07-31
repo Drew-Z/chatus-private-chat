@@ -1,11 +1,52 @@
 export const MAX_WORKSPACE_PATH_CHARS = 1_024;
 export const MAX_WORKSPACE_SEGMENT_CHARS = 255;
 export const MAX_WORKSPACE_FILE_BYTES = 10 * 1024 * 1024;
+export const MAX_TEXT_DOCUMENT_BYTES = 1 * 1024 * 1024;
+export const MAX_DOCUMENT_UPLOAD_BATCH_FILES = 50;
+export const MAX_WORKSPACE_MEMBER_BYTES = 250 * 1024 * 1024;
 export const MAX_WORKSPACE_FILES_PER_CONVERSATION = 10;
 export const MAX_WORKSPACE_LIST_LIMIT = 50;
+export const DOCUMENT_INGEST_LEASE_MS = 60_000;
 
 export type WorkspaceFileState = "uploading" | "ready" | "failed" | "deleting" | "deleted";
 export type WorkspaceFileVersionState = "pending" | "ready" | "failed" | "deleting";
+export type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "deleted";
+
+export function workspaceExtractedObjectKey(sourceObjectKey: string, generation: number): string {
+  return `${sourceObjectKey}.extracted.${generation}.txt`;
+}
+
+export type DocumentIngestMessage = {
+  ownerId: string;
+  fileId: string;
+  versionId: string;
+  generation: number;
+};
+
+export type DocumentIngestBeginResult =
+  | {
+      action: "process";
+      attempt: number;
+      sourceObjectKey: string;
+      extractedObjectKey: string;
+      name: string;
+      size: number;
+      mediaType: string;
+      checksum: string;
+    }
+  | { action: "retry"; retryAfterSeconds: number }
+  | { action: "ack"; status: DocumentIngestStatus | "stale" };
+
+export type DocumentIngestArtifact = {
+  objectKey: string;
+  checksum: string;
+  bytes: number;
+  chars: number;
+};
+
+export type DocumentIngestRetryResult =
+  | { ok: true; message: DocumentIngestMessage }
+  | { ok: false; error: "workspace_file_not_found" | "document_ingest_not_retryable" };
 
 export type WorkspaceFileVersionProjection = {
   id: string;
@@ -14,6 +55,10 @@ export type WorkspaceFileVersionProjection = {
   mediaType: string;
   checksum: string;
   state: WorkspaceFileVersionState;
+  ingestStatus: DocumentIngestStatus;
+  ingestGeneration: number;
+  ingestAttempts: number;
+  ingestError?: string;
   createdAt: number;
 };
 
@@ -27,6 +72,7 @@ export type WorkspaceFileProjection = {
   updatedAt: number;
   currentVersion?: WorkspaceFileVersionProjection;
   retryAvailable: boolean;
+  ingestRetryAvailable: boolean;
 };
 
 export type WorkspaceConversationFileRef = {
@@ -86,6 +132,7 @@ export type WorkspaceUploadReservationResult =
         | "workspace_account_purge_in_progress"
         | "workspace_operation_conflict"
         | "workspace_operation_failed"
+        | "workspace_member_quota_exceeded"
         | "workspace_upload_invalid";
       current?: WorkspaceFileProjection;
     };
@@ -129,6 +176,14 @@ export type WorkspaceDeleteReservationResult =
 export type WorkspaceResolvedFileVersion = WorkspaceConversationFileRef & {
   objectKey: string;
   generation: number;
+  ingestStatus: DocumentIngestStatus;
+  ingestGeneration: number;
+  ingestAttempts: number;
+  ingestError: string;
+  extractedObjectKey: string;
+  extractedChecksum: string;
+  extractedBytes: number;
+  extractedChars: number;
 };
 
 export type WorkspacePendingOperation = {
@@ -240,4 +295,28 @@ export function normalizeWorkspaceMediaType(value: unknown): string {
     && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u.test(normalized)
     ? normalized
     : "application/octet-stream";
+}
+
+export function workspaceDocumentByteLimit(mediaTypeValue: unknown, nameValue: unknown): number {
+  const mediaType = normalizeWorkspaceMediaType(mediaTypeValue);
+  const name = typeof nameValue === "string" ? nameValue.trim().toLowerCase() : "";
+  const extension = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+  if (
+    mediaType.startsWith("text/")
+    || mediaType === "application/json"
+    || mediaType === "application/xml"
+    || extension === ".txt"
+    || extension === ".md"
+    || extension === ".csv"
+    || extension === ".json"
+    || extension === ".xml"
+  ) return MAX_TEXT_DOCUMENT_BYTES;
+  if (
+    mediaType === "application/pdf"
+    || extension === ".pdf"
+    || extension === ".docx"
+    || extension === ".xlsx"
+    || extension === ".pptx"
+  ) return MAX_WORKSPACE_FILE_BYTES;
+  return 0;
 }

@@ -5,6 +5,10 @@ import {
   TEXT_FILE_EXTENSIONS,
   type FileInputPolicy,
 } from "../../../src/contracts/file";
+import type {
+  WorkspaceFileProjection,
+  WorkspaceFileVersionProjection,
+} from "../../../src/contracts/workspace-file";
 
 export type RouteProjection = {
   id: string;
@@ -544,27 +548,9 @@ export type AgentConversation = {
   workspaceFiles: WorkspaceConversationFileRef[];
 };
 
-export type WorkspaceFileVersion = {
-  id: string;
-  fileId: string;
-  size: number;
-  mediaType: string;
-  checksum: string;
-  state: "pending" | "ready" | "failed" | "deleting";
-  createdAt: number;
-};
+export type WorkspaceFileVersion = WorkspaceFileVersionProjection;
 
-export type WorkspaceFile = {
-  id: string;
-  path: string;
-  name: string;
-  pinned: boolean;
-  state: "uploading" | "ready" | "failed" | "deleting" | "deleted";
-  createdAt: number;
-  updatedAt: number;
-  currentVersion?: WorkspaceFileVersion;
-  retryAvailable: boolean;
-};
+export type WorkspaceFile = WorkspaceFileProjection;
 
 export type WorkspaceConversationFileRef = {
   fileId: string;
@@ -1110,6 +1096,16 @@ export async function uploadWorkspaceFile(input: {
   return data.file;
 }
 
+export async function retryWorkspaceDocumentIngest(fileId: string, versionId?: string): Promise<void> {
+  const data = await requestJson(`/api/workspace/files/${encodeURIComponent(fileId)}/ingest-retry`, {
+    method: "POST",
+    body: JSON.stringify(versionId ? { versionId } : {}),
+  });
+  if (!isRecord(data) || !hasExactKeys(data, ["ok"]) || data.ok !== true) {
+    throw new ApiError("invalid_workspace_response", "文件解析重试结果格式无效。", 502);
+  }
+}
+
 export async function updateWorkspaceFile(
   file: WorkspaceFile,
   patch: { relativePath?: string; pinned?: boolean },
@@ -1620,13 +1616,31 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
 
 export function isWorkspaceFileVersion(value: unknown): value is WorkspaceFileVersion {
   return isRecord(value)
-    && hasExactKeys(value, ["id", "fileId", "size", "mediaType", "checksum", "state", "createdAt"])
+    && hasExactKeys(value, [
+      "id",
+      "fileId",
+      "size",
+      "mediaType",
+      "checksum",
+      "state",
+      "ingestStatus",
+      "ingestGeneration",
+      "ingestAttempts",
+      ...(value.ingestError === undefined ? [] : ["ingestError"]),
+      "createdAt",
+    ])
     && isNonEmptyString(value.id)
     && isNonEmptyString(value.fileId)
     && isNonNegativeInteger(value.size)
     && isNonEmptyString(value.mediaType)
     && /^[0-9a-f]{64}$/u.test(typeof value.checksum === "string" ? value.checksum : "")
     && (value.state === "pending" || value.state === "ready" || value.state === "failed" || value.state === "deleting")
+    && (value.ingestStatus === "queued" || value.ingestStatus === "extracting" || value.ingestStatus === "ready"
+      || value.ingestStatus === "failed" || value.ingestStatus === "deleted")
+    && isPositiveInteger(value.ingestGeneration)
+    && isNonNegativeInteger(value.ingestAttempts)
+    && (value.ingestError === undefined
+      || (typeof value.ingestError === "string" && value.ingestError.length > 0 && value.ingestError.length <= 120))
     && isNonNegativeInteger(value.createdAt);
 }
 
@@ -1641,6 +1655,7 @@ export function isWorkspaceFile(value: unknown): value is WorkspaceFile {
       "createdAt",
       "updatedAt",
       "retryAvailable",
+      "ingestRetryAvailable",
       ...(value.currentVersion === undefined ? [] : ["currentVersion"]),
     ])
     && isNonEmptyString(value.id)
@@ -1653,7 +1668,9 @@ export function isWorkspaceFile(value: unknown): value is WorkspaceFile {
     && isNonNegativeInteger(value.updatedAt)
     && value.updatedAt >= value.createdAt
     && (value.currentVersion === undefined || isWorkspaceFileVersion(value.currentVersion))
-    && typeof value.retryAvailable === "boolean";
+    && (value.currentVersion === undefined || value.currentVersion.fileId === value.id)
+    && value.retryAvailable === (value.state === "failed")
+    && value.ingestRetryAvailable === (value.currentVersion?.ingestStatus === "failed");
 }
 
 function isWorkspaceConversationFileRef(value: unknown): value is WorkspaceConversationFileRef {

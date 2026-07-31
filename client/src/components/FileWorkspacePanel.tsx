@@ -6,6 +6,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  RefreshCw,
   RotateCw,
   Search,
   Trash2,
@@ -16,6 +17,7 @@ import {
   deleteWorkspaceFile,
   listWorkspaceFiles,
   listWorkspaceFileVersions,
+  retryWorkspaceDocumentIngest,
   setConversationWorkspaceFiles,
   updateWorkspaceFile,
   uploadWorkspaceFile,
@@ -24,10 +26,11 @@ import {
   type WorkspaceFile,
   type WorkspaceFileVersion,
 } from "../lib/api";
+import {
+  MAX_WORKSPACE_FILES_PER_CONVERSATION,
+} from "../../../src/contracts/workspace-file";
+import { workspaceUploadSelectionError } from "../lib/workspace-files";
 import { ConfirmDialog } from "./ConfirmDialog";
-
-const MAX_DIRECTORY_UPLOAD_FILES = 50;
-const MAX_CONVERSATION_FILES = 10;
 
 export function FileWorkspacePanel({
   conversation,
@@ -93,28 +96,43 @@ export function FileWorkspacePanel({
     return () => window.clearTimeout(timer);
   }, [query]);
 
+  useEffect(() => {
+    if (!files.some((file) => file.currentVersion?.ingestStatus === "queued" || file.currentVersion?.ingestStatus === "extracting")) return;
+    const timer = window.setTimeout(() => void load(false), 1_200);
+    return () => window.clearTimeout(timer);
+  }, [files, load]);
+
   const refresh = () => void load(false);
 
   const loadVersions = async (file: WorkspaceFile): Promise<WorkspaceFileVersion[]> => {
     if (versions[file.id]) return versions[file.id];
     const result = await listWorkspaceFileVersions(file.id);
-    const ready = result.versions.filter((version) => version.state === "ready");
+    const ready = result.versions.filter((version) => version.state === "ready" && version.ingestStatus === "ready");
     setVersions((current) => ({ ...current, [file.id]: ready }));
     return ready;
   };
 
   const uploadFiles = async (selected: File[]) => {
     if (!selected.length || busy || pendingId) return;
-    if (selected.length > MAX_DIRECTORY_UPLOAD_FILES) {
-      setError(`一次最多上传 ${MAX_DIRECTORY_UPLOAD_FILES} 个文件。`);
+    const uploads = selected.map((file) => ({
+      file,
+      relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+    }));
+    const invalid = workspaceUploadSelectionError(uploads.map(({ file, relativePath }) => ({
+      name: file.name,
+      mediaType: file.type,
+      relativePath,
+      size: file.size,
+    })));
+    if (invalid) {
+      setError(invalid);
       return;
     }
     setError("");
     setPendingId("upload");
     let firstFailure = "";
-    for (const file of selected) {
+    for (const { file, relativePath } of uploads) {
       try {
-        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
         await uploadWorkspaceFile({
           file,
           relativePath,
@@ -133,6 +151,16 @@ export function FileWorkspacePanel({
     const target = retryTarget;
     setRetryTarget(null);
     if (!target) return;
+    const invalid = workspaceUploadSelectionError([{
+      name: file.name,
+      mediaType: file.type,
+      relativePath: target.path,
+      size: file.size,
+    }]);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
     setPendingId(target.id);
     setError("");
     try {
@@ -151,6 +179,25 @@ export function FileWorkspacePanel({
       await load(false);
     } catch (failure) {
       setError(fileError(failure, "文件重试失败。"));
+    } finally {
+      setPendingId("");
+    }
+  };
+
+  const retryDocumentIngest = async (file: WorkspaceFile) => {
+    if (!file.currentVersion || busy || pendingId) return;
+    setPendingId(`ingest:${file.id}`);
+    setError("");
+    try {
+      await retryWorkspaceDocumentIngest(file.id, file.currentVersion.id);
+      setVersions((current) => {
+        const next = { ...current };
+        delete next[file.id];
+        return next;
+      });
+      await load(false);
+    } catch (failure) {
+      setError(fileError(failure, "文件解析重试失败。"));
     } finally {
       setPendingId("");
     }
@@ -189,7 +236,7 @@ export function FileWorkspacePanel({
         const readyVersions = await loadVersions(file);
         const nextVersionId = versionId || file.currentVersion?.id || readyVersions[0]?.id;
         if (!nextVersionId) throw new Error("文件还没有可用版本。");
-        if (!selected && currentRefs.length >= MAX_CONVERSATION_FILES) throw new Error("每个会话最多选择 10 个文件。");
+        if (!selected && currentRefs.length >= MAX_WORKSPACE_FILES_PER_CONVERSATION) throw new Error("每个会话最多选择 10 个文件。");
         nextRefs = [
           ...currentRefs.filter((ref) => ref.fileId !== file.id),
           { fileId: file.id, versionId: nextVersionId },
@@ -223,7 +270,7 @@ export function FileWorkspacePanel({
         <input ref={fileInputRef} hidden type="file" multiple onChange={(event) => { void uploadFiles([...event.target.files || []]); event.target.value = ""; }} />
         <input ref={directoryInputRef} hidden type="file" multiple onChange={(event) => { void uploadFiles([...event.target.files || []]); event.target.value = ""; }} />
         <input ref={retryInputRef} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) void retryUpload(file); event.target.value = ""; }} />
-        <span>{conversation?.workspaceFiles.length || 0}/{MAX_CONVERSATION_FILES}</span>
+        <span>{conversation?.workspaceFiles.length || 0}/{MAX_WORKSPACE_FILES_PER_CONVERSATION}</span>
       </div>
       <label className="conversation-search file-search">
         <Search size={15} aria-hidden="true" />
@@ -238,6 +285,7 @@ export function FileWorkspacePanel({
           const selected = selectedByFile.get(file.id);
           const readyVersions = versions[file.id];
           const disabled = busy || Boolean(pendingId) || file.state === "uploading" || file.state === "deleting";
+          const currentReady = file.state === "ready" && file.currentVersion?.ingestStatus === "ready";
           return (
             <div className={`file-workspace-row ${selected ? "selected" : ""}`} key={file.id}>
               {editingId === file.id ? (
@@ -252,10 +300,10 @@ export function FileWorkspacePanel({
                     <input
                       type="checkbox"
                       checked={Boolean(selected)}
-                      disabled={disabled || file.state !== "ready" || (!selected && (conversation?.workspaceFiles.length || 0) >= MAX_CONVERSATION_FILES)}
+                      disabled={disabled || (!selected && !currentReady) || (!selected && (conversation?.workspaceFiles.length || 0) >= MAX_WORKSPACE_FILES_PER_CONVERSATION)}
                       onChange={() => void updateConversationRef(file)}
                     />
-                    <span><strong title={file.path}>{file.name}</strong><small title={file.path}>{file.path} · {formatBytes(file.currentVersion?.size || 0)} · {workspaceFileStateText(file.state)}</small></span>
+                    <span><strong title={file.path}>{file.name}</strong><small title={file.path}>{file.path} · {formatBytes(file.currentVersion?.size || 0)} · {workspaceFileStateText(file)}</small></span>
                   </label>
                   <div className="file-workspace-row-actions">
                     <button className="icon-button" type="button" onClick={() => void mutateFile(file, { pinned: !file.pinned })} disabled={disabled} aria-label={file.pinned ? "取消固定" : "固定文件"} title={file.pinned ? "取消固定" : "固定文件"}>{file.pinned ? <PinOff size={14} /> : <Pin size={14} />}</button>
@@ -272,6 +320,16 @@ export function FileWorkspacePanel({
                       aria-label="重命名文件"
                       title="重命名"
                     ><Pencil size={14} /></button>
+                    {file.ingestRetryAvailable && file.currentVersion && (
+                      <button
+                        className="icon-button"
+                        type="button"
+                        onClick={() => void retryDocumentIngest(file)}
+                        disabled={disabled}
+                        aria-label="重试文件解析"
+                        title="重试解析"
+                      ><RefreshCw size={14} /></button>
+                    )}
                     <button
                       className="icon-button"
                       type="button"
@@ -352,11 +410,17 @@ function formatVersionDate(value: number): string {
   return new Date(value).toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-function workspaceFileStateText(state: WorkspaceFile["state"]): string {
-  if (state === "uploading") return "上传中";
-  if (state === "failed") return "失败";
-  if (state === "deleting") return "删除中";
-  return state === "deleted" ? "已删除" : "可用";
+function workspaceFileStateText(file: WorkspaceFile): string {
+  if (file.state === "uploading") return "上传中";
+  if (file.state === "failed") return "上传失败";
+  if (file.state === "deleting") return "删除中";
+  if (file.state === "deleted") return "已删除";
+  const status = file.currentVersion?.ingestStatus;
+  if (status === "queued") return "等待解析";
+  if (status === "extracting") return "解析中";
+  if (status === "failed") return "解析失败";
+  if (status === "deleted") return "已删除";
+  return status === "ready" ? "可用" : "等待上传";
 }
 
 function fileError(error: unknown, fallback: string): string {

@@ -60,10 +60,14 @@ import {
   MAX_WORKSPACE_LIST_LIMIT,
   normalizeWorkspaceEntityId,
   normalizeWorkspaceOperationId,
+  workspaceDocumentByteLimit,
+  type DocumentIngestMessage,
   type WorkspaceDeleteReservationResult,
+  type WorkspaceFileProjection,
   type WorkspaceMutationResult,
   type WorkspaceUploadReservationResult,
 } from "./contracts/workspace-file";
+import { DocumentIngestError, extractDocumentText } from "./services/document-ingest";
 import {
   buildProviderRoutePlan,
   isTerminalProviderFailure,
@@ -331,6 +335,7 @@ export type Env = {
   ASSETS: Fetcher;
   CHAT_STORE: KVNamespace;
   WORKSPACE_FILES: R2Bucket;
+  DOCUMENT_INGEST: Queue<DocumentIngestMessage>;
   USER_STATE: DurableObjectNamespace<UserState>;
   TEAM_AGENT: DurableObjectNamespace<TeamAgent>;
   PROVIDER_COORDINATOR: DurableObjectNamespace<ProviderCoordinator>;
@@ -357,6 +362,8 @@ export type Env = {
   SESSION_TTL_SECONDS?: string;
   DEFAULT_MAX_TOKENS?: string;
   DEFAULT_CLIENT?: string;
+  DOCUMENT_INGEST_QUEUE_NAME?: string;
+  DOCUMENT_INGEST_DLQ_NAME?: string;
   BLOCKED_PROMPTS?: string;
   ADMIN_TOKEN?: string;
   ROUTE_KEYS_MASTER_KEY?: string;
@@ -896,7 +903,103 @@ export default {
       return withRequestId(response, requestId);
     }
   },
+  async queue(batch: MessageBatch<DocumentIngestMessage>, env: Env): Promise<void> {
+    await handleDocumentIngestBatch(batch, env);
+  },
 };
+
+async function handleDocumentIngestBatch(batch: MessageBatch<DocumentIngestMessage>, env: Env): Promise<void> {
+  const mainQueue = env.DOCUMENT_INGEST_QUEUE_NAME?.trim() || "";
+  const deadLetterQueue = env.DOCUMENT_INGEST_DLQ_NAME?.trim() || "";
+  if (!mainQueue || !deadLetterQueue || mainQueue === deadLetterQueue) {
+    for (const message of batch.messages) message.retry();
+    return;
+  }
+  if (batch.queue === deadLetterQueue) {
+    for (const message of batch.messages) await handleDocumentIngestDlqMessage(message, env);
+    return;
+  }
+  if (batch.queue !== mainQueue) {
+    for (const message of batch.messages) message.retry();
+    return;
+  }
+  for (const message of batch.messages) await handleDocumentIngestMessage(message, env);
+}
+
+async function handleDocumentIngestDlqMessage(message: Message<DocumentIngestMessage>, env: Env): Promise<void> {
+  const body = normalizeDocumentIngestQueueMessage(message.body);
+  if (!body) {
+    message.ack();
+    return;
+  }
+  try {
+    const root = await getTeamAgent(env, body.ownerId);
+    await root.recordDocumentIngestDlq(body, "document_ingest_retry_exhausted");
+    message.ack();
+  } catch {
+    message.retry();
+  }
+}
+
+async function handleDocumentIngestMessage(message: Message<DocumentIngestMessage>, env: Env): Promise<void> {
+  const body = normalizeDocumentIngestQueueMessage(message.body);
+  if (!body) {
+    message.ack();
+    return;
+  }
+  let root: DurableObjectStub<TeamAgent>;
+  try {
+    root = await getTeamAgent(env, body.ownerId);
+  } catch {
+    message.retry();
+    return;
+  }
+  const begun = await root.beginDocumentIngest(body);
+  if (begun.action === "retry") {
+    message.retry({ delaySeconds: begun.retryAfterSeconds });
+    return;
+  }
+  if (begun.action === "ack") {
+    message.ack();
+    return;
+  }
+  try {
+    const source = await env.WORKSPACE_FILES.get(begun.sourceObjectKey);
+    if (!source || source.size !== begun.size) throw new Error("workspace_object_unavailable");
+    const sourceBytes = new Uint8Array(await source.arrayBuffer());
+    if (await sha256HexBytes(sourceBytes) !== begun.checksum) throw new Error("workspace_object_checksum_mismatch");
+    const result = await extractDocumentText({
+      bytes: sourceBytes,
+      name: begun.name,
+      mediaType: begun.mediaType,
+    });
+    const extractedBytes = new TextEncoder().encode(result.text);
+    const checksum = await sha256HexBytes(extractedBytes);
+    await env.WORKSPACE_FILES.put(begun.extractedObjectKey, extractedBytes, {
+      sha256: checksum,
+      httpMetadata: { contentType: "text/plain; charset=utf-8" },
+      customMetadata: { format: result.format },
+    });
+    const completed = await root.completeDocumentIngest(body, {
+      objectKey: begun.extractedObjectKey,
+      checksum,
+      bytes: extractedBytes.byteLength,
+      chars: result.text.length,
+    });
+    if (!completed) await env.WORKSPACE_FILES.delete(begun.extractedObjectKey);
+    message.ack();
+  } catch (error) {
+    const transient = !(error instanceof DocumentIngestError) || error.transient;
+    const code = error instanceof DocumentIngestError
+      ? error.code
+      : error instanceof Error && error.message.startsWith("workspace_")
+        ? error.message.slice(0, 80)
+        : "document_ingest_transient_failure";
+    const recorded = await root.recordDocumentIngestFailure(body, code, transient).catch(() => false);
+    if (transient || !recorded) message.retry();
+    else message.ack();
+  }
+}
 
 async function handleRequest(
   request: Request,
@@ -1161,6 +1264,9 @@ async function handleApi(
     }
     if (workspaceFileRoute.action === "retry" && request.method === "POST") {
       return handleWorkspaceFileUpload(request, env, session, workspaceFileRoute.fileId);
+    }
+    if (workspaceFileRoute.action === "ingest-retry" && request.method === "POST") {
+      return handleWorkspaceDocumentIngestRetry(request, env, session, workspaceFileRoute.fileId);
     }
     if (workspaceFileRoute.action === "file" && request.method === "PATCH") {
       return handleUpdateWorkspaceFile(request, env, session, workspaceFileRoute.fileId);
@@ -3121,6 +3227,14 @@ async function handleWorkspaceFileUpload(
   const relativePath = typeof relativePathValue === "string" && relativePathValue
     ? relativePathValue
     : existing?.file.path || fileValue.name;
+  const documentByteLimit = workspaceDocumentByteLimit(fileValue.type, relativePath);
+  if (!documentByteLimit) {
+    return jsonResponse({ error: "workspace_document_unsupported", message: "仅支持文本、PDF、DOCX、XLSX 和 PPTX" }, 415);
+  }
+  if (fileValue.size > documentByteLimit) {
+    const message = documentByteLimit < MAX_WORKSPACE_FILE_BYTES ? "文本文件不能超过 1 MB" : "文档不能超过 10 MB";
+    return jsonResponse({ error: "workspace_file_too_large", message }, 413);
+  }
   const bytes = await fileValue.arrayBuffer();
   const checksum = await sha256HexBytes(bytes);
   const reservation = await root.reserveWorkspaceUpload({
@@ -3133,7 +3247,10 @@ async function handleWorkspaceFileUpload(
   });
   if (!reservation.ok) return workspaceMutationError(reservation);
   if (reservation.reservation.completed) {
-    return jsonResponse({ ok: true, file: reservation.reservation.file, existing: true });
+    const queued = await enqueueWorkspaceDocument(env, root, session.label, reservation.reservation.file);
+    return queued
+      ? jsonResponse({ ok: true, file: reservation.reservation.file, existing: true })
+      : jsonResponse({ error: "document_ingest_queue_unavailable", message: "文件已保存，解析任务可手动重试" }, 503);
   }
 
   try {
@@ -3156,6 +3273,14 @@ async function handleWorkspaceFileUpload(
       reservation.reservation.generation,
     );
     if (!completed.ok) return workspaceMutationError(completed);
+    const queued = await enqueueWorkspaceDocument(env, root, session.label, completed.file);
+    if (!queued) {
+      return jsonResponse({
+        error: "document_ingest_queue_unavailable",
+        message: "文件已保存，解析任务可手动重试",
+        file: completed.file,
+      }, 503);
+    }
     return jsonResponse({ ok: true, file: completed.file, existing: reservation.reservation.existing }, fileId ? 200 : 201);
   } catch {
     return jsonResponse({
@@ -3165,6 +3290,61 @@ async function handleWorkspaceFileUpload(
       message: "文件已写入，元数据正在自动恢复",
     }, 202);
   }
+}
+
+async function enqueueWorkspaceDocument(
+  env: Env,
+  root: DurableObjectStub<TeamAgent>,
+  ownerId: string,
+  file: WorkspaceFileProjection,
+): Promise<boolean> {
+  const version = file.currentVersion;
+  if (!version || version.ingestStatus !== "queued") return version?.ingestStatus === "ready";
+  const message: DocumentIngestMessage = {
+    ownerId,
+    fileId: file.id,
+    versionId: version.id,
+    generation: version.ingestGeneration,
+  };
+  try {
+    await env.DOCUMENT_INGEST.send(message, { contentType: "json" });
+    return true;
+  } catch {
+    await root.recordDocumentIngestDlq(message, "document_ingest_queue_unavailable").catch(() => undefined);
+    return false;
+  }
+}
+
+async function handleWorkspaceDocumentIngestRetry(
+  request: Request,
+  env: Env,
+  session: Session,
+  fileId: string,
+): Promise<Response> {
+  const body = await readJson<unknown>(request);
+  if (!isRecord(body) || Object.keys(body).some((key) => key !== "versionId")) {
+    return jsonResponse({ error: "document_ingest_retry_invalid", message: "解析重试参数无效" }, 400);
+  }
+  const root = await getTeamAgent(env, session.label, session);
+  const versions = await root.listWorkspaceFileVersions(fileId);
+  if (!versions?.file.currentVersion) return jsonResponse({ error: "workspace_file_not_found", message: "文件不存在" }, 404);
+  const requestedVersionId = body.versionId === undefined
+    ? versions.file.currentVersion.id
+    : normalizeWorkspaceEntityId(body.versionId);
+  if (!requestedVersionId) return jsonResponse({ error: "document_ingest_retry_invalid", message: "解析版本无效" }, 400);
+  const retried = await root.retryDocumentIngest(fileId, requestedVersionId);
+  if (!retried.ok) {
+    return retried.error === "workspace_file_not_found"
+      ? jsonResponse({ error: retried.error, message: "文件不存在" }, 404)
+      : jsonResponse({ error: retried.error, message: "当前解析状态不可重试" }, 409);
+  }
+  try {
+    await env.DOCUMENT_INGEST.send(retried.message, { contentType: "json" });
+  } catch {
+    await root.recordDocumentIngestDlq(retried.message, "document_ingest_queue_unavailable").catch(() => undefined);
+    return jsonResponse({ error: "document_ingest_queue_unavailable", message: "解析队列暂时不可用" }, 503);
+  }
+  return jsonResponse({ ok: true });
 }
 
 async function handleUpdateWorkspaceFile(
@@ -5779,7 +5959,7 @@ function agentConversationWorkspaceSourceIdFromPath(url: URL): string {
 
 type WorkspaceFileRoute = {
   fileId: string;
-  action: "file" | "versions" | "download" | "retry";
+  action: "file" | "versions" | "download" | "retry" | "ingest-retry";
 };
 
 function workspaceFileRouteFromUrl(url: URL): WorkspaceFileRoute | undefined {
@@ -5796,10 +5976,21 @@ function workspaceFileRouteFromUrl(url: URL): WorkspaceFileRoute | undefined {
   if (!fileId) return undefined;
   const action = parts.length === 1 || !parts[1]
     ? "file"
-    : parts[1] === "versions" || parts[1] === "download" || parts[1] === "retry"
+    : parts[1] === "versions" || parts[1] === "download" || parts[1] === "retry" || parts[1] === "ingest-retry"
       ? parts[1]
       : undefined;
   return action ? { fileId, action } : undefined;
+}
+
+function normalizeDocumentIngestQueueMessage(value: unknown): DocumentIngestMessage | undefined {
+  if (!isRecord(value)) return undefined;
+  const ownerId = typeof value.ownerId === "string" ? value.ownerId.trim() : "";
+  const fileId = normalizeWorkspaceEntityId(value.fileId);
+  const versionId = normalizeWorkspaceEntityId(value.versionId);
+  const generation = finitePositiveInteger(value.generation);
+  return ownerId && ownerId.length <= 120 && fileId && versionId && generation
+    ? { ownerId, fileId, versionId, generation }
+    : undefined;
 }
 
 async function completeWithUserRoute(
@@ -7501,7 +7692,7 @@ async function secretFingerprint(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function sha256HexBytes(value: ArrayBuffer): Promise<string> {
+async function sha256HexBytes(value: BufferSource): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", value);
   return hexBytes(digest);
 }

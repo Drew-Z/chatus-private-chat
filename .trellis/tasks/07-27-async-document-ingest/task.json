@@ -3,7 +3,7 @@
   "name": "async-document-ingest",
   "title": "异步 PDF Office 文档解析",
   "description": "Queue/DLQ、状态机、安全解析、配额限制、幂等重试与 Workers 兼容验证。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-07-27",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/async-document-ingest",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
@@ -22,5 +22,56 @@
   "parent": "07-27-product-experience-governance-q3",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite production client and structural checks passed",
+        "at": "2026-07-31T08:33:49.581579+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "38 files and 467 tests passed",
+        "at": "2026-07-31T08:33:50.296811+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser TypeScript checks passed",
+        "at": "2026-07-31T08:33:51.016482+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "6373.10 KiB upload, 1293.30 KiB gzip; Queue and R2 bindings validated",
+        "at": "2026-07-31T08:33:51.748328+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors",
+        "at": "2026-07-31T08:33:52.532615+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "67 passed and 33 skipped across five viewports",
+        "at": "2026-07-31T08:33:53.370705+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "1 local fake-Provider Agent acceptance test passed",
+        "at": "2026-07-31T08:33:54.004516+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency OK",
+        "at": "2026-07-31T08:33:54.655713+00:00"
+      }
+    ]
+  }
 }
