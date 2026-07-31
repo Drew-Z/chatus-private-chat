@@ -21,6 +21,26 @@
       "binding": "WORKSPACE_FILES"
     }
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "DOCUMENT_INGEST",
+        "queue": "chatus-document-ingest-local"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "chatus-document-ingest-local",
+        "max_batch_size": 1,
+        "max_retries": 3,
+        "max_concurrency": 1,
+        "dead_letter_queue": "chatus-document-ingest-dlq-local"
+      },
+      {
+        "queue": "chatus-document-ingest-dlq-local"
+      }
+    ]
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -65,7 +85,9 @@
     "MAX_IMAGES_PER_REQUEST": "4",
     "SESSION_TTL_SECONDS": "2592000",
     "DEFAULT_MAX_TOKENS": "4096",
-    "DEFAULT_CLIENT": "react"
+    "DEFAULT_CLIENT": "react",
+    "DOCUMENT_INGEST_QUEUE_NAME": "chatus-document-ingest-local",
+    "DOCUMENT_INGEST_DLQ_NAME": "chatus-document-ingest-dlq-local"
   },
   "observability": {
     "enabled": true,

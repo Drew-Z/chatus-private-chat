@@ -10,6 +10,7 @@ import packageSourceRaw from "../package.json?raw";
 import { classifyChangedPaths } from "../scripts/classify-ci-paths.mjs";
 import { createDeliveryManifest } from "../scripts/write-delivery-manifest.mjs";
 import { provisionR2Bucket } from "../scripts/provision-r2-bucket.mjs";
+import { provisionDocumentIngestQueues } from "../scripts/provision-document-ingest-queues.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const normalizeText = (source: string) => source.replace(/\r\n?/gu, "\n");
@@ -218,6 +219,111 @@ describe("main deployment governance", () => {
       ...base,
       fetchImpl: async () => new Response("not-json", { status: 502 }),
     })).rejects.toThrow("invalid JSON (status 502)");
+  });
+
+  it("provisions the document ingest DLQ before the main Queue and verifies both", async () => {
+    const requests: Array<{ url: string; method: string; body?: string }> = [];
+    const queueNames = ["chatus-test-document-dlq", "chatus-test-document"];
+    const responses = queueNames.flatMap((queueName) => [
+      apiResponse(200, true, [], []),
+      apiResponse(200, true, { queue_id: `${queueName}-id`, queue_name: queueName }, []),
+      apiResponse(200, true, [{ queue_id: `${queueName}-id`, queue_name: queueName }], []),
+    ]);
+
+    await expect(provisionDocumentIngestQueues({
+      accountId: "d".repeat(32),
+      apiToken: "test-token",
+      queueName: "chatus-test-document",
+      deadLetterQueueName: "chatus-test-document-dlq",
+      fetchImpl: async (url, init = {}) => {
+        requests.push({
+          url: String(url),
+          method: init.method || "GET",
+          ...(typeof init.body === "string" ? { body: init.body } : {}),
+        });
+        return responses.shift()!;
+      },
+      logger: { log() {} },
+    })).resolves.toEqual({
+      deadLetterQueue: { queueName: "chatus-test-document-dlq", created: true },
+      queue: { queueName: "chatus-test-document", created: true },
+    });
+
+    expect(requests.map((request) => request.method)).toEqual(["GET", "POST", "GET", "GET", "POST", "GET"]);
+    expect(new URL(requests[0]!.url).searchParams.get("name")).toBe("chatus-test-document-dlq");
+    expect(requests[1]?.body).toBe(JSON.stringify({ queue_name: "chatus-test-document-dlq" }));
+    expect(new URL(requests[3]!.url).searchParams.get("name")).toBe("chatus-test-document");
+    expect(requests[4]?.body).toBe(JSON.stringify({ queue_name: "chatus-test-document" }));
+  });
+
+  it("leaves existing document ingest Queues unchanged", async () => {
+    const requests: string[] = [];
+    await expect(provisionDocumentIngestQueues({
+      accountId: "e".repeat(32),
+      apiToken: "test-token",
+      queueName: "chatus-test-document",
+      deadLetterQueueName: "chatus-test-document-dlq",
+      fetchImpl: async (url, init = {}) => {
+        requests.push(`${init.method || "GET"} ${new URL(String(url)).searchParams.get("name")}`);
+        const queueName = new URL(String(url)).searchParams.get("name");
+        return apiResponse(200, true, [{ queue_id: `${queueName}-id`, queue_name: queueName }], []);
+      },
+      logger: { log() {} },
+    })).resolves.toEqual({
+      deadLetterQueue: { queueName: "chatus-test-document-dlq", created: false },
+      queue: { queueName: "chatus-test-document", created: false },
+    });
+    expect(requests).toEqual([
+      "GET chatus-test-document-dlq",
+      "GET chatus-test-document",
+    ]);
+  });
+
+  it("absorbs a concurrent Queue creation without relying on duplicate error codes", async () => {
+    const responses = [
+      apiResponse(200, true, [], []),
+      apiResponse(409, false, null, [{ code: 99999 }]),
+      apiResponse(200, true, [{ queue_id: "dlq-id", queue_name: "chatus-test-document-dlq" }], []),
+      apiResponse(200, true, [{ queue_id: "queue-id", queue_name: "chatus-test-document" }], []),
+    ];
+    await expect(provisionDocumentIngestQueues({
+      accountId: "f".repeat(32),
+      apiToken: "test-token",
+      queueName: "chatus-test-document",
+      deadLetterQueueName: "chatus-test-document-dlq",
+      fetchImpl: async () => responses.shift()!,
+      logger: { log() {} },
+    })).resolves.toEqual({
+      deadLetterQueue: { queueName: "chatus-test-document-dlq", created: false },
+      queue: { queueName: "chatus-test-document", created: false },
+    });
+  });
+
+  it("fails closed for Queue authorization, malformed envelopes, and non-exact verification", async () => {
+    const base = {
+      accountId: "1".repeat(32),
+      apiToken: "test-token",
+      queueName: "chatus-test-document",
+      deadLetterQueueName: "chatus-test-document-dlq",
+      logger: { log() {} },
+    };
+    await expect(provisionDocumentIngestQueues({
+      ...base,
+      fetchImpl: async () => apiResponse(403, false, null, [{ code: 10000 }]),
+    })).rejects.toThrow("lookup failed (status 403, codes 10000)");
+    await expect(provisionDocumentIngestQueues({
+      ...base,
+      fetchImpl: async () => new Response(JSON.stringify({ result: [] }), { status: 200 }),
+    })).rejects.toThrow("invalid envelope");
+    const responses = [
+      apiResponse(200, true, [], []),
+      apiResponse(200, true, { queue_id: "wrong-id", queue_name: "wrong-name" }, []),
+      apiResponse(200, true, [{ queue_id: "wrong-id", queue_name: "wrong-name" }], []),
+    ];
+    await expect(provisionDocumentIngestQueues({
+      ...base,
+      fetchImpl: async () => responses.shift()!,
+    })).rejects.toThrow("post-create verification failed");
   });
 
   it("stays on the approved 0.x version line", () => {

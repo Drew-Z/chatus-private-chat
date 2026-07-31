@@ -35,6 +35,8 @@ Required GitHub Repository Variables:
 | `CHATUS_KV_NAMESPACE_ID` | Stable 32-character hexadecimal KV namespace ID |
 | `CHATUS_PRODUCTION_URL` | HTTPS origin without credentials, port, path, query, or fragment |
 | `CHATUS_R2_BUCKET_NAME` | Stable 3-63 character lowercase R2 bucket name using letters, numbers, and hyphens |
+| `CHATUS_DOCUMENT_INGEST_QUEUE_NAME` | 1-63 letter/number/hyphen main Queue name with alphanumeric ends |
+| `CHATUS_DOCUMENT_INGEST_DLQ_NAME` | Distinct 1-63 letter/number/hyphen dead-letter Queue name with alphanumeric ends |
 
 If the production host is `<worker>.<account-subdomain>.workers.dev`, generated config uses `workers_dev: true` and no routes. Other hosts use `workers_dev: false` with one exact `custom_domain` route. A workers.dev hostname must match `CHATUS_WORKER_NAME`.
 
@@ -70,6 +72,10 @@ New Durable Object namespaces must use `new_sqlite_classes`; `new_classes` selec
 
 The checked-in Wrangler baseline defines exactly one ID-free `WORKSPACE_FILES` R2 binding so local Vitest, Playwright, Wrangler dev, and default dry-run do not need a production account. `prepare:deployment` requires `CHATUS_R2_BUCKET_NAME` and injects it as that binding's `bucket_name` in `.wrangler.deploy.jsonc`; it must reject a missing, duplicate, or malformed binding/name. Before preparing or validating the production config, GitHub Actions runs `scripts/provision-r2-bucket.mjs`: it performs an exact Cloudflare R2 bucket GET, creates only after `404` plus error code `10006`, then repeats the exact GET. Authentication, rate-limit, network, invalid-envelope, and every other API failure stop deployment without attempting creation. The generated production config used for dry-run must be the same file uploaded by GitHub Actions. R2 credentials and arbitrary object keys are never Worker Secrets, Repository Variables, or browser configuration.
 
+The checked-in baseline also defines exactly one `DOCUMENT_INGEST` producer, one linked main consumer, and one linked DLQ consumer. The main consumer is fixed at `max_batch_size: 1`, `max_concurrency: 1`, `max_retries: 3`, and a distinct `dead_letter_queue`. `prepare:deployment` rewrites producer/consumer names to the two Queue Repository Variables, injects the same names as Worker vars for runtime event discrimination, and rejects missing, duplicate, unlinked, or drifted consumer settings.
+
+Before generating the production config, GitHub Actions runs `scripts/provision-document-ingest-queues.mjs`. It performs an exact name-filtered list, creates the DLQ before the main Queue only when absent, and repeats the exact lookup after creation. A failed create is accepted only when a follow-up exact lookup proves a concurrent creator won; authorization, rate-limit, network, malformed-envelope, ambiguous-match, and non-exact verification failures stop deployment. Queue API credentials remain GitHub Actions secrets and never enter Worker vars or artifacts.
+
 Production deploy and production member acceptance share the `chatus-production-mutation` concurrency group with `cancel-in-progress: false`. New production mutations wait instead of canceling an upload, smoke, generated-file cleanup, or temporary-member cleanup. Deploy checks that `GITHUB_SHA` is still the remote `main` tip early for fast failure and again immediately before the real Wrangler upload.
 
 If Wrangler upload succeeds but the post-deploy smoke still observes an older release marker, the attempt remains failed and its manifest artifact remains authoritative evidence. Recovery may rerun the failed deploy job only through GitHub Actions and only while remote `main` is still the same `GITHUB_SHA`; the rerun must repeat provisioning, upload, exact-SHA smoke, and artifact retention. Task closure additionally requires a successful `Production member acceptance` run checked out at that exact SHA. A local production probe, a newer SHA, or the successful upload step alone cannot replace these gates.
@@ -82,6 +88,11 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 | Worker name or KV/account ID malformed | Fail preflight |
 | R2 bucket name is missing or malformed | Fail preflight before generating deployment files |
 | Checked-in Wrangler config lacks exactly one `WORKSPACE_FILES` R2 binding | Fail preflight; do not invent a second binding |
+| Queue names are missing, malformed, or equal | Fail preflight before provisioning or generated-file writes |
+| Checked-in config lacks exactly one linked producer/main/DLQ consumer | Fail preflight; do not infer Queue topology |
+| Main consumer batch/concurrency/retry values differ from `1/1/3` | Fail preflight; preserve the reviewed retry semantics |
+| Exact Queue lookup proves absence | Create DLQ first, then main Queue, and verify each by exact name |
+| Queue API returns auth, rate-limit, network, malformed, ambiguous, or non-exact data | Fail closed without treating it as successful provisioning |
 | Exact R2 lookup returns `404` with code `10006` | Create the configured bucket through GitHub Actions, then verify it with another exact lookup |
 | Exact R2 lookup returns auth, rate-limit, network, malformed, or any other error | Fail closed; do not reinterpret it as a missing bucket |
 | Production URL uses HTTP or contains a path | Fail preflight |
@@ -108,10 +119,10 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 
 ## 5. Good / Base / Bad Cases
 
-- Good: an installer configures three non-secret Variables plus GitHub Secrets, Actions generates the target config, dry-run validates the exact bindings/routes, deploy uses the same config, and exact-SHA smoke passes.
+- Good: an installer configures the six non-secret instance/Queue Variables plus GitHub Secrets, Actions provisions R2 and both Queues, generates the target config, dry-run validates the exact bindings/routes/consumers, deploy uses the same config, and exact-SHA smoke passes.
 - Good recovery: the first post-upload smoke observes an older release marker, the failed manifest is retained, remote `main` is confirmed unchanged, the same Actions run is retried at the same SHA, and both exact-SHA smoke and production member acceptance pass with new artifacts.
-- Base: `wrangler.jsonc` has a generic name, an ID-free `CHAT_STORE` binding, and an ID-free `WORKSPACE_FILES` R2 binding, so Vitest, local dev, and default dry-run work without any production identifiers.
-- Bad: commit an account/KV/domain value, interpolate shell text into JSONC, place a generated config under `.wrangler/` without rebasing relative paths, deploy without a stale-SHA guard, or assume removing a GitHub Secret deletes its remote Worker value.
+- Base: `wrangler.jsonc` has generic local KV/R2 bindings and local Queue names, so Vitest, Playwright, Wrangler dev, and default dry-run work without production identifiers.
+- Bad: commit an account/KV/domain/production Queue name, accept a main consumer with drifted retries or concurrency, create the main Queue before its DLQ, or reinterpret a Queue API authorization error as absence.
 - Good managed secret: the KV read returns `null`, so a trimmed Worker binding may satisfy the credential.
 - Base managed secret: a valid encrypted record decrypts with its namespace/ref AAD and shadows any same-name Worker binding.
 - Bad managed secret: an empty, malformed, moved, or undecryptable record silently falls through to an older Worker binding.
@@ -121,12 +132,13 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 
 ## 6. Tests Required
 
-- Unit-test custom-domain and workers.dev projections, input immutability, KV and R2 binding injection, R2 provision existing/missing/error branches, and removal of stale routes.
+- Unit-test custom-domain and workers.dev projections, input immutability, KV/R2/Queue binding injection, R2 and Queue provision existing/missing/concurrent/error branches, and removal of stale routes.
 - Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
 - Assert every newly introduced Durable Object uses a SQLite-backed migration and reject `new_classes` in the checked-in Wrangler contract.
-- Import workflow/config files as raw fixtures and assert Repository Variables including `CHATUS_R2_BUCKET_NAME`, generated `--config`, shared non-canceling production concurrency, early and late stale-SHA checks, parameterized production URL, generic Wrangler baseline with exactly one `WORKSPACE_FILES` binding, and absence of a local `deploy` script.
+- Import workflow/config files as raw fixtures and assert all six Repository Variables, generated `--config`, shared non-canceling production concurrency, early and late stale-SHA checks, parameterized production URL, one `WORKSPACE_FILES` binding, exact Queue topology/settings, provisioning before config generation, and absence of a local `deploy` script.
 - Parse the checked-in `.env.example` `ROUTES_CONFIG` after dotenv quote removal and require non-empty provider and route registries.
-- Run `node --check` for both deployment scripts.
+- Run `node --check` for deployment preparation and every provisioning script.
+- Run `node --check scripts/provision-document-ingest-queues.mjs` and assert its logs/errors contain Queue names or bounded status/codes only, never tokens.
 - Execute the generator with dummy values and run `npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, default `npx wrangler deploy --dry-run`, and `git diff --check`.
 - For a post-upload release-visibility failure, retain both the failed and successful same-SHA deployment manifests and require the production-acceptance manifest to report `release=success,acceptance=success` for that SHA.
@@ -149,6 +161,7 @@ This deploys the checked-in instance binding, hard-codes one operator's target, 
 ### Correct
 
 ```yaml
+- run: node scripts/provision-document-ingest-queues.mjs
 - run: npm run prepare:deployment
 - run: npx wrangler deploy --dry-run --config .wrangler.deploy.jsonc
 - run: npx wrangler deploy --config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json
