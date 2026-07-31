@@ -39,6 +39,7 @@
     "@cfworker/json-schema": "^4.1.1",
     "@cloudflare/ai-chat": "0.9.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@zip.js/zip.js": "2.8.34",
     "agents": "0.17.4",
     "ai": "6.0.228",
     "lucide-react": "^1.24.0",
@@ -46,6 +47,8 @@
     "react-dom": "19.2.7",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "saxes": "6.0.0",
+    "unpdf": "1.8.0",
     "zod": "^4.4.3"
   }
 }

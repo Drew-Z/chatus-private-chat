@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
 import {
   normalizeWorkspacePath,
+  MAX_TEXT_DOCUMENT_BYTES,
   MAX_WORKSPACE_FILE_BYTES,
 } from "../src/contracts/workspace-file";
 import {
   getTeamAgentConversationInstanceName,
   getTeamAgentInstanceName,
 } from "../src/worker";
+import { minimalPdfSource } from "./document-fixtures";
 
 const ACCESS_CODES_KEY = "config:access_codes";
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -67,12 +69,12 @@ async function createConversation(cookie: string, chatId = crypto.randomUUID()) 
 
 async function upload(
   cookie: string,
-  text: string,
+  content: BlobPart,
   relativePath: string,
   options: { operationId?: string; fileId?: string; expectedUpdatedAt?: number; mediaType?: string } = {},
 ) {
   const form = new FormData();
-  form.set("file", new File([text], relativePath.split("/").at(-1) || "file.txt", {
+  form.set("file", new File([content], relativePath.split("/").at(-1) || "file.txt", {
     type: options.mediaType || "text/plain",
   }));
   form.set("relativePath", relativePath);
@@ -93,6 +95,20 @@ function fakeProviderResponse(text: string): Response {
     `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`,
     { status: 200, headers: { "Content-Type": "text/event-stream" } },
   );
+}
+
+async function waitForIngestStatus(
+  root: DurableObjectStub<TeamAgent>,
+  fileId: string,
+  expected: "ready" | "failed",
+) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await root.listWorkspaceFileVersions(fileId);
+    const version = result?.file.currentVersion;
+    if (version?.ingestStatus === expected) return version;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`document ingest did not reach ${expected}`);
 }
 
 async function clearWorkspaceBucket() {
@@ -148,7 +164,7 @@ describe("workspace file API and R2 recovery", () => {
       state.storage.sql.exec("DROP TABLE workspace_file_operations");
       state.storage.sql.exec("DROP TABLE workspace_file_versions");
       state.storage.sql.exec("DROP TABLE workspace_files");
-      state.storage.sql.exec("DELETE FROM _sql_schema_migrations WHERE id = 2");
+      state.storage.sql.exec("DELETE FROM _sql_schema_migrations WHERE id >= 2");
       const migrator = instance as unknown as { applySchemaMigrations(): void };
       migrator.applySchemaMigrations();
       migrator.applySchemaMigrations();
@@ -164,7 +180,7 @@ describe("workspace file API and R2 recovery", () => {
         ).toArray().map((row) => row.name),
       };
     });
-    expect(schema.versions).toEqual([1, 2]);
+    expect(schema.versions).toEqual([1, 2, 3]);
     expect(schema.tables).toEqual([
       "conversation_file_refs",
       "workspace_file_operations",
@@ -176,6 +192,46 @@ describe("workspace file API and R2 recovery", () => {
       "workspace_file_operations_pending",
       "workspace_files_active_path_key",
     ]);
+  });
+
+  it("enforces text and document upload byte limits at the exact boundary", async () => {
+    const member = await login();
+    const textAtLimit = await upload(
+      member.cookie,
+      new Uint8Array(MAX_TEXT_DOCUMENT_BYTES),
+      "limits/exact.txt",
+      { operationId: "text-exact-limit" },
+    );
+    expect(textAtLimit.response.status, JSON.stringify(textAtLimit.payload)).toBe(201);
+    const textOverLimit = await upload(
+      member.cookie,
+      new Uint8Array(MAX_TEXT_DOCUMENT_BYTES + 1),
+      "limits/over.txt",
+      { operationId: "text-over-limit" },
+    );
+    expect(textOverLimit.response.status).toBe(413);
+    expect(textOverLimit.payload).toMatchObject({ error: "workspace_file_too_large" });
+
+    const pdfPrefix = new TextEncoder().encode("%PDF-1.4\n/Launch\n");
+    const pdfAtLimit = new Uint8Array(MAX_WORKSPACE_FILE_BYTES);
+    pdfAtLimit.set(pdfPrefix);
+    const documentAtLimit = await upload(
+      member.cookie,
+      pdfAtLimit,
+      "limits/exact.pdf",
+      { operationId: "document-exact-limit", mediaType: "application/pdf" },
+    );
+    expect(documentAtLimit.response.status, JSON.stringify(documentAtLimit.payload)).toBe(201);
+    const pdfOverLimit = new Uint8Array(MAX_WORKSPACE_FILE_BYTES + 1);
+    pdfOverLimit.set(pdfPrefix);
+    const documentOverLimit = await upload(
+      member.cookie,
+      pdfOverLimit,
+      "limits/over.pdf",
+      { operationId: "document-over-limit", mediaType: "application/pdf" },
+    );
+    expect(documentOverLimit.response.status).toBe(413);
+    expect(documentOverLimit.payload).toMatchObject({ error: "workspace_file_too_large" });
   });
 
   it("keeps immutable versions, pins an old version, and sends only that version to the fake Provider", async () => {
@@ -374,7 +430,10 @@ describe("workspace file API and R2 recovery", () => {
       }),
     ]);
     await expect(root.beginWorkspaceAccountPurge("purge-after-missing-object"))
-      .resolves.toMatchObject({ completed: false, objectKeys: [reserved.reservation.objectKey] });
+      .resolves.toMatchObject({
+        completed: false,
+        objectKeys: [reserved.reservation.objectKey, `${reserved.reservation.objectKey}.extracted.1.txt`],
+      });
   });
 
   it("holds an account purge lock across empty workspace cleanup until explicit release", async () => {
@@ -431,15 +490,16 @@ describe("workspace file API and R2 recovery", () => {
     })).resolves.toMatchObject({ ok: true });
   });
 
-  it("marks documents unavailable without exposing storage identifiers or raw content to the fake Provider", async () => {
+  it("marks failed documents unavailable without exposing storage identifiers or raw content to the fake Provider", async () => {
     const member = await login();
     const conversation = await createConversation(member.cookie);
-    const rawDocument = "%PDF-local-private-document";
+    const rawDocument = "%PDF-1.4\n1 0 obj << /Type /Catalog /OpenAction << /S /Launch >> >> endobj\n%%EOF";
     const uploaded = await upload(member.cookie, rawDocument, "documents/report.pdf", {
       mediaType: "application/pdf",
     });
     expect(uploaded.response.status).toBe(201);
     const file = uploaded.payload.file;
+    await waitForIngestStatus(await getRootAgent(member.label), file.id, "failed");
     const selected = await apiRequest(
       `/api/agent/conversations/${conversation.id}/workspace-files`,
       member.cookie,
@@ -472,11 +532,267 @@ describe("workspace file API and R2 recovery", () => {
     expect(result.status, result.body).toBe(200);
     const serialized = JSON.stringify(providerBody);
     expect(serialized).toContain("attached_file_unavailable");
-    expect(serialized).toContain("document_ingest_not_ready");
+    expect(serialized).toContain("document_ingest_failed");
     expect(serialized).not.toContain(rawDocument);
     expect(serialized).not.toContain(file.id);
     expect(serialized).not.toContain(file.currentVersion.id);
     expect(serialized).not.toContain("workspace/v1/");
+  });
+
+  it("retries failed document ingest without exposing the internal Queue message", async () => {
+    const member = await login();
+    const uploaded = await upload(
+      member.cookie,
+      "%PDF-1.4\n1 0 obj << /Type /Catalog /OpenAction << /S /Launch >> >> endobj\n%%EOF",
+      "documents/retry-report.pdf",
+      { mediaType: "application/pdf" },
+    );
+    expect(uploaded.response.status).toBe(201);
+    const file = uploaded.payload.file;
+    await waitForIngestStatus(await getRootAgent(member.label), file.id, "failed");
+
+    const response = await apiRequest(`/api/workspace/files/${file.id}/ingest-retry`, member.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ versionId: file.currentVersion.id }),
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ ok: true });
+    expect(JSON.stringify(body)).not.toContain(member.label);
+
+    const readyUpload = await upload(member.cookie, "ready text", "documents/ready.txt");
+    expect(readyUpload.response.status).toBe(201);
+    await waitForIngestStatus(await getRootAgent(member.label), readyUpload.payload.file.id, "ready");
+    const nonRetryable = await apiRequest(
+      `/api/workspace/files/${readyUpload.payload.file.id}/ingest-retry`,
+      member.cookie,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ versionId: readyUpload.payload.file.currentVersion.id }),
+      },
+    );
+    expect(nonRetryable.status).toBe(409);
+
+    const outsider = await login();
+    const outsiderResponse = await apiRequest(`/api/workspace/files/${file.id}/ingest-retry`, outsider.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ versionId: file.currentVersion.id }),
+    });
+    expect(outsiderResponse.status).toBe(404);
+  });
+
+  it("sends only ready extracted PDF text for the selected exact version", async () => {
+    const member = await login();
+    const conversation = await createConversation(member.cookie);
+    const rawDocument = minimalPdfSource("ready extracted PDF context");
+    const uploaded = await upload(member.cookie, rawDocument, "documents/ready-report.pdf", {
+      mediaType: "application/pdf",
+    });
+    expect(uploaded.response.status, JSON.stringify(uploaded.payload)).toBe(201);
+    const file = uploaded.payload.file;
+    const root = await getRootAgent(member.label);
+    await waitForIngestStatus(root, file.id, "ready");
+    const resolved = await root.getWorkspaceFileVersion(file.id, file.currentVersion.id);
+    expect(resolved?.extractedObjectKey).toContain(".extracted.1.txt");
+
+    const selected = await apiRequest(
+      `/api/agent/conversations/${conversation.id}/workspace-files`,
+      member.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expectedUpdatedAt: conversation.updatedAt,
+          files: [{ fileId: file.id, versionId: file.currentVersion.id }],
+        }),
+      },
+    );
+    expect(selected.status, await selected.clone().text()).toBe(200);
+
+    let providerBody: unknown = null;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      providerBody = JSON.parse(String(init?.body));
+      return fakeProviderResponse("local response");
+    });
+    const agent = await getConversationAgent(member.label, conversation.id);
+    await agent.importLegacyMessages([{
+      id: "workspace-ready-document-message",
+      role: "user",
+      parts: [{ type: "text", text: "Use the ready document." }],
+    }]);
+    const result = await runInDurableObject(agent, async (instance) => {
+      const response = await instance.onChatMessage(async () => undefined, {});
+      return { status: response.status, body: await response.text() };
+    });
+    expect(result.status, result.body).toBe(200);
+    const serialized = JSON.stringify(providerBody);
+    expect(serialized).toContain("ready extracted PDF context");
+    expect(serialized).not.toContain("%PDF-1.4");
+    expect(serialized).not.toContain("xref");
+    expect(serialized).not.toContain(file.id);
+    expect(serialized).not.toContain(file.currentVersion.id);
+    expect(serialized).not.toContain(resolved!.objectKey);
+    expect(serialized).not.toContain(resolved!.extractedObjectKey);
+  });
+
+  it("fails before Provider execution when a ready extracted artifact is tampered", async () => {
+    const member = await login();
+    const conversation = await createConversation(member.cookie);
+    const uploaded = await upload(member.cookie, "original text must not be used", "documents/integrity.txt");
+    expect(uploaded.response.status).toBe(201);
+    const file = uploaded.payload.file;
+    const root = await getRootAgent(member.label);
+    await waitForIngestStatus(root, file.id, "ready");
+    const resolved = await root.getWorkspaceFileVersion(file.id, file.currentVersion.id);
+    expect(resolved).toBeDefined();
+
+    const selected = await apiRequest(
+      `/api/agent/conversations/${conversation.id}/workspace-files`,
+      member.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expectedUpdatedAt: conversation.updatedAt,
+          files: [{ fileId: file.id, versionId: file.currentVersion.id }],
+        }),
+      },
+    );
+    expect(selected.status).toBe(200);
+
+    const replacement = "x".repeat(resolved!.extractedBytes);
+    await env.WORKSPACE_FILES.put(resolved!.extractedObjectKey, replacement, { sha256: await sha256(replacement) });
+    const providerFetch = vi.spyOn(globalThis, "fetch");
+    const agent = await getConversationAgent(member.label, conversation.id);
+    await agent.importLegacyMessages([{
+      id: "workspace-tampered-artifact-message",
+      role: "user",
+      parts: [{ type: "text", text: "Use the selected file." }],
+    }]);
+    const result = await runInDurableObject(agent, async (instance) => {
+      const response = await instance.onChatMessage(async () => undefined, {});
+      return { status: response.status, body: await response.text() };
+    });
+    expect(result.status).toBe(503);
+    expect(result.body).toContain("workspace_context_unavailable");
+    expect(result.body).not.toContain(resolved!.objectKey);
+    expect(result.body).not.toContain(resolved!.extractedObjectKey);
+    expect(providerFetch).not.toHaveBeenCalled();
+  });
+
+  it("sends at most ten exact ready versions while consuming one user-message quota unit", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        files: {
+          label: "Files",
+          type: "openai-chat",
+          baseUrl: "https://workspace-provider.example/v1",
+          model: "workspace-model",
+          apiKey: "workspace-key",
+        },
+      },
+      defaults: {
+        defaultRoute: "files",
+        allowedRoutes: ["files"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+    }));
+    const member = await login();
+    const conversation = await createConversation(member.cookie);
+    const root = await getRootAgent(member.label);
+    const uploaded = [];
+    for (let index = 0; index < 11; index += 1) {
+      const result = await upload(
+        member.cookie,
+        `turn-file-${index}`,
+        `turn/file-${index}.txt`,
+        { operationId: `turn-file-${index}` },
+      );
+      expect(result.response.status, JSON.stringify(result.payload)).toBe(201);
+      await waitForIngestStatus(root, result.payload.file.id, "ready");
+      uploaded.push(result.payload.file);
+    }
+
+    const tenRefs = uploaded.slice(0, 10).map((file) => ({
+      fileId: file.id,
+      versionId: file.currentVersion.id,
+    }));
+    const nineResponse = await apiRequest(
+      `/api/agent/conversations/${conversation.id}/workspace-files`,
+      member.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedUpdatedAt: conversation.updatedAt, files: tenRefs.slice(0, 9) }),
+      },
+    );
+    expect(nineResponse.status, await nineResponse.clone().text()).toBe(200);
+    const nineConversation = (await nineResponse.json() as any).conversation;
+    expect(nineConversation.workspaceFiles).toHaveLength(9);
+
+    const selectedResponse = await apiRequest(
+      `/api/agent/conversations/${conversation.id}/workspace-files`,
+      member.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedUpdatedAt: nineConversation.updatedAt, files: tenRefs }),
+      },
+    );
+    expect(selectedResponse.status, await selectedResponse.clone().text()).toBe(200);
+    const selectedConversation = (await selectedResponse.json() as any).conversation;
+    expect(selectedConversation.workspaceFiles).toHaveLength(10);
+
+    const elevenResponse = await apiRequest(
+      `/api/agent/conversations/${conversation.id}/workspace-files`,
+      member.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expectedUpdatedAt: selectedConversation.updatedAt,
+          files: [
+            ...tenRefs,
+            { fileId: uploaded[10].id, versionId: uploaded[10].currentVersion.id },
+          ],
+        }),
+      },
+    );
+    expect(elevenResponse.status).toBe(400);
+    await expect(elevenResponse.json()).resolves.toMatchObject({ error: "workspace_refs_invalid" });
+
+    let providerBody: unknown = null;
+    const providerFetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      providerBody = JSON.parse(String(init?.body));
+      return fakeProviderResponse("local response");
+    });
+    const agent = await getConversationAgent(member.label, conversation.id);
+    await agent.importLegacyMessages([{
+      id: "workspace-ten-file-message",
+      role: "user",
+      parts: [{ type: "text", text: "Use all ten exact files." }],
+    }]);
+    const first = await runInDurableObject(agent, async (instance) => {
+      const response = await instance.onChatMessage(async () => undefined, {});
+      return { status: response.status, body: await response.text() };
+    });
+    expect(first.status, first.body).toBe(200);
+    expect(providerFetch).toHaveBeenCalledOnce();
+    const serialized = JSON.stringify(providerBody);
+    expect(serialized.match(/<attached_file /gu)).toHaveLength(10);
+    for (let index = 0; index < 10; index += 1) expect(serialized).toContain(`turn-file-${index}`);
+    expect(serialized).not.toContain("turn-file-10");
+
+    const second = await runInDurableObject(agent, async (instance) => {
+      const response = await instance.onChatMessage(async () => undefined, {});
+      return { status: response.status, body: await response.text() };
+    });
+    expect(second.status).toBe(429);
+    expect(providerFetch).toHaveBeenCalledOnce();
   });
 
   it("searches and paginates files, then renames, pins, and deletes through the HTTP API", async () => {
@@ -728,7 +1044,7 @@ describe("workspace file API and R2 recovery", () => {
     const purge = await root.beginWorkspaceAccountPurge("account-purge-race-lock");
     expect(purge).toMatchObject({
       operationId: "account-purge-race-lock",
-      objectKeys: [version!.objectKey],
+      objectKeys: [version!.objectKey, version!.extractedObjectKey],
       existing: false,
       completed: false,
     });

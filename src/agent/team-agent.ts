@@ -55,14 +55,15 @@ import {
 import {
   emptyTextFileValidationState,
   formatAttachedFileContext,
-  isSupportedTextFileDescriptor,
   parseDataTextFile,
   type FileInputPolicy,
   type FileValidationErrorCode,
 } from "../contracts/file";
 import {
+  DOCUMENT_INGEST_LEASE_MS,
   MAX_WORKSPACE_FILES_PER_CONVERSATION,
   MAX_WORKSPACE_FILE_BYTES,
+  MAX_WORKSPACE_MEMBER_BYTES,
   MAX_WORKSPACE_LIST_LIMIT,
   type WorkspaceAccountPurgeReservation,
   type WorkspaceAccountPurgeReservationResult,
@@ -78,12 +79,18 @@ import {
   type WorkspaceUploadReservation,
   type WorkspaceUploadReservationInput,
   type WorkspaceUploadReservationResult,
+  type DocumentIngestArtifact,
+  type DocumentIngestBeginResult,
+  type DocumentIngestMessage,
+  type DocumentIngestRetryResult,
+  type DocumentIngestStatus,
   normalizeWorkspaceChecksum,
   normalizeWorkspaceEntityId,
   normalizeWorkspaceMediaType,
   normalizeWorkspaceOperationId,
   normalizeWorkspacePath,
   normalizeWorkspaceSearchQuery,
+  workspaceExtractedObjectKey,
 } from "../contracts/workspace-file";
 import type { Session } from "../contracts/session";
 import { createAgentToolSet } from "../services/agent-tools";
@@ -185,6 +192,14 @@ type WorkspaceFileVersionRow = {
   state: string;
   generation: number;
   error: string;
+  ingest_status: string;
+  ingest_generation: number;
+  ingest_attempts: number;
+  ingest_error: string;
+  extracted_object_key: string;
+  extracted_checksum: string;
+  extracted_bytes: number;
+  extracted_chars: number;
   created_at: number;
   updated_at: number;
 };
@@ -217,6 +232,14 @@ type WorkspaceConversationRefRow = {
   checksum: string;
   object_key: string;
   generation: number;
+  ingest_status: string;
+  ingest_generation: number;
+  ingest_attempts: number;
+  ingest_error: string;
+  extracted_object_key: string;
+  extracted_checksum: string;
+  extracted_bytes: number;
+  extracted_chars: number;
 };
 
 type WorkspaceCursor = { pinned: number; updatedAt: number; id: string };
@@ -401,6 +424,17 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         this.sql`CREATE INDEX IF NOT EXISTS workspace_file_operations_pending ON workspace_file_operations(state, updated_at)`;
         this.sql`CREATE INDEX IF NOT EXISTS workspace_file_operations_file ON workspace_file_operations(file_id, created_at DESC)`;
         this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (2, ${Date.now()})`;
+      }
+      if (version < 3) {
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN ingest_status TEXT NOT NULL DEFAULT 'failed'`;
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN ingest_generation INTEGER NOT NULL DEFAULT 1`;
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN ingest_attempts INTEGER NOT NULL DEFAULT 0`;
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN ingest_error TEXT NOT NULL DEFAULT 'document_ingest_migration_required'`;
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN extracted_object_key TEXT NOT NULL DEFAULT ''`;
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN extracted_checksum TEXT NOT NULL DEFAULT ''`;
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN extracted_bytes INTEGER NOT NULL DEFAULT 0`;
+        this.sql`ALTER TABLE workspace_file_versions ADD COLUMN extracted_chars INTEGER NOT NULL DEFAULT 0`;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (3, ${Date.now()})`;
       }
     });
   }
@@ -767,7 +801,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (!file || file.deleted_at !== 0) return undefined;
     const versions = this.sql<WorkspaceFileVersionRow>`
       SELECT id, file_id, object_key, size, media_type, checksum, state,
-        generation, error, created_at, updated_at
+        generation, error, ingest_status, ingest_generation, ingest_attempts, ingest_error,
+        extracted_object_key, extracted_checksum, extracted_bytes, extracted_chars,
+        created_at, updated_at
       FROM workspace_file_versions
       WHERE file_id = ${file.id}
       ORDER BY created_at DESC, id DESC
@@ -781,6 +817,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
             mediaType: normalizeWorkspaceMediaType(row.media_type),
             checksum: normalizeWorkspaceChecksum(row.checksum),
             state,
+            ingestStatus: normalizeDocumentIngestStatus(row.ingest_status),
+            ingestGeneration: Math.max(1, row.ingest_generation),
+            ingestAttempts: Math.max(0, row.ingest_attempts),
+            ...(row.ingest_error ? { ingestError: row.ingest_error } : {}),
             createdAt: row.created_at,
           }]
         : [];
@@ -872,9 +912,17 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const objectKey = `workspace/v1/${ownerHash}/${fileId}/${versionId}`;
     let reserved = false;
     let purgeLocked = false;
+    let quotaExceeded = false;
     this.ctx.storage.transactionSync(() => {
       if (this.hasWorkspaceAccountPurgeLock()) {
         purgeLocked = true;
+        return;
+      }
+      const retainedBytes = this.sql<{ bytes: number }>`
+        SELECT COALESCE(SUM(size), 0) AS bytes FROM workspace_file_versions WHERE state <> 'deleting'
+      `[0]?.bytes || 0;
+      if (retainedBytes + size > MAX_WORKSPACE_MEMBER_BYTES) {
+        quotaExceeded = true;
         return;
       }
       if (file) {
@@ -904,10 +952,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       this.sql`
         INSERT INTO workspace_file_versions(
           id, file_id, object_key, size, media_type, checksum, state,
-          generation, error, created_at, updated_at
+          generation, error, ingest_status, ingest_generation, ingest_attempts, ingest_error,
+          extracted_object_key, extracted_checksum, extracted_bytes, extracted_chars,
+          created_at, updated_at
         ) VALUES (
           ${versionId}, ${fileId}, ${objectKey}, ${size}, ${mediaType}, ${checksum},
-          'pending', ${generation}, '', ${now}, ${now}
+          'pending', ${generation}, '', 'queued', 1, 0, '',
+          ${workspaceExtractedObjectKey(objectKey, 1)}, '', 0, 0, ${now}, ${now}
         )
       `;
       this.sql`
@@ -921,6 +972,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       `;
     });
     if (purgeLocked) return { ok: false, error: "workspace_account_purge_in_progress" };
+    if (quotaExceeded) return { ok: false, error: "workspace_member_quota_exceeded" };
     if (!reserved) {
       const current = this.getWorkspaceFileRow(fileId);
       return { ok: false, error: "workspace_file_conflict", ...(current ? { current: this.workspaceFileProjection(current) } : {}) };
@@ -970,6 +1022,161 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     return completed
       ? { ok: true, file: this.workspaceFileProjection(completed) }
       : { ok: false, error: "workspace_file_not_found" };
+  }
+
+  async beginDocumentIngest(messageValue: DocumentIngestMessage): Promise<DocumentIngestBeginResult> {
+    this.requireRootScope();
+    const message = normalizeDocumentIngestMessage(messageValue);
+    if (!message || message.ownerId !== this.userLabel) return { action: "ack", status: "stale" };
+    const file = this.getWorkspaceFileRow(message.fileId);
+    if (!file || file.deleted_at !== 0) return { action: "ack", status: "deleted" };
+    const version = this.getWorkspaceVersionRow(message.versionId);
+    if (!version || version.file_id !== file.id || version.state !== "ready") {
+      return { action: "ack", status: "stale" };
+    }
+    const status = normalizeDocumentIngestStatus(version.ingest_status);
+    if (status === "deleted") return { action: "ack", status };
+    if (version.ingest_generation !== message.generation) return { action: "ack", status: "stale" };
+    const now = Date.now();
+    if (status === "extracting") {
+      const retryAfterMs = version.updated_at + DOCUMENT_INGEST_LEASE_MS - now;
+      if (retryAfterMs > 0) {
+        return { action: "retry", retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1_000)) };
+      }
+      this.sql`
+        UPDATE workspace_file_versions
+        SET ingest_attempts = ingest_attempts + 1, ingest_error = '', updated_at = ${now}
+        WHERE id = ${version.id} AND file_id = ${file.id} AND state = 'ready'
+          AND ingest_status = 'extracting' AND ingest_generation = ${message.generation}
+          AND updated_at <= ${now - DOCUMENT_INGEST_LEASE_MS}
+      `;
+      if (this.lastSqlChangeCount() !== 1) {
+        return { action: "retry", retryAfterSeconds: 1 };
+      }
+      const reclaimed = this.getWorkspaceVersionRow(version.id)!;
+      return {
+        action: "process",
+        attempt: Math.max(1, reclaimed.ingest_attempts),
+        sourceObjectKey: reclaimed.object_key,
+        extractedObjectKey: reclaimed.extracted_object_key,
+        name: file.name,
+        size: Math.max(0, reclaimed.size),
+        mediaType: normalizeWorkspaceMediaType(reclaimed.media_type),
+        checksum: normalizeWorkspaceChecksum(reclaimed.checksum),
+      };
+    }
+    if (status !== "queued") return { action: "ack", status };
+    this.sql`
+      UPDATE workspace_file_versions
+      SET ingest_status = 'extracting', ingest_attempts = ingest_attempts + 1,
+        ingest_error = '', updated_at = ${now}
+      WHERE id = ${version.id} AND file_id = ${file.id} AND state = 'ready'
+        AND ingest_status = 'queued' AND ingest_generation = ${message.generation}
+    `;
+    if (this.lastSqlChangeCount() !== 1) {
+      const latest = this.getWorkspaceVersionRow(version.id);
+      return { action: "ack", status: latest ? normalizeDocumentIngestStatus(latest.ingest_status) : "stale" };
+    }
+    const started = this.getWorkspaceVersionRow(version.id)!;
+    return {
+      action: "process",
+      attempt: Math.max(1, started.ingest_attempts),
+      sourceObjectKey: started.object_key,
+      extractedObjectKey: started.extracted_object_key,
+      name: file.name,
+      size: Math.max(0, started.size),
+      mediaType: normalizeWorkspaceMediaType(started.media_type),
+      checksum: normalizeWorkspaceChecksum(started.checksum),
+    };
+  }
+
+  async completeDocumentIngest(
+    messageValue: DocumentIngestMessage,
+    artifactValue: DocumentIngestArtifact,
+  ): Promise<boolean> {
+    this.requireRootScope();
+    const message = normalizeDocumentIngestMessage(messageValue);
+    const artifact = normalizeDocumentIngestArtifact(artifactValue);
+    if (!message || message.ownerId !== this.userLabel || !artifact) return false;
+    const file = this.getWorkspaceFileRow(message.fileId);
+    const version = this.getWorkspaceVersionRow(message.versionId);
+    if (
+      !file
+      || file.deleted_at !== 0
+      || !version
+      || version.file_id !== file.id
+      || version.extracted_object_key !== artifact.objectKey
+    ) return false;
+    this.sql`
+      UPDATE workspace_file_versions
+      SET ingest_status = 'ready', ingest_error = '', extracted_checksum = ${artifact.checksum},
+        extracted_bytes = ${artifact.bytes}, extracted_chars = ${artifact.chars}, updated_at = ${Date.now()}
+      WHERE id = ${version.id} AND file_id = ${file.id} AND state = 'ready'
+        AND ingest_status = 'extracting' AND ingest_generation = ${message.generation}
+    `;
+    return this.lastSqlChangeCount() === 1;
+  }
+
+  async recordDocumentIngestFailure(
+    messageValue: DocumentIngestMessage,
+    errorValue: string,
+    transient: boolean,
+  ): Promise<boolean> {
+    this.requireRootScope();
+    const message = normalizeDocumentIngestMessage(messageValue);
+    if (!message || message.ownerId !== this.userLabel) return false;
+    const error = boundedString(errorValue, 80) || "document_ingest_failed";
+    this.sql`
+      UPDATE workspace_file_versions
+      SET ingest_status = ${transient ? "queued" : "failed"}, ingest_error = ${error}, updated_at = ${Date.now()}
+      WHERE id = ${message.versionId} AND file_id = ${message.fileId}
+        AND state = 'ready' AND ingest_status = 'extracting' AND ingest_generation = ${message.generation}
+    `;
+    return this.lastSqlChangeCount() === 1;
+  }
+
+  async recordDocumentIngestDlq(messageValue: DocumentIngestMessage, errorValue: string): Promise<boolean> {
+    this.requireRootScope();
+    const message = normalizeDocumentIngestMessage(messageValue);
+    if (!message || message.ownerId !== this.userLabel) return false;
+    const error = boundedString(errorValue, 80) || "document_ingest_retry_exhausted";
+    this.sql`
+      UPDATE workspace_file_versions
+      SET ingest_status = 'failed', ingest_error = ${error}, updated_at = ${Date.now()}
+      WHERE id = ${message.versionId} AND file_id = ${message.fileId}
+        AND state = 'ready' AND ingest_status IN ('queued', 'extracting')
+        AND ingest_generation = ${message.generation}
+    `;
+    return this.lastSqlChangeCount() === 1;
+  }
+
+  async retryDocumentIngest(
+    fileIdValue: string,
+    versionIdValue: string,
+  ): Promise<DocumentIngestRetryResult> {
+    this.requireRootScope();
+    const fileId = normalizeWorkspaceEntityId(fileIdValue);
+    const versionId = normalizeWorkspaceEntityId(versionIdValue);
+    const file = fileId ? this.getWorkspaceFileRow(fileId) : undefined;
+    const version = versionId ? this.getWorkspaceVersionRow(versionId) : undefined;
+    if (!file || file.deleted_at !== 0 || !version || version.file_id !== file.id || file.current_version_id !== version.id) {
+      return { ok: false, error: "workspace_file_not_found" };
+    }
+    if (normalizeDocumentIngestStatus(version.ingest_status) !== "failed") {
+      return { ok: false, error: "document_ingest_not_retryable" };
+    }
+    const generation = Math.max(1, version.ingest_generation) + 1;
+    this.sql`
+      UPDATE workspace_file_versions
+      SET ingest_status = 'queued', ingest_generation = ${generation}, ingest_attempts = 0,
+        ingest_error = '', extracted_checksum = '', extracted_bytes = 0, extracted_chars = 0,
+        extracted_object_key = ${workspaceExtractedObjectKey(version.object_key, generation)},
+        updated_at = ${Date.now()}
+      WHERE id = ${version.id} AND file_id = ${file.id} AND state = 'ready' AND ingest_status = 'failed'
+    `;
+    return this.lastSqlChangeCount() === 1
+      ? { ok: true, message: { ownerId: this.userLabel, fileId: file.id, versionId: version.id, generation } }
+      : { ok: false, error: "document_ingest_not_retryable" };
   }
 
   async recordWorkspaceOperationFailure(
@@ -1123,9 +1330,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       return { ok: false, error: "workspace_file_conflict", current: this.workspaceFileProjection(current) };
     }
     if (requestedOperation) return { ok: true, reservation: this.workspaceDeleteReservation(requestedOperation, true) };
-    const objectKeys = this.sql<{ object_key: string }>`
-      SELECT object_key FROM workspace_file_versions WHERE file_id = ${current.id}
-    `.map((row) => row.object_key);
+    const objectKeys = this.sql<{ object_key: string; extracted_object_key: string }>`
+      SELECT object_key, extracted_object_key FROM workspace_file_versions WHERE file_id = ${current.id}
+    `.flatMap((row) => [row.object_key, row.extracted_object_key]).filter(Boolean);
     const generation = current.generation + 1;
     const now = monotonicNow(current.updated_at);
     let reserved = false;
@@ -1147,7 +1354,8 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       if (!reserved) return;
       this.sql`DELETE FROM conversation_file_refs WHERE file_id = ${current.id}`;
       this.sql`
-        UPDATE workspace_file_versions SET state = 'deleting', generation = ${generation}, updated_at = ${now}
+        UPDATE workspace_file_versions
+        SET state = 'deleting', generation = ${generation}, ingest_status = 'deleted', updated_at = ${now}
         WHERE file_id = ${current.id}
       `;
       this.sql`DELETE FROM workspace_file_operations WHERE file_id = ${current.id}`;
@@ -1327,6 +1535,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       checksum: row.checksum,
       objectKey: row.object_key,
       generation: row.generation,
+      ingestStatus: normalizeDocumentIngestStatus(row.ingest_status),
+      ingestGeneration: Math.max(1, row.ingest_generation),
+      ingestAttempts: Math.max(0, row.ingest_attempts),
+      ingestError: row.ingest_error,
+      extractedObjectKey: row.extracted_object_key,
+      extractedChecksum: normalizeWorkspaceChecksum(row.extracted_checksum),
+      extractedBytes: Math.max(0, row.extracted_bytes),
+      extractedChars: Math.max(0, row.extracted_chars),
     }));
   }
 
@@ -1364,7 +1580,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       WHERE kind = 'upload' AND state = 'pending'
     `[0]?.count || 0;
     if (pendingUploads > 0) return { error: "workspace_purge_pending_upload" };
-    const objectKeys = this.sql<{ object_key: string }>`SELECT object_key FROM workspace_file_versions`.map((row) => row.object_key);
+    const objectKeys = this.sql<{ object_key: string; extracted_object_key: string }>`
+      SELECT object_key, extracted_object_key FROM workspace_file_versions
+    `.flatMap((row) => [row.object_key, row.extracted_object_key]).filter(Boolean);
     const maximum = this.sql<{ generation: number }>`
       SELECT COALESCE(MAX(generation), 0) AS generation FROM workspace_files
     `[0]?.generation || 0;
@@ -1378,7 +1596,8 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       `;
       this.sql`DELETE FROM conversation_file_refs`;
       this.sql`
-        UPDATE workspace_file_versions SET state = 'deleting', generation = ${generation}, updated_at = ${now}
+        UPDATE workspace_file_versions
+        SET state = 'deleting', generation = ${generation}, ingest_status = 'deleted', updated_at = ${now}
       `;
       this.sql`DELETE FROM workspace_file_operations`;
       this.sql`
@@ -1923,29 +2142,50 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   private async loadWorkspaceContext(files: WorkspaceResolvedFileVersion[]): Promise<string> {
     if (!files.length) return "";
+    if (files.length > MAX_WORKSPACE_FILES_PER_CONVERSATION) {
+      throw new Error("workspace_reference_limit_exceeded");
+    }
     const policy = { ...fileInputPolicy(this.env), maxFiles: MAX_WORKSPACE_FILES_PER_CONVERSATION };
     let validation = emptyTextFileValidationState();
     const context: string[] = [];
     for (const file of files) {
-      if (!isSupportedTextFileDescriptor(file.mediaType, file.name, policy)) {
-        context.push(workspaceUnavailableContext(file, "document_ingest_not_ready"));
+      if (file.ingestStatus !== "ready") {
+        context.push(workspaceUnavailableContext(file, `document_ingest_${file.ingestStatus}`));
         continue;
       }
-      if (file.size > policy.maxFileBytes || validation.totalBytes + file.size > policy.maxTotalBytes) {
+      if (
+        !Number.isSafeInteger(file.ingestGeneration)
+        || file.ingestGeneration < 1
+        || file.extractedObjectKey !== workspaceExtractedObjectKey(file.objectKey, file.ingestGeneration)
+        || !normalizeWorkspaceChecksum(file.extractedChecksum)
+        || !Number.isSafeInteger(file.extractedBytes)
+        || file.extractedBytes < 0
+        || !Number.isSafeInteger(file.extractedChars)
+        || file.extractedChars < 0
+      ) {
+        throw new Error("workspace_extracted_artifact_invalid");
+      }
+      if (file.extractedBytes > policy.maxTotalBytes || validation.totalBytes + file.extractedBytes > policy.maxTotalBytes) {
         context.push(workspaceUnavailableContext(file, "text_file_too_large"));
         continue;
       }
-      const object = await this.env.WORKSPACE_FILES.get(file.objectKey);
-      if (!object || object.size !== file.size) throw new Error("workspace_object_unavailable");
+      const object = await this.env.WORKSPACE_FILES.get(file.extractedObjectKey);
+      if (!object || object.size !== file.extractedBytes) throw new Error("workspace_object_unavailable");
+      const storedChecksum = object.checksums.sha256;
+      if (!storedChecksum || hexBytes(storedChecksum) !== file.extractedChecksum) {
+        throw new Error("workspace_object_checksum_mismatch");
+      }
       const bytes = await object.arrayBuffer();
-      if (await contentFingerprintBytes(bytes) !== file.checksum) throw new Error("workspace_object_checksum_mismatch");
+      if (bytes.byteLength !== file.extractedBytes || await contentFingerprintBytes(bytes) !== file.extractedChecksum) {
+        throw new Error("workspace_object_checksum_mismatch");
+      }
       let text: string;
       try {
-        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes).replace(/^\uFEFF/u, "");
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
       } catch {
-        context.push(workspaceUnavailableContext(file, "invalid_utf8"));
-        continue;
+        throw new Error("workspace_extracted_artifact_invalid");
       }
+      if (text.length !== file.extractedChars) throw new Error("workspace_extracted_artifact_invalid");
       if (validation.totalChars + text.length > policy.maxExtractedChars) {
         context.push(workspaceUnavailableContext(file, "text_context_too_large"));
         continue;
@@ -1999,7 +2239,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private getWorkspaceVersionRow(versionId: string): WorkspaceFileVersionRow | undefined {
     return this.sql<WorkspaceFileVersionRow>`
       SELECT id, file_id, object_key, size, media_type, checksum, state,
-        generation, error, created_at, updated_at
+        generation, error, ingest_status, ingest_generation, ingest_attempts, ingest_error,
+        extracted_object_key, extracted_checksum, extracted_bytes, extracted_chars,
+        created_at, updated_at
       FROM workspace_file_versions WHERE id = ${versionId} LIMIT 1
     `[0];
   }
@@ -2034,6 +2276,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           mediaType: normalizeWorkspaceMediaType(version.media_type),
           checksum: normalizeWorkspaceChecksum(version.checksum),
           state: versionState,
+          ingestStatus: normalizeDocumentIngestStatus(version.ingest_status),
+          ingestGeneration: Math.max(1, version.ingest_generation),
+          ingestAttempts: Math.max(0, version.ingest_attempts),
+          ...(version.ingest_error ? { ingestError: version.ingest_error } : {}),
           createdAt: version.created_at,
         }
       : undefined;
@@ -2047,6 +2293,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       updatedAt: row.updated_at,
       ...(currentVersion ? { currentVersion } : {}),
       retryAvailable: state === "failed",
+      ingestRetryAvailable: currentVersion?.ingestStatus === "failed",
     };
   }
 
@@ -2097,7 +2344,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     return this.sql<WorkspaceConversationRefRow>`
       SELECT refs.conversation_id, refs.file_id, refs.version_id,
         files.path, files.name, versions.size, versions.media_type, versions.checksum,
-        versions.object_key, versions.generation
+        versions.object_key, versions.generation, versions.ingest_status, versions.ingest_generation,
+        versions.ingest_attempts, versions.ingest_error, versions.extracted_object_key,
+        versions.extracted_checksum, versions.extracted_bytes, versions.extracted_chars
       FROM conversation_file_refs AS refs
       INNER JOIN workspace_files AS files ON files.id = refs.file_id AND files.deleted_at = 0
       INNER JOIN workspace_file_versions AS versions
@@ -2123,7 +2372,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const row = this.sql<WorkspaceConversationRefRow>`
       SELECT '' AS conversation_id, files.id AS file_id, versions.id AS version_id,
         files.path, files.name, versions.size, versions.media_type, versions.checksum,
-        versions.object_key, versions.generation
+        versions.object_key, versions.generation, versions.ingest_status, versions.ingest_generation,
+        versions.ingest_attempts, versions.ingest_error, versions.extracted_object_key,
+        versions.extracted_checksum, versions.extracted_bytes, versions.extracted_chars
       FROM workspace_files AS files
       INNER JOIN workspace_file_versions AS versions ON versions.file_id = files.id
       WHERE files.id = ${fileId} AND files.deleted_at = 0
@@ -2141,6 +2392,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           checksum: normalizeWorkspaceChecksum(row.checksum),
           objectKey: row.object_key,
           generation: row.generation,
+          ingestStatus: normalizeDocumentIngestStatus(row.ingest_status),
+          ingestGeneration: Math.max(1, row.ingest_generation),
+          ingestAttempts: Math.max(0, row.ingest_attempts),
+          ingestError: row.ingest_error,
+          extractedObjectKey: row.extracted_object_key,
+          extractedChecksum: normalizeWorkspaceChecksum(row.extracted_checksum),
+          extractedBytes: Math.max(0, row.extracted_bytes),
+          extractedChars: Math.max(0, row.extracted_chars),
         }
       : undefined;
   }
@@ -2869,6 +3128,38 @@ function normalizeWorkspaceFileVersionState(value: unknown): WorkspaceFileVersio
     : undefined;
 }
 
+function normalizeDocumentIngestStatus(value: unknown): DocumentIngestStatus {
+  return value === "queued" || value === "extracting" || value === "ready" || value === "failed" || value === "deleted"
+    ? value
+    : "failed";
+}
+
+function normalizeDocumentIngestMessage(value: unknown): DocumentIngestMessage | undefined {
+  if (!isRecord(value)) return undefined;
+  const ownerId = typeof value.ownerId === "string" ? value.ownerId.trim() : "";
+  const fileId = normalizeWorkspaceEntityId(value.fileId);
+  const versionId = normalizeWorkspaceEntityId(value.versionId);
+  const generation = finitePositiveInteger(value.generation);
+  return ownerId && ownerId.length <= 120 && fileId && versionId && generation
+    ? { ownerId, fileId, versionId, generation }
+    : undefined;
+}
+
+function normalizeDocumentIngestArtifact(value: unknown): DocumentIngestArtifact | undefined {
+  if (!isRecord(value)) return undefined;
+  const objectKey = typeof value.objectKey === "string" && value.objectKey.length <= 1_024 ? value.objectKey : "";
+  const checksum = normalizeWorkspaceChecksum(value.checksum);
+  const bytes = finiteNonNegativeInteger(value.bytes);
+  const chars = finiteNonNegativeInteger(value.chars);
+  return objectKey && checksum && bytes !== undefined && chars !== undefined
+    ? { objectKey, checksum, bytes, chars }
+    : undefined;
+}
+
+function finiteNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
 function escapeWorkspaceLike(value: string): string {
   return value.replace(/[\\%_]/gu, "\\$&");
 }
@@ -2932,12 +3223,22 @@ async function contentFingerprint(value: string): Promise<string> {
 
 async function contentFingerprintBytes(value: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", value);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return hexBytes(digest);
+}
+
+function hexBytes(value: ArrayBuffer): string {
+  return [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function workspaceUnavailableContext(
   file: WorkspaceResolvedFileVersion,
-  reason: "document_ingest_not_ready" | "text_file_too_large" | "invalid_utf8" | "text_context_too_large",
+  reason:
+    | "document_ingest_queued"
+    | "document_ingest_extracting"
+    | "document_ingest_failed"
+    | "document_ingest_deleted"
+    | "text_file_too_large"
+    | "text_context_too_large",
 ): string {
   const name = file.path.replace(/["<>\u0000-\u001f\u007f]/gu, "_").slice(0, 1_024);
   const mediaType = file.mediaType.replace(/["<>\u0000-\u001f\u007f]/gu, "_").slice(0, 120);
