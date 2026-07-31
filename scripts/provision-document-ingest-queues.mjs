@@ -147,13 +147,15 @@ async function requestEnvelope(fetchImpl, url, init) {
   if (
     !isRecord(payload)
     || (payload.success !== undefined && typeof payload.success !== "boolean")
-    || (payload.errors !== undefined && !Array.isArray(payload.errors))
+    || (payload.errors != null && !Array.isArray(payload.errors))
+    || (payload.messages != null && !Array.isArray(payload.messages))
   ) {
     throw new Error(
       `Cloudflare Queues API returned an invalid envelope (status ${response.status}; shape ${envelopeShape(payload)})`,
     );
   }
-  if (payload.errors === undefined) payload.errors = [];
+  if (payload.errors == null) payload.errors = [];
+  if (payload.messages == null) payload.messages = [];
   return { status: response.status, ok: response.ok, payload };
 }
 

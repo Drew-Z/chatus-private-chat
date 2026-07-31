@@ -272,7 +272,13 @@ describe("main deployment governance", () => {
       fetchImpl: async (url, init = {}) => {
         const requestUrl = new URL(String(url));
         requests.push(`${init.method || "GET"} page=${requestUrl.searchParams.get("page")}`);
-        return new Response(JSON.stringify({ result: queues }), { status: 200 });
+        return new Response(JSON.stringify({
+          success: true,
+          errors: null,
+          messages: null,
+          result: queues,
+          result_info: {},
+        }), { status: 200 });
       },
       logger: { log() {} },
     })).resolves.toEqual({
