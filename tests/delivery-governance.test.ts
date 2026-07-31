@@ -225,9 +225,9 @@ describe("main deployment governance", () => {
     const requests: Array<{ url: string; method: string; body?: string }> = [];
     const queueNames = ["chatus-test-document-dlq", "chatus-test-document"];
     const responses = queueNames.flatMap((queueName) => [
-      apiResponse(200, true, [], []),
-      apiResponse(200, true, { queue_id: `${queueName}-id`, queue_name: queueName }, []),
-      apiResponse(200, true, [{ queue_id: `${queueName}-id`, queue_name: queueName }], []),
+      apiResponse(200, true, [], [], { page: 1, total_pages: 0 }),
+      apiResponse(200, undefined, { queue_id: `${queueName}-id`, queue_name: queueName }, []),
+      apiResponse(200, true, [{ queue_id: `${queueName}-id`, queue_name: queueName }], [], { page: 1, total_pages: 1 }),
     ]);
 
     await expect(provisionDocumentIngestQueues({
@@ -250,23 +250,29 @@ describe("main deployment governance", () => {
     });
 
     expect(requests.map((request) => request.method)).toEqual(["GET", "POST", "GET", "GET", "POST", "GET"]);
-    expect(new URL(requests[0]!.url).searchParams.get("name")).toBe("chatus-test-document-dlq");
+    expect(new URL(requests[0]!.url).searchParams.get("page")).toBe("1");
+    expect(new URL(requests[0]!.url).searchParams.get("name")).toBeNull();
     expect(requests[1]?.body).toBe(JSON.stringify({ queue_name: "chatus-test-document-dlq" }));
-    expect(new URL(requests[3]!.url).searchParams.get("name")).toBe("chatus-test-document");
+    expect(new URL(requests[3]!.url).searchParams.get("page")).toBe("1");
+    expect(new URL(requests[3]!.url).searchParams.get("name")).toBeNull();
     expect(requests[4]?.body).toBe(JSON.stringify({ queue_name: "chatus-test-document" }));
   });
 
   it("leaves existing document ingest Queues unchanged", async () => {
     const requests: string[] = [];
+    const queues = [
+      { queue_id: "dlq-id", queue_name: "chatus-test-document-dlq" },
+      { queue_id: "queue-id", queue_name: "chatus-test-document" },
+    ];
     await expect(provisionDocumentIngestQueues({
       accountId: "e".repeat(32),
       apiToken: "test-token",
       queueName: "chatus-test-document",
       deadLetterQueueName: "chatus-test-document-dlq",
       fetchImpl: async (url, init = {}) => {
-        requests.push(`${init.method || "GET"} ${new URL(String(url)).searchParams.get("name")}`);
-        const queueName = new URL(String(url)).searchParams.get("name");
-        return apiResponse(200, true, [{ queue_id: `${queueName}-id`, queue_name: queueName }], []);
+        const requestUrl = new URL(String(url));
+        requests.push(`${init.method || "GET"} page=${requestUrl.searchParams.get("page")}`);
+        return new Response(JSON.stringify({ result: queues }), { status: 200 });
       },
       logger: { log() {} },
     })).resolves.toEqual({
@@ -274,9 +280,55 @@ describe("main deployment governance", () => {
       queue: { queueName: "chatus-test-document", created: false },
     });
     expect(requests).toEqual([
-      "GET chatus-test-document-dlq",
-      "GET chatus-test-document",
+      "GET page=1",
+      "GET page=1",
     ]);
+  });
+
+  it("searches every Queue page locally and rejects ambiguous exact matches", async () => {
+    const requests: string[] = [];
+    const base = {
+      accountId: "2".repeat(32),
+      apiToken: "test-token",
+      queueName: "chatus-test-document",
+      deadLetterQueueName: "chatus-test-document-dlq",
+      logger: { log() {} },
+    };
+    await expect(provisionDocumentIngestQueues({
+      ...base,
+      fetchImpl: async (url, init = {}) => {
+        const requestUrl = new URL(String(url));
+        const page = Number(requestUrl.searchParams.get("page"));
+        requests.push(`${init.method || "GET"} page=${page} name=${requestUrl.searchParams.get("name")}`);
+        const result = page === 1
+          ? [{ queue_id: "main-id", queue_name: "chatus-test-document" }]
+          : [{ queue_id: "dlq-id", queue_name: "chatus-test-document-dlq" }];
+        return new Response(JSON.stringify({
+          result,
+          result_info: { page, total_pages: 2 },
+        }), { status: 200 });
+      },
+    })).resolves.toEqual({
+      deadLetterQueue: { queueName: "chatus-test-document-dlq", created: false },
+      queue: { queueName: "chatus-test-document", created: false },
+    });
+    expect(requests).toEqual([
+      "GET page=1 name=null",
+      "GET page=2 name=null",
+      "GET page=1 name=null",
+      "GET page=2 name=null",
+    ]);
+
+    await expect(provisionDocumentIngestQueues({
+      ...base,
+      fetchImpl: async (url) => {
+        const page = Number(new URL(String(url)).searchParams.get("page"));
+        return new Response(JSON.stringify({
+          result: [{ queue_id: `duplicate-${page}`, queue_name: "chatus-test-document-dlq" }],
+          result_info: { page, total_pages: 2 },
+        }), { status: 200 });
+      },
+    })).rejects.toThrow('multiple exact matches for Queue "chatus-test-document-dlq"');
   });
 
   it("absorbs a concurrent Queue creation without relying on duplicate error codes", async () => {
@@ -313,8 +365,12 @@ describe("main deployment governance", () => {
     })).rejects.toThrow("lookup failed (status 403, codes 10000)");
     await expect(provisionDocumentIngestQueues({
       ...base,
-      fetchImpl: async () => new Response(JSON.stringify({ result: [] }), { status: 200 }),
+      fetchImpl: async () => new Response(JSON.stringify({ success: "yes", result: [], errors: [] }), { status: 200 }),
     })).rejects.toThrow("invalid envelope");
+    await expect(provisionDocumentIngestQueues({
+      ...base,
+      fetchImpl: async () => new Response(JSON.stringify({ result: [], result_info: { page: 2, total_pages: 2 } }), { status: 200 }),
+    })).rejects.toThrow("invalid pagination");
     const responses = [
       apiResponse(200, true, [], []),
       apiResponse(200, true, { queue_id: "wrong-id", queue_name: "wrong-name" }, []),
@@ -331,8 +387,20 @@ describe("main deployment governance", () => {
   });
 });
 
-function apiResponse(status: number, success: boolean, result: unknown, errors: unknown[]) {
-  return new Response(JSON.stringify({ success, result, errors, messages: [] }), {
+function apiResponse(
+  status: number,
+  success: boolean | undefined,
+  result: unknown,
+  errors: unknown[],
+  resultInfo?: Record<string, unknown>,
+) {
+  return new Response(JSON.stringify({
+    ...(success === undefined ? {} : { success }),
+    result,
+    errors,
+    messages: [],
+    ...(resultInfo === undefined ? {} : { result_info: resultInfo }),
+  }), {
     status,
     headers: { "Content-Type": "application/json" },
   });

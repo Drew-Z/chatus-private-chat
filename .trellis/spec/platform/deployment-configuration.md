@@ -74,7 +74,7 @@ The checked-in Wrangler baseline defines exactly one ID-free `WORKSPACE_FILES` R
 
 The checked-in baseline also defines exactly one `DOCUMENT_INGEST` producer, one linked main consumer, and one linked DLQ consumer. The main consumer is fixed at `max_batch_size: 1`, `max_concurrency: 1`, `max_retries: 3`, and a distinct `dead_letter_queue`. `prepare:deployment` rewrites producer/consumer names to the two Queue Repository Variables, injects the same names as Worker vars for runtime event discrimination, and rejects missing, duplicate, unlinked, or drifted consumer settings.
 
-Before generating the production config, GitHub Actions runs `scripts/provision-document-ingest-queues.mjs`. It performs an exact name-filtered list, creates the DLQ before the main Queue only when absent, and repeats the exact lookup after creation. A failed create is accepted only when a follow-up exact lookup proves a concurrent creator won; authorization, rate-limit, network, malformed-envelope, ambiguous-match, and non-exact verification failures stop deployment. Queue API credentials remain GitHub Actions secrets and never enter Worker vars or artifacts.
+Before generating the production config, GitHub Actions runs `scripts/provision-document-ingest-queues.mjs`. It lists Queue pages without relying on the undocumented `name` query parameter, performs client-side exact `queue_name` matching across every reported page, creates the DLQ before the main Queue only when absent, and repeats the exact lookup after creation. Cloudflare's Queue OpenAPI marks the success-envelope `success`, `errors`, and `messages` fields optional: a 2xx response may omit them, but any present `success` must be boolean and any present `errors` must be an array. The operation-specific `result` remains mandatory (`Queue[]` for list, with post-create exact lookup proving creation). A failed create is accepted only when a follow-up exact lookup proves a concurrent creator won; authorization, rate-limit, network, malformed-envelope/result/pagination, ambiguous-match, and non-exact verification failures stop deployment. Queue API credentials remain GitHub Actions secrets and never enter Worker vars or artifacts.
 
 Production deploy and production member acceptance share the `chatus-production-mutation` concurrency group with `cancel-in-progress: false`. New production mutations wait instead of canceling an upload, smoke, generated-file cleanup, or temporary-member cleanup. Deploy checks that `GITHUB_SHA` is still the remote `main` tip early for fast failure and again immediately before the real Wrangler upload.
 
@@ -92,6 +92,8 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 | Checked-in config lacks exactly one linked producer/main/DLQ consumer | Fail preflight; do not infer Queue topology |
 | Main consumer batch/concurrency/retry values differ from `1/1/3` | Fail preflight; preserve the reviewed retry semantics |
 | Exact Queue lookup proves absence | Create DLQ first, then main Queue, and verify each by exact name |
+| Queue list returns 2xx with a valid `result` and omitted optional envelope fields | Accept the response and continue exact client-side matching |
+| Queue envelope fields are present with invalid types, `success=false`, or list pagination is inconsistent | Fail closed; do not reinterpret the response as absence |
 | Queue API returns auth, rate-limit, network, malformed, ambiguous, or non-exact data | Fail closed without treating it as successful provisioning |
 | Exact R2 lookup returns `404` with code `10006` | Create the configured bucket through GitHub Actions, then verify it with another exact lookup |
 | Exact R2 lookup returns auth, rate-limit, network, malformed, or any other error | Fail closed; do not reinterpret it as a missing bucket |
@@ -120,9 +122,11 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 ## 5. Good / Base / Bad Cases
 
 - Good: an installer configures the six non-secret instance/Queue Variables plus GitHub Secrets, Actions provisions R2 and both Queues, generates the target config, dry-run validates the exact bindings/routes/consumers, deploy uses the same config, and exact-SHA smoke passes.
+- Good Queue lookup: a 2xx page omits optional `success/errors/messages`, exposes a valid Queue array and pagination, and the provisioner matches the configured name locally across all pages.
 - Good recovery: the first post-upload smoke observes an older release marker, the failed manifest is retained, remote `main` is confirmed unchanged, the same Actions run is retried at the same SHA, and both exact-SHA smoke and production member acceptance pass with new artifacts.
 - Base: `wrangler.jsonc` has generic local KV/R2 bindings and local Queue names, so Vitest, Playwright, Wrangler dev, and default dry-run work without production identifiers.
 - Bad: commit an account/KV/domain/production Queue name, accept a main consumer with drifted retries or concurrency, create the main Queue before its DLQ, or reinterpret a Queue API authorization error as absence.
+- Bad Queue lookup: require optional envelope fields, trust undocumented server-side name filtering, inspect only page 1, or create after an invalid/ambiguous list response.
 - Good managed secret: the KV read returns `null`, so a trimmed Worker binding may satisfy the credential.
 - Base managed secret: a valid encrypted record decrypts with its namespace/ref AAD and shadows any same-name Worker binding.
 - Bad managed secret: an empty, malformed, moved, or undecryptable record silently falls through to an older Worker binding.
@@ -132,7 +136,7 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 
 ## 6. Tests Required
 
-- Unit-test custom-domain and workers.dev projections, input immutability, KV/R2/Queue binding injection, R2 and Queue provision existing/missing/concurrent/error branches, and removal of stale routes.
+- Unit-test custom-domain and workers.dev projections, input immutability, KV/R2/Queue binding injection, R2 and Queue provision existing/missing/concurrent/error branches, omitted optional Queue envelope fields, empty and multi-page Queue lists, ambiguous exact matches, invalid pagination, and removal of stale routes.
 - Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
 - Assert every newly introduced Durable Object uses a SQLite-backed migration and reject `new_classes` in the checked-in Wrangler contract.
 - Import workflow/config files as raw fixtures and assert all six Repository Variables, generated `--config`, shared non-canceling production concurrency, early and late stale-SHA checks, parameterized production URL, one `WORKSPACE_FILES` binding, exact Queue topology/settings, provisioning before config generation, and absence of a local `deploy` script.
@@ -168,6 +172,28 @@ This deploys the checked-in instance binding, hard-codes one operator's target, 
 ```
 
 Generate one validated target config from Repository Variables, use it for both dry-run and upload, then smoke `vars.CHATUS_PRODUCTION_URL` at the exact deployed SHA.
+
+### Queue Envelope Decoding
+
+Wrong:
+
+```js
+if (typeof payload.success !== "boolean") throw new Error("invalid envelope");
+const queue = payload.result[0];
+```
+
+Correct:
+
+```js
+if (payload.success !== undefined && typeof payload.success !== "boolean") {
+  throw new Error("invalid envelope");
+}
+for (const page of await listAllQueuePages()) {
+  exactMatches.push(...page.result.filter((queue) => queue.queue_name === configuredName));
+}
+```
+
+The Queue OpenAPI makes the generic success fields optional, while exact identity is an operation-level contract. Decode optional fields by type, then require and verify the list result across every page rather than treating missing metadata or a first-page miss as absence.
 
 ### Managed Secret Fallback
 
