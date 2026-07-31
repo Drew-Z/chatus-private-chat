@@ -206,6 +206,7 @@ describe("main deployment governance", () => {
       apiToken: "test-token",
       bucketName: "chatus-test-files",
       logger: { log() {} },
+      retryDelaysMs: [],
     };
     await expect(provisionR2Bucket({
       ...base,
@@ -219,6 +220,48 @@ describe("main deployment governance", () => {
       ...base,
       fetchImpl: async () => new Response("not-json", { status: 502 }),
     })).rejects.toThrow("invalid JSON (status 502)");
+  });
+
+  it("retries transient R2 lookup failures without retrying writes", async () => {
+    const requests: string[] = [];
+    const delays: number[] = [];
+    let attempt = 0;
+    await expect(provisionR2Bucket({
+      accountId: "c".repeat(32),
+      apiToken: "test-token",
+      bucketName: "chatus-test-files",
+      fetchImpl: async (_url, init = {}) => {
+        requests.push(init.method || "GET");
+        attempt += 1;
+        if (attempt === 1) return new Response("edge unavailable", { status: 522 });
+        return apiResponse(200, true, { name: "chatus-test-files" });
+      },
+      logger: { log() {} },
+      retryDelaysMs: [7],
+      sleepImpl: async (delayMs: number) => { delays.push(delayMs); },
+    })).resolves.toEqual({ bucketName: "chatus-test-files", created: false });
+    expect(requests).toEqual(["GET", "GET"]);
+    expect(delays).toEqual([7]);
+  });
+
+  it("verifies a R2 bucket after a lost create response instead of retrying the write", async () => {
+    const requests: string[] = [];
+    let attempt = 0;
+    await expect(provisionR2Bucket({
+      accountId: "d".repeat(32),
+      apiToken: "test-token",
+      bucketName: "chatus-test-files",
+      fetchImpl: async (_url, init = {}) => {
+        requests.push(init.method || "GET");
+        attempt += 1;
+        if (attempt === 1) return apiResponse(404, false, null, [{ code: 10006 }]);
+        if (attempt === 2) throw new Error("network detail");
+        return apiResponse(200, true, { name: "chatus-test-files" });
+      },
+      logger: { log() {} },
+      retryDelaysMs: [],
+    })).resolves.toEqual({ bucketName: "chatus-test-files", created: false });
+    expect(requests).toEqual(["GET", "POST", "GET"]);
   });
 
   it("provisions the document ingest DLQ before the main Queue and verifies both", async () => {
@@ -364,6 +407,7 @@ describe("main deployment governance", () => {
       queueName: "chatus-test-document",
       deadLetterQueueName: "chatus-test-document-dlq",
       logger: { log() {} },
+      retryDelaysMs: [],
     };
     await expect(provisionDocumentIngestQueues({
       ...base,
@@ -398,6 +442,65 @@ describe("main deployment governance", () => {
       ...base,
       fetchImpl: async () => responses.shift()!,
     })).rejects.toThrow("post-create verification failed");
+  });
+
+  it("retries transient Queue lookup failures without retrying Queue creation", async () => {
+    const requests: string[] = [];
+    const delays: number[] = [];
+    let attempt = 0;
+    await expect(provisionDocumentIngestQueues({
+      accountId: "3".repeat(32),
+      apiToken: "test-token",
+      queueName: "chatus-test-document",
+      deadLetterQueueName: "chatus-test-document-dlq",
+      fetchImpl: async (url, init = {}) => {
+        const method = init.method || "GET";
+        requests.push(method);
+        attempt += 1;
+        if (attempt === 1) return new Response("edge unavailable", { status: 520 });
+        return apiResponse(200, true, [
+          { queue_id: "dlq-id", queue_name: "chatus-test-document-dlq" },
+          { queue_id: "queue-id", queue_name: "chatus-test-document" },
+        ], []);
+      },
+      logger: { log() {} },
+      retryDelaysMs: [11],
+      sleepImpl: async (delayMs: number) => { delays.push(delayMs); },
+    })).resolves.toEqual({
+      deadLetterQueue: { queueName: "chatus-test-document-dlq", created: false },
+      queue: { queueName: "chatus-test-document", created: false },
+    });
+    expect(requests).toEqual(["GET", "GET", "GET"]);
+    expect(delays).toEqual([11]);
+  });
+
+  it("verifies a Queue after a lost create response instead of retrying the write", async () => {
+    const requests: string[] = [];
+    let attempt = 0;
+    await expect(provisionDocumentIngestQueues({
+      accountId: "4".repeat(32),
+      apiToken: "test-token",
+      queueName: "chatus-test-document",
+      deadLetterQueueName: "chatus-test-document-dlq",
+      fetchImpl: async (_url, init = {}) => {
+        requests.push(init.method || "GET");
+        attempt += 1;
+        if (attempt === 1) return apiResponse(200, true, [], []);
+        if (attempt === 2) throw new Error("network detail");
+        if (attempt === 3) return apiResponse(200, true, [
+          { queue_id: "dlq-id", queue_name: "chatus-test-document-dlq" },
+        ], []);
+        return apiResponse(200, true, [
+          { queue_id: "queue-id", queue_name: "chatus-test-document" },
+        ], []);
+      },
+      logger: { log() {} },
+      retryDelaysMs: [],
+    })).resolves.toEqual({
+      deadLetterQueue: { queueName: "chatus-test-document-dlq", created: false },
+      queue: { queueName: "chatus-test-document", created: false },
+    });
+    expect(requests).toEqual(["GET", "POST", "GET", "GET"]);
   });
 
   it("stays on the approved 0.x version line", () => {
