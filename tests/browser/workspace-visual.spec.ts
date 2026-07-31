@@ -192,9 +192,16 @@ test("file workspace stays contained and exposes exact version selection", async
     mediaType: "text/markdown",
     checksum,
     state: "ready",
+    ingestStatus: "ready",
+    ingestGeneration: 1,
+    ingestAttempts: 1,
     createdAt: Date.now(),
   } as const;
   const oldVersion = { ...currentVersion, id: oldVersionId, createdAt: Date.now() - 86_400_000 };
+  const ingestFailedFileId = "55555555-5555-4555-8555-555555555555";
+  const ingestFailedVersionId = "66666666-6666-4666-8666-666666666666";
+  let ingestStatus: "failed" | "ready" = "failed";
+  let ingestRetryRequested = false;
   let updatedAt = Date.now();
   let deleted = false;
 
@@ -217,6 +224,7 @@ test("file workspace stays contained and exposes exact version selection", async
           updatedAt,
           currentVersion,
           retryAvailable: false,
+          ingestRetryAvailable: false,
         }]), {
           id: "44444444-4444-4444-8444-444444444444",
           path: "source-data/metrics.csv",
@@ -226,6 +234,30 @@ test("file workspace stays contained and exposes exact version selection", async
           createdAt: updatedAt - 200_000,
           updatedAt: updatedAt - 1_000,
           retryAvailable: true,
+          ingestRetryAvailable: false,
+        }, {
+          id: ingestFailedFileId,
+          path: "documents/failed-report.pdf",
+          name: "failed-report.pdf",
+          pinned: false,
+          state: "ready",
+          createdAt: updatedAt - 300_000,
+          updatedAt: updatedAt - 2_000,
+          currentVersion: {
+            id: ingestFailedVersionId,
+            fileId: ingestFailedFileId,
+            size: 8_192,
+            mediaType: "application/pdf",
+            checksum,
+            state: "ready",
+            ingestStatus,
+            ingestGeneration: 1,
+            ingestAttempts: 1,
+            ...(ingestStatus === "failed" ? { ingestError: "pdf_invalid" } : {}),
+            createdAt: updatedAt - 300_000,
+          },
+          retryAvailable: false,
+          ingestRetryAvailable: ingestStatus === "failed",
         }],
         maxFileBytes: 10 * 1024 * 1024,
       });
@@ -243,9 +275,17 @@ test("file workspace stays contained and exposes exact version selection", async
           updatedAt,
           currentVersion,
           retryAvailable: false,
+          ingestRetryAvailable: false,
         },
         versions: [currentVersion, oldVersion],
       });
+      return;
+    }
+    if (url.pathname === `/api/workspace/files/${ingestFailedFileId}/ingest-retry` && route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ versionId: ingestFailedVersionId });
+      ingestRetryRequested = true;
+      ingestStatus = "ready";
+      await json({ ok: true });
       return;
     }
     if (url.pathname === `/api/workspace/files/${fileId}` && route.request().method() === "DELETE") {
@@ -301,6 +341,20 @@ test("file workspace stays contained and exposes exact version selection", async
   await selector.selectOption(oldVersionId);
   await expect(row.getByRole("link", { name: "下载文件" })).toHaveAttribute("href", new RegExp(oldVersionId));
   await expect(row.getByRole("button", { name: "上传新版本" })).toBeVisible();
+  const failedRow = panel.locator(".file-workspace-row").filter({ hasText: "failed-report.pdf" });
+  await expect(failedRow).toContainText("解析失败");
+  await expect(failedRow.getByRole("checkbox")).toBeDisabled();
+  await failedRow.getByRole("button", { name: "重试文件解析" }).click();
+  await expect(failedRow).toContainText("可用");
+  await expect(failedRow.getByRole("checkbox")).toBeEnabled();
+  expect(ingestRetryRequested).toBe(true);
+
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: "too-large.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.alloc(1024 * 1024 + 1, 65),
+  });
+  await expect(panel.getByRole("alert")).toContainText("超过 1.0 MB 限制");
 
   const geometry = await panel.evaluate((element) => {
     const rect = element.getBoundingClientRect();

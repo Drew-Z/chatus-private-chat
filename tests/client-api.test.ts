@@ -25,6 +25,9 @@ import {
   isAgentConversationBranchResult,
   isAgentMemory,
   isSessionProjection,
+  isWorkspaceFile,
+  isWorkspaceFileVersion,
+  retryWorkspaceDocumentIngest,
   setConversationWorkspaceFiles,
   submitFeedback,
   isUserDataExport,
@@ -334,6 +337,9 @@ describe("workspace file client contract", () => {
     mediaType: "text/plain",
     checksum: "a".repeat(64),
     state: "ready" as const,
+    ingestStatus: "ready" as const,
+    ingestGeneration: 1,
+    ingestAttempts: 1,
     createdAt: 10,
   };
   const file = {
@@ -346,6 +352,7 @@ describe("workspace file client contract", () => {
     updatedAt: 20,
     currentVersion: version,
     retryAvailable: false,
+    ingestRetryAvailable: false,
   };
   const conversation = {
     id: "chat-1",
@@ -362,6 +369,7 @@ describe("workspace file client contract", () => {
   it("accepts every documented workspace mutation envelope", async () => {
     const responses = [
       { ok: true, file, existing: false },
+      { ok: true },
       { ok: true, file },
       { ok: true, conversation },
       { ok: true, deleted: false, pending: true, message: "删除正在自动重试" },
@@ -376,6 +384,7 @@ describe("workspace file client contract", () => {
       relativePath: "notes.txt",
       operationId: "upload-1",
     })).resolves.toEqual(file);
+    await expect(retryWorkspaceDocumentIngest(file.id, version.id)).resolves.toBeUndefined();
     await expect(updateWorkspaceFile(file, { pinned: true })).resolves.toEqual(file);
     await expect(setConversationWorkspaceFiles(conversation, [])).resolves.toEqual(conversation);
     await expect(deleteWorkspaceFile(file, "delete-1")).resolves.toEqual({
@@ -388,6 +397,7 @@ describe("workspace file client contract", () => {
   it("rejects unknown workspace mutation response fields", async () => {
     const responses = [
       { ok: true, file, existing: false, objectKey: "private" },
+      { ok: true, message: { ownerId: "private" } },
       { ok: true, file, objectKey: "private" },
       { ok: true, conversation, token: "private" },
       { ok: true, deleted: true, existing: false, objectKey: "private" },
@@ -402,12 +412,29 @@ describe("workspace file client contract", () => {
       relativePath: "notes.txt",
       operationId: "upload-1",
     })).rejects.toMatchObject<ApiError>({ code: "invalid_workspace_response", status: 502 });
+    await expect(retryWorkspaceDocumentIngest(file.id, version.id))
+      .rejects.toMatchObject<ApiError>({ code: "invalid_workspace_response", status: 502 });
     await expect(updateWorkspaceFile(file, { pinned: true }))
       .rejects.toMatchObject<ApiError>({ code: "invalid_workspace_response", status: 502 });
     await expect(setConversationWorkspaceFiles(conversation, []))
       .rejects.toMatchObject<ApiError>({ code: "invalid_conversation_response", status: 502 });
     await expect(deleteWorkspaceFile(file, "delete-1"))
       .rejects.toMatchObject<ApiError>({ code: "invalid_workspace_response", status: 502 });
+  });
+
+  it("validates exact document ingest fields", () => {
+    expect(isWorkspaceFileVersion(version)).toBe(true);
+    expect(isWorkspaceFile(file)).toBe(true);
+    expect(isWorkspaceFileVersion({ ...version, ingestStatus: "unknown" })).toBe(false);
+    expect(isWorkspaceFileVersion({ ...version, ingestError: "x", ownerId: "private" })).toBe(false);
+    expect(isWorkspaceFile({ ...file, ingestRetryAvailable: "true" })).toBe(false);
+    expect(isWorkspaceFile({ ...file, ingestRetryAvailable: true })).toBe(false);
+    expect(isWorkspaceFile({ ...file, currentVersion: { ...version, fileId: "other-file" } })).toBe(false);
+    expect(isWorkspaceFile({
+      ...file,
+      currentVersion: { ...version, ingestStatus: "failed" },
+      ingestRetryAvailable: true,
+    })).toBe(true);
   });
 });
 
