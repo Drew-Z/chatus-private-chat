@@ -149,7 +149,9 @@ async function requestEnvelope(fetchImpl, url, init) {
     || (payload.success !== undefined && typeof payload.success !== "boolean")
     || (payload.errors !== undefined && !Array.isArray(payload.errors))
   ) {
-    throw new Error(`Cloudflare Queues API returned an invalid envelope (status ${response.status})`);
+    throw new Error(
+      `Cloudflare Queues API returned an invalid envelope (status ${response.status}; shape ${envelopeShape(payload)})`,
+    );
   }
   if (payload.errors === undefined) payload.errors = [];
   return { status: response.status, ok: response.ok, payload };
@@ -170,6 +172,19 @@ function apiFailure(action, response) {
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function envelopeShape(payload) {
+  if (!isRecord(payload)) return valueShape(payload);
+  return ["success", "errors", "messages", "result", "result_info"]
+    .map((name) => `${name}=${Object.hasOwn(payload, name) ? valueShape(payload[name]) : "missing"}`)
+    .join(",");
+}
+
+function valueShape(value) {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  return typeof value;
 }
 
 async function main() {

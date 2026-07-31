@@ -365,8 +365,20 @@ describe("main deployment governance", () => {
     })).rejects.toThrow("lookup failed (status 403, codes 10000)");
     await expect(provisionDocumentIngestQueues({
       ...base,
-      fetchImpl: async () => new Response(JSON.stringify({ success: "yes", result: [], errors: [] }), { status: 200 }),
-    })).rejects.toThrow("invalid envelope");
+      fetchImpl: async () => new Response(JSON.stringify({
+        success: "secret-success-value",
+        result: [],
+        errors: { token: "secret-token-value" },
+      }), { status: 200 }),
+    })).rejects.toThrow(
+      "invalid envelope (status 200; shape success=string,errors=object,messages=missing,result=array,result_info=missing)",
+    );
+    const arrayEnvelopeFailure = provisionDocumentIngestQueues({
+      ...base,
+      fetchImpl: async () => new Response(JSON.stringify(["secret-array-value"]), { status: 200 }),
+    });
+    await expect(arrayEnvelopeFailure).rejects.toThrow("invalid envelope (status 200; shape array)");
+    await expect(arrayEnvelopeFailure).rejects.not.toThrow("secret-array-value");
     await expect(provisionDocumentIngestQueues({
       ...base,
       fetchImpl: async () => new Response(JSON.stringify({ result: [], result_info: { page: 2, total_pages: 2 } }), { status: 200 }),
