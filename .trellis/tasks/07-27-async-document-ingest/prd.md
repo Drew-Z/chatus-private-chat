@@ -19,14 +19,14 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 五种格式各有正常 fixture，状态按 queued -> extracting -> ready，精确 version 产生确定性文本。
-- [ ] AC2. 宏/脚本、嵌套 archive、zip bomb、path traversal、外部关系、PDF JS/Launch/EmbeddedFile 和加密/损坏文档永久失败且不调用 Provider。
-- [ ] AC3. 大小、批次、成员存储和单轮 10 文件限制在边界 ±1 有测试；并发 admission 不突破成员额度。
-- [ ] AC4. transient failure 恰好最多重试 3 次，DLQ 置 failed；permanent failure 不重试；人工 retry 使用新 generation。
-- [ ] AC5. 重复、并发、ready 后重复、extracting 时删除、deleted 后延迟和旧 generation 消息均幂等。
-- [ ] AC6. parser 研究记录包含 Workers 兼容、恶意文档、license/maintenance、bundle size 和 dry-run 证据，选型理由可审计。
-- [ ] AC7. Agent fake Provider 测试证明只收到受控 extracted text，单轮最多 10 个精确版本，用户消息配额仍只计一次。
-- [ ] AC8. Queue/DLQ Vitest、恶意 fixtures、两类浏览器测试和五项全量验证通过。
+- [x] AC1. 五种格式各有正常 fixture，状态按 queued -> extracting -> ready，精确 version 产生确定性文本。
+- [x] AC2. 宏/脚本、嵌套 archive、zip bomb、path traversal、外部关系、PDF JS/Launch/EmbeddedFile 和加密/损坏文档永久失败且不调用 Provider。
+- [x] AC3. 大小、批次、成员存储和单轮 10 文件限制在边界 ±1 有测试；并发 admission 不突破成员额度。
+- [x] AC4. transient failure 恰好最多重试 3 次，DLQ 置 failed；permanent failure 不重试；人工 retry 使用新 generation。
+- [x] AC5. 重复、并发、ready 后重复、extracting 时删除、deleted 后延迟和旧 generation 消息均幂等。
+- [x] AC6. parser 研究记录包含 Workers 兼容、恶意文档、license/maintenance、bundle size 和 dry-run 证据，选型理由可审计。
+- [x] AC7. Agent fake Provider 测试证明只收到受控 extracted text，单轮最多 10 个精确版本，用户消息配额仍只计一次。
+- [x] AC8. Queue/DLQ Vitest、恶意 fixtures、两类浏览器测试和五项全量验证通过。
 
 ## Out of Scope
 
