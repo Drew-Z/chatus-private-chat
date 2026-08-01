@@ -71,6 +71,24 @@
         "status": "passed",
         "summary": "Final validation passed; repository consistency OK",
         "at": "2026-08-01T16:40:25.687112+00:00"
+      },
+      {
+        "command": "gh run view 30711251478",
+        "status": "passed",
+        "summary": "PR CI passed for head 87c049bec01153f8453332e72194e98646220937; changes, quality, Workspace Playwright, and local fake-Provider Agent jobs succeeded; artifacts 8821940115, 8821968772, 8821953479, and 8822005736 retained",
+        "at": "2026-08-01T18:08:08.046880+00:00"
+      },
+      {
+        "command": "gh run view 30711573144",
+        "status": "passed",
+        "summary": "GitHub Actions deployment passed for exact main SHA ee074f2baaa914dc9047d237e6786ac551ca1f8f; production verify succeeded; deployment artifact 8822070107 retained",
+        "at": "2026-08-01T18:08:09.113798+00:00"
+      },
+      {
+        "command": "gh run view 30711712422",
+        "status": "passed",
+        "summary": "GitHub Actions production member acceptance passed for exact deployed SHA ee074f2baaa914dc9047d237e6786ac551ca1f8f; acceptance artifact 8822086182 retained; no live Provider or MCP used",
+        "at": "2026-08-01T18:08:10.216823+00:00"
       }
     ]
   }

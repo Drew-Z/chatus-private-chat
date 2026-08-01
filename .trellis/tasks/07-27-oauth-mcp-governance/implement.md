@@ -12,7 +12,7 @@
 - [x] 扩展 user purge、user export exclusion 和 encrypted backup inventory。
 - [x] 覆盖 token/log/audit/browser 泄漏扫描及连续副作用确认。
 - [x] 运行 `trellis-check`、fake MCP/OAuth、两类浏览器测试和五项全量验证。
-- [ ] 更新 MCP/security/backup specs，记录验证、提交、PR、合并并归档。
+- [x] 更新 MCP/security/backup specs，记录验证、提交、PR、合并并归档。
 
 ## Risky Files
 
