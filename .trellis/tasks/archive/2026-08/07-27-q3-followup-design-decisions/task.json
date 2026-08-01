@@ -3,7 +3,7 @@
   "name": "q3-followup-design-decisions",
   "title": "季度后续设计决策",
   "description": "只做成员分享 ACL、Provider 成本预算反馈、备份恢复与 legacy 退役三份设计和风险登记。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-07-27",
-  "completedAt": null,
+  "completedAt": "2026-08-02",
   "branch": "codex/q3-followup-design-decisions",
   "base_branch": "main",
   "worktree_path": null,
@@ -83,6 +83,12 @@
         "status": "passed",
         "summary": "Merged docs/spec main SHA 83e8e59fe1e3b4be315a091d96ac36c15505ca52 correctly skipped Worker deployment; classification artifact 8822681514 retained and deploy job did not run",
         "at": "2026-08-01T18:59:48.555714+00:00"
+      },
+      {
+        "command": "gh run view 30713830985",
+        "status": "passed",
+        "summary": "Trellis-only main commit fc79da12c025af7d9ab37d6ed578c1a3f5c44c99 correctly skipped Worker deployment; classification artifact 8822708470 retained and deploy job did not run",
+        "at": "2026-08-01T19:01:35.347758+00:00"
       }
     ]
   }
