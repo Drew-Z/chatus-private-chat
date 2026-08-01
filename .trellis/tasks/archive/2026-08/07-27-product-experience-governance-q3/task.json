@@ -3,7 +3,7 @@
   "name": "product-experience-governance-q3",
   "title": "Chatus 季度体验与治理优化计划",
   "description": "季度级产品体验、交付治理、文件工作区、文档解析、Skill 自动选择与 OAuth MCP 计划的父任务和最终证据审计。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-07-27",
-  "completedAt": null,
+  "completedAt": "2026-08-02",
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "efca07bb3164f1a34cc7a982b75b110b1a6f8d14",
   "pr_url": null,
   "subtasks": [],
   "children": [
@@ -86,6 +86,12 @@
         "status": "passed",
         "summary": "Archive commit 503ddc0 docs and Trellis-only deployment skip passed; deploy job skipped and classification artifact 8822724652 retained",
         "at": "2026-08-01T19:46:49.412923+00:00"
+      },
+      {
+        "command": "gh run view 30715845769",
+        "status": "passed",
+        "summary": "Parent audit commit efca07bb3164f1a34cc7a982b75b110b1a6f8d14 correctly skipped Worker deployment; deployment-skipped succeeded, deploy was skipped, and classification artifact 8823297267 was retained",
+        "at": "2026-08-01T19:57:11.745650+00:00"
       }
     ]
   }
