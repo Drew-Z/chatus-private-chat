@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 25
+- **Total Sessions**: 26
 - **Last Active**: 2026-08-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1051 | Active |
+| `journal-1.md` | ~1085 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 26 | 2026-08-01 | Complete automatic Skill selection | `5fade7c`, `3f17dc1` | `main` |
 | 25 | 2026-08-01 | Complete async document ingest | `58c4a5c`, `9b18785`, `e1389bf`, `b1a8a40`, `22e5faf`, `1f9f436`, `2fff8c2`, `4085cb2` | `main` |
 | 24 | 2026-07-30 | R2 文件工作区 | `51b1473`, `1cf9cbc`, `b066d38`, `716e319`, `0ca2358`, `b454d23` | `main` |
 | 23 | 2026-07-29 | 首次配置与单后台闭环 | `d341d36`, `59efb4b` | `main` |

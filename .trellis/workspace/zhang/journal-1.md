@@ -1049,3 +1049,37 @@ Implemented safe asynchronous text/PDF/Office ingestion, workspace UI and exact-
 ### Next Steps
 
 - None - task complete
+
+
+## Session 26: Complete automatic Skill selection
+
+**Date**: 2026-08-01
+**Task**: Complete automatic Skill selection
+**Branch**: `main`
+
+### Summary
+
+Implemented automatic and manual Skill modes, bounded same-route structured selection, validated fallback and telemetry isolation, completed local and CI validation, verified exact-SHA production deployment and member acceptance with retained artifacts, and archived the child task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5fade7c` | (see git log) |
+| `3f17dc1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
