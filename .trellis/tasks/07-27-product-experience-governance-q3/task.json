@@ -3,7 +3,7 @@
   "name": "product-experience-governance-q3",
   "title": "Chatus 季度体验与治理优化计划",
   "description": "季度级产品体验、交付治理、文件工作区、文档解析、Skill 自动选择与 OAuth MCP 计划的父任务和最终证据审计。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -31,5 +31,62 @@
   "parent": null,
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; React/Vite build and frontend structural checks",
+        "at": "2026-08-01T19:46:41.065649+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; 40 files and 501 local deterministic tests",
+        "at": "2026-08-01T19:46:42.107606+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; 77 passed and 33 viewport-conditional skips across five viewports",
+        "at": "2026-08-01T19:46:43.166505+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; 1 local fake-Provider Agent browser test",
+        "at": "2026-08-01T19:46:44.220657+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; Worker, React client, and browser TypeScript checks",
+        "at": "2026-08-01T19:46:45.263990+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; Wrangler 4.110.0 built 6464.12 KiB and gzip 1310.10 KiB without deployment",
+        "at": "2026-08-01T19:46:46.276029+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; no whitespace errors",
+        "at": "2026-08-01T19:46:47.298967+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Fresh parent validation passed; repository task graph and workspace index consistency OK",
+        "at": "2026-08-01T19:46:48.333607+00:00"
+      },
+      {
+        "command": "gh run view 30713887789",
+        "status": "passed",
+        "summary": "Archive commit 503ddc0 docs and Trellis-only deployment skip passed; deploy job skipped and classification artifact 8822724652 retained",
+        "at": "2026-08-01T19:46:49.412923+00:00"
+      }
+    ]
+  }
 }

@@ -33,13 +33,13 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 8 个子任务均有收敛后的 `prd.md`、`design.md` 和 `implement.md`，且父子关系双向一致。
-- [ ] AC2. 7 个实现型子任务均有工作 commit、PR/合并证据、完整验证记录、spec 判断和成功归档记录。
-- [ ] AC3. 设计型子任务产生三份明确的决策文档和风险登记，不包含未经批准的功能实现。
-- [ ] AC4. 所有子任务的 AC 均完成或存在结构化、持久化、可审计的 waiver；父任务没有未解释的失败检查。
-- [ ] AC5. main 部署与生产验收只由 GitHub Actions 运行，并能从部署/验收记录追溯到准确 SHA 和 artifacts。
-- [ ] AC6. 最终全量验证全部通过；任何跳过项都有路径分类或环境原因证据，且不是 live model/production 规避。
-- [ ] AC7. 最终审计逐项映射本 PRD 的 R1-R8 和每个子任务 AC 到 commit、PR、测试、spec 和归档证据。
+- [x] AC1. 8 个子任务均有收敛后的 `prd.md`、`design.md` 和 `implement.md`，且父子关系双向一致。
+- [x] AC2. 7 个实现型子任务均有工作 commit、PR/合并证据、完整验证记录、spec 判断和成功归档记录。
+- [x] AC3. 设计型子任务产生三份明确的决策文档和风险登记，不包含未经批准的功能实现。
+- [x] AC4. 所有子任务的 AC 均完成或存在结构化、持久化、可审计的 waiver；父任务没有未解释的失败检查。
+- [x] AC5. main 部署与生产验收只由 GitHub Actions 运行，并能从部署/验收记录追溯到准确 SHA 和 artifacts。
+- [x] AC6. 最终全量验证全部通过；任何跳过项都有路径分类或环境原因证据，且不是 live model/production 规避。
+- [x] AC7. 最终审计逐项映射本 PRD 的 R1-R8 和每个子任务 AC 到 commit、PR、测试、spec 和归档证据。
 
 ## Out of Scope
 

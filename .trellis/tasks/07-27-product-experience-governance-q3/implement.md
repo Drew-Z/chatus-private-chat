@@ -2,14 +2,14 @@
 
 ## Ordered Checklist
 
-- [ ] 逐个完成 8 个子任务的规划收敛，确认依赖和 AC。
-- [ ] 按 1 到 8 的顺序激活子任务；父任务保持 planning，直到最终审计。
-- [ ] 每个实现型子任务：加载 `trellis-before-dev`，实现，加载 `trellis-check`，修复到绿色。
-- [ ] 每个实现型子任务按影响路径运行浏览器测试，并运行五项全量 shipping checks。
-- [ ] 每个子任务加载 `trellis-update-spec`，提交工作 commit，通过 PR 进入 main，再归档。
-- [ ] 子任务 8 只提交设计与风险登记，禁止加入运行时代码。
-- [ ] 全部子任务归档后激活父任务，运行任务树一致性和全量项目验证。
-- [ ] 生成最终 requirement-to-evidence 审计，提交父任务记录并归档。
+- [x] 逐个完成 8 个子任务的规划收敛，确认依赖和 AC。
+- [x] 按 1 到 8 的顺序激活子任务；父任务保持 planning，直到最终审计。
+- [x] 每个实现型子任务：加载 `trellis-before-dev`，实现，加载 `trellis-check`，修复到绿色。
+- [x] 每个实现型子任务按影响路径运行浏览器测试，并运行五项全量 shipping checks。
+- [x] 每个子任务加载 `trellis-update-spec`，提交工作 commit，通过 PR 进入 main，再归档。
+- [x] 子任务 8 只提交设计与风险登记，禁止加入运行时代码。
+- [x] 全部子任务归档后激活父任务，运行任务树一致性和全量项目验证。
+- [x] 生成最终 requirement-to-evidence 审计，提交父任务记录并归档。
 
 ## Validation Baseline
 
