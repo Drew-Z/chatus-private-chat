@@ -10,7 +10,7 @@
 - [x] 逐份检查事实引用、推荐、未决选择、迁移/回滚和 acceptance scenarios。
 - [x] 运行 `trellis-check` 的文档/spec 一致性检查和 `git diff --check`。
 - [x] 验证变更路径没有运行时代码；复用/运行所需全量 main 绿色检查。
-- [ ] 用 `trellis-update-spec` 判断哪些设计不变量应进入 spec，提交并归档。
+- [x] 用 `trellis-update-spec` 判断哪些设计不变量应进入 spec，提交并归档。
 
 ## Validation Commands
 

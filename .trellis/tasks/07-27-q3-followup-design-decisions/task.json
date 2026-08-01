@@ -71,6 +71,18 @@
         "status": "passed",
         "summary": "Reused Workspace and local fake-Provider Agent Playwright from unchanged runtime tree; four PR jobs passed and artifacts 8822005736 and 8821953479 are retained",
         "at": "2026-08-01T18:52:37.849139+00:00"
+      },
+      {
+        "command": "gh run view 30713622859",
+        "status": "passed",
+        "summary": "PR CI passed for head 19eb6a29fed7ddafc8cb442312c0d1bfa4fe1f41; changes and quality succeeded, browser jobs skipped by design-only path classification; artifacts 8822648513 and 8822674939 retained",
+        "at": "2026-08-01T18:59:47.496750+00:00"
+      },
+      {
+        "command": "gh run view 30713736989",
+        "status": "passed",
+        "summary": "Merged docs/spec main SHA 83e8e59fe1e3b4be315a091d96ac36c15505ca52 correctly skipped Worker deployment; classification artifact 8822681514 retained and deploy job did not run",
+        "at": "2026-08-01T18:59:48.555714+00:00"
       }
     ]
   }

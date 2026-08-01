@@ -21,7 +21,7 @@
 - [x] AC4. Recovery 文档列出 persistent/transitional/rebuildable inventory、consistency protocol、key custody、restore drill 证据和分 surface legacy gate。
 - [x] AC5. 风险登记至少含 asset、trigger、failure mode、severity/likelihood、invariant、detection、mitigation、rollback、acceptance evidence、owner/review date。
 - [x] AC6. `git diff` 证明本子任务只改 Trellis/spec/docs 设计记录，没有运行时或 deployment 实现。
-- [ ] AC7. 文档/spec 校验、五项全量验证（代码无变时可复用最近 main 绿色证据）和 diff check 通过，任务提交并归档。
+- [x] AC7. 文档/spec 校验、五项全量验证（代码无变时可复用最近 main 绿色证据）和 diff check 通过，任务提交并归档。
 
 ## Out of Scope
 
