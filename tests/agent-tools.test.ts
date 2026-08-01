@@ -52,6 +52,10 @@ const reviewedDefinition: NormalizedToolDefinition = {
     confirmation: "first-per-conversation",
     executor: { type: "mcp", serverId: "docs", remoteName: "search.docs" },
     schemaFingerprint: "a".repeat(64),
+    securityFingerprint: "b".repeat(64),
+    sideEffect: "read",
+    reviewRevision: "c".repeat(64),
+    reviewRequired: false,
   },
 };
 
@@ -68,8 +72,8 @@ describe("Agent AI SDK tools", () => {
       conversationId: "chat-1",
       runTool,
       approvals: {
-        isTrusted: (_conversationId, toolId) => trusted.has(toolId),
-        markTrusted: (_conversationId, toolId) => trusted.add(toolId),
+        isTrusted: (_conversationId, toolId, reviewRevision) => trusted.has(`${toolId}:${reviewRevision}`),
+        markTrusted: (_conversationId, toolId, reviewRevision) => trusted.add(`${toolId}:${reviewRevision}`),
       },
     });
 
@@ -78,9 +82,66 @@ describe("Agent AI SDK tools", () => {
 
     const output = await executeTool(tools, reviewedDefinition.providerName, { query: "Agents SDK" });
     expect(output).toContain(reviewedDefinition.id);
-    expect(trusted.has(reviewedDefinition.id)).toBe(true);
+    expect(trusted.has(`${reviewedDefinition.id}:${reviewedDefinition.config.reviewRevision}`)).toBe(true);
     expect(await needsApproval(tools, reviewedDefinition.providerName, { query: "Agents SDK" })).toBe(false);
     expect(runTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates read trust by review revision and never trusts side-effect tools", async () => {
+    const trusted = new Set<string>();
+    const markTrusted = vi.fn((_conversationId: string, toolId: string, reviewRevision: string) => {
+      trusted.add(`${toolId}:${reviewRevision}`);
+    });
+    const approvals = {
+      isTrusted: (_conversationId: string, toolId: string, reviewRevision: string) => (
+        trusted.has(`${toolId}:${reviewRevision}`)
+      ),
+      markTrusted,
+    };
+    const runTool = vi.fn(async () => ({ text: "ok", preview: "ok", truncated: false }));
+    const firstTools = createAgentToolSet({
+      definitions: [reviewedDefinition],
+      conversationId: "chat-revision",
+      runTool,
+      approvals,
+    });
+    await executeTool(firstTools, reviewedDefinition.providerName, { query: "first" });
+    expect(await needsApproval(firstTools, reviewedDefinition.providerName, { query: "again" })).toBe(false);
+
+    const revisedDefinition: NormalizedToolDefinition = {
+      ...reviewedDefinition,
+      config: { ...reviewedDefinition.config, reviewRevision: "d".repeat(64) },
+    };
+    const revisedTools = createAgentToolSet({
+      definitions: [revisedDefinition],
+      conversationId: "chat-revision",
+      runTool,
+      approvals,
+    });
+    expect(await needsApproval(revisedTools, revisedDefinition.providerName, { query: "new review" })).toBe(true);
+
+    const sideEffectDefinition: NormalizedToolDefinition = {
+      ...reviewedDefinition,
+      id: "mcp:docs:delete",
+      providerName: "delete_docs_3333333333",
+      config: {
+        ...reviewedDefinition.config,
+        confirmation: "first-per-conversation",
+        executor: { type: "mcp", serverId: "docs", remoteName: "delete.docs" },
+        sideEffect: "destructive",
+        reviewRevision: "e".repeat(64),
+      },
+    };
+    const sideEffectTools = createAgentToolSet({
+      definitions: [sideEffectDefinition],
+      conversationId: "chat-revision",
+      runTool,
+      approvals,
+    });
+    expect(await needsApproval(sideEffectTools, sideEffectDefinition.providerName, {})).toBe(true);
+    await executeTool(sideEffectTools, sideEffectDefinition.providerName, {});
+    expect(await needsApproval(sideEffectTools, sideEffectDefinition.providerName, {})).toBe(true);
+    expect(markTrusted).toHaveBeenCalledTimes(1);
   });
 
   it("preserves approval request and response parts for continuation model messages", async () => {

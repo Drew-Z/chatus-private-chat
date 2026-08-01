@@ -22,6 +22,7 @@ import {
   type AdminConfigSnapshot,
   type AdminMcpDiscoveryResponse,
   type AdminMcpSecretsSnapshot,
+  type AdminMemberProjection,
 } from "../lib/api";
 import {
   applyMcpServerDraft,
@@ -36,6 +37,7 @@ import {
   deleteRemoteTool,
   deleteSkill,
   mergeMcpDiscovery,
+  MCP_OAUTH_CALLBACK_PATH,
   orderedMcpServerEntries,
   orderedSkillEntries,
   orderedToolEntries,
@@ -62,6 +64,7 @@ type PendingConfirmationFocus =
 
 type CapabilityAdminPanelProps = {
   snapshot: AdminConfigSnapshot;
+  members: AdminMemberProjection[];
   onSnapshot: (snapshot: AdminConfigSnapshot) => void;
   onSessionExpired: () => void;
   onDirtyChange: (dirty: boolean) => void;
@@ -71,6 +74,7 @@ type CapabilityAdminPanelProps = {
 
 export function CapabilityAdminPanel({
   snapshot,
+  members,
   onSnapshot,
   onSessionExpired,
   onDirtyChange,
@@ -90,6 +94,7 @@ export function CapabilityAdminPanel({
   const [secretValue, setSecretValue] = useState("");
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [pendingDiscovery, setPendingDiscovery] = useState<AdminMcpDiscoveryResponse | null>(null);
+  const [oauthMemberLabel, setOauthMemberLabel] = useState(() => members[0]?.label || "");
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const confirmDialogRef = useRef<HTMLDialogElement>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
@@ -101,16 +106,30 @@ export function CapabilityAdminPanel({
   const servers = useMemo(() => orderedMcpServerEntries(snapshot.config), [snapshot.config]);
   const savedTool = activeTab === "tools" && selectedId ? snapshot.config.tools[selectedId] : undefined;
   const savedServer = activeTab === "mcp" && selectedId ? snapshot.config.mcpServers[selectedId] : undefined;
-  const secretRef = mcpDraft?.authType === "none" ? "" : mcpDraft?.secretRef?.trim() || "";
+  const memberLabels = useMemo(() => members.map((member) => member.label), [members]);
+  const secretRef = mcpDraft?.authType === "bearer" || mcpDraft?.authType === "x-api-key"
+    ? mcpDraft.secretRef.trim()
+    : mcpDraft?.authType === "oauth2"
+      ? mcpDraft.clientSecretRef.trim()
+      : "";
+  const savedSecretRef = savedServer?.auth.type === "bearer" || savedServer?.auth.type === "x-api-key"
+    ? savedServer.auth.secretRef
+    : savedServer?.auth.type === "oauth2"
+      ? savedServer.auth.clientSecretRef || ""
+      : "";
   const secretMetadata = secretRef ? secrets?.items.find((item) => item.secretRef === secretRef) : undefined;
   const secretCanEdit = Boolean(
     savedServer
       && mcpDraft
       && !dirty
       && selectedId === mcpDraft.id
-      && savedServer.secretRef === secretRef
+      && savedSecretRef === secretRef
       && secretRef,
   );
+
+  useEffect(() => {
+    if (!memberLabels.includes(oauthMemberLabel)) setOauthMemberLabel(memberLabels[0] || "");
+  }, [memberLabels, oauthMemberLabel]);
 
   useEffect(() => {
     void refreshSecrets();
@@ -383,16 +402,27 @@ export function CapabilityAdminPanel({
   }
 
   async function discoverTools() {
-    if (!selectedId || !savedServer || !mcpDraft || dirty || discoveryBusy) return;
+    if (
+      !selectedId
+      || !savedServer
+      || !mcpDraft
+      || dirty
+      || busy
+      || discoveryBusy
+      || (savedServer.auth.type === "oauth2" && !oauthMemberLabel)
+    ) return;
     setDiscoveryBusy(true);
     setSecretValue("");
     try {
       const result = await discoverAdminMcpTools({
-        serverId: selectedId,
-        label: savedServer.label,
-        endpoint: savedServer.endpoint,
-        authType: savedServer.authType,
-        ...(savedServer.secretRef ? { secretRef: savedServer.secretRef } : {}),
+        ...(savedServer.auth.type === "oauth2"
+          ? { serverId: selectedId, memberLabel: oauthMemberLabel }
+          : {
+              serverId: selectedId,
+              label: savedServer.label,
+              endpoint: savedServer.endpoint,
+              auth: savedServer.auth,
+            }),
       });
       setPendingDiscovery(result);
       await commitDiscovery(result);
@@ -416,7 +446,7 @@ export function CapabilityAdminPanel({
       setDirty(false);
       onNotice({
         kind: merged.changed ? "warning" : "success",
-        text: `发现 ${result.tools.length} 个只读工具；新增 ${merged.added}，Schema 变更 ${merged.changed}，拒绝 ${result.rejected}。`,
+        text: `发现 ${result.tools.length} 个工具；新增 ${merged.added}，治理变更 ${merged.changed}，拒绝 ${result.rejected}。`,
       });
     } catch (error) {
       await handleConfigError(error);
@@ -525,6 +555,8 @@ export function CapabilityAdminPanel({
             secretCanEdit={secretCanEdit}
             secretMetadata={secretMetadata}
             masterKeyReady={secrets?.masterKeyReady ?? false}
+            memberLabels={memberLabels}
+            oauthMemberLabel={oauthMemberLabel}
             onUpdate={updateMcp}
             onSave={saveMcp}
             onUseServer={useServerVersion}
@@ -535,6 +567,7 @@ export function CapabilityAdminPanel({
             onSaveSecret={() => void saveSecret()}
             onDeleteSecret={() => secretRef && openConfirmation({ kind: "delete-secret", ref: secretRef })}
             onRefreshSecrets={() => void refreshSecrets()}
+            onOauthMemberLabelChange={setOauthMemberLabel}
           />
         )}
       </div>
@@ -615,7 +648,8 @@ function ToolEditor({ id, tool, draft, dirty, busy, conflict, onUpdate, onSave, 
 function McpEditor({
   id, draft, isNew, dirty, busy, conflict, discoveryBusy, pendingDiscovery, secretValue, secretCanEdit,
   secretMetadata, masterKeyReady, onUpdate, onSave, onUseServer, onDelete, onDiscover, onCommitDiscovery,
-  onSecretChange, onSaveSecret, onDeleteSecret, onRefreshSecrets,
+  memberLabels, oauthMemberLabel, onSecretChange, onSaveSecret, onDeleteSecret, onRefreshSecrets,
+  onOauthMemberLabelChange,
 }: {
   id: string | null;
   draft: McpServerDraft | null;
@@ -629,6 +663,8 @@ function McpEditor({
   secretCanEdit: boolean;
   secretMetadata: AdminMcpSecretsSnapshot["items"][number] | undefined;
   masterKeyReady: boolean;
+  memberLabels: string[];
+  oauthMemberLabel: string;
   onUpdate: (update: (draft: McpServerDraft) => McpServerDraft) => void;
   onSave: (event?: FormEvent) => Promise<void>;
   onUseServer: () => void;
@@ -639,21 +675,32 @@ function McpEditor({
   onSaveSecret: () => void;
   onDeleteSecret: () => void;
   onRefreshSecrets: () => void;
+  onOauthMemberLabelChange: (label: string) => void;
 }) {
   if (!draft) return <EmptyCapabilityState label="MCP Server" />;
-  const authenticated = draft.authType !== "none";
+  const usesStaticSecret = draft.authType === "bearer" || draft.authType === "x-api-key";
+  const usesManagedSecret = usesStaticSecret || (draft.authType === "oauth2" && Boolean(draft.clientSecretRef.trim()));
+  const discoveryDisabled = dirty || busy || discoveryBusy || (draft.authType === "oauth2" && !oauthMemberLabel);
   return (
     <form className="capability-editor-form" onSubmit={(event) => void onSave(event)}>
-      <EditorHeader eyebrow="MCP SERVER" title={isNew ? "新增 MCP Server" : draft.label || draft.id} dirty={dirty} busy={busy} conflict={conflict} onUseServer={onUseServer} onDelete={isNew ? undefined : onDelete} onSave={() => void onSave()} saveLabel="保存 MCP" extraAction={!isNew ? <button className="quiet-button icon-text-button" type="button" onClick={onDiscover} disabled={dirty || busy || discoveryBusy}><RefreshCw size={15} /><span>{discoveryBusy ? "发现中..." : "发现工具"}</span></button> : undefined} />
+      <EditorHeader eyebrow="MCP SERVER" title={isNew ? "新增 MCP Server" : draft.label || draft.id} dirty={dirty} busy={busy} conflict={conflict} onUseServer={onUseServer} onDelete={isNew ? undefined : onDelete} onSave={() => void onSave()} saveLabel="保存 MCP" extraAction={!isNew ? <button className="quiet-button icon-text-button" type="button" onClick={onDiscover} disabled={discoveryDisabled}><RefreshCw size={15} /><span>{discoveryBusy ? "发现中..." : "发现工具"}</span></button> : undefined} />
       <div className="admin-form-grid two">
         <label><span>Server ID</span><input value={draft.id} maxLength={80} autoComplete="off" onChange={(event) => onUpdate((current) => ({ ...current, id: event.target.value }))} /></label>
         <label><span>显示名称</span><input value={draft.label} maxLength={80} onChange={(event) => onUpdate((current) => ({ ...current, label: event.target.value }))} /></label>
         <label className="admin-form-span"><span>HTTPS Endpoint</span><input value={draft.endpoint} maxLength={2048} inputMode="url" onChange={(event) => onUpdate((current) => ({ ...current, endpoint: event.target.value }))} /></label>
-        <label><span>认证方式</span><select value={draft.authType} onChange={(event) => onUpdate((current) => ({ ...current, authType: event.target.value as McpServerDraft["authType"], ...(event.target.value === "none" ? { secretRef: undefined } : {}) }))}><option value="none">无需认证</option><option value="bearer">Bearer Token</option><option value="x-api-key">X-API-Key</option></select></label>
-        {authenticated && <label><span>Secret Ref</span><input value={draft.secretRef || ""} maxLength={64} autoComplete="off" placeholder="例如 DOCS_MCP_TOKEN" onChange={(event) => onUpdate((current) => ({ ...current, secretRef: event.target.value || undefined }))} /></label>}
+        <label><span>认证方式</span><select value={draft.authType} onChange={(event) => onUpdate((current) => ({ ...current, authType: event.target.value as McpServerDraft["authType"] }))}><option value="none">无需认证</option><option value="bearer">Bearer Token</option><option value="x-api-key">X-API-Key</option><option value="oauth2">OAuth 2.0 + PKCE</option></select></label>
+        {usesStaticSecret && <label><span>Secret Ref</span><input value={draft.secretRef} maxLength={64} autoComplete="off" placeholder="例如 DOCS_MCP_TOKEN" onChange={(event) => onUpdate((current) => ({ ...current, secretRef: event.target.value }))} /></label>}
         <label className="admin-checkbox-row"><input type="checkbox" checked={draft.enabled} onChange={(event) => onUpdate((current) => ({ ...current, enabled: event.target.checked }))} /><span>启用 Server</span></label>
+        {draft.authType === "oauth2" && <>
+          <label className="admin-form-span"><span>OAuth Issuer</span><input value={draft.issuer} maxLength={2048} inputMode="url" placeholder="https://identity.example" onChange={(event) => onUpdate((current) => ({ ...current, issuer: event.target.value }))} /></label>
+          <label><span>Client ID</span><input value={draft.clientId} maxLength={256} autoComplete="off" onChange={(event) => onUpdate((current) => ({ ...current, clientId: event.target.value }))} /></label>
+          <label><span>Scopes</span><input value={draft.scopes} maxLength={3903} autoComplete="off" placeholder="openid profile mcp.tools" onChange={(event) => onUpdate((current) => ({ ...current, scopes: event.target.value }))} /></label>
+          <label><span>固定 Callback Path</span><input value={MCP_OAUTH_CALLBACK_PATH} readOnly /></label>
+          <label><span>Client Secret Ref（可选）</span><input value={draft.clientSecretRef} maxLength={64} autoComplete="off" placeholder="例如 DOCS_MCP_CLIENT_SECRET" onChange={(event) => onUpdate((current) => ({ ...current, clientSecretRef: event.target.value }))} /></label>
+          <label className="admin-form-span"><span>成员 Discovery Candidate</span><select value={oauthMemberLabel} onChange={(event) => onOauthMemberLabelChange(event.target.value)}><option value="">选择已完成成员发现的账号</option>{memberLabels.map((label) => <option key={label} value={label}>{label}</option>)}</select></label>
+        </>}
       </div>
-      {authenticated && (
+      {usesManagedSecret && (
         <section className="admin-secret-box" aria-labelledby="mcp-secret-title">
           <div><h3 id="mcp-secret-title">托管密钥</h3><p>{secretMetadata ? `${secretMetadata.source} · ${secretMetadata.status}` : masterKeyReady ? "未配置" : "主密钥不可用"}</p></div>
           <div className="admin-secret-actions">

@@ -25,6 +25,7 @@ import type {
   CapabilityToolExecutionResult,
   CapabilityToolRunner,
   CapabilityStreamEvent,
+  McpOAuth2AuthConfig,
   McpServerConfig,
   ModelTurn,
   NormalizedToolDefinition,
@@ -122,8 +123,28 @@ import {
   MCP_REMOTE_NAME_PATTERN,
   McpRuntimeError,
   normalizeMcpToolSchema,
+  type McpDiscoveredTool,
+  type McpDiscoveryResult,
   type McpRuntimeExecution,
 } from "./services/mcp-runtime";
+import {
+  buildMcpOAuthAuthorizationUrl,
+  createMcpOAuthPkce,
+  decryptMcpOAuthToken,
+  discoverMcpOAuthMetadata,
+  encryptMcpOAuthToken,
+  exchangeMcpOAuthCode,
+  hasRequiredOAuthScopes,
+  MCP_OAUTH_CALLBACK_PATH,
+  MCP_OAUTH_STATE_TTL_MS,
+  McpOAuthError,
+  isSafeOAuthIssuer,
+  normalizeEncryptedMcpOAuthToken,
+  normalizeOAuthScopes,
+  refreshMcpOAuthToken,
+  type EncryptedMcpOAuthToken,
+  type McpOAuthTokenSet,
+} from "./services/mcp-oauth";
 import {
   appendProviderToolResults,
   appendProviderTurn,
@@ -203,7 +224,8 @@ type CapabilityChatRpcArgs = Omit<CapabilityChatArgs, "env" | "requestSignal"> &
 
 type PendingToolApproval = {
   callId: string;
-  toolId: string;
+  trustKey: string;
+  allowConversation: boolean;
   resolve: (decision: ToolApprovalDecision) => void;
   reject: (error: CapabilityError) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -236,6 +258,16 @@ type AppConfig = {
   skills?: Record<string, SkillConfig>;
   tools?: Record<string, ToolConfig>;
   mcpServers?: Record<string, McpServerConfig>;
+};
+
+type McpToolDriftEntry = {
+  reviewRevision: string;
+  observedAt: string;
+};
+
+type McpToolDriftOverlay = {
+  version: 1;
+  tools: Record<string, McpToolDriftEntry>;
 };
 
 type PublicAccessConfig = {
@@ -396,9 +428,12 @@ const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ACCESS_CODES_KEY = "config:access_codes";
 const SETUP_SMOKE_KEY = "config:setup_smoke";
+const MCP_TOOL_DRIFT_KEY = "config:mcp_tool_drift";
 const MAX_SKILLS = 50;
 const MAX_TOOLS = 200;
 const MAX_MCP_SERVERS = 20;
+const MCP_OAUTH_CANDIDATE_TTL_MS = 30 * 60 * 1_000;
+const MAX_MCP_OAUTH_CANDIDATE_BYTES = 2_000_000;
 const MAX_SELECTED_SKILLS = 3;
 const SKILL_SELECTOR_DEADLINE_MS = 5_000;
 const SKILL_SELECTOR_MAX_OUTPUT_TOKENS = 200;
@@ -430,6 +465,8 @@ const MAX_TOOL_ROUNDS = 4;
 const MAX_TOOL_CALLS = 8;
 const TOOL_CALL_TIMEOUT_MS = 15_000;
 const TOOL_TOTAL_BUDGET_MS = 45_000;
+const MAX_PENDING_MCP_OAUTH_STATES = 8;
+const MCP_OAUTH_REFRESH_SKEW_MS = 60_000;
 const WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS = 60_000;
 const MAX_TOOL_RESULT_BYTES = 32 * 1024;
 const TOOL_SCHEMA_VALIDATOR = new CfWorkerJsonSchemaValidator({ draft: "2020-12", shortcircuit: false });
@@ -459,10 +496,70 @@ type UserStats = {
   metrics: Array<{ day: string; kind: string; routeId: string; count: number }>;
 };
 
+type McpOAuthStateInput = {
+  ownerLabel: string;
+  state: string;
+  sessionFingerprint: string;
+  serverId: string;
+  configRevision: string;
+  verifier: string;
+  callbackUrl: string;
+  expiresAt: number;
+  nowMs?: number;
+};
+
+type ConsumedMcpOAuthState = {
+  serverId: string;
+  configRevision: string;
+  verifier: string;
+  callbackUrl: string;
+};
+
+type McpOAuthConnectionProjection = {
+  serverId: string;
+  connected: boolean;
+  reviewRequired: boolean;
+  grantedScopes: string[];
+  expiresAt?: number;
+  status: "connected" | "expired" | "review_required" | "disconnected";
+};
+
+type PublicMcpOAuthConnection = McpOAuthConnectionProjection & { label: string };
+
+type McpOAuthDiscoveryCandidateProjection = {
+  candidateId: string;
+  serverId: string;
+  createdAt: number;
+  expiresAt: number;
+  tools: number;
+  rejected: number;
+};
+
+type StoredMcpOAuthDiscoveryCandidateRow = {
+  candidate_id: string;
+  config_revision: string;
+  discovery_json: string;
+  created_at: number;
+  expires_at: number;
+};
+
+type StoredMcpOAuthTokenRow = {
+  encrypted_record: string;
+  token_expires_at: number | null;
+  config_revision: string;
+  granted_scopes: string;
+  review_required: number;
+  revision: number;
+};
+
 export class UserState extends DurableObject<Env> implements QuotaBucket {
   private readonly runtimeEnv: Env;
   private readonly activeCapabilityRuns = new Map<string, ActiveCapabilityRun>();
   private readonly conversationTrust = new Map<string, { toolIds: Set<string>; lastSeenAt: number }>();
+  private readonly mcpOAuthRefreshes = new Map<string, Promise<string>>();
+  private readonly mcpOAuthMutationGenerations = new Map<string, number>();
+  private mcpOAuthPurgeGeneration = 0;
+  private toolConfirmationTimeoutMs = 120_000;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -510,7 +607,41 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
           token TEXT NOT NULL,
           expires_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS mcp_oauth_owner (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          owner_label TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mcp_oauth_states (
+          state_hash TEXT PRIMARY KEY,
+          session_fingerprint TEXT NOT NULL,
+          server_id TEXT NOT NULL,
+          config_revision TEXT NOT NULL,
+          verifier TEXT NOT NULL,
+          callback_url TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
+          server_id TEXT PRIMARY KEY,
+          encrypted_record TEXT NOT NULL,
+          token_expires_at INTEGER,
+          config_revision TEXT NOT NULL,
+          granted_scopes TEXT NOT NULL,
+          review_required INTEGER NOT NULL DEFAULT 0,
+          revision INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mcp_oauth_discovery_candidates (
+          server_id TEXT PRIMARY KEY,
+          candidate_id TEXT NOT NULL UNIQUE,
+          config_revision TEXT NOT NULL,
+          discovery_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS chats_updated_at ON chats(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS mcp_oauth_states_expires_at ON mcp_oauth_states(expires_at);
+        CREATE INDEX IF NOT EXISTS mcp_oauth_candidates_expires_at ON mcp_oauth_discovery_candidates(expires_at);
       `);
     });
   }
@@ -612,6 +743,328 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
     return this.ctx.storage.sql.exec<{ ok: number }>("SELECT 1 AS ok").one().ok === 1;
   }
 
+  async storeMcpOAuthState(args: McpOAuthStateInput): Promise<void> {
+    const nowMs = args.nowMs ?? Date.now();
+    requireMcpOAuthOwnerLabel(args.ownerLabel);
+    requireMcpOAuthServerId(args.serverId);
+    requireMcpOAuthRevision(args.configRevision);
+    if (!isMcpOAuthOpaqueValue(args.state) || !isMcpOAuthOpaqueValue(args.verifier)) {
+      throw new McpOAuthError("mcp_oauth_config_invalid", "OAuth PKCE 状态无效");
+    }
+    if (!isSecretFingerprint(args.sessionFingerprint)) {
+      throw new McpOAuthError("mcp_oauth_config_invalid", "OAuth 会话绑定无效");
+    }
+    if (
+      !Number.isSafeInteger(args.expiresAt)
+      || args.expiresAt <= nowMs
+      || args.expiresAt > nowMs + MCP_OAUTH_STATE_TTL_MS
+      || !isSafeMcpOAuthCallbackUrl(args.callbackUrl)
+    ) {
+      throw new McpOAuthError("mcp_oauth_config_invalid", "OAuth callback 状态无效");
+    }
+    const purgeGeneration = this.mcpOAuthPurgeGeneration;
+    const stateHash = await secretFingerprint(args.state);
+    if (purgeGeneration !== this.mcpOAuthPurgeGeneration) {
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接已被删除，请重新连接");
+    }
+    this.ctx.storage.transactionSync(() => {
+      this.ensureMcpOAuthOwner(args.ownerLabel);
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_states WHERE expires_at <= ?", nowMs);
+      const count = this.ctx.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM mcp_oauth_states")
+        .one().count;
+      if (count >= MAX_PENDING_MCP_OAUTH_STATES) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM mcp_oauth_states WHERE state_hash IN ("+
+            "SELECT state_hash FROM mcp_oauth_states ORDER BY created_at ASC LIMIT ?)",
+          count - MAX_PENDING_MCP_OAUTH_STATES + 1,
+        );
+      }
+      this.ctx.storage.sql.exec(
+        "INSERT INTO mcp_oauth_states("+
+          "state_hash, session_fingerprint, server_id, config_revision, verifier, callback_url, expires_at, created_at"+
+          ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        stateHash,
+        args.sessionFingerprint,
+        args.serverId,
+        args.configRevision,
+        args.verifier,
+        args.callbackUrl,
+        args.expiresAt,
+        nowMs,
+      );
+    });
+  }
+
+  async consumeMcpOAuthState(args: {
+    ownerLabel: string;
+    state: string;
+    sessionFingerprint: string;
+    nowMs?: number;
+  }): Promise<ConsumedMcpOAuthState | null> {
+    const nowMs = args.nowMs ?? Date.now();
+    if (
+      !MEMBER_LABEL_PATTERN.test(args.ownerLabel)
+      || !isMcpOAuthOpaqueValue(args.state)
+      || !isSecretFingerprint(args.sessionFingerprint)
+    ) return null;
+    const stateHash = await secretFingerprint(args.state);
+    return this.ctx.storage.transactionSync(() => {
+      this.ensureMcpOAuthOwner(args.ownerLabel);
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_states WHERE expires_at <= ?", nowMs);
+      const row = this.ctx.storage.sql.exec<{
+        server_id: string;
+        config_revision: string;
+        verifier: string;
+        callback_url: string;
+      }>(
+        "SELECT server_id, config_revision, verifier, callback_url FROM mcp_oauth_states "+
+          "WHERE state_hash = ? AND session_fingerprint = ? AND expires_at > ?",
+        stateHash,
+        args.sessionFingerprint,
+        nowMs,
+      ).toArray()[0];
+      if (!row) return null;
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_states WHERE state_hash = ?", stateHash);
+      return {
+        serverId: row.server_id,
+        configRevision: row.config_revision,
+        verifier: row.verifier,
+        callbackUrl: row.callback_url,
+      };
+    });
+  }
+
+  async storeMcpOAuthToken(args: {
+    ownerLabel: string;
+    serverId: string;
+    auth: McpOAuth2AuthConfig;
+    token: McpOAuthTokenSet;
+    nowMs?: number;
+  }): Promise<McpOAuthConnectionProjection> {
+    const nowMs = args.nowMs ?? Date.now();
+    requireMcpOAuthOwnerLabel(args.ownerLabel);
+    requireMcpOAuthServerId(args.serverId);
+    requireMatchingMcpOAuthToken(args.auth, args.token);
+    const purgeGeneration = this.mcpOAuthPurgeGeneration;
+    const encrypted = await encryptMcpOAuthToken({
+      masterKey: this.runtimeEnv.ROUTE_KEYS_MASTER_KEY,
+      ownerLabel: args.ownerLabel,
+      serverId: args.serverId,
+      token: args.token,
+      nowIso: new Date(nowMs).toISOString(),
+    });
+    if (purgeGeneration !== this.mcpOAuthPurgeGeneration) {
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接已被删除，请重新连接");
+    }
+    const reviewRequired = !hasRequiredOAuthScopes(args.token.grantedScopes, args.auth.scopes);
+    this.bumpMcpOAuthMutationGeneration(args.serverId);
+    this.mcpOAuthRefreshes.delete(args.serverId);
+    this.ctx.storage.transactionSync(() => {
+      this.ensureMcpOAuthOwner(args.ownerLabel);
+      const previousRevision = this.ctx.storage.sql.exec<{ revision: number }>(
+        "SELECT revision FROM mcp_oauth_tokens WHERE server_id = ?",
+        args.serverId,
+      ).toArray()[0]?.revision || 0;
+      this.ctx.storage.sql.exec(
+        "INSERT INTO mcp_oauth_tokens("+
+          "server_id, encrypted_record, token_expires_at, config_revision, granted_scopes, review_required, revision, updated_at"+
+          ") VALUES (?, ?, ?, ?, ?, ?, ?, ?) "+
+          "ON CONFLICT(server_id) DO UPDATE SET "+
+          "encrypted_record = excluded.encrypted_record, token_expires_at = excluded.token_expires_at, "+
+          "config_revision = excluded.config_revision, granted_scopes = excluded.granted_scopes, "+
+          "review_required = excluded.review_required, revision = excluded.revision, updated_at = excluded.updated_at",
+        args.serverId,
+        JSON.stringify(encrypted),
+        args.token.expiresAt ?? null,
+        args.auth.configRevision,
+        JSON.stringify(args.token.grantedScopes),
+        reviewRequired ? 1 : 0,
+        previousRevision + 1,
+        nowMs,
+      );
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_states WHERE server_id = ?", args.serverId);
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates WHERE server_id = ?", args.serverId);
+    });
+    return mcpOAuthConnectionProjection(
+      args.serverId,
+      args.token.grantedScopes,
+      args.token.expiresAt,
+      reviewRequired,
+      nowMs,
+    );
+  }
+
+  async getMcpOAuthConnection(args: {
+    ownerLabel: string;
+    serverId: string;
+    auth?: McpOAuth2AuthConfig;
+    nowMs?: number;
+  }): Promise<McpOAuthConnectionProjection> {
+    const nowMs = args.nowMs ?? Date.now();
+    requireMcpOAuthOwnerLabel(args.ownerLabel);
+    requireMcpOAuthServerId(args.serverId);
+    this.ensureMcpOAuthOwner(args.ownerLabel);
+    const row = this.readMcpOAuthTokenRow(args.serverId);
+    if (!row) return disconnectedMcpOAuthConnection(args.serverId);
+    const grantedScopes = parseStoredMcpOAuthScopes(row.granted_scopes);
+    const configDrift = Boolean(args.auth && (
+      row.config_revision !== args.auth.configRevision
+      || !hasRequiredOAuthScopes(grantedScopes, args.auth.scopes)
+    ));
+    if (configDrift && row.review_required !== 1) {
+      this.ctx.storage.sql.exec(
+        "UPDATE mcp_oauth_tokens SET review_required = 1 WHERE server_id = ? AND revision = ?",
+        args.serverId,
+        row.revision,
+      );
+    }
+    return mcpOAuthConnectionProjection(
+      args.serverId,
+      grantedScopes,
+      row.token_expires_at ?? undefined,
+      row.review_required === 1 || configDrift,
+      nowMs,
+    );
+  }
+
+  async markMcpOAuthReviewRequired(ownerLabel: string, serverId: string): Promise<void> {
+    requireMcpOAuthOwnerLabel(ownerLabel);
+    requireMcpOAuthServerId(serverId);
+    this.ensureMcpOAuthOwner(ownerLabel);
+    this.bumpMcpOAuthMutationGeneration(serverId);
+    this.mcpOAuthRefreshes.delete(serverId);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        "UPDATE mcp_oauth_tokens SET review_required = 1, revision = revision + 1 WHERE server_id = ?",
+        serverId,
+      );
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates WHERE server_id = ?", serverId);
+    });
+  }
+
+  async revokeMcpOAuthConnection(ownerLabel: string, serverId: string): Promise<void> {
+    requireMcpOAuthOwnerLabel(ownerLabel);
+    requireMcpOAuthServerId(serverId);
+    this.ensureMcpOAuthOwner(ownerLabel);
+    this.bumpMcpOAuthMutationGeneration(serverId);
+    this.mcpOAuthRefreshes.delete(serverId);
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_tokens WHERE server_id = ?", serverId);
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_states WHERE server_id = ?", serverId);
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates WHERE server_id = ?", serverId);
+    });
+  }
+
+  async storeMcpOAuthDiscoveryCandidate(args: {
+    ownerLabel: string;
+    serverId: string;
+    configRevision: string;
+    discovery: McpDiscoveryResult;
+    nowMs?: number;
+  }): Promise<McpOAuthDiscoveryCandidateProjection> {
+    const nowMs = args.nowMs ?? Date.now();
+    requireMcpOAuthOwnerLabel(args.ownerLabel);
+    requireMcpOAuthServerId(args.serverId);
+    requireMcpOAuthRevision(args.configRevision);
+    const discovery = normalizeStoredMcpOAuthDiscovery(args.discovery, args.serverId);
+    if (!discovery) throw new McpOAuthError("mcp_oauth_token_invalid", "OAuth MCP 发现候选无效");
+    const discoveryJson = JSON.stringify(discovery);
+    if (new TextEncoder().encode(discoveryJson).byteLength > MAX_MCP_OAUTH_CANDIDATE_BYTES) {
+      throw new McpOAuthError("mcp_oauth_token_invalid", "OAuth MCP 发现候选超过大小限制");
+    }
+    const candidateId = crypto.randomUUID();
+    const expiresAt = nowMs + MCP_OAUTH_CANDIDATE_TTL_MS;
+    this.ctx.storage.transactionSync(() => {
+      this.requireExistingMcpOAuthOwner(args.ownerLabel);
+      const token = this.readMcpOAuthTokenRow(args.serverId);
+      if (!token || token.review_required === 1 || token.config_revision !== args.configRevision) {
+        throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接已变化，请重新连接");
+      }
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates WHERE expires_at <= ?", nowMs);
+      this.ctx.storage.sql.exec(
+        "INSERT INTO mcp_oauth_discovery_candidates("+
+          "server_id, candidate_id, config_revision, discovery_json, created_at, expires_at"+
+          ") VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(server_id) DO UPDATE SET "+
+          "candidate_id = excluded.candidate_id, config_revision = excluded.config_revision, "+
+          "discovery_json = excluded.discovery_json, created_at = excluded.created_at, expires_at = excluded.expires_at",
+        args.serverId,
+        candidateId,
+        args.configRevision,
+        discoveryJson,
+        nowMs,
+        expiresAt,
+      );
+    });
+    return {
+      candidateId,
+      serverId: args.serverId,
+      createdAt: nowMs,
+      expiresAt,
+      tools: discovery.tools.length,
+      rejected: discovery.rejected,
+    };
+  }
+
+  async getMcpOAuthDiscoveryCandidate(args: {
+    ownerLabel: string;
+    serverId: string;
+    configRevision: string;
+    nowMs?: number;
+  }): Promise<{ discoveryJson: string } | null> {
+    const nowMs = args.nowMs ?? Date.now();
+    requireMcpOAuthOwnerLabel(args.ownerLabel);
+    requireMcpOAuthServerId(args.serverId);
+    requireMcpOAuthRevision(args.configRevision);
+    return this.ctx.storage.transactionSync(() => {
+      this.requireExistingMcpOAuthOwner(args.ownerLabel);
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates WHERE expires_at <= ?", nowMs);
+      const row = this.ctx.storage.sql.exec<StoredMcpOAuthDiscoveryCandidateRow>(
+        "SELECT candidate_id, config_revision, discovery_json, created_at, expires_at "+
+          "FROM mcp_oauth_discovery_candidates WHERE server_id = ?",
+        args.serverId,
+      ).toArray()[0];
+      if (!row) return null;
+      if (row.config_revision !== args.configRevision) {
+        this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates WHERE server_id = ?", args.serverId);
+        return null;
+      }
+      try {
+        const discovery = normalizeStoredMcpOAuthDiscovery(JSON.parse(row.discovery_json), args.serverId);
+        if (discovery) return { discoveryJson: JSON.stringify(discovery) };
+      } catch {
+        // Invalid stored candidates are removed rather than projected to administrators.
+      }
+      this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates WHERE server_id = ?", args.serverId);
+      return null;
+    });
+  }
+
+  async resolveMcpOAuthAccessToken(args: {
+    ownerLabel: string;
+    serverId: string;
+    auth: McpOAuth2AuthConfig;
+    nowMs?: number;
+  }): Promise<string> {
+    requireMcpOAuthOwnerLabel(args.ownerLabel);
+    requireMcpOAuthServerId(args.serverId);
+    this.ensureMcpOAuthOwner(args.ownerLabel);
+    const row = this.readMcpOAuthTokenRow(args.serverId);
+    if (!row) throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接不存在，请重新连接");
+    if (row.review_required === 1) {
+      throw new McpOAuthError("mcp_oauth_review_required", "OAuth 连接需要重新审查");
+    }
+    const current = this.mcpOAuthRefreshes.get(args.serverId);
+    if (current) return current;
+    const task = this.resolveMcpOAuthAccessTokenFresh({ ...args, nowMs: args.nowMs ?? Date.now() });
+    this.mcpOAuthRefreshes.set(args.serverId, task);
+    try {
+      return await task;
+    } finally {
+      if (this.mcpOAuthRefreshes.get(args.serverId) === task) this.mcpOAuthRefreshes.delete(args.serverId);
+    }
+  }
+
   async runCapabilityChat(args: CapabilityChatRpcArgs): Promise<Response> {
     this.pruneConversationTrust();
     if (this.activeCapabilityRuns.size >= 4) {
@@ -638,15 +1091,18 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
     runId: string,
     callId: string,
     decision: ToolApprovalDecision,
-  ): Promise<{ resolved: boolean }> {
+  ): Promise<{ resolved: boolean; invalidDecision?: boolean }> {
     const active = this.activeCapabilityRuns.get(runId);
     const pending = active?.pendingApproval;
     if (!active || !pending || pending.callId !== callId) return { resolved: false };
+    if (decision === "conversation" && !pending.allowConversation) {
+      return { resolved: false, invalidDecision: true };
+    }
     active.pendingApproval = undefined;
     clearTimeout(pending.timer);
     if (decision === "conversation") {
       const trust = this.conversationTrust.get(active.chatId) || { toolIds: new Set<string>(), lastSeenAt: Date.now() };
-      trust.toolIds.add(pending.toolId);
+      trust.toolIds.add(pending.trustKey);
       trust.lastSeenAt = Date.now();
       this.conversationTrust.set(active.chatId, trust);
       this.pruneConversationTrust();
@@ -663,8 +1119,9 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
     const active = this.activeCapabilityRuns.get(runId);
     if (!active) return Promise.reject(new CapabilityError("request_cancelled", "工具会话已结束", true));
     const policy = normalizeToolConfirmation(definition.config);
+    const trustKey = toolTrustKey(definition);
     const trust = this.conversationTrust.get(active.chatId);
-    if (policy === "first-per-conversation" && trust?.toolIds.has(definition.id)) {
+    if (policy === "first-per-conversation" && trust?.toolIds.has(trustKey)) {
       trust.lastSeenAt = Date.now();
       return "conversation";
     }
@@ -675,14 +1132,190 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
       const timer = setTimeout(() => {
         if (active.pendingApproval?.callId === event.id) active.pendingApproval = undefined;
         reject(new CapabilityError("tool_confirmation_timeout", "工具确认已超时，请重试"));
-      }, 120_000);
-      active.pendingApproval = { callId: event.id, toolId: definition.id, resolve, reject, timer };
+      }, this.toolConfirmationTimeoutMs);
+      active.pendingApproval = {
+        callId: event.id,
+        trustKey,
+        allowConversation: policy === "first-per-conversation",
+        resolve,
+        reject,
+        timer,
+      };
       active.controller.signal.addEventListener("abort", () => {
         if (active.pendingApproval?.callId === event.id) active.pendingApproval = undefined;
         clearTimeout(timer);
         reject(new CapabilityError("request_cancelled", "工具会话已取消", true));
       }, { once: true });
     });
+  }
+
+  private ensureMcpOAuthOwner(ownerLabel: string): void {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO mcp_oauth_owner(singleton, owner_label) VALUES (1, ?) ON CONFLICT(singleton) DO NOTHING",
+      ownerLabel,
+    );
+    const storedOwner = this.ctx.storage.sql
+      .exec<{ owner_label: string }>("SELECT owner_label FROM mcp_oauth_owner WHERE singleton = 1")
+      .one().owner_label;
+    if (storedOwner !== ownerLabel) {
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接 owner 不匹配");
+    }
+  }
+
+  private requireExistingMcpOAuthOwner(ownerLabel: string): void {
+    const storedOwner = this.ctx.storage.sql
+      .exec<{ owner_label: string }>("SELECT owner_label FROM mcp_oauth_owner WHERE singleton = 1")
+      .toArray()[0]?.owner_label;
+    if (storedOwner !== ownerLabel) {
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接 owner 不匹配");
+    }
+  }
+
+  private readMcpOAuthTokenRow(serverId: string): StoredMcpOAuthTokenRow | null {
+    return this.ctx.storage.sql.exec<StoredMcpOAuthTokenRow>(
+      "SELECT encrypted_record, token_expires_at, config_revision, granted_scopes, review_required, revision "+
+        "FROM mcp_oauth_tokens WHERE server_id = ?",
+      serverId,
+    ).toArray()[0] || null;
+  }
+
+  private bumpMcpOAuthMutationGeneration(serverId: string): number {
+    const next = (this.mcpOAuthMutationGenerations.get(serverId) || 0) + 1;
+    this.mcpOAuthMutationGenerations.set(serverId, next);
+    return next;
+  }
+
+  private async resolveMcpOAuthAccessTokenFresh(args: {
+    ownerLabel: string;
+    serverId: string;
+    auth: McpOAuth2AuthConfig;
+    nowMs: number;
+  }): Promise<string> {
+    this.ensureMcpOAuthOwner(args.ownerLabel);
+    const row = this.readMcpOAuthTokenRow(args.serverId);
+    if (!row) throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接不存在，请重新连接");
+    if (row.review_required === 1) {
+      throw new McpOAuthError("mcp_oauth_review_required", "OAuth 连接需要重新审查");
+    }
+    const mutationGeneration = this.mcpOAuthMutationGenerations.get(args.serverId) || 0;
+    const purgeGeneration = this.mcpOAuthPurgeGeneration;
+    let token: McpOAuthTokenSet;
+    try {
+      const encrypted = normalizeEncryptedMcpOAuthToken(JSON.parse(row.encrypted_record));
+      token = await decryptMcpOAuthToken({
+        masterKey: this.runtimeEnv.ROUTE_KEYS_MASTER_KEY,
+        ownerLabel: args.ownerLabel,
+        serverId: args.serverId,
+        record: encrypted,
+      });
+    } catch (error) {
+      if (
+        mutationGeneration === (this.mcpOAuthMutationGenerations.get(args.serverId) || 0)
+        && purgeGeneration === this.mcpOAuthPurgeGeneration
+      ) this.deleteMcpOAuthTokenRevision(args.serverId, row.revision);
+      if (error instanceof McpOAuthError) throw error;
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接无法解密，请重新连接");
+    }
+    if (purgeGeneration !== this.mcpOAuthPurgeGeneration) {
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接已被删除，请重新连接");
+    }
+    if (mutationGeneration !== (this.mcpOAuthMutationGenerations.get(args.serverId) || 0)) {
+      return this.resolveMcpOAuthAccessTokenFresh(args);
+    }
+
+    const tokenMatchesConfig = mcpOAuthTokenMatchesAuth(args.auth, token);
+    const scopesAvailable = hasRequiredOAuthScopes(token.grantedScopes, args.auth.scopes);
+    if (!tokenMatchesConfig || !scopesAvailable || row.config_revision !== args.auth.configRevision) {
+      this.ctx.storage.sql.exec(
+        "UPDATE mcp_oauth_tokens SET review_required = 1, revision = revision + 1 "+
+          "WHERE server_id = ? AND revision = ?",
+        args.serverId,
+        row.revision,
+      );
+      this.bumpMcpOAuthMutationGeneration(args.serverId);
+      throw new McpOAuthError("mcp_oauth_review_required", "OAuth 配置或 scope 已变化，需要重新授权");
+    }
+    if (!token.expiresAt || token.expiresAt > args.nowMs + MCP_OAUTH_REFRESH_SKEW_MS) return token.accessToken;
+    if (!token.refreshToken) {
+      this.deleteMcpOAuthTokenRevision(args.serverId, row.revision);
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth token 已过期，请重新连接");
+    }
+
+    let refreshed: McpOAuthTokenSet;
+    try {
+      const [metadata, clientSecret] = await Promise.all([
+        discoverMcpOAuthMetadata(args.auth),
+        args.auth.clientSecretRef
+          ? managedSecretService(this.runtimeEnv).resolve("mcp", args.auth.clientSecretRef)
+          : Promise.resolve(undefined),
+      ]);
+      refreshed = await refreshMcpOAuthToken({
+        metadata,
+        auth: args.auth,
+        refreshToken: token.refreshToken,
+        previousScopes: token.grantedScopes,
+        clientSecret: clientSecret || undefined,
+        now: args.nowMs,
+      });
+    } catch (error) {
+      if (
+        error instanceof McpOAuthError
+        && error.code === "mcp_oauth_invalid_grant"
+        && mutationGeneration === (this.mcpOAuthMutationGenerations.get(args.serverId) || 0)
+        && purgeGeneration === this.mcpOAuthPurgeGeneration
+      ) this.deleteMcpOAuthTokenRevision(args.serverId, row.revision);
+      throw error;
+    }
+    if (purgeGeneration !== this.mcpOAuthPurgeGeneration) {
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接已被删除，请重新连接");
+    }
+    if (mutationGeneration !== (this.mcpOAuthMutationGenerations.get(args.serverId) || 0)) {
+      return this.resolveMcpOAuthAccessTokenFresh(args);
+    }
+
+    requireMatchingMcpOAuthToken(args.auth, refreshed);
+    const reviewRequired = !hasRequiredOAuthScopes(refreshed.grantedScopes, args.auth.scopes);
+    const encrypted = await encryptMcpOAuthToken({
+      masterKey: this.runtimeEnv.ROUTE_KEYS_MASTER_KEY,
+      ownerLabel: args.ownerLabel,
+      serverId: args.serverId,
+      token: refreshed,
+      nowIso: new Date(args.nowMs).toISOString(),
+    });
+    if (purgeGeneration !== this.mcpOAuthPurgeGeneration) {
+      throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth 连接已被删除，请重新连接");
+    }
+    if (mutationGeneration !== (this.mcpOAuthMutationGenerations.get(args.serverId) || 0)) {
+      return this.resolveMcpOAuthAccessTokenFresh(args);
+    }
+    const update = this.ctx.storage.sql.exec(
+      "UPDATE mcp_oauth_tokens SET encrypted_record = ?, token_expires_at = ?, config_revision = ?, "+
+        "granted_scopes = ?, review_required = ?, revision = revision + 1, updated_at = ? "+
+        "WHERE server_id = ? AND revision = ?",
+      JSON.stringify(encrypted),
+      refreshed.expiresAt ?? null,
+      args.auth.configRevision,
+      JSON.stringify(refreshed.grantedScopes),
+      reviewRequired ? 1 : 0,
+      args.nowMs,
+      args.serverId,
+      row.revision,
+    );
+    if (update.rowsWritten !== 1) return this.resolveMcpOAuthAccessTokenFresh(args);
+    this.bumpMcpOAuthMutationGeneration(args.serverId);
+    if (reviewRequired) {
+      throw new McpOAuthError("mcp_oauth_review_required", "OAuth scope 已变化，需要重新授权");
+    }
+    return refreshed.accessToken;
+  }
+
+  private deleteMcpOAuthTokenRevision(serverId: string, revision: number): void {
+    const deletion = this.ctx.storage.sql.exec(
+      "DELETE FROM mcp_oauth_tokens WHERE server_id = ? AND revision = ?",
+      serverId,
+      revision,
+    );
+    if (deletion.rowsWritten > 0) this.bumpMcpOAuthMutationGeneration(serverId);
   }
 
   private cleanupCapabilityRun(runId: string): void {
@@ -808,6 +1441,9 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
   }
 
   async purgeUserData(nowMs = Date.now()): Promise<void> {
+    this.mcpOAuthPurgeGeneration += 1;
+    this.mcpOAuthRefreshes.clear();
+    this.mcpOAuthMutationGenerations.clear();
     for (const runId of [...this.activeCapabilityRuns.keys()]) this.cleanupCapabilityRun(runId);
     this.conversationTrust.clear();
     this.ctx.storage.sql.exec("DELETE FROM chats");
@@ -816,6 +1452,10 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
     this.ctx.storage.sql.exec("DELETE FROM bursts");
     this.ctx.storage.sql.exec("DELETE FROM metrics");
     this.ctx.storage.sql.exec("DELETE FROM guest_turn_lease");
+    this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_states");
+    this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_tokens");
+    this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates");
+    this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_owner");
     this.ctx.storage.sql.exec(
       "INSERT INTO user_state(key, value) VALUES ('chats_purged_at', ?) ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
       nowMs,
@@ -1206,6 +1846,22 @@ async function handleApi(
   }
   if (session.kind === "guest" && !isGuestApiAllowed(url.pathname, request.method)) {
     return jsonResponse({ error: "capability_not_allowed", message: "访客账号不支持这项操作" }, 403);
+  }
+
+  if (url.pathname === "/api/mcp/oauth/start" && request.method === "POST") {
+    return handleMcpOAuthStart(request, env, session, url);
+  }
+  if (url.pathname === MCP_OAUTH_CALLBACK_PATH && request.method === "GET") {
+    return handleMcpOAuthCallback(request, env, session, url);
+  }
+  if (url.pathname === "/api/mcp/oauth/status" && request.method === "GET") {
+    return handleMcpOAuthStatus(env, session);
+  }
+  if (url.pathname === "/api/mcp/oauth/discovery" && request.method === "POST") {
+    return handleMcpOAuthDiscovery(request, env, session);
+  }
+  if (url.pathname === "/api/mcp/oauth/revoke" && request.method === "POST") {
+    return handleMcpOAuthRevoke(request, env, session);
   }
 
   if (url.pathname === "/api/session" && request.method === "GET") {
@@ -1858,9 +2514,10 @@ async function buildSessionProjection(env: Env, session: Session): Promise<Recor
   const access = await getRouteAccess(config, session, env);
   const capabilities = getPublicCapabilities(config, access.user);
   const policy = sessionCapabilities(session, access);
-  const [usage, routes] = await Promise.all([
+  const [usage, routes, mcpConnections] = await Promise.all([
     quotaAdmissionService(env).getUsage(session, access.user),
     Promise.all(access.routes.map((route) => withPublicRouteHealth(env, route))),
+    session.kind === "member" ? listMcpOAuthConnections(env, session) : Promise.resolve([]),
   ]);
   return {
     authenticated: true,
@@ -1877,6 +2534,7 @@ async function buildSessionProjection(env: Env, session: Session): Promise<Recor
     capabilities: policy,
     skills: session.kind === "member" ? capabilities.skills : [],
     tools: session.kind === "member" ? capabilities.tools : [],
+    mcpConnections,
     agent: {
       transport: "cloudflare-ai-chat",
       className: "team-agent",
@@ -2152,18 +2810,23 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   if (!rawProviderPoolValidation.ok) {
     return jsonResponse({ error: "invalid_config", message: rawProviderPoolValidation.message }, 400);
   }
+  const rawMcpValidation = validateRawMcpConfiguration(body.config);
+  if (!rawMcpValidation.ok) {
+    return jsonResponse({ error: "invalid_config", message: rawMcpValidation.message }, 400);
+  }
   const editable = await loadEditableConfig(env);
-  const normalized = mergeHiddenCredentialShadows(
+  const normalized = await applyMcpOAuthConfigRevisions(mergeHiddenCredentialShadows(
     editable.config,
     normalizeAppConfig(body.config),
     body.config,
-  );
+  ));
   const validation = validateAppConfig(normalized);
   if (!validation.ok) {
     return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
   }
 
   await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(normalized));
+  await reconcileMcpToolDriftOverlay(env, normalized);
   await appendAdminAudit(env, "config.update");
   return jsonResponse({ ok: true, config: sanitizeAdminConfig(normalized), source: "kv", revision: await configRevision(normalized) });
 }
@@ -2393,7 +3056,11 @@ async function handleGetAdminMcpSecrets(env: Env): Promise<Response> {
   const prefix = managedSecretPrefix("mcp");
   const refs = new Set(
     Object.values(config.mcpServers || {})
-      .map((server) => server.secretRef?.trim() || "")
+      .map((server) => {
+        if (server.auth.type === "bearer" || server.auth.type === "x-api-key") return server.auth.secretRef;
+        if (server.auth.type === "oauth2") return server.auth.clientSecretRef || "";
+        return "";
+      })
       .filter((ref) => MANAGED_SECRET_REF_PATTERN.test(ref)),
   );
   let cursor: string | undefined;
@@ -4393,29 +5060,65 @@ async function handleAdminMcpDiscovery(request: Request, env: Env): Promise<Resp
     serverId?: unknown;
     label?: unknown;
     endpoint?: unknown;
+    auth?: unknown;
     authType?: unknown;
     secretRef?: unknown;
+    memberLabel?: unknown;
   }>(request);
   const serverId = normalizeCapabilityId(body.serverId, 80);
   if (!serverId) return jsonResponse({ error: "invalid_mcp_server_id", message: "MCP Server ID 格式无效" }, 400);
-  const authType = body.authType;
-  if (authType !== "none" && authType !== "bearer" && authType !== "x-api-key") {
+  if (body.memberLabel !== undefined) {
+    const memberLabel = normalizeMemberLabel(body.memberLabel);
+    if (!memberLabel) return jsonResponse({ error: "invalid_member_label", message: "成员 label 无效" }, 400);
+    const config = await loadAppConfig(env);
+    const configured = config.mcpServers?.[serverId];
+    if (!configured || configured.enabled !== true || configured.auth.type !== "oauth2") {
+      return jsonResponse({ error: "mcp_oauth_not_available", message: "OAuth MCP 服务未启用" }, 404);
+    }
+    try {
+      const candidate = await getUserState(env, memberLabel).getMcpOAuthDiscoveryCandidate({
+        ownerLabel: memberLabel,
+        serverId,
+        configRevision: configured.auth.configRevision,
+      });
+      const discovery = candidate
+        ? normalizeStoredMcpOAuthDiscovery(JSON.parse(candidate.discoveryJson), serverId)
+        : null;
+      if (!discovery) {
+        return jsonResponse({
+          error: "mcp_oauth_discovery_unavailable",
+          message: "该成员尚无可审查的 OAuth MCP 发现候选",
+        }, 409);
+      }
+      await appendAdminAudit(env, "mcp.discovery.candidate", `${serverId}:${discovery.tools.length}/${discovery.rejected}`);
+      return jsonResponse(discovery);
+    } catch (error) {
+      if (error instanceof McpOAuthError) return mcpOAuthJsonError(error);
+      throw error;
+    }
+  }
+  const auth = normalizeMcpAuthConfig(body);
+  if (!auth) {
     return jsonResponse({ error: "invalid_mcp_auth_type", message: "MCP 认证类型无效" }, 400);
   }
   const endpoint = normalizeBoundedText(body.endpoint, 2_048);
-  const secretRef = normalizeBoundedText(body.secretRef, 64);
-  const server: McpServerConfig = {
+  const server = await applyMcpOAuthConfigRevision(serverId, {
     enabled: true,
     label: normalizeBoundedText(body.label, 80) || serverId,
     endpoint,
-    authType,
-    secretRef: secretRef && MANAGED_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
-  };
+    auth,
+  });
   if (!isValidMcpEndpoint(server.endpoint) || isForbiddenMcpUrl(new URL(server.endpoint))) {
     return jsonResponse({ error: "mcp_endpoint_invalid", message: "MCP 地址必须是可公开访问的 HTTPS 地址" }, 400);
   }
-  if (server.authType !== "none" && !server.secretRef) {
+  if ((server.auth.type === "bearer" || server.auth.type === "x-api-key") && !server.auth.secretRef) {
     return jsonResponse({ error: "mcp_auth_unavailable", message: "该认证类型需要有效的 Secret Ref" }, 400);
+  }
+  if (server.auth.type === "oauth2") {
+    return jsonResponse({
+      error: "mcp_oauth_discovery_candidate_required",
+      message: "OAuth MCP 发现必须由已连接成员生成候选后再由管理员审查",
+    }, 409);
   }
   try {
     const discovery = await mcpRuntime(env).discoverTools(serverId, server, request.signal);
@@ -4827,6 +5530,7 @@ async function handleToolApproval(request: Request, env: Env, session: Session):
     return jsonResponse({ error: "invalid_tool_approval" }, 400);
   }
   const result = await getUserState(env, session.label).resolveToolApproval(runId, callId, decision);
+  if (result.invalidDecision) return jsonResponse({ error: "invalid_tool_approval_decision" }, 400);
   if (!result.resolved) return jsonResponse({ error: "tool_approval_not_pending" }, 409);
   return jsonResponse({ ok: true });
 }
@@ -5317,7 +6021,7 @@ export async function prepareTeamAgentTurn(
       await recordChatMetric(env, { kind: "route_error", label: session.label, routeId: event.routeId });
     },
   });
-  const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env);
+  const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env, session.label);
 
   return {
     ok: true,
@@ -5572,7 +6276,7 @@ async function loadAppConfig(env: Env): Promise<AppConfig> {
   const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY);
   if (stored?.trim()) {
     try {
-      return normalizeAppConfig(JSON.parse(stored));
+      return finalizeLoadedAppConfig(env, normalizeAppConfig(JSON.parse(stored)));
     } catch {
       await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
     }
@@ -5585,7 +6289,7 @@ async function loadEditableConfig(env: Env): Promise<{ config: AppConfig; source
   const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY);
   if (stored?.trim()) {
     try {
-      return { config: normalizeAppConfig(JSON.parse(stored)), source: "kv" };
+      return { config: await finalizeLoadedAppConfig(env, normalizeAppConfig(JSON.parse(stored))), source: "kv" };
     } catch {
       await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
     }
@@ -5593,25 +6297,144 @@ async function loadEditableConfig(env: Env): Promise<{ config: AppConfig; source
 
   if (env.ROUTES_CONFIG?.trim()) {
     try {
-      return { config: normalizeAppConfig(JSON.parse(env.ROUTES_CONFIG)), source: "secret" };
+      return {
+        config: await finalizeLoadedAppConfig(env, normalizeAppConfig(JSON.parse(env.ROUTES_CONFIG))),
+        source: "secret",
+      };
     } catch {
-      return { config: getDefaultAppConfig(env), source: "default" };
+      return { config: await finalizeLoadedAppConfig(env, getDefaultAppConfig(env)), source: "default" };
     }
   }
 
-  return { config: getDefaultAppConfig(env), source: "default" };
+  return { config: await finalizeLoadedAppConfig(env, getDefaultAppConfig(env)), source: "default" };
 }
 
-function getAppConfig(env: Env): AppConfig {
+async function getAppConfig(env: Env): Promise<AppConfig> {
   if (env.ROUTES_CONFIG?.trim()) {
     try {
-      return normalizeAppConfig(JSON.parse(env.ROUTES_CONFIG));
+      return finalizeLoadedAppConfig(env, normalizeAppConfig(JSON.parse(env.ROUTES_CONFIG)));
     } catch {
-      return getDefaultAppConfig(env);
+      return finalizeLoadedAppConfig(env, getDefaultAppConfig(env));
     }
   }
 
-  return getDefaultAppConfig(env);
+  return finalizeLoadedAppConfig(env, getDefaultAppConfig(env));
+}
+
+async function finalizeLoadedAppConfig(env: Env, config: AppConfig): Promise<AppConfig> {
+  const revised = await applyMcpOAuthConfigRevisions(config);
+  const overlay = await loadMcpToolDriftOverlay(env);
+  return applyMcpToolDriftOverlay(revised, overlay);
+}
+
+async function loadMcpToolDriftOverlay(env: Env): Promise<McpToolDriftOverlay> {
+  const stored = await env.CHAT_STORE.get(MCP_TOOL_DRIFT_KEY);
+  return decodeMcpToolDriftOverlay(stored) || { version: 1, tools: {} };
+}
+
+function decodeMcpToolDriftOverlay(stored: string | null): McpToolDriftOverlay | null {
+  if (!stored?.trim()) return null;
+  try {
+    const value: unknown = JSON.parse(stored);
+    if (!isRecord(value) || !hasOnlyRecordKeys(value, ["version", "tools"]) || value.version !== 1 || !isRecord(value.tools)) {
+      return null;
+    }
+    const entries = Object.entries(value.tools);
+    if (entries.length > MAX_TOOLS) return null;
+    const tools: Record<string, McpToolDriftEntry> = {};
+    for (const [toolId, entry] of entries) {
+      if (
+        normalizeCapabilityId(toolId, 160) !== toolId
+        || !toolId.startsWith("mcp:")
+        || !isRecord(entry)
+        || !hasOnlyRecordKeys(entry, ["reviewRevision", "observedAt"])
+        || typeof entry.reviewRevision !== "string"
+        || !isSecretFingerprint(entry.reviewRevision)
+        || typeof entry.observedAt !== "string"
+        || !isCanonicalIsoTimestamp(entry.observedAt)
+      ) {
+        return null;
+      }
+      tools[toolId] = { reviewRevision: entry.reviewRevision, observedAt: entry.observedAt };
+    }
+    return { version: 1, tools };
+  } catch {
+    return null;
+  }
+}
+
+function applyMcpToolDriftOverlay(config: AppConfig, overlay: McpToolDriftOverlay): AppConfig {
+  if (!config.tools || Object.keys(overlay.tools).length === 0) return config;
+  let nextTools: Record<string, ToolConfig> | undefined;
+  for (const [toolId, drift] of Object.entries(overlay.tools)) {
+    const tool = config.tools[toolId];
+    if (
+      !tool
+      || tool.executor.type !== "mcp"
+      || tool.reviewRevision !== drift.reviewRevision
+      || (tool.enabled !== true && tool.reviewRequired === true)
+    ) {
+      continue;
+    }
+    nextTools ||= { ...config.tools };
+    nextTools[toolId] = { ...tool, enabled: false, reviewRequired: true };
+  }
+  return nextTools ? { ...config, tools: nextTools } : config;
+}
+
+async function recordMcpToolDrift(env: Env, toolId: string, reviewRevision: string): Promise<void> {
+  const config = await loadAppConfig(env);
+  const current = config.tools?.[toolId];
+  if (
+    !current
+    || current.executor.type !== "mcp"
+    || current.enabled !== true
+    || current.reviewRequired === true
+    || current.reviewRevision !== reviewRevision
+  ) {
+    return;
+  }
+  const overlay = await loadMcpToolDriftOverlay(env);
+  const tools = {
+    ...overlay.tools,
+    [toolId]: { reviewRevision, observedAt: new Date().toISOString() },
+  };
+  const overflow = Object.entries(tools).length - MAX_TOOLS;
+  if (overflow > 0) {
+    for (const [staleId] of Object.entries(tools)
+      .sort((left, right) => left[1].observedAt.localeCompare(right[1].observedAt))
+      .slice(0, overflow)) {
+      delete tools[staleId];
+    }
+  }
+  await env.CHAT_STORE.put(MCP_TOOL_DRIFT_KEY, JSON.stringify({ version: 1, tools } satisfies McpToolDriftOverlay));
+}
+
+async function reconcileMcpToolDriftOverlay(env: Env, config: AppConfig): Promise<void> {
+  const overlay = await loadMcpToolDriftOverlay(env);
+  const tools = Object.fromEntries(Object.entries(overlay.tools).filter(([toolId, drift]) => {
+    const tool = config.tools?.[toolId];
+    return tool?.executor.type === "mcp"
+      && tool.reviewRevision === drift.reviewRevision
+      && !(tool.enabled === true && tool.reviewRequired !== true);
+  }));
+  if (Object.keys(tools).length === 0) {
+    if (Object.keys(overlay.tools).length > 0) await env.CHAT_STORE.delete(MCP_TOOL_DRIFT_KEY);
+    return;
+  }
+  if (JSON.stringify(tools) !== JSON.stringify(overlay.tools)) {
+    await env.CHAT_STORE.put(MCP_TOOL_DRIFT_KEY, JSON.stringify({ version: 1, tools } satisfies McpToolDriftOverlay));
+  }
+}
+
+function isCanonicalIsoTimestamp(value: string): boolean {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function hasOnlyRecordKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }
 
 function getDefaultAppConfig(env: Env): AppConfig {
@@ -5718,11 +6541,17 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   }
 
   for (const [serverId, server] of Object.entries(config.mcpServers || {})) {
-    if (!isValidMcpEndpoint(server.endpoint)) {
+    if (!isValidMcpEndpoint(server.endpoint) || isForbiddenMcpUrl(new URL(server.endpoint))) {
       return { ok: false, message: `MCP 服务 ${serverId} 必须使用有效的 HTTPS 地址` };
     }
-    if (server.authType !== "none" && !server.secretRef) {
+    if (
+      (server.auth.type === "bearer" || server.auth.type === "x-api-key")
+      && !MANAGED_SECRET_REF_PATTERN.test(server.auth.secretRef)
+    ) {
       return { ok: false, message: `MCP 服务 ${serverId} 使用认证时必须配置 Secret Ref` };
+    }
+    if (server.auth.type === "oauth2" && !isValidMcpOAuthConfig(server.auth)) {
+      return { ok: false, message: `MCP 服务 ${serverId} 的 OAuth 配置无效` };
     }
   }
 
@@ -5811,6 +6640,35 @@ function validateRawProviderPoolConfiguration(value: unknown): { ok: true } | { 
       if (rawOffering.priority !== undefined && !isFiniteConfigNumber(rawOffering.priority)) {
         return { ok: false, message: `逻辑模型 ${routeId} 的服务提供商优先级无效` };
       }
+    }
+  }
+  return { ok: true };
+}
+
+function validateRawMcpConfiguration(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isRecord(value) || value.mcpServers === undefined) return { ok: true };
+  if (!isRecord(value.mcpServers)) return { ok: false, message: "MCP 服务配置必须是对象" };
+  if (Object.keys(value.mcpServers).length > MAX_MCP_SERVERS) {
+    return { ok: false, message: `MCP 服务数量不能超过 ${MAX_MCP_SERVERS}` };
+  }
+  for (const [serverId, rawServer] of Object.entries(value.mcpServers)) {
+    if (!normalizeCapabilityId(serverId, 80) || !isRecord(rawServer)) {
+      return { ok: false, message: `MCP 服务 ${serverId} 配置无效` };
+    }
+    const endpoint = normalizeBoundedText(rawServer.endpoint, 2_048);
+    if (!isValidMcpEndpoint(endpoint) || isForbiddenMcpUrl(new URL(endpoint))) {
+      return { ok: false, message: `MCP 服务 ${serverId} 必须使用可公开访问的 HTTPS 地址` };
+    }
+    const auth = normalizeMcpAuthConfig(rawServer);
+    if (!auth) return { ok: false, message: `MCP 服务 ${serverId} 的认证配置无效` };
+    if (auth.type === "oauth2") {
+      const normalizedScopes = normalizeOAuthScopes(auth.scopes);
+      if (!normalizedScopes.length || JSON.stringify(normalizedScopes) !== JSON.stringify(auth.scopes)) {
+        return { ok: false, message: `MCP 服务 ${serverId} 的 OAuth scope 无效` };
+      }
+    }
+    if (!isRecord(rawServer.auth) && rawServer.authType === "none" && rawServer.secretRef !== undefined) {
+      return { ok: false, message: `MCP 服务 ${serverId} 无需认证时不能配置 Secret Ref` };
     }
   }
   return { ok: true };
@@ -6202,10 +7060,21 @@ function feedbackAuditService(env: Env) {
   });
 }
 
-function mcpRuntime(env: Env) {
+function mcpRuntime(env: Env, ownerLabel?: string) {
   const secrets = managedSecretService(env);
   return createMcpRuntime({
     resolveSecret: (secretRef) => secrets.resolve("mcp", secretRef),
+    resolveOAuthAccessToken: async (serverId, server) => {
+      if (!ownerLabel || server.auth.type !== "oauth2") {
+        throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth MCP 连接需要成员身份");
+      }
+      return getUserState(env, ownerLabel).resolveMcpOAuthAccessToken({
+        ownerLabel,
+        serverId,
+        auth: server.auth,
+      });
+    },
+    recordToolDrift: (toolId, reviewRevision) => recordMcpToolDrift(env, toolId, reviewRevision),
     fingerprint: secretFingerprint,
   });
 }
@@ -7046,12 +7915,17 @@ function validateToolArguments(definition: NormalizedToolDefinition, value: unkn
   }
 }
 
+function toolTrustKey(definition: NormalizedToolDefinition): string {
+  return JSON.stringify([definition.id, definition.config.reviewRevision || ""]);
+}
+
 function createAgentCapabilityRuntime(
   definitions: NormalizedToolDefinition[],
   env: Env,
+  ownerLabel: string,
 ): { runTool: CapabilityToolRunner; close: () => Promise<void> } {
   const allowed = new Map(definitions.map((definition) => [definition.id, definition]));
-  const mcpExecution = mcpRuntime(env).createExecution();
+  const mcpExecution = mcpRuntime(env, ownerLabel).createExecution();
   let callCount = 0;
   let elapsedMs = 0;
   let closed = false;
@@ -7115,11 +7989,31 @@ async function executeCapabilityTool(
       result = executeTextStats(value);
     } else {
       const config = await loadAppConfig(env);
+      const currentTool = config.tools?.[definition.id];
+      if (
+        !currentTool
+        || currentTool.enabled !== true
+        || currentTool.reviewRequired === true
+        || currentTool.executor.type !== "mcp"
+        || currentTool.executor.serverId !== definition.config.executor.serverId
+        || currentTool.executor.remoteName !== definition.config.executor.remoteName
+        || currentTool.reviewRevision !== definition.config.reviewRevision
+      ) {
+        throw new CapabilityError("mcp_tool_changed", "MCP 工具配置已变化，请重新开始本轮请求");
+      }
+      const currentDefinition: NormalizedToolDefinition = {
+        ...definition,
+        label: currentTool.label,
+        description: currentTool.description || currentTool.label,
+        inputSchema: currentTool.inputSchema,
+        config: currentTool,
+      };
+      validateToolArguments(currentDefinition, value);
       try {
         result = await mcpExecution.executeTool(
-          definition,
+          currentDefinition,
           value,
-          config.mcpServers?.[definition.config.executor.serverId],
+          config.mcpServers?.[currentTool.executor.serverId],
           callController.signal,
         );
       } catch (error) {
@@ -7808,20 +8702,110 @@ function normalizeMcpServerRegistry(value: unknown): Record<string, McpServerCon
   for (const [rawId, rawServer] of Object.entries(value).slice(0, MAX_MCP_SERVERS)) {
     const id = normalizeCapabilityId(rawId, 80);
     if (!id || output[id] || !isRecord(rawServer)) continue;
-    const authType = rawServer.authType;
-    if (authType !== "none" && authType !== "bearer" && authType !== "x-api-key") continue;
+    const auth = normalizeMcpAuthConfig(rawServer);
+    if (!auth) continue;
     const endpoint = normalizeBoundedText(rawServer.endpoint, 2_048);
     if (!endpoint) continue;
-    const secretRef = normalizeBoundedText(rawServer.secretRef, 64);
     output[id] = {
       enabled: rawServer.enabled === true,
       label: normalizeBoundedText(rawServer.label, 80) || id,
       endpoint,
-      authType,
-      secretRef: secretRef && MANAGED_SECRET_REF_PATTERN.test(secretRef) ? secretRef : undefined,
+      auth,
     };
   }
   return output;
+}
+
+function normalizeMcpAuthConfig(value: Record<string, unknown>): McpServerConfig["auth"] | null {
+  if (isRecord(value.auth)) {
+    const rawAuth = value.auth;
+    if (rawAuth.version !== 1) return null;
+    if (rawAuth.type === "none") return { version: 1, type: "none" };
+    if (rawAuth.type === "bearer" || rawAuth.type === "x-api-key") {
+      const secretRef = normalizeBoundedText(rawAuth.secretRef, 64);
+      return MANAGED_SECRET_REF_PATTERN.test(secretRef)
+        ? { version: 1, type: rawAuth.type, secretRef }
+        : null;
+    }
+    if (rawAuth.type !== "oauth2") return null;
+    const issuer = normalizeMcpOAuthIssuer(rawAuth.issuer);
+    const clientId = normalizeMcpOAuthClientId(rawAuth.clientId);
+    const scopes = normalizeOAuthScopes(rawAuth.scopes);
+    const callbackPath = rawAuth.callbackPath === MCP_OAUTH_CALLBACK_PATH ? MCP_OAUTH_CALLBACK_PATH : "";
+    const configRevision = typeof rawAuth.configRevision === "string" && isSecretFingerprint(rawAuth.configRevision)
+      ? rawAuth.configRevision
+      : "";
+    const rawClientSecretRef = normalizeBoundedText(rawAuth.clientSecretRef, 64);
+    if (rawAuth.clientSecretRef !== undefined && !MANAGED_SECRET_REF_PATTERN.test(rawClientSecretRef)) return null;
+    if (!issuer || !clientId || !callbackPath) return null;
+    return {
+      version: 1,
+      type: "oauth2",
+      issuer,
+      clientId,
+      scopes,
+      callbackPath,
+      configRevision,
+      ...(rawClientSecretRef ? { clientSecretRef: rawClientSecretRef } : {}),
+    };
+  }
+
+  const legacyType = value.authType;
+  if (legacyType === "none") return { version: 1, type: "none" };
+  if (legacyType !== "bearer" && legacyType !== "x-api-key") return null;
+  const secretRef = normalizeBoundedText(value.secretRef, 64);
+  return MANAGED_SECRET_REF_PATTERN.test(secretRef)
+    ? { version: 1, type: legacyType, secretRef }
+    : null;
+}
+
+async function applyMcpOAuthConfigRevisions(config: AppConfig): Promise<AppConfig> {
+  const entries = await Promise.all(Object.entries(config.mcpServers || {}).map(async ([serverId, server]) => (
+    [serverId, await applyMcpOAuthConfigRevision(serverId, server)] as const
+  )));
+  return { ...config, mcpServers: Object.fromEntries(entries) };
+}
+
+async function applyMcpOAuthConfigRevision(
+  serverId: string,
+  server: McpServerConfig,
+): Promise<McpServerConfig> {
+  if (server.auth.type !== "oauth2") return server;
+  const configRevision = await secretFingerprint(JSON.stringify({
+    version: server.auth.version,
+    type: server.auth.type,
+    serverId,
+    endpoint: server.endpoint,
+    issuer: server.auth.issuer,
+    clientId: server.auth.clientId,
+    scopes: server.auth.scopes,
+    callbackPath: MCP_OAUTH_CALLBACK_PATH,
+    clientSecretRef: server.auth.clientSecretRef || "",
+  }));
+  return { ...server, auth: { ...server.auth, callbackPath: MCP_OAUTH_CALLBACK_PATH, configRevision } };
+}
+
+function normalizeMcpOAuthIssuer(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const issuer = value.trim().replace(/\/$/, "");
+  return issuer && isSafeOAuthIssuer(issuer) ? issuer : "";
+}
+
+function normalizeMcpOAuthClientId(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const clientId = value.trim();
+  return clientId && clientId.length <= 256 && !/[\u0000-\u001f\u007f]/.test(clientId) ? clientId : "";
+}
+
+function isValidMcpOAuthConfig(auth: McpOAuth2AuthConfig): boolean {
+  const scopes = normalizeOAuthScopes(auth.scopes);
+  return normalizeMcpOAuthIssuer(auth.issuer) === auth.issuer
+    && normalizeMcpOAuthClientId(auth.clientId) === auth.clientId
+    && scopes.length > 0
+    && JSON.stringify(scopes) === JSON.stringify(auth.scopes)
+    && auth.callbackPath === MCP_OAUTH_CALLBACK_PATH
+    && isSecretFingerprint(auth.configRevision)
+    && (!auth.clientSecretRef || MANAGED_SECRET_REF_PATTERN.test(auth.clientSecretRef));
 }
 
 function normalizeToolRegistry(
@@ -7854,19 +8838,33 @@ function normalizeToolRegistry(
     }
     if (!executor) continue;
     const confirmation = rawTool.confirmation;
+    const schemaFingerprint = normalizeFingerprint(rawTool.schemaFingerprint);
+    const securityFingerprint = normalizeFingerprint(rawTool.securityFingerprint);
+    const sideEffect = rawTool.sideEffect === "read"
+      || rawTool.sideEffect === "write"
+      || rawTool.sideEffect === "destructive"
+      ? rawTool.sideEffect
+      : undefined;
+    const reviewRevision = normalizeFingerprint(rawTool.reviewRevision);
+    const governanceComplete = executor.type === "builtin"
+      || Boolean(schemaFingerprint && securityFingerprint && sideEffect && reviewRevision);
+    const reviewRequired = executor.type === "mcp" && (rawTool.reviewRequired === true || !governanceComplete);
     output[id] = {
-      enabled: rawTool.enabled === true,
+      enabled: rawTool.enabled === true && !reviewRequired,
       label: normalizeBoundedText(rawTool.label, 80) || remoteToolLabel(executor),
       description: normalizeBoundedText(rawTool.description, 1_000) || undefined,
       inputSchema: schema,
       confirmation: executor.type === "builtin"
         ? confirmation === "always" ? "always" : "auto"
-        : confirmation === "always" ? "always" : "first-per-conversation",
+        : sideEffect === "write" || sideEffect === "destructive" || confirmation === "always"
+          ? "always"
+          : "first-per-conversation",
       executor,
-      schemaFingerprint:
-        typeof rawTool.schemaFingerprint === "string" && /^[a-f0-9]{64}$/i.test(rawTool.schemaFingerprint)
-          ? rawTool.schemaFingerprint.toLowerCase()
-          : undefined,
+      schemaFingerprint,
+      securityFingerprint,
+      sideEffect,
+      reviewRevision,
+      reviewRequired,
     };
   }
   return output;
@@ -8024,6 +9022,361 @@ async function secretFingerprint(value: string): Promise<string> {
   if (!value) return "";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function requireMcpOAuthOwnerLabel(value: string): void {
+  if (!MEMBER_LABEL_PATTERN.test(value)) {
+    throw new McpOAuthError("mcp_oauth_config_invalid", "OAuth owner 无效");
+  }
+}
+
+function requireMcpOAuthServerId(value: string): void {
+  if (!CAPABILITY_ID_PATTERN.test(value) || value.length > 80) {
+    throw new McpOAuthError("mcp_oauth_config_invalid", "OAuth MCP server 无效");
+  }
+}
+
+function requireMcpOAuthRevision(value: string): void {
+  if (!isSecretFingerprint(value)) {
+    throw new McpOAuthError("mcp_oauth_config_invalid", "OAuth 配置 revision 无效");
+  }
+}
+
+function isSecretFingerprint(value: string): boolean {
+  return /^[a-f0-9]{64}$/.test(value);
+}
+
+function normalizeFingerprint(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value)
+    ? value.toLowerCase()
+    : undefined;
+}
+
+function isMcpOAuthOpaqueValue(value: string): boolean {
+  return /^[A-Za-z0-9_-]{43,128}$/.test(value);
+}
+
+function isSafeMcpOAuthCallbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:"
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && url.pathname === MCP_OAUTH_CALLBACK_PATH;
+  } catch {
+    return false;
+  }
+}
+
+function requireMatchingMcpOAuthToken(auth: McpOAuth2AuthConfig, token: McpOAuthTokenSet): void {
+  requireMcpOAuthRevision(auth.configRevision);
+  if (!mcpOAuthTokenMatchesAuth(auth, token)) {
+    throw new McpOAuthError("mcp_oauth_review_required", "OAuth token 与当前配置不匹配");
+  }
+  const normalizedScopes = normalizeOAuthScopes(token.grantedScopes);
+  if (JSON.stringify(normalizedScopes) !== JSON.stringify(token.grantedScopes)) {
+    throw new McpOAuthError("mcp_oauth_token_invalid", "OAuth granted scope 无效");
+  }
+}
+
+function mcpOAuthTokenMatchesAuth(auth: McpOAuth2AuthConfig, token: McpOAuthTokenSet): boolean {
+  return token.issuer === auth.issuer
+    && token.clientId === auth.clientId
+    && token.configRevision === auth.configRevision;
+}
+
+function parseStoredMcpOAuthScopes(value: string): string[] {
+  try {
+    return normalizeOAuthScopes(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeStoredMcpOAuthDiscovery(value: unknown, expectedServerId: string): McpDiscoveryResult | null {
+  if (
+    !isRecord(value)
+    || !hasOnlyRecordKeys(value, ["serverId", "tools", "rejected"])
+    || value.serverId !== expectedServerId
+    || !Array.isArray(value.tools)
+    || value.tools.length > MAX_TOOLS
+    || !Number.isSafeInteger(value.rejected)
+    || Number(value.rejected) < 0
+    || Number(value.rejected) > 100_000
+  ) return null;
+  const tools: McpDiscoveredTool[] = [];
+  const ids = new Set<string>();
+  for (const rawTool of value.tools) {
+    if (
+      !isRecord(rawTool)
+      || !hasOnlyRecordKeys(rawTool, [
+        "id",
+        "label",
+        "description",
+        "inputSchema",
+        "confirmation",
+        "executor",
+        "schemaFingerprint",
+        "securityFingerprint",
+        "sideEffect",
+        "reviewRevision",
+        "reviewRequired",
+      ])
+      || !isRecord(rawTool.executor)
+      || !hasOnlyRecordKeys(rawTool.executor, ["type", "serverId", "remoteName"])
+      || rawTool.executor.type !== "mcp"
+      || rawTool.executor.serverId !== expectedServerId
+      || typeof rawTool.executor.remoteName !== "string"
+      || !MCP_REMOTE_NAME_PATTERN.test(rawTool.executor.remoteName)
+      || rawTool.id !== `mcp:${expectedServerId}:${rawTool.executor.remoteName}`
+      || typeof rawTool.id !== "string"
+      || ids.has(rawTool.id)
+      || typeof rawTool.label !== "string"
+      || normalizeBoundedText(rawTool.label, 80) !== rawTool.label
+      || typeof rawTool.description !== "string"
+      || normalizeBoundedText(rawTool.description, 1_000) !== rawTool.description
+      || typeof rawTool.schemaFingerprint !== "string"
+      || !isSecretFingerprint(rawTool.schemaFingerprint)
+      || typeof rawTool.securityFingerprint !== "string"
+      || !isSecretFingerprint(rawTool.securityFingerprint)
+      || typeof rawTool.reviewRevision !== "string"
+      || !isSecretFingerprint(rawTool.reviewRevision)
+      || (rawTool.sideEffect !== "read" && rawTool.sideEffect !== "write" && rawTool.sideEffect !== "destructive")
+      || rawTool.confirmation !== (rawTool.sideEffect === "read" ? "first-per-conversation" : "always")
+      || rawTool.reviewRequired !== true
+    ) return null;
+    const inputSchema = normalizeMcpToolSchema(rawTool.inputSchema);
+    if (!inputSchema) return null;
+    ids.add(rawTool.id);
+    tools.push({
+      id: rawTool.id,
+      label: rawTool.label,
+      description: rawTool.description,
+      inputSchema,
+      confirmation: rawTool.sideEffect === "read" ? "first-per-conversation" : "always",
+      executor: {
+        type: "mcp",
+        serverId: expectedServerId,
+        remoteName: rawTool.executor.remoteName,
+      },
+      schemaFingerprint: rawTool.schemaFingerprint,
+      securityFingerprint: rawTool.securityFingerprint,
+      sideEffect: rawTool.sideEffect,
+      reviewRevision: rawTool.reviewRevision,
+      reviewRequired: true,
+    });
+  }
+  return { serverId: expectedServerId, tools, rejected: Number(value.rejected) };
+}
+
+function disconnectedMcpOAuthConnection(serverId: string): McpOAuthConnectionProjection {
+  return {
+    serverId,
+    connected: false,
+    reviewRequired: false,
+    grantedScopes: [],
+    status: "disconnected",
+  };
+}
+
+async function handleMcpOAuthStart(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "capability_not_allowed" }, 403);
+  const body = await readJson<{ serverId?: unknown }>(request);
+  const serverId = normalizeCapabilityId(body.serverId, 80);
+  if (!serverId) return jsonResponse({ error: "invalid_mcp_server_id", message: "MCP Server ID 格式无效" }, 400);
+  const config = await loadAppConfig(env);
+  const server = config.mcpServers?.[serverId];
+  if (!server || server.enabled !== true || server.auth.type !== "oauth2") {
+    return jsonResponse({ error: "mcp_oauth_not_available", message: "OAuth MCP 服务未启用" }, 404);
+  }
+  try {
+    const [metadata, pkce, sessionFingerprint] = await Promise.all([
+      discoverMcpOAuthMetadata(server.auth),
+      createMcpOAuthPkce(),
+      mcpOAuthSessionFingerprint(request),
+    ]);
+    const callbackUrl = new URL(MCP_OAUTH_CALLBACK_PATH, url.origin).toString();
+    await getUserState(env, session.label).storeMcpOAuthState({
+      ownerLabel: session.label,
+      state: pkce.state,
+      sessionFingerprint,
+      serverId,
+      configRevision: server.auth.configRevision,
+      verifier: pkce.verifier,
+      callbackUrl,
+      expiresAt: Date.now() + MCP_OAUTH_STATE_TTL_MS,
+    });
+    return jsonResponse({
+      serverId,
+      authorizationUrl: buildMcpOAuthAuthorizationUrl({
+        metadata,
+        auth: server.auth,
+        callbackUrl,
+        state: pkce.state,
+        challenge: pkce.challenge,
+      }),
+    });
+  } catch (error) {
+    return mcpOAuthJsonError(error);
+  }
+}
+
+async function handleMcpOAuthCallback(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+): Promise<Response> {
+  if (session.kind !== "member") return redirectMcpOAuthResult(url, "error");
+  const stateValue = url.searchParams.get("state") || "";
+  const sessionFingerprint = await mcpOAuthSessionFingerprint(request);
+  const consumed = await getUserState(env, session.label).consumeMcpOAuthState({
+    ownerLabel: session.label,
+    state: stateValue,
+    sessionFingerprint,
+  });
+  if (!consumed || url.searchParams.has("error")) return redirectMcpOAuthResult(url, "error");
+  const code = url.searchParams.get("code") || "";
+  if (!code || code.length > 8_192) return redirectMcpOAuthResult(url, "error");
+
+  try {
+    const config = await loadAppConfig(env);
+    const server = config.mcpServers?.[consumed.serverId];
+    if (
+      !server
+      || server.enabled !== true
+      || server.auth.type !== "oauth2"
+      || server.auth.configRevision !== consumed.configRevision
+      || consumed.callbackUrl !== new URL(MCP_OAUTH_CALLBACK_PATH, url.origin).toString()
+    ) return redirectMcpOAuthResult(url, "review_required");
+    const [metadata, clientSecret] = await Promise.all([
+      discoverMcpOAuthMetadata(server.auth),
+      server.auth.clientSecretRef
+        ? managedSecretService(env).resolve("mcp", server.auth.clientSecretRef)
+        : Promise.resolve(undefined),
+    ]);
+    const token = await exchangeMcpOAuthCode({
+      metadata,
+      auth: server.auth,
+      callbackUrl: consumed.callbackUrl,
+      code,
+      verifier: consumed.verifier,
+      clientSecret: clientSecret || undefined,
+    });
+    const connection = await getUserState(env, session.label).storeMcpOAuthToken({
+      ownerLabel: session.label,
+      serverId: consumed.serverId,
+      auth: server.auth,
+      token,
+    });
+    await appendAdminAudit(env, "mcp.oauth.connect", `${session.label}:${consumed.serverId}`);
+    return redirectMcpOAuthResult(url, connection.reviewRequired ? "review_required" : "connected");
+  } catch {
+    return redirectMcpOAuthResult(url, "error");
+  }
+}
+
+async function handleMcpOAuthStatus(env: Env, session: Session): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "capability_not_allowed" }, 403);
+  return jsonResponse({ connections: await listMcpOAuthConnections(env, session) });
+}
+
+async function handleMcpOAuthDiscovery(request: Request, env: Env, session: Session): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "capability_not_allowed" }, 403);
+  const body = await readJson<{ serverId?: unknown }>(request);
+  const serverId = normalizeCapabilityId(body.serverId, 80);
+  if (!serverId) return jsonResponse({ error: "invalid_mcp_server_id", message: "MCP Server ID 格式无效" }, 400);
+  const config = await loadAppConfig(env);
+  const server = config.mcpServers?.[serverId];
+  if (!server || server.enabled !== true || server.auth.type !== "oauth2") {
+    return jsonResponse({ error: "mcp_oauth_not_available", message: "OAuth MCP 服务未启用" }, 404);
+  }
+  try {
+    const discovery = await mcpRuntime(env, session.label).discoverTools(serverId, server, request.signal);
+    const candidate = await getUserState(env, session.label).storeMcpOAuthDiscoveryCandidate({
+      ownerLabel: session.label,
+      serverId,
+      configRevision: server.auth.configRevision,
+      discovery,
+    });
+    await appendAdminAudit(env, "mcp.oauth.discovery", `${session.label}:${serverId}:${candidate.tools}/${candidate.rejected}`);
+    return jsonResponse(candidate);
+  } catch (error) {
+    if (error instanceof McpOAuthError) return mcpOAuthJsonError(error);
+    const capabilityError = toCapabilityError(error);
+    return jsonResponse({ error: capabilityError.code, message: capabilityError.message }, 502);
+  }
+}
+
+async function handleMcpOAuthRevoke(request: Request, env: Env, session: Session): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "capability_not_allowed" }, 403);
+  const body = await readJson<{ serverId?: unknown }>(request);
+  const serverId = normalizeCapabilityId(body.serverId, 80);
+  if (!serverId) return jsonResponse({ error: "invalid_mcp_server_id", message: "MCP Server ID 格式无效" }, 400);
+  await getUserState(env, session.label).revokeMcpOAuthConnection(session.label, serverId);
+  await appendAdminAudit(env, "mcp.oauth.revoke", `${session.label}:${serverId}`);
+  return jsonResponse({ ok: true, serverId });
+}
+
+async function listMcpOAuthConnections(env: Env, session: Session): Promise<PublicMcpOAuthConnection[]> {
+  if (session.kind !== "member") return [];
+  const config = await loadAppConfig(env);
+  const servers = Object.entries(config.mcpServers || {})
+    .filter((entry): entry is [string, McpServerConfig & { auth: McpOAuth2AuthConfig }] => (
+      entry[1].enabled === true && entry[1].auth.type === "oauth2"
+    ))
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  const state = getUserState(env, session.label);
+  return Promise.all(servers.map(async ([serverId, server]) => ({
+    label: server.label,
+    ...await state.getMcpOAuthConnection({
+      ownerLabel: session.label,
+      serverId,
+      auth: server.auth,
+    }),
+  })));
+}
+
+async function mcpOAuthSessionFingerprint(request: Request): Promise<string> {
+  const sessionToken = getCookie(request, SESSION_COOKIE);
+  return secretFingerprint(`chatus:mcp-oauth-session:v1:${sessionToken}`);
+}
+
+function redirectMcpOAuthResult(url: URL, result: "connected" | "review_required" | "error"): Response {
+  const target = new URL("/react-chat/", url.origin);
+  target.searchParams.set("mcpOAuth", result);
+  return Response.redirect(target.toString(), 303);
+}
+
+function mcpOAuthJsonError(error: unknown): Response {
+  const code = error instanceof McpOAuthError ? error.code : "mcp_oauth_token_unavailable";
+  const status = error instanceof McpOAuthError && error.retryable ? 503 : 400;
+  return jsonResponse({ error: code, message: "OAuth MCP 暂时无法连接，请检查配置后重试" }, status);
+}
+
+function mcpOAuthConnectionProjection(
+  serverId: string,
+  grantedScopes: string[],
+  expiresAt: number | undefined,
+  reviewRequired: boolean,
+  nowMs: number,
+): McpOAuthConnectionProjection {
+  const expired = expiresAt !== undefined && expiresAt <= nowMs;
+  return {
+    serverId,
+    connected: !reviewRequired && !expired,
+    reviewRequired,
+    grantedScopes: [...grantedScopes],
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    status: reviewRequired ? "review_required" : expired ? "expired" : "connected",
+  };
 }
 
 async function sha256HexBytes(value: BufferSource): Promise<string> {

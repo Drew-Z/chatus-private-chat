@@ -425,104 +425,125 @@ setPanelResetKey((value) => value + 1);
 
 Only explicit policy intent changes revisioned configuration; usage reset stays separate and refreshes its read projection.
 
-## Scenario: Typed Capability Registry Administration
+## Scenario: Typed Capability Registry And OAuth MCP Governance
 
 ### 1. Scope / Trigger
 
-- Trigger: changing the typed React administration surface for Skill definitions, tool policy, MCP server configuration, managed MCP credentials, remote-tool discovery/review, or capability reference repair.
-- The registry is administrator-only. Members receive only their assigned public capability projection and never receive Skill instructions, MCP endpoints, schemas, secret metadata, or physical credential values.
+- Trigger: changing Skill/tool/MCP administration, MCP authentication, member OAuth connections, remote discovery/review, runtime tool execution, or capability trust persistence.
+- The contract spans the React admin/member clients, Worker APIs, `UserState` token storage, MCP runtime, and root/conversation Agent trust. Guests never receive MCP capabilities.
 
 ### 2. Signatures
 
 ```text
-GET    /api/admin/config
-PUT    /api/admin/config
-  <- { config: SanitizedAdminConfig, expectedRevision: string }
+GET /api/admin/config
+PUT /api/admin/config <- { config, expectedRevision }
 
-GET    /api/admin/mcp-secrets
-PUT    /api/admin/mcp-secrets/:secretRef
-  <- { secret: string, expectedRevision?: string }
-DELETE /api/admin/mcp-secrets/:secretRef
-  <- { expectedRevision?: string }
+POST /api/admin/mcp-discovery
+  <- { serverId, label?, endpoint, auth } | { serverId, memberLabel }
+  -> { serverId, tools, rejected }
 
-POST   /api/admin/mcp-discovery
-  <- { serverId, label?, endpoint, authType, secretRef? }
-  -> { serverId, tools: AdminMcpDiscoveredTool[], rejected }
+POST /api/mcp/oauth/start     <- { serverId } -> { serverId, authorizationUrl }
+GET  /api/mcp/oauth/callback  <- { state, code | error } -> 303 /react-chat/?mcpOAuth=<result>
+GET  /api/mcp/oauth/status    -> { connections }
+POST /api/mcp/oauth/discovery <- { serverId } -> { candidateId, serverId, createdAt, expiresAt, tools, rejected }
+POST /api/mcp/oauth/revoke    <- { serverId } -> { ok: true, serverId }
 ```
 
 ```typescript
-type AdminMcpServerConfig = {
-  enabled: boolean;
-  label: string;
-  endpoint: string;
-  authType: "none" | "bearer" | "x-api-key";
-  secretRef?: string;
-};
+type McpAuthConfig =
+  | { version: 1; type: "none" }
+  | { version: 1; type: "bearer" | "x-api-key"; secretRef: string }
+  | {
+      version: 1; type: "oauth2"; issuer: string; clientId: string;
+      scopes: string[]; callbackPath: "/api/mcp/oauth/callback";
+      configRevision: string; clientSecretRef?: string;
+    };
 
-type AdminToolExecutor =
-  | { type: "builtin"; name: "text_stats" }
-  | { type: "mcp"; serverId: string; remoteName: string };
+type McpToolReview = {
+  schemaFingerprint: string;
+  securityFingerprint: string;
+  sideEffect: "read" | "write" | "destructive";
+  reviewRevision: string;
+  reviewRequired: boolean;
+};
+```
+
+```sql
+mcp_oauth_owner(singleton, owner_label)
+mcp_oauth_states(state_hash, session_fingerprint, server_id, config_revision,
+  verifier, callback_url, expires_at, created_at)
+mcp_oauth_tokens(server_id, encrypted_record, token_expires_at, config_revision,
+  granted_scopes, review_required, revision, updated_at)
+mcp_oauth_discovery_candidates(server_id, candidate_id, config_revision,
+  discovery_json, created_at, expires_at)
+capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 ```
 
 ### 3. Contracts
 
-- `config.skills`, `config.tools`, and `config.mcpServers` are exact runtime-decoded registries. IDs and references use locale-independent UTF-16 code-unit ordering in deterministic UI/test output.
-- Skill rename/delete repairs `defaults.allowedSkills` and every explicit user `allowedSkills`. Remote-tool deletion repairs every Skill `toolIds` plus default/user `allowedTools`. `builtin:text_stats` is never deletable.
-- MCP rename is delete-plus-create because remote tool IDs embed the server ID. Rename/delete removes that server's reviewed tools and all Skill/member references; it does not migrate old discovered tools to the new ID. Managed secret records remain separately owned and are not deleted implicitly.
-- A Skill/tool/MCP entity draft is local. Every config save uses the current snapshot revision. `config_conflict` refreshes the snapshot but keeps the local entity draft dirty and exposes an explicit server-version reset.
-- An authenticated MCP server requires a saved `secretRef`; `authType: "none"` forbids one. Secret writes are enabled only when the selected server and exact ref match the saved, clean snapshot.
-- MCP secret input is write-only and ephemeral. The client sends the exact string without trimming; only a zero-length value is rejected. The input clears on success, failure, conflict, ref/entity/view/snapshot changes, refresh, and unmount.
-- Discovery is read-only and saved separately through the revisioned config boundary. New tools are disabled. A changed `schemaFingerprint` forces disabled review state. A stable fingerprint preserves enabled state and preserves only `always`; all other remote policies normalize to `first-per-conversation`. Tools absent from the newest discovery response are not deleted automatically.
-- The tablist uses roving tabindex plus Arrow/Home/End navigation and labels one `tabpanel`. At mobile widths, the bounded sidebar remains outside the editor scroll owner; tabs are at least 44px and cannot scroll behind the global header.
+- Config is dual-read/new-write: legacy `authType/secretRef` remains readable, while every new admin save writes the exact versioned `auth` union. OAuth `configRevision` is server-derived from server ID, endpoint, issuer, client ID, normalized scopes, fixed callback, and optional client-secret reference.
+- OAuth issuer, authorization endpoint, and token endpoint use public HTTPS URLs with no credentials, query, fragment, private literal address, redirect, or cross-origin metadata endpoint. The callback is derived from the current Chatus origin plus the fixed path; arbitrary redirect URIs are never accepted.
+- Authorization Code + PKCE uses S256. Server-side state is TTL-bounded, one-time, and bound to member owner, session fingerprint, server ID, callback URL, and config revision. Authorization codes, state, and verifiers never enter the React state or callback result URL.
+- Access and refresh tokens are encrypted with AES-GCM before `UserState` persistence. AAD binds `ownerLabel`, `serverId`, and token schema v1. `ROUTE_KEYS_MASTER_KEY` is the external 32-byte key; browser projections, audit, logs, user export, discovery candidates, and React persistence never contain token, IV, ciphertext, code, state, verifier, or client secret.
+- Refresh is single-flight per member/server. Rotation uses a row revision compare-and-swap; revoke, purge, config/scope drift, invalid grant, or decrypt failure invalidates the in-flight result. Failure is closed: the runtime requires reconnection or review and never falls back to a shared static secret.
+- `/api/session` and status expose only server ID/label, connected/review-required/expiry state, granted scope names, and optional expiry time. Guests receive an empty connection array and cannot call member OAuth endpoints.
+- Member OAuth discovery stores a bounded, expiring candidate in that member's `UserState`; admin review retrieves it by `{ serverId, memberLabel }`. It does not grant execution by itself.
+- Discovery and every remote call compare schema fingerprint, normalized security annotations, side-effect classification, and review revision. Any difference persistently disables the reviewed tool through the drift overlay and invalidates conversation trust until an administrator rediscovers, reviews, and explicitly enables it.
+- `read` tools may use `first-per-conversation`. `write` and `destructive` tools always normalize to `confirmation: "always"`; each invocation accepts only `once` or `deny` and never creates conversation trust. Trust keys and Agent SQLite rows include `reviewRevision`.
+- Skill/MCP rename or deletion repairs references as before. MCP secret input stays byte-exact, write-only, and ephemeral; server deletion does not implicitly delete a separately managed static or OAuth client-secret reference.
 
 ### 4. Validation & Error Matrix
 
-- Blank/oversized label, invalid ID, missing Skill/tool/MCP reference, non-HTTPS endpoint, or invalid auth/ref pairing -> reject the local draft; submitted invalid config -> `400 invalid_config`.
-- Unknown or extra response fields, blank labels, invalid executor union, invalid remote name, uppercase/malformed fingerprint, or secret-bearing projection -> client rejects the response as an invalid admin config/discovery/secret response.
-- Stale config revision -> `409 config_conflict`; refresh the snapshot and retain the draft/discovery result.
-- Stale managed-secret revision -> `409 mcp_secret_conflict`; clear plaintext and keep the saved secret unchanged.
-- Zero-length or over-8192-character secret -> `400 secret_required` / `400 secret_too_long`. Leading and trailing whitespace are credential bytes and are preserved.
-- Attempt to delete a builtin tool -> no mutation and no delete control.
-- New or changed discovered schema -> persist `enabled: false`; do not silently retain the former approval state.
+| Condition | Required result |
+| --- | --- |
+| Invalid ID, endpoint, auth union, issuer, scope, callback, or secret ref | Reject locally; Worker returns `400 invalid_config` or the bounded OAuth config error |
+| Stale admin config/secret revision | `409 config_conflict` / `409 mcp_secret_conflict`; retain the local draft or discovery candidate and clear plaintext input |
+| State expired, replayed, swapped across session/member/server, or callback changed | Consume nothing else and redirect with `mcpOAuth=error` or `review_required`; no token row |
+| OAuth config or granted scope drift | Mark the connection review-required before a remote tool call |
+| Token cannot decrypt, is expired without refresh, or refresh returns `invalid_grant` | Delete the matching revision and require reconnection; never use static auth |
+| Schema/security/side-effect/review revision differs | Persist drift disablement and return `mcp_tool_changed` before `tools/call` |
+| Side-effect approval is `conversation`, denied, cancelled, or times out | Reject conversation trust; deny/cancel/timeout produces zero remote calls |
+| Guest invokes any MCP OAuth endpoint | `403 capability_not_allowed`; no storage or remote call |
+| Browser response contains unknown or secret-like fields | Exact decoder rejects it instead of persisting the projection |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: rename a Skill, save with `expectedRevision`, and update every explicit assignment reference atomically while inherited assignments remain inherited.
-- Good: discover a changed remote schema, save it disabled for review, then deliberately enable it in the tool-policy editor.
-- Base: a stable rediscovery keeps an enabled remote tool enabled and retains `always` confirmation without deleting older reviewed tools omitted by the server.
-- Bad: trim an MCP bearer token before encryption, submit the surrounding MCP form when Enter is pressed in the password input, or persist plaintext in the config draft.
-- Bad: make the whole mobile sidebar sticky inside the panel scroll container; `scrollIntoView()` can place the tab under the header/editor and make touch clicks unreachable.
+- Good: one member completes PKCE, receives a secret-free connected projection, and a reviewed write tool asks for `once` confirmation on every call.
+- Good: security annotations change while the JSON schema stays stable; the runtime records drift and blocks the call until administrator review creates a new revision.
+- Base: an old bearer config round-trips through dual-read, and a stable read-only rediscovery retains explicit enablement and first-per-conversation policy.
+- Bad: treat OAuth as X-API-Key, store tokens in browser state, accept provider redirects, reuse a token for another member, or keep trust after any review dimension changes.
 
 ### 6. Tests Required
 
-- Pure helper tests cover Skill rename/delete, remote-tool delete, MCP rename/delete, assignment/Skill reference repair, builtin deletion denial, schema merge counts, stable enablement, and changed-schema disablement.
-- Client decoder tests accept exact valid Skill/tool/MCP/secret/discovery projections and reject unknown fields, blank labels, invalid auth/ref pairs, invalid executor names, malformed remote names, and malformed fingerprints.
-- Worker tests decrypt a padded synthetic MCP secret and assert byte-for-byte preservation while API responses, audit records, and stored JSON omit plaintext/ciphertext.
-- Desktop 1440px and touch-enabled 390px browser tests cover dirty-discard confirmation, Escape and successful-delete focus restoration, keyboard tab navigation, Enter-to-save-secret behavior, discovery review, touch targets, local editor scrolling, and horizontal containment.
-- Run the full workspace matrix and the separate fake-provider Agent browser acceptance; neither may contact a live model.
+- Pure OAuth tests assert S256, fixed callback, bounded token responses, issuer/endpoint/redirect/private-address rejection, scope normalization, AES-GCM AAD isolation, and wrong-key failure.
+- `UserState` tests assert state TTL/one-time/session/member binding, encrypted-only storage, concurrent refresh single-flight, CAS rotation, revoke/purge races, discovery candidate expiry, and exact member/server isolation.
+- Worker tests use only local fake OAuth/MCP and cover start/callback replay/swap/exchange failure, exact status/revoke projections, no token/audit/export/log leak, config/scope drift, member candidate review, and permanent deletion.
+- MCP runtime and Agent tests assert all four review dimensions before `tools/call`, persistent drift overlay, review-revision trust isolation, consecutive side-effect confirmations, invalid `conversation` decisions, and zero calls on deny/cancel/timeout.
+- Client tests assert exact versioned auth and connection decoders, OAuth admin round-trip, callback query consumption, busy deduplication boundaries, and guest denial. Workspace Playwright covers the five-view matrix; fake-Provider Agent Playwright remains separate.
+- Run the complete project gate. No test may contact a live Provider, OAuth issuer, or MCP server.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
 ```typescript
-await putAdminMcpSecret(secretRef, secretValue.trim());
-tools[id] = { ...discovered, enabled: existing?.enabled ?? true };
+headers.set("X-API-Key", oauthToken);
+tools[id] = { ...candidate, enabled: existing?.enabled ?? true };
+trust.add(`${conversationId}:${toolId}`);
 ```
 
-This changes credential bytes and lets a new or changed remote schema execute without administrator review.
+This crosses authentication types, ignores security and review drift, and lets side-effect approval outlive the reviewed definition.
 
 #### Correct
 
 ```typescript
-await putAdminMcpSecret(secretRef, secretValue, metadata.revision);
-tools[id] = {
-  ...discovered,
-  enabled: sameFingerprint ? existing.enabled : false,
-  confirmation: sameFingerprint && existing.confirmation === "always"
-    ? "always"
-    : "first-per-conversation",
-};
+const accessToken = await resolveOAuthAccessToken(memberLabel, serverId, auth);
+headers.set("Authorization", `Bearer ${accessToken}`);
+
+const sameReview = sameSchema && sameSecurity && sameSideEffect && sameRevision;
+tools[id] = { ...candidate, enabled: sameReview ? existing.enabled : false,
+  reviewRequired: sameReview ? existing.reviewRequired === true : true };
+const trustKey = `${toolId}:${reviewRevision}`;
 ```
 
-The secret remains byte-exact and schema trust is granted only through explicit review.
+Member OAuth stays isolated, every governance dimension participates in review, and old trust cannot authorize a changed tool.

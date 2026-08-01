@@ -11,8 +11,8 @@ import type {
 import { normalizeToolConfirmation } from "./capability-registry";
 
 type AgentToolApprovalStore = {
-  isTrusted: (conversationId: string, toolId: string) => boolean | Promise<boolean>;
-  markTrusted: (conversationId: string, toolId: string) => void | Promise<void>;
+  isTrusted: (conversationId: string, toolId: string, reviewRevision: string) => boolean | Promise<boolean>;
+  markTrusted: (conversationId: string, toolId: string, reviewRevision: string) => void | Promise<void>;
 };
 
 type CreateAgentToolSetArgs = {
@@ -37,18 +37,19 @@ export function createAgentToolSet(args: CreateAgentToolSetArgs): ToolSet {
 
   for (const definition of args.definitions) {
     const confirmation = normalizeToolConfirmation(definition.config);
+    const reviewRevision = definition.config.reviewRevision || "";
     tools[definition.providerName] = tool({
       description: definition.description,
       inputSchema: jsonSchema<unknown>(definition.inputSchema as JSONSchema7),
       needsApproval: confirmation === "always"
         ? true
         : confirmation === "first-per-conversation"
-          ? async () => !(await args.approvals.isTrusted(args.conversationId, definition.id))
+          ? async () => !(await args.approvals.isTrusted(args.conversationId, definition.id, reviewRevision))
           : false,
       execute: async (input, options) => {
         const result = await args.runTool(definition, input, options.abortSignal);
         if (confirmation === "first-per-conversation") {
-          await args.approvals.markTrusted(args.conversationId, definition.id);
+          await args.approvals.markTrusted(args.conversationId, definition.id, reviewRevision);
         }
         return result.text;
       },

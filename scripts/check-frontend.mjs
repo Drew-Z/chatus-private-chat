@@ -74,6 +74,8 @@ const reactMemoryPanel = await readText(path.join(root, "client/src/components/M
 const reactMessageView = await readText(path.join(root, "client/src/components/MessageView.tsx"));
 const reactComposer = await readText(path.join(root, "client/src/components/MessageComposer.tsx"));
 const reactWorkspaceHeader = await readText(path.join(root, "client/src/components/WorkspaceHeader.tsx"));
+const reactMcpConnections = await readText(path.join(root, "client/src/components/McpConnectionsDialog.tsx"));
+const reactMcpOAuth = await readText(path.join(root, "client/src/lib/mcp-oauth.ts"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
 const reactAdminWorkspace = await readText(path.join(root, "client/src/components/AdminWorkspace.tsx"));
 const reactAdminSetup = await readText(path.join(root, "client/src/components/AdminSetupGuide.tsx"));
@@ -107,6 +109,10 @@ assert(reactClient.includes('setSkillMode(session.access === "guest" ? "manual" 
 assert(reactClient.includes("addToolApprovalResponse"), "React client: tool approval rendering is missing");
 assert(reactClient.includes("if (busy || accountBusy) return;"), "React client: logout must not abandon an active Agent or account operation");
 assert(reactWorkspaceHeader.includes("disabled={busy || accountBusy}"), "React client: logout control must be disabled during an active Agent or account operation");
+assert(reactClient.includes("if (mcpRefresh.current) return mcpRefresh.current") && reactClient.includes("mcpRefresh.current !== task"), "React client: MCP status refresh must stay single-flight and clear only its owning busy state");
+assert(reactApp.includes("consumeMcpOAuthCallback(window.location.href)") && reactApp.includes("window.history.replaceState"), "React client: MCP OAuth callback result must be consumed once and removed from the URL");
+assert(reactMcpOAuth.includes('url.searchParams.delete("mcpOAuth")') && reactMcpOAuth.includes("url.pathname"), "React client: MCP OAuth callback cleanup must preserve the current path and unrelated URL state");
+assert(reactMcpConnections.includes("dialog.showModal()") && reactMcpConnections.includes("aria-busy={busy}") && reactMcpConnections.includes("trapFocus"), "React client: MCP connections must use a focus-contained modal with explicit busy state");
 assert(reactClient.includes("await chat.sendMessage(text ? { text, files: fileParts } : { files: fileParts })"), "React client: text and attachment-only send failures must be observed");
 assert(reactClient.includes("resolvePendingDraftAction("), "React client: SDK resolve-with-error status must resolve pending drafts explicitly");
 assert(reactClient.includes("const value = input || pendingSubmission?.text || \"\""), "React client: submitted text must remain device-persisted until the request settles");
@@ -189,7 +195,18 @@ assert(reactCapabilityAdmin.includes('type="password"') && (reactCapabilityAdmin
 assert(reactCapabilityAdmin.includes("<dialog") && reactCapabilityAdmin.includes("dialog.showModal()") && reactCapabilityAdmin.includes("queueConfirmationOpener()") && reactCapabilityAdmin.includes("pendingConfirmationFocusRef"), "React admin: capability deletion and draft discard need an accessible modal with connected focus return");
 assert(reactCapabilityAdmin.includes("discoverAdminMcpTools") && reactCapabilityAdmin.includes("pendingDiscovery") && reactCapabilityAdmin.includes("mergeMcpDiscovery"), "React admin: reviewed MCP discovery is incomplete");
 assert(reactAdminCapabilities.includes("deleteRemoteTool") && reactAdminCapabilities.includes("deleteMcpServer") && reactAdminCapabilities.includes("replaceAssignmentReference"), "React admin: capability deletion must repair Skill and member references through one pure boundary");
-assert(reactAdminCapabilities.includes("sameFingerprint ? existing.enabled : false") && reactAdminCapabilities.includes('confirmation: sameFingerprint && existing.confirmation === "always"'), "React admin: MCP schema changes must disable tools for review while stable schemas retain policy");
+assert(
+  reactAdminCapabilities.includes("const sameReview =")
+    && reactAdminCapabilities.includes("existing.schemaFingerprint === candidate.schemaFingerprint")
+    && reactAdminCapabilities.includes("existing.securityFingerprint === candidate.securityFingerprint")
+    && reactAdminCapabilities.includes("existing.sideEffect === candidate.sideEffect")
+    && reactAdminCapabilities.includes("existing.reviewRevision === candidate.reviewRevision")
+    && reactAdminCapabilities.includes("enabled: sameReview ? existing.enabled : false")
+    && reactAdminCapabilities.includes("reviewRequired: sameReview ? existing.reviewRequired === true : true")
+    && reactAdminCapabilities.includes('candidate.sideEffect === "read"')
+    && reactAdminCapabilities.includes(': "always"'),
+  "React admin: MCP governance drift must disable tools for review while side effects always require confirmation",
+);
 assert(reactCapabilityAdmin.includes("pendingConfirmationFocusRef") && reactCapabilityAdmin.includes("if (confirmState || !pending) return") && reactCapabilityAdmin.includes("queueSelectionFocus(selection)"), "React admin: destructive capability focus restoration must wait until the confirmation dialog is closed and the next selection is committed");
 assert(reactAdminProvider.includes("...(provider || {})") && reactAdminProvider.includes("...(route || {})"), "React admin: draft helpers must retain sanitized fields that are not rendered as controls");
 assert(reactApi.includes("hasExactKeys(value, [\"member\", \"accessCode\", \"accessRevision\", \"sessionRevocation\"])") && reactApi.includes("isAdminMemberRevokeResponse"), "React admin: member lifecycle responses need strict secret-aware decoders");

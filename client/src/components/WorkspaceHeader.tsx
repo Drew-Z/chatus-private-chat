@@ -1,4 +1,4 @@
-import { ArrowLeft, Brain, Download, LogIn, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, Brain, Cable, Download, LogIn, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
 
 export type ConnectionState = "connecting" | "ready" | "error";
@@ -7,6 +7,7 @@ export function WorkspaceHeader({
   session,
   conversation,
   routeId,
+  mcpConnections,
   connectionState,
   busy,
   accountBusy,
@@ -15,6 +16,7 @@ export function WorkspaceHeader({
   onOpenSidebar,
   onOpenRouteSettings,
   onOpenMemory,
+  onOpenMcpConnections,
   onReturnToParent,
   onMemberLogin,
   onLogout,
@@ -22,6 +24,7 @@ export function WorkspaceHeader({
   session: SessionProjection;
   conversation: AgentConversation | null;
   routeId: string;
+  mcpConnections: SessionProjection["mcpConnections"];
   connectionState: ConnectionState;
   busy: boolean;
   accountBusy: boolean;
@@ -30,6 +33,7 @@ export function WorkspaceHeader({
   onOpenSidebar: () => void;
   onOpenRouteSettings: () => void;
   onOpenMemory: () => void;
+  onOpenMcpConnections: () => void;
   onReturnToParent: () => void;
   onMemberLogin: () => void;
   onLogout: () => Promise<void>;
@@ -37,6 +41,7 @@ export function WorkspaceHeader({
   const route = session.routes.find((candidate) => candidate.id === routeId);
   const health = routeHealthLabel(route?.healthStatus);
   const connection = connectionLabel(connectionState);
+  const connectedMcpCount = mcpConnections.filter((item) => item.connected).length;
 
   return (
     <header className="workspace-header">
@@ -97,6 +102,9 @@ export function WorkspaceHeader({
         <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
         {session.capabilities.memory && (
           <button className="icon-text-button quiet-button" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
+        )}
+        {session.access === "member" && (
+          <button className={`icon-button mcp-connections-trigger ${connectedMcpCount ? "connected" : ""}`} type="button" onClick={onOpenMcpConnections} disabled={busy || accountBusy} title={`MCP 连接${connectedMcpCount ? ` · ${connectedMcpCount} 已连接` : ""}`} aria-label={`MCP 连接${connectedMcpCount ? `，${connectedMcpCount} 个已连接` : ""}`}><Cable size={18} /></button>
         )}
         {session.access === "guest" ? (
           <button className="icon-text-button quiet-button" type="button" onClick={onMemberLogin} disabled={busy || accountBusy} title="成员登录" aria-label="成员登录"><LogIn size={17} /><span>成员登录</span></button>

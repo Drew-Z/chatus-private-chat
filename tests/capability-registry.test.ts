@@ -151,5 +151,15 @@ describe("capability registry", () => {
       ...config.tools!["mcp:docs:search"],
       confirmation: "always",
     })).toBe("always");
+    expect(normalizeToolConfirmation({
+      ...config.tools!["mcp:docs:search"],
+      confirmation: "first-per-conversation",
+      sideEffect: "write",
+    })).toBe("always");
+    expect(normalizeToolConfirmation({
+      ...config.tools!["mcp:docs:search"],
+      confirmation: "first-per-conversation",
+      sideEffect: "destructive",
+    })).toBe("always");
   });
 });

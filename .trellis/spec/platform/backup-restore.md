@@ -57,6 +57,7 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
 - Workspace-file state: the `WORKSPACE_FILES` R2 bucket plus root `TeamAgent` file, immutable-version, exact-reference, and operation/outbox tables. A future backup manifest must inventory object keys indirectly, sizes, SHA-256 checksums, version/generation ownership, and include/exclude decisions without exposing keys to users.
 - Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
+- Member OAuth MCP token rows in `UserState.mcp_oauth_tokens` and their owner binding are required durable security state. Token values are AES-GCM ciphertext whose AAD binds member, server, and schema v1; the original `ROUTE_KEYS_MASTER_KEY` remains external key material. A future manifest may record only the table/class, schema version, row count, and an explicit `ciphertextOnly: true` inventory marker. The manifest must not contain `encrypted_record`, IV, ciphertext, access/refresh token, member label, server endpoint, authorization code, state, verifier, or session fingerprint.
 - External key material required to decrypt archived ciphertext. In particular, the original `ROUTE_KEYS_MASTER_KEY` must be retained outside the application data archive under operator control.
 
 ### Transitional Durable Data
@@ -71,6 +72,7 @@ These remain in the recovery inventory until a separate migration-retirement aud
 - `session:*` and `admin:*` sessions are not restored; users and administrators authenticate again.
 - `provider-leases:v1` and its alarm are not restored; provider capacity starts empty and is rebuilt by new requests.
 - Guest cleanup/turn leases, minute bursts, login-failure windows, and passive route-reliability telemetry may expire or rebuild.
+- OAuth PKCE state and member discovery candidates are short-lived/rebuildable and are not restored. Future manifests must list `mcp_oauth_states` and `mcp_oauth_discovery_candidates` as explicit exclusions; members restart authorization or discovery after recovery.
 
 Every excluded prefix/table/key must appear in the future archive manifest. Absence must be deliberate rather than inferred after recovery fails.
 
@@ -88,6 +90,8 @@ A future instance backup/restore implementation is ready only when all of these 
 8. **Drill:** retain evidence of a successful restore rehearsal. A readable archive alone does not establish recoverability.
 
 Do not promise numeric RPO/RTO until an executable capture schedule and measured restore drill can support those values.
+
+The ciphertext inventory above is a design contract for a future manifest, not a backup implementation. No current API, CLI, archive envelope, or restore path may claim to export or restore OAuth MCP tokens.
 
 ### Permanent User-Data Deletion
 

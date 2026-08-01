@@ -18,6 +18,11 @@ import {
   isAdminMcpDiscoveryResponse,
   isAdminMcpSecretMutationResponse,
   isAdminMcpSecretsSnapshot,
+  isMcpOAuthConnection,
+  isMcpOAuthDiscoveryCandidate,
+  isMcpOAuthRevokeResponse,
+  isMcpOAuthStartResponse,
+  isMcpOAuthStatusResponse,
   isAdminUsageResetResponse,
   isAdminOperationsStats,
   isAdminReliabilitySnapshot,
@@ -128,6 +133,15 @@ const validSession = {
     label: "Text stats",
     source: "builtin",
     confirmation: "auto",
+  }],
+  mcpConnections: [{
+    serverId: "docs",
+    label: "Docs",
+    connected: true,
+    reviewRequired: false,
+    grantedScopes: ["mcp.read"],
+    expiresAt: 2_000_000_000_000,
+    status: "connected",
   }],
   agent: { transport: "cloudflare-ai-chat", basePath: "agent", instance: "member-1" },
 };
@@ -842,6 +856,7 @@ describe("React client runtime validation", () => {
       hasUserSystemPrompt: false,
       skills: [],
       tools: [],
+      mcpConnections: [],
       capabilities: {
         imageInput: true,
         fileInput: false,
@@ -865,6 +880,7 @@ describe("React client runtime validation", () => {
       hasUserSystemPrompt: false,
       skills: [],
       tools: [],
+      mcpConnections: [],
       capabilities: {
         imageInput: false,
         fileInput: false,
@@ -883,6 +899,7 @@ describe("React client runtime validation", () => {
     ["member capability", { capabilities: { ...validSession.capabilities, memory: true } }],
     ["Skill projection", { skills: validSession.skills }],
     ["tool projection", { tools: validSession.tools }],
+    ["MCP OAuth connection", { mcpConnections: validSession.mcpConnections }],
     ["tool-capable route", { routes: [{ ...validSession.routes[0], supportsTools: true }] }],
     ["mismatched default route", { defaultRoute: "backup" }],
     ["image policy mismatch", { routes: [{ ...validSession.routes[0], supportsImages: false, supportsTools: false }] }],
@@ -898,6 +915,7 @@ describe("React client runtime validation", () => {
       hasUserSystemPrompt: false,
       skills: [],
       tools: [],
+      mcpConnections: [],
       capabilities: {
         imageInput: true,
         fileInput: false,
@@ -1136,6 +1154,10 @@ describe("React client runtime validation", () => {
       confirmation: "first-per-conversation",
       executor: { type: "mcp", serverId: "docs", remoteName: "search" },
       schemaFingerprint: "a".repeat(64),
+      securityFingerprint: "b".repeat(64),
+      sideEffect: "read",
+      reviewRevision: "c".repeat(64),
+      reviewRequired: true,
     };
     expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [tool], rejected: 2 })).toBe(true);
     expect(isAdminMcpDiscoveryResponse({ serverId: "other", tools: [tool], rejected: 2 })).toBe(false);
@@ -1144,5 +1166,34 @@ describe("React client runtime validation", () => {
     expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [{ ...tool, label: " " }], rejected: 2 })).toBe(false);
     expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [{ ...tool, id: "mcp:docs:bad:name", executor: { ...tool.executor, remoteName: "bad:name" } }], rejected: 2 })).toBe(false);
     expect(isAdminMcpDiscoveryResponse({ serverId: "docs", tools: [tool], rejected: 2, secret: "hidden" })).toBe(false);
+  });
+
+  it("validates exact secret-free MCP OAuth browser projections", () => {
+    const connected = validSession.mcpConnections[0];
+    expect(isMcpOAuthConnection(connected)).toBe(true);
+    expect(isMcpOAuthConnection({ ...connected, accessToken: "hidden" })).toBe(false);
+    expect(isMcpOAuthConnection({ ...connected, status: "review_required" })).toBe(false);
+    expect(isMcpOAuthConnection({
+      serverId: "docs",
+      label: "Docs",
+      connected: false,
+      reviewRequired: true,
+      grantedScopes: ["mcp.read"],
+      status: "review_required",
+    })).toBe(true);
+    expect(isMcpOAuthStatusResponse({ connections: [connected] })).toBe(true);
+    expect(isMcpOAuthStatusResponse({ connections: [connected, connected] })).toBe(false);
+    expect(isMcpOAuthStartResponse({ serverId: "docs", authorizationUrl: "https://identity.example/authorize?state=opaque" })).toBe(true);
+    expect(isMcpOAuthStartResponse({ serverId: "docs", authorizationUrl: "javascript:alert(1)" })).toBe(false);
+    expect(isMcpOAuthDiscoveryCandidate({
+      candidateId: "12345678-1234-4123-8123-123456789abc",
+      serverId: "docs",
+      createdAt: 1_900_000_000_000,
+      expiresAt: 1_900_001_800_000,
+      tools: 3,
+      rejected: 1,
+    })).toBe(true);
+    expect(isMcpOAuthRevokeResponse({ ok: true, serverId: "docs" })).toBe(true);
+    expect(isMcpOAuthRevokeResponse({ ok: true, serverId: "docs", refreshToken: "hidden" })).toBe(false);
   });
 });

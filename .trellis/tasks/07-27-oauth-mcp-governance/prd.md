@@ -19,14 +19,14 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 管理 OAuth 配置验证 HTTPS/issuer/client/scopes/fixed callback，旧 auth config 可 round-trip；响应和 audit 无 secret/endpoint 泄漏。
-- [ ] AC2. PKCE S256、state TTL/一次性/session/member/server/revision 绑定、callback replay/swap/code exchange failure 有测试。
-- [ ] AC3. 同 server 两成员使用不同 encrypted key/AAD；跨成员解密失败，浏览器/API/log/audit/user export 无 token。
-- [ ] AC4. refresh 并发单飞、rotation、expiry 和 invalid_grant 行为可重复验证；不可解密 fail closed。
-- [ ] AC5. scope/config/tool schema/annotation 漂移在远端 call 前持久禁用并使 trust revision 失效；重审后才可恢复。
-- [ ] AC6. 连续两次副作用调用要求两次确认，conversation 决定不能建 trust；deny/timeout/cancel 时远端调用数为 0。
-- [ ] AC7. 用户永久删除清除 OAuth token/临时 state；备份 manifest 只声明加密 token inventory，不输出明文。
-- [ ] AC8. fake MCP/OAuth、Agent/Workspace Playwright 和五项全量验证通过。
+- [x] AC1. 管理 OAuth 配置验证 HTTPS/issuer/client/scopes/fixed callback，旧 auth config 可 round-trip；响应和 audit 无 secret/endpoint 泄漏。
+- [x] AC2. PKCE S256、state TTL/一次性/session/member/server/revision 绑定、callback replay/swap/code exchange failure 有测试。
+- [x] AC3. 同 server 两成员使用不同 encrypted key/AAD；跨成员解密失败，浏览器/API/log/audit/user export 无 token。
+- [x] AC4. refresh 并发单飞、rotation、expiry 和 invalid_grant 行为可重复验证；不可解密 fail closed。
+- [x] AC5. scope/config/tool schema/annotation 漂移在远端 call 前持久禁用并使 trust revision 失效；重审后才可恢复。
+- [x] AC6. 连续两次副作用调用要求两次确认，conversation 决定不能建 trust；deny/timeout/cancel 时远端调用数为 0。
+- [x] AC7. 用户永久删除清除 OAuth token/临时 state；备份 manifest 只声明加密 token inventory，不输出明文。
+- [x] AC8. fake MCP/OAuth、Agent/Workspace Playwright 和五项全量验证通过。
 
 ## Out of Scope
 
