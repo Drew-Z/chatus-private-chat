@@ -12,7 +12,7 @@
 - [x] 用 fake Provider 覆盖成功、offering fallback、timeout、malformed、撤权竞态和主回答继续。
 - [x] 运行 `trellis-check`、两类浏览器测试和五项全量验证。
 - [x] 更新 Agent/capability/telemetry specs并记录本地验证。
-- [ ] 提交、PR、合并、生产 exact-SHA 验收并归档。
+- [x] 提交、PR、合并、生产 exact-SHA 验收并归档。
 
 ## Validation Evidence
 
@@ -23,6 +23,9 @@
 - `npm run typecheck`: passed for Worker, React client, and browser tests.
 - `npx wrangler deploy --dry-run`: passed with Wrangler 4.110.0, 6391.11 KiB / gzip 1296.65 KiB; no deployment performed.
 - `git diff --check`: passed with no whitespace errors.
+- Work commit / merge SHA: `8a350e81cc1fb7ada43d35c457bfa821ab52c732`; PR [#26](https://github.com/Drew-Z/chatus-private-chat/pull/26) merged to `main`.
+- Deploy workflow [30691381234](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30691381234): passed for exact SHA `8a350e81cc1fb7ada43d35c457bfa821ab52c732`, including production revision verification and retained deployment artifacts.
+- Production member acceptance [30692584772](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30692584772): passed for the same SHA, including temporary-member acceptance and retained 90-day manifest artifact.
 
 ## Risky Files
 
