@@ -19,6 +19,7 @@ Dependencies are injected so deterministic tests never read KV, resolve a real s
 ## 3. Contracts
 
 - `routeIds` are logical route IDs already selected through the authenticated allow-list and fallback chain. Unknown, disabled, or provider-less routes produce no executable candidate.
+- Callers choose the logical fallback boundary. Normal chat may pass its authenticated fallback chain; the Automatic Skill selector must pass exactly `[selectedRouteId]` so only offerings inside the main answer's logical model are eligible.
 - Candidate expansion and ordering continue to use `provider-router.ts`. Administrator priority is authoritative; injected recent passive quality only breaks equal-priority ties for the exact logical-route/provider pair.
 - `loadQuality` reads existing real-task evidence only. Planning must never send a model request or create synthetic reliability data.
 - `accessRoutes` are the current server-derived member or guest projection. A physical candidate whose logical route is absent from that projection is discarded.
@@ -38,6 +39,8 @@ Legacy chat streaming, Team Agent turns, small completion tasks, and legacy capa
 
 The plan runtime never retries an attempted provider and never observes visible stream output. The rule that fallback cannot cross the first-visible-output boundary remains in the protocol and response lifecycle layers.
 
+`preparePlan()` has no abort/deadline contract and may await passive-quality or credential dependencies. A bounded auxiliary caller such as Automatic Skill selection must race the entire pipeline, including `preparePlan()`, leases, Provider I/O, telemetry, and release, against its own hard deadline. Passing an abort signal only to the later Provider request is insufficient.
+
 ## 5. Validation & Error Matrix
 
 | Condition | Required result |
@@ -51,6 +54,8 @@ The plan runtime never retries an attempted provider and never observes visible 
 | Credential is missing and user key is optional | Record the missing-key error and continue |
 | Credential is missing and user key is required | Stop with `userKeyRequiredRouteId` |
 | Earlier candidate is unusable | Preserve the later candidate's filtered-plan index |
+| Automatic Skill selector requests a plan | Pass only the selected logical route; offering fallback is allowed, logical-route fallback is forbidden |
+| Bounded caller dependency ignores abort | Caller hard deadline returns its fallback and rejects any late result |
 
 ## 6. Tests Required
 
@@ -59,6 +64,7 @@ The plan runtime never retries an attempted provider and never observes visible 
 - Unit-test allowed and disallowed BYOK propagation.
 - Unit-test credential exceptions, missing credentials, fallback indexes, and required-user-key termination.
 - Keep Worker and Team Agent integration tests for streaming, tool loops, fallback, leases, quotas, telemetry, and cancellation.
+- For Automatic Skill selection, assert offering fallback works, no configured logical fallback is contacted, and a late successful Provider result is ignored after five seconds.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 
 ## 7. Wrong vs Correct

@@ -18,14 +18,14 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 旧 SQLite row/legacy import 迁移为 manual；新成员 create 为 automatic；访客 create/PATCH automatic 被服务端拒绝或规范化为 manual empty。
-- [ ] AC2. selector 只使用当前 logical route、maxTokens=200、无 tools，并在 lease wait + provider 请求总计 5 秒内取消。
-- [ ] AC3. 合法 JSON 最多选择 3 个；未知、重复、未授权、disabled 和竞态撤权 Skill 不进入最终 prompt/tools。
-- [ ] AC4. selector + 主回答产生两类 Provider telemetry，但用户日/分钟配额只增加一次，continuation 不重复 admission。
-- [ ] AC5. timeout/empty/malformed/provider failure 均不阻断主回答；按“重新校验上次选择 -> 管理员前三项”顺序回退。
-- [ ] AC6. API 与 UI 显示本轮实际选择和 fallback 来源；manual UI 仍可精确选择/清空。
-- [ ] AC7. branch/import/export/client hydration 覆盖 automatic/manual 兼容语义。
-- [ ] AC8. fake Provider Agent、Workspace Playwright 和五项全量验证通过。
+- [x] AC1. 旧 SQLite row/legacy import 迁移为 manual；新成员 create 为 automatic；访客 create/PATCH automatic 被服务端拒绝或规范化为 manual empty。
+- [x] AC2. selector 只使用当前 logical route、maxTokens=200、无 tools，并在 lease wait + provider 请求总计 5 秒内取消。
+- [x] AC3. 合法 JSON 最多选择 3 个；未知、重复、未授权、disabled 和竞态撤权 Skill 不进入最终 prompt/tools。
+- [x] AC4. selector + 主回答产生两类 Provider telemetry，但用户日/分钟配额只增加一次，continuation 不重复 admission。
+- [x] AC5. timeout/empty/malformed/provider failure 均不阻断主回答；按“重新校验上次选择 -> 管理员前三项”顺序回退。
+- [x] AC6. API 与 UI 显示本轮实际选择和 fallback 来源；manual UI 仍可精确选择/清空。
+- [x] AC7. branch/import/export/client hydration 覆盖 automatic/manual 兼容语义。
+- [x] AC8. fake Provider Agent、Workspace Playwright 和五项全量验证通过。
 
 ## Out of Scope
 

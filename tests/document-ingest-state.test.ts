@@ -80,7 +80,7 @@ describe("document ingest contracts", () => {
         ).toArray().map((row) => row.name),
       };
     });
-    expect(schema.versions).toEqual([1, 2, 3]);
+    expect(schema.versions).toEqual([1, 2, 3, 4]);
     expect(schema.columns).toEqual(expect.arrayContaining([
       "ingest_status",
       "ingest_generation",

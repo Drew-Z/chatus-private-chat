@@ -77,6 +77,7 @@ test("real Worker Agent transport preserves streaming, approval, attachments, an
   await expect(page.getByRole("button", { name: /返回父会话/ })).toBeVisible();
 
   const state = await providerState(request);
+  expect(state.selectorRequests).toBeGreaterThan(0);
   expect(state.delayedRequests).toBeGreaterThan(0);
   expect(state.singleChunkRequests).toBeGreaterThan(0);
   expect(state.recoveryRequests).toBeGreaterThan(0);
@@ -91,6 +92,7 @@ async function sendMessage(page: import("@playwright/test").Page, text: string):
 }
 
 type ProviderState = {
+  selectorRequests: number;
   delayedRequests: number;
   singleChunkRequests: number;
   recoveryRequests: number;

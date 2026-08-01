@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adminLogout,
   ApiError,
+  createAgentConversation,
   deleteWorkspaceFile,
   exportUserData,
   fetchAdminSetupStatus,
+  getAgentSkillSelectionMetadata,
   isAdminConfigSnapshot,
   isAdminAuditSnapshot,
   isAdminFeedbackSnapshot,
@@ -34,6 +36,7 @@ import {
   isUserDataMutationResponse,
   runAdminSetupSmoke,
   updateWorkspaceFile,
+  updateAgentConversation,
   uploadWorkspaceFile,
 } from "../client/src/lib/api";
 import { DEFAULT_FILE_INPUT_POLICY } from "../src/contracts/file";
@@ -361,6 +364,7 @@ describe("workspace file client contract", () => {
     updatedAt: 20,
     summary: "",
     pinned: false,
+    skillMode: "manual" as const,
     skillIds: [],
     messageCount: 0,
     workspaceFiles: [],
@@ -711,6 +715,7 @@ describe("React client runtime validation", () => {
         summary: "",
         pinned: false,
         routeId: "primary",
+        skillMode: "manual",
         skillIds: ["coding"],
         messageCount: 2,
         messages: [
@@ -927,6 +932,7 @@ describe("React client runtime validation", () => {
       summary: "",
       pinned: false,
       routeId: "primary",
+      skillMode: "automatic",
       skillIds: ["coding"],
       messageCount: 2,
       workspaceFiles: [],
@@ -934,8 +940,74 @@ describe("React client runtime validation", () => {
     expect(isAgentConversation(conversation)).toBe(true);
     expect(isAgentConversation({ ...conversation, updatedAt: 9 })).toBe(false);
     expect(isAgentConversation({ ...conversation, messageCount: -1 })).toBe(false);
+    expect(isAgentConversation({ ...conversation, skillMode: "scheduled" })).toBe(false);
+    const { skillMode: _skillMode, ...missingMode } = conversation;
+    expect(isAgentConversation(missingMode)).toBe(false);
     expect(isAgentConversation({ ...conversation, skillIds: ["coding", "coding"] })).toBe(false);
     expect(isAgentConversation({ ...conversation, objectKey: "private" })).toBe(false);
+  });
+
+  it("decodes only bounded public automatic Skill metadata", () => {
+    const metadata = {
+      finishReason: "length",
+      skillSelection: {
+        mode: "automatic",
+        source: "last_success",
+        reason: "timeout",
+        skills: [{ id: "coding", label: "Coding" }],
+      },
+    };
+    expect(getAgentSkillSelectionMetadata(metadata)).toEqual(metadata.skillSelection);
+    expect(getAgentSkillSelectionMetadata({
+      skillSelection: { ...metadata.skillSelection, providerId: "private" },
+    })).toBeUndefined();
+    expect(getAgentSkillSelectionMetadata({
+      skillSelection: { ...metadata.skillSelection, reason: "raw_provider_error" },
+    })).toBeUndefined();
+    expect(getAgentSkillSelectionMetadata({
+      skillSelection: { ...metadata.skillSelection, skills: [metadata.skillSelection.skills[0], metadata.skillSelection.skills[0]] },
+    })).toBeUndefined();
+  });
+
+  it("serializes conversation Skill mode create and manual clear mutations", async () => {
+    const conversation = {
+      id: "chat-mode",
+      title: "Mode test",
+      createdAt: 10,
+      updatedAt: 20,
+      summary: "",
+      pinned: false,
+      routeId: "primary",
+      skillMode: "automatic" as const,
+      skillIds: ["coding"],
+      messageCount: 0,
+      workspaceFiles: [],
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, conversation }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(createAgentConversation({ routeId: "primary", skillMode: "automatic" }))
+      .resolves.toEqual(conversation);
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body))).toEqual({
+      routeId: "primary",
+      skillMode: "automatic",
+    });
+
+    const manual = { ...conversation, updatedAt: 21, skillMode: "manual" as const, skillIds: [] };
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, conversation: manual }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(updateAgentConversation(conversation, { skillMode: "manual", skillIds: [] }))
+      .resolves.toEqual(manual);
+    expect(JSON.parse(String((fetchSpy.mock.calls[1][1] as RequestInit).body))).toEqual({
+      skillMode: "manual",
+      skillIds: [],
+      expectedUpdatedAt: 20,
+    });
+    fetchSpy.mockRestore();
   });
 
   it("validates secret-free branch responses and feedback envelopes", async () => {
@@ -948,6 +1020,7 @@ describe("React client runtime validation", () => {
       pinned: false,
       parentChatId: "chat-1",
       routeId: "primary",
+      skillMode: "automatic",
       skillIds: ["coding"],
       messageCount: 2,
       workspaceFiles: [],

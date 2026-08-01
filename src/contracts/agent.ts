@@ -5,6 +5,30 @@ import type { WorkspaceConversationFileRef } from "./workspace-file";
 export const MAX_AGENT_CONVERSATIONS = 50;
 export const AGENT_MEMORY_PROPOSAL_TOOL_NAME = "chatus_update_memory";
 
+export type ConversationSkillMode = "automatic" | "manual";
+
+export type AgentSkillSelectionSource = "model" | "last_success" | "admin_default";
+
+export type AgentSkillSelectionReason =
+  | "timeout"
+  | "provider_busy"
+  | "provider_error"
+  | "empty_response"
+  | "invalid_response"
+  | "no_valid_skills";
+
+export type AgentSkillSelectionMetadata = {
+  mode: "automatic";
+  source: AgentSkillSelectionSource;
+  skills: Array<{ id: string; label: string }>;
+  reason?: AgentSkillSelectionReason;
+};
+
+export type AgentMessageMetadata = {
+  finishReason?: "length";
+  skillSelection?: AgentSkillSelectionMetadata;
+};
+
 export type TeamAgentScope = "root" | "conversation";
 
 export type TeamAgentProps = {
@@ -40,6 +64,7 @@ export type AgentConversationSummary = {
   pinned: boolean;
   routeId?: string;
   parentChatId?: string;
+  skillMode: ConversationSkillMode;
   skillIds: string[];
   workspaceFiles: WorkspaceConversationFileRef[];
   messageCount: number;
@@ -60,7 +85,11 @@ export type AgentExportMessagesResult = {
   truncated: boolean;
 };
 
-export type AgentConversationInput = Omit<AgentConversationSummary, "messageCount" | "workspaceFiles"> & {
+export type AgentConversationInput = Omit<
+  AgentConversationSummary,
+  "messageCount" | "workspaceFiles" | "skillMode"
+> & {
+  skillMode?: ConversationSkillMode;
   messageCount?: number;
   workspaceFiles?: WorkspaceConversationFileRef[];
 };
@@ -70,6 +99,7 @@ export type AgentConversationPatch = {
   expectedUpdatedAt: number;
   title?: string;
   routeId?: string;
+  skillMode?: ConversationSkillMode;
   skillIds?: string[];
 };
 
@@ -99,6 +129,7 @@ export type AgentConversationActivity = {
   messageCount: number;
   titleCandidate?: string;
   routeId?: string;
+  skillMode?: ConversationSkillMode;
   skillIds?: string[];
 };
 
@@ -122,6 +153,7 @@ export type AgentConversationBranchInput = {
   destinationId: string;
   title: string;
   routeId?: string;
+  skillMode?: ConversationSkillMode;
   skillIds?: string[];
   launch: AgentConversationBranchLaunch;
 };

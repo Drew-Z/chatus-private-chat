@@ -365,6 +365,8 @@ messages: await convertToModelMessages(this.messages, { tools })
 ## Fallback Contract
 
 - AI SDK provider retries are disabled with `maxRetries: 0`; Chatus owns retries across offerings and fallback logical routes plus their telemetry.
+- Automatic Skill selection is a pre-turn non-streaming auxiliary call. It may fall back between offerings of the selected logical route, but it must never enter the main answer's logical-route fallback chain.
+- The selector's hard five-second boundary starts before plan preparation and returns the validated snapshot/admin fallback even when plan, lease, Provider, telemetry, or release work ignores abort. A late completion cannot update the conversation snapshot.
 - A provider offering or logical route may fall back only before user-visible output begins. Provider metadata, response metadata, empty text starts, and raw chunks may be buffered and discarded.
 - Text/reasoning deltas, sources/files, tool input/calls/results, or approval events commit the selected offering. Errors after commitment are surfaced and recorded; another provider or logical route must not continue the same answer.
 - User cancellation never triggers fallback.
@@ -384,7 +386,9 @@ messages: await convertToModelMessages(this.messages, { tools })
 ## Reliability And Quota
 
 - Quota is consumed once during turn preparation, not once per fallback attempt.
+- Automatic Skill selection performs no quota admission. The main turn remains the single user-message quota owner, including continuation semantics.
 - Every real offering attempt records redacted passive reliability keyed by the exact `(logicalRouteId, providerId)` pair. BYOK authentication failures do not overwrite shared provider quality.
+- Selector attempts record redacted `skill_selection` telemetry under `route-provider-skill-selection:`. These records may describe offering fallback and latency but must never enter `route-provider-reliability:` or affect chat ordering/cost aggregates.
 - Administrator priority is authoritative. Passive real-task success rate and latency order only offerings at the same priority; no active probe may influence this ordering.
 - A successful logical-route fallback records the selected route as `fallback: true`; exhausted or post-output failures also record the overall request failure.
 - Telemetry callbacks are best effort and must never alter stream success or failure.
@@ -408,6 +412,8 @@ messages: await convertToModelMessages(this.messages, { tools })
 - Seed an impossible aggregate with `streamSamples > successes` and assert both the storage normalizer and exact client decoder reject it; at the 1,000-sample cap, add a failure and assert stream counters remain within the reduced success count.
 - Seed malformed, expired, and duplicate persisted leases, evict the coordinator, and assert normalized capacity, storage, idempotent request recovery, and the earliest alarm.
 - Pass the Agent request abort signal through to `streamText`.
+- Pass the Agent abort signal into Automatic Skill selection, but retain the selector's independent five-second hard boundary and ignore late success from a non-cooperative dependency.
+- Assert selector and main-answer telemetry use different storage keys, selector attempts do not change chat reliability, and daily/minute quota increments exactly once.
 - Keep `chatRecovery` configured as a class field, never inside `onStart()`.
 
 ## Scenario: Durable Message Branches And Safe Truncation Metadata

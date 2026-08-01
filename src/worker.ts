@@ -15,6 +15,9 @@ import {
   type AgentConversationInput,
   type AgentConversationMutationResult,
   type AgentConversationSummary,
+  type AgentSkillSelectionMetadata,
+  type AgentSkillSelectionReason,
+  type ConversationSkillMode,
   type TeamAgentProps,
 } from "./contracts/agent";
 import type {
@@ -397,6 +400,9 @@ const MAX_SKILLS = 50;
 const MAX_TOOLS = 200;
 const MAX_MCP_SERVERS = 20;
 const MAX_SELECTED_SKILLS = 3;
+const SKILL_SELECTOR_DEADLINE_MS = 5_000;
+const SKILL_SELECTOR_MAX_OUTPUT_TOKENS = 200;
+const SKILL_SELECTOR_MAX_PROMPT_CHARS = 6_000;
 const MAX_SKILL_INSTRUCTIONS_CHARS = 8_000;
 const MAX_TOOL_EVENTS = 16;
 const MAX_TOOL_ARGUMENT_SUMMARY_CHARS = 500;
@@ -1143,6 +1149,7 @@ async function handleTeamAgentRequest(
     updatedAt: now,
     summary: "",
     pinned: false,
+    skillMode: session.kind === "member" ? "automatic" : "manual",
     skillIds: [],
   });
   if (!created.ok) return agentConversationMutationError(created);
@@ -2967,8 +2974,21 @@ async function handleListAgentConversations(env: Env, session: Session): Promise
 }
 
 async function handleCreateAgentConversation(request: Request, env: Env, session: Session): Promise<Response> {
-  const body = await readJson<{ id?: unknown; title?: unknown; routeId?: unknown; skillIds?: unknown }>(request);
-  const settings = await validateAgentConversationSettings(env, session, body.routeId, body.skillIds, true);
+  const body = await readJson<{
+    id?: unknown;
+    title?: unknown;
+    routeId?: unknown;
+    skillMode?: unknown;
+    skillIds?: unknown;
+  }>(request);
+  const settings = await validateAgentConversationSettings(
+    env,
+    session,
+    body.routeId,
+    body.skillMode,
+    body.skillIds,
+    true,
+  );
   if (!settings.ok) return settings.response;
   await ensureAgentLegacyImport(env, session.label);
   const now = Date.now();
@@ -2982,6 +3002,7 @@ async function handleCreateAgentConversation(request: Request, env: Env, session
     summary: "",
     pinned: false,
     routeId: settings.routeId,
+    skillMode: settings.skillMode,
     skillIds: settings.skillIds || [],
   });
   if (!result.ok || !result.conversation) return agentConversationMutationError(result);
@@ -3020,7 +3041,13 @@ async function handleCreateAgentConversationBranch(
   const root = await getTeamAgent(env, session.label);
   const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId);
   if (!source) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
-  const settings = await repairAgentConversationSettings(env, session, source.routeId, source.skillIds);
+  const settings = await repairAgentConversationSettings(
+    env,
+    session,
+    source.routeId,
+    source.skillMode,
+    source.skillIds,
+  );
   const launch = branchLaunchForAction(action);
   const fingerprint = await secretFingerprint(JSON.stringify({
     sourceId,
@@ -3040,6 +3067,7 @@ async function handleCreateAgentConversationBranch(
     destinationId: crypto.randomUUID(),
     title: branchConversationTitle(source.title, action),
     routeId: settings.routeId,
+    skillMode: settings.skillMode,
     skillIds: settings.skillIds,
     launch,
   });
@@ -3059,7 +3087,7 @@ async function handleCreateAgentConversationBranch(
     fingerprint,
     destinationId: reservation.operation.destinationId,
     destinationInstance: await getTeamAgentConversationInstanceName(session.label, reservation.operation.destinationId),
-    body: { routeId: settings.routeId, skillIds: settings.skillIds },
+    body: { routeId: settings.routeId, skillMode: settings.skillMode, skillIds: settings.skillIds },
   });
   if ("error" in copied) {
     await failAgentConversationBranch(env, session.label, root, reservation.operation, fingerprint);
@@ -3093,6 +3121,7 @@ async function handleUpdateAgentConversation(
   const body = await readJson<{
     title?: unknown;
     routeId?: unknown;
+    skillMode?: unknown;
     skillIds?: unknown;
     expectedUpdatedAt?: unknown;
   }>(request);
@@ -3100,15 +3129,26 @@ async function handleUpdateAgentConversation(
   if (!expectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
-  const settings = await validateAgentConversationSettings(env, session, body.routeId, body.skillIds, false);
-  if (!settings.ok) return settings.response;
   await ensureAgentLegacyImport(env, session.label);
   const root = await getTeamAgent(env, session.label);
+  const current = (await root.listConversations())
+    .find((conversation) => conversation.id === id);
+  if (!current) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
+  const settings = await validateAgentConversationSettings(
+    env,
+    session,
+    body.routeId,
+    body.skillMode === undefined ? current.skillMode : body.skillMode,
+    body.skillIds,
+    false,
+  );
+  if (!settings.ok) return settings.response;
   const result = await root.updateConversation({
     id,
     expectedUpdatedAt,
     title: typeof body.title === "string" ? body.title : undefined,
     routeId: settings.routeId,
+    skillMode: settings.skillMode,
     skillIds: settings.skillIds,
   });
   if (!result.ok || !result.conversation) return agentConversationMutationError(result);
@@ -3598,10 +3638,11 @@ async function validateAgentConversationSettings(
   env: Env,
   session: Session,
   routeValue: unknown,
+  skillModeValue: unknown,
   skillValue: unknown,
   useDefaults: boolean,
 ): Promise<
-  | { ok: true; routeId?: string; skillIds?: string[] }
+  | { ok: true; routeId?: string; skillMode: ConversationSkillMode; skillIds?: string[] }
   | { ok: false; response: Response }
 > {
   const config = await loadAppConfig(env);
@@ -3609,6 +3650,20 @@ async function validateAgentConversationSettings(
   const requestedRoute = typeof routeValue === "string" ? routeValue.trim() : "";
   if (requestedRoute && !access.routes.some((route) => route.id === requestedRoute)) {
     return { ok: false, response: jsonResponse({ error: "route_not_allowed", message: "该线路不可用" }, 403) };
+  }
+  if (session.kind === "guest") {
+    return {
+      ok: true,
+      routeId: requestedRoute || (useDefaults ? access.defaultRoute : undefined),
+      skillMode: "manual",
+      skillIds: [],
+    };
+  }
+  const skillMode = skillModeValue === undefined && useDefaults
+    ? "automatic"
+    : normalizeConversationSkillMode(skillModeValue);
+  if (!skillMode) {
+    return { ok: false, response: jsonResponse({ error: "invalid_skill_mode", message: "Skill 模式无效" }, 400) };
   }
   let skillIds: string[] | undefined;
   if (skillValue !== undefined) {
@@ -3618,14 +3673,17 @@ async function validateAgentConversationSettings(
       return { ok: false, response: jsonResponse({ error: "skill_not_allowed", message: "包含未分配的 Skill" }, 403) };
     }
     skillIds = requestedSkills;
-  } else if (useDefaults) {
+  } else if (useDefaults && skillMode === "manual") {
     skillIds = getPublicCapabilities(config, access.user).skills
       .slice(0, MAX_SELECTED_SKILLS)
       .map((skill) => skill.id);
+  } else if (useDefaults) {
+    skillIds = [];
   }
   return {
     ok: true,
     routeId: requestedRoute || (useDefaults ? access.defaultRoute : undefined),
+    skillMode,
     skillIds,
   };
 }
@@ -3634,8 +3692,9 @@ async function repairAgentConversationSettings(
   env: Env,
   session: Session,
   routeValue: unknown,
+  skillModeValue: unknown,
   skillValue: unknown,
-): Promise<{ routeId?: string; skillIds: string[] }> {
+): Promise<{ routeId?: string; skillMode: ConversationSkillMode; skillIds: string[] }> {
   const config = await loadAppConfig(env);
   const access = await getRouteAccess(config, session, env);
   const requestedRoute = typeof routeValue === "string" ? routeValue.trim() : "";
@@ -3645,7 +3704,11 @@ async function repairAgentConversationSettings(
   const allowedSkills = new Set(getPublicCapabilities(config, access.user).skills.map((skill) => skill.id));
   const skillIds = normalizeSelectedSkillIds(skillValue)
     .filter((skillId) => allowedSkills.has(skillId));
-  return { routeId, skillIds };
+  return {
+    routeId,
+    skillMode: session.kind === "guest" ? "manual" : normalizeConversationSkillMode(skillModeValue) || "manual",
+    skillIds: session.kind === "guest" ? [] : skillIds,
+  };
 }
 
 function agentConversationBranchSourceIdFromPath(url: URL): string {
@@ -5020,12 +5083,14 @@ export type TeamAgentTurnInput = {
   messages: ChatMessage[];
   continuation?: boolean;
   routeId?: string;
+  skillMode?: ConversationSkillMode;
   skillIds?: string[];
   userApiKey?: string;
   sessionSummary?: string;
   temperature?: number;
   longTermMemory?: string;
   workspaceContext?: string;
+  abortSignal?: AbortSignal;
 };
 
 export type PreparedTeamAgentTurn =
@@ -5042,6 +5107,8 @@ export type PreparedTeamAgentTurn =
       remaining: number;
       routeId: string;
       skillIds: string[];
+      skillSelection?: AgentSkillSelectionMetadata;
+      skillSnapshotIds?: string[];
       recordStreamFailure: () => Promise<void>;
       releaseTurn: () => Promise<void>;
     }
@@ -5052,14 +5119,14 @@ export async function prepareTeamAgentTurn(
   session: Session,
   input: TeamAgentTurnInput,
 ): Promise<PreparedTeamAgentTurn> {
-  const config = await loadAppConfig(env);
+  let config = await loadAppConfig(env);
   if (session.expiresAt <= Date.now()) {
     return { ok: false, error: "session_expired", message: "登录会话已过期，请重新连接", status: 401 };
   }
   if (session.kind === "guest" && !config.publicAccess.enabled) {
     return { ok: false, error: "public_access_disabled", message: "公开访问已关闭", status: 403 };
   }
-  const access = await getRouteAccess(config, session, env);
+  let access = await getRouteAccess(config, session, env);
   if (!access.routes.length) {
     return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
   }
@@ -5084,9 +5151,9 @@ export async function prepareTeamAgentTurn(
   if (session.kind === "guest" && selectedRoute !== config.publicAccess.routeId) {
     return { ok: false, error: "route_not_allowed", message: "访客只能使用公开模型", status: 403 };
   }
-  const selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
+  let selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
     || access.routes.find((route) => route.id === access.defaultRoute);
-  const memoryToolEnabled = session.kind === "member" && selectedPublicRoute?.supportsTools === true;
+  let memoryToolEnabled = session.kind === "member" && selectedPublicRoute?.supportsTools === true;
   if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
     return {
       ok: false,
@@ -5097,7 +5164,38 @@ export async function prepareTeamAgentTurn(
     };
   }
 
-  const selectedSkills = getSelectedSkills(config, input.skillIds, access.user);
+  let skillSelection: AgentSkillSelectionMetadata | undefined;
+  let skillSnapshotIds: string[] | undefined;
+  let selectedSkillIds = input.skillIds || [];
+  if (session.kind === "member" && input.skillMode === "automatic" && selectedPublicRoute) {
+    const selectorAttempt = await runAutomaticSkillSelector(env, {
+      config,
+      access,
+      routeId: selectedPublicRoute.id,
+      userApiKey: input.userApiKey?.trim() || "",
+      latestUserText: latestPrompt?.text || "",
+      signal: input.abortSignal,
+    });
+
+    config = await loadAppConfig(env);
+    access = await getRouteAccess(config, session, env);
+    if (!access.routes.length) {
+      return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
+    }
+    selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
+      || access.routes.find((route) => route.id === access.defaultRoute);
+    memoryToolEnabled = selectedPublicRoute?.supportsTools === true;
+    const resolved = resolveAutomaticSkillSelection(
+      config,
+      access.user,
+      selectorAttempt,
+      input.skillIds,
+    );
+    selectedSkillIds = resolved.skillIds;
+    skillSelection = resolved.metadata;
+    if (resolved.metadata.source === "model") skillSnapshotIds = resolved.skillIds;
+  }
+  const selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
   const messages = await buildMessagesWithSystem(
     env,
     session,
@@ -5234,9 +5332,239 @@ export async function prepareTeamAgentTurn(
     remaining: admission.remaining,
     routeId: selectedPublicRoute?.id || selectedRoute,
     skillIds: selectedSkills.map(({ id }) => id),
+    skillSelection,
+    skillSnapshotIds,
     recordStreamFailure,
     releaseTurn: admission.release,
   };
+}
+
+type AutomaticSkillSelectorAttempt = {
+  skillIds?: string[];
+  reason?: AgentSkillSelectionReason;
+};
+
+async function runAutomaticSkillSelector(
+  env: Env,
+  args: {
+    config: AppConfig;
+    access: RouteAccess;
+    routeId: string;
+    userApiKey: string;
+    latestUserText: string;
+    signal?: AbortSignal;
+  },
+): Promise<AutomaticSkillSelectorAttempt> {
+  const availableSkills = getPublicCapabilities(args.config, args.access.user).skills;
+  if (!availableSkills.length) return { reason: "no_valid_skills" };
+
+  const controller = new AbortController();
+  let resolveBoundary: (attempt: AutomaticSkillSelectorAttempt) => void = () => undefined;
+  const boundary = new Promise<AutomaticSkillSelectorAttempt>((resolve) => {
+    resolveBoundary = resolve;
+  });
+  const abortAtBoundary = (reason: unknown) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+    resolveBoundary({ reason: "timeout" });
+  };
+  const abortFromParent = () => abortAtBoundary(args.signal?.reason);
+  if (args.signal?.aborted) return { reason: "timeout" };
+  args.signal?.addEventListener("abort", abortFromParent, { once: true });
+  const deadline = setTimeout(() => {
+    abortAtBoundary(new DOMException("Skill selection timed out", "TimeoutError"));
+  }, SKILL_SELECTOR_DEADLINE_MS);
+  const attempt = runAutomaticSkillSelectorAttempt(env, args, availableSkills, controller.signal)
+    .catch((): AutomaticSkillSelectorAttempt => ({
+      reason: controller.signal.aborted ? "timeout" : "provider_error",
+    }));
+
+  try {
+    return await Promise.race([attempt, boundary]);
+  } finally {
+    clearTimeout(deadline);
+    args.signal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+async function runAutomaticSkillSelectorAttempt(
+  env: Env,
+  args: {
+    config: AppConfig;
+    access: RouteAccess;
+    routeId: string;
+    userApiKey: string;
+    latestUserText: string;
+  },
+  availableSkills: ReturnType<typeof getPublicCapabilities>["skills"],
+  signal: AbortSignal,
+): Promise<AutomaticSkillSelectorAttempt> {
+  const prepared = await providerPlanRuntime(env, args.config).preparePlan({
+    routeIds: [args.routeId],
+    accessRoutes: args.access.routes,
+    userApiKey: args.userApiKey,
+  });
+  if (signal.aborted) return { reason: "timeout" };
+  if (!prepared.candidates.length || prepared.userKeyRequiredRouteId) {
+    return { reason: "provider_error" };
+  }
+
+  const remaining = [...prepared.candidates];
+  let attempted = 0;
+  let lastReason: AgentSkillSelectionReason = "provider_error";
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content:
+        "Select one to three relevant Skills for the current user message. "
+        + "Return only strict JSON with exactly this shape: {\"skillIds\":[\"id\"]}. "
+        + "Use only IDs from the candidate list. Do not call tools or add prose.",
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        skills: availableSkills.map(({ id, label, description }) => ({ id, label, description })),
+        message: args.latestUserText.slice(0, SKILL_SELECTOR_MAX_PROMPT_CHARS),
+      }),
+    },
+  ];
+
+  while (remaining.length && !signal.aborted) {
+    let acquired: { candidate: (typeof remaining)[number]; lease: ProviderLease } | null;
+    try {
+      acquired = await acquireFirstAvailableProvider(env, remaining, signal);
+    } catch (error) {
+      return { reason: signal.aborted || isAbortLikeError(error) ? "timeout" : "provider_error" };
+    }
+    if (!acquired) return { reason: signal.aborted ? "timeout" : "provider_busy" };
+    const { candidate: route, lease } = acquired;
+    remaining.splice(remaining.indexOf(route), 1);
+    attempted += 1;
+    const startedAt = Date.now();
+    const fallback = route.planIndex > 0 || attempted > 1;
+    try {
+      const text = await completeOnce({
+        route,
+        apiKey: route.credential.apiKey,
+        messages,
+        temperature: 0,
+        maxTokens: SKILL_SELECTOR_MAX_OUTPUT_TOKENS,
+        env,
+        signal,
+      });
+      signal.throwIfAborted();
+      const parsed = parseAutomaticSkillSelection(text, args.config, args.access.user);
+      if (parsed.skillIds?.length) {
+        await recordRouteReliability(env, {
+          operation: "skill_selection",
+          routeId: route.routeId,
+          providerId: route.providerId,
+          ok: true,
+          fallback,
+          startedAt,
+        });
+        return { skillIds: parsed.skillIds };
+      }
+      lastReason = parsed.reason || "invalid_response";
+      await recordRouteReliability(env, {
+        operation: "skill_selection",
+        routeId: route.routeId,
+        providerId: route.providerId,
+        ok: false,
+        outcome: "protocol_error",
+        fallback,
+        startedAt,
+      });
+    } catch (error) {
+      const status = providerErrorStatus(error);
+      lastReason = signal.aborted || isAbortLikeError(error) ? "timeout" : "provider_error";
+      await recordRouteReliability(env, {
+        operation: "skill_selection",
+        routeId: route.routeId,
+        providerId: route.providerId,
+        ok: false,
+        status,
+        error,
+        fallback,
+        startedAt,
+        usedUserKey: route.credential.usedUserKey,
+      });
+      if (signal.aborted) return { reason: "timeout" };
+      if (
+        error instanceof UpstreamRequestError
+        && isTerminalProviderFailure(error.status, route.credential.usedUserKey)
+      ) {
+        break;
+      }
+    } finally {
+      await lease.release();
+    }
+  }
+  return { reason: signal.aborted ? "timeout" : lastReason };
+}
+
+function parseAutomaticSkillSelection(
+  text: string,
+  config: AppConfig,
+  user: UserConfig,
+): AutomaticSkillSelectorAttempt {
+  if (!text.trim()) return { reason: "empty_response" };
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { reason: "invalid_response" };
+  }
+  if (
+    !isRecord(value)
+    || Object.keys(value).length !== 1
+    || !Array.isArray(value.skillIds)
+    || value.skillIds.some((id) => typeof id !== "string")
+  ) return { reason: "invalid_response" };
+  const requested = normalizeSelectedSkillIds(value.skillIds);
+  const selected = getSelectedSkills(config, requested, user).map(({ id }) => id);
+  return selected.length ? { skillIds: selected } : { reason: "no_valid_skills" };
+}
+
+function resolveAutomaticSkillSelection(
+  config: AppConfig,
+  user: UserConfig,
+  attempt: AutomaticSkillSelectorAttempt,
+  previousSkillIds: unknown,
+): { skillIds: string[]; metadata: AgentSkillSelectionMetadata } {
+  const modelSelection = getSelectedSkills(config, attempt.skillIds, user);
+  if (modelSelection.length) {
+    return {
+      skillIds: modelSelection.map(({ id }) => id),
+      metadata: {
+        mode: "automatic",
+        source: "model",
+        skills: modelSelection.map(({ id, skill }) => ({ id, label: skill.label })),
+      },
+    };
+  }
+  const reason = attempt.skillIds?.length ? "no_valid_skills" : attempt.reason || "provider_error";
+  const previous = getSelectedSkills(config, previousSkillIds, user);
+  const selected = previous.length
+    ? previous
+    : getSelectedSkills(
+        config,
+        getPublicCapabilities(config, user).skills.slice(0, MAX_SELECTED_SKILLS).map(({ id }) => id),
+        user,
+      );
+  const source = previous.length ? "last_success" as const : "admin_default" as const;
+  return {
+    skillIds: selected.map(({ id }) => id),
+    metadata: {
+      mode: "automatic",
+      source,
+      reason,
+      skills: selected.map(({ id, skill }) => ({ id, label: skill.label })),
+    },
+  };
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
 
@@ -6130,8 +6458,9 @@ async function completeOnce(args: {
   temperature: number;
   maxTokens?: number;
   env: Env;
+  signal?: AbortSignal;
 }): Promise<string> {
-  const { route, apiKey, messages, temperature, maxTokens, env } = args;
+  const { route, apiKey, messages, temperature, maxTokens, env, signal } = args;
   try {
     const result = await generateText({
       model: createProviderLanguageModel(route, apiKey),
@@ -6140,6 +6469,7 @@ async function completeOnce(args: {
       maxOutputTokens: maxTokens || route.maxTokens || numberEnv(env.DEFAULT_MAX_TOKENS, 4096),
       maxRetries: 0,
       allowSystemInMessages: true,
+      abortSignal: signal,
     });
     return result.text;
   } catch (error) {
@@ -7591,6 +7921,10 @@ function normalizeToolEventStatus(value: unknown): ToolEventSummary["status"] | 
 
 function normalizeSelectedSkillIds(value: unknown): string[] {
   return normalizeStringIdList(value, MAX_SELECTED_SKILLS, 80);
+}
+
+function normalizeConversationSkillMode(value: unknown): ConversationSkillMode | undefined {
+  return value === "automatic" || value === "manual" ? value : undefined;
 }
 
 function normalizeStringIdList(value: unknown, limit: number, maxChars: number): string[] {

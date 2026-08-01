@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Download, LogOut, MessageSquarePlus, Pencil, Plug, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
+import { Check, Download, LogOut, MessageSquarePlus, Pencil, Plug, Search, Settings2, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
+import type { ConversationSkillMode } from "../../../src/contracts/agent";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
 
 export type SidebarView = "history" | "files" | "settings";
@@ -11,6 +12,7 @@ export function ConversationSidebar({
   conversations,
   activeId,
   routeId,
+  skillMode,
   skillIds,
   view,
   busy,
@@ -23,6 +25,7 @@ export function ConversationSidebar({
   onDelete,
   onConversationUpdated,
   onRouteChange,
+  onSkillModeChange,
   onSkillChange,
   onRevokeAllSessions,
   onDeleteUserData,
@@ -33,6 +36,7 @@ export function ConversationSidebar({
   conversations: AgentConversation[];
   activeId: string;
   routeId: string;
+  skillMode: ConversationSkillMode;
   skillIds: string[];
   view: SidebarView;
   busy: boolean;
@@ -45,6 +49,7 @@ export function ConversationSidebar({
   onDelete: (conversation: AgentConversation) => Promise<void>;
   onConversationUpdated: (conversation: AgentConversation) => void;
   onRouteChange: (routeId: string) => void;
+  onSkillModeChange: (skillMode: ConversationSkillMode) => void;
   onSkillChange: (skillIds: string[]) => void;
   onRevokeAllSessions: () => Promise<void>;
   onDeleteUserData: () => Promise<void>;
@@ -296,7 +301,21 @@ export function ConversationSidebar({
           {session.access === "member" && (
             <>
               <section className="settings-section">
-                <div className="settings-heading"><strong>Skills</strong><span>{skillIds.length}/3</span></div>
+                <div className="settings-heading"><Sparkles size={16} /><strong>Skills</strong><span>{skillIds.length}/3</span></div>
+                <div className="skill-mode-control" role="group" aria-label="Skill 模式">
+                  <button
+                    type="button"
+                    aria-pressed={skillMode === "automatic"}
+                    disabled={busy}
+                    onClick={() => onSkillModeChange("automatic")}
+                  >自动</button>
+                  <button
+                    type="button"
+                    aria-pressed={skillMode === "manual"}
+                    disabled={busy}
+                    onClick={() => onSkillModeChange("manual")}
+                  >手动</button>
+                </div>
                 <div className="skill-list">
                   {session.skills.length === 0 && <div className="sidebar-empty">未分配 Skill</div>}
                   {session.skills.map((skill) => (
@@ -304,7 +323,7 @@ export function ConversationSidebar({
                       <input
                         type="checkbox"
                         checked={skillIds.includes(skill.id)}
-                        disabled={busy || (!skillIds.includes(skill.id) && skillIds.length >= 3)}
+                        disabled={skillMode === "automatic" || busy || (!skillIds.includes(skill.id) && skillIds.length >= 3)}
                         onChange={() => onSkillChange(
                           skillIds.includes(skill.id)
                             ? skillIds.filter((id) => id !== skill.id)

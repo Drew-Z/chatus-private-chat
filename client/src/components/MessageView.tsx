@@ -10,13 +10,14 @@ import {
   Play,
   RotateCw,
   Send,
+  Sparkles,
   ThumbsDown,
   ThumbsUp,
   Wrench,
 } from "lucide-react";
 import { isToolUIPart, type UIMessage } from "ai";
 import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../../../src/contracts/agent";
-import type { AgentConversationBranchAction } from "../lib/api";
+import { getAgentSkillSelectionMetadata, type AgentConversationBranchAction } from "../lib/api";
 import { copyText, sanitizeMarkdownUrl } from "../lib/markdown";
 import type { MessageActionAvailability, MessageActionState } from "../lib/state";
 import { MarkdownContent } from "./MarkdownContent";
@@ -51,6 +52,9 @@ export function MessageView({
     .map((part) => part.text)
     .join("\n");
   const sourceParts = message.parts.filter((part) => part.type === "source-url" || part.type === "source-document");
+  const skillSelection = message.role === "assistant"
+    ? getAgentSkillSelectionMetadata(message.metadata)
+    : undefined;
 
   const copy = async () => {
     if (!text || !(await copyText(text))) return;
@@ -146,6 +150,21 @@ export function MessageView({
           return null;
         })}
       </div>
+      {skillSelection && (
+        <section className="message-skill-selection" aria-label="本轮自动 Skill">
+          <div className="message-skill-selection-head">
+            <Sparkles size={14} aria-hidden="true" />
+            <strong>自动 Skill</strong>
+            <span>{skillSelectionSourceLabel(skillSelection.source)}</span>
+          </div>
+          <div className="message-skill-list">
+            {skillSelection.skills.length
+              ? skillSelection.skills.map((skill) => <span key={skill.id}>{skill.label}</span>)
+              : <span>未启用 Skill</span>}
+          </div>
+          {skillSelection.reason && <small>{skillSelectionReasonLabel(skillSelection.reason)}</small>}
+        </section>
+      )}
       {sourceParts.length > 0 && (
         <section className="message-sources" aria-label="消息来源">
           <span className="message-sources-label">来源 · {sourceParts.length}</span>
@@ -209,6 +228,23 @@ export function MessageView({
       )}
     </article>
   );
+}
+
+function skillSelectionSourceLabel(source: "model" | "last_success" | "admin_default"): string {
+  if (source === "model") return "模型选择";
+  if (source === "last_success") return "上次成功";
+  return "管理员顺序";
+}
+
+function skillSelectionReasonLabel(
+  reason: "timeout" | "provider_busy" | "provider_error" | "empty_response" | "invalid_response" | "no_valid_skills",
+): string {
+  if (reason === "timeout") return "选择超时，已回退";
+  if (reason === "provider_busy") return "Provider 繁忙，已回退";
+  if (reason === "provider_error") return "Provider 失败，已回退";
+  if (reason === "empty_response") return "选择为空，已回退";
+  if (reason === "invalid_response") return "选择格式无效，已回退";
+  return "没有可用选择，已回退";
 }
 
 function parseAttachedFileContext(text: string): { filename: string; mediaType: string; bytes: number } | null {
