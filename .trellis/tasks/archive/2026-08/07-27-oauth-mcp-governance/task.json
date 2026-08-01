@@ -3,7 +3,7 @@
   "name": "oauth-mcp-governance",
   "title": "OAuth MCP 授权与治理",
   "description": "管理员 OAuth 配置、成员 PKCE、加密 token、漂移重审和副作用确认。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-07-27",
-  "completedAt": null,
+  "completedAt": "2026-08-02",
   "branch": "codex/oauth-mcp-governance",
   "base_branch": "main",
   "worktree_path": null,
@@ -89,6 +89,12 @@
         "status": "passed",
         "summary": "GitHub Actions production member acceptance passed for exact deployed SHA ee074f2baaa914dc9047d237e6786ac551ca1f8f; acceptance artifact 8822086182 retained; no live Provider or MCP used",
         "at": "2026-08-01T18:08:10.216823+00:00"
+      },
+      {
+        "command": "gh run view 30711874387",
+        "status": "passed",
+        "summary": "Docs and Trellis-only main commit 121377bc4badc4eea7b4981878c63166c8564400 correctly skipped deployment; classification artifact 8822125156 retained and deploy job did not run",
+        "at": "2026-08-01T18:09:58.001435+00:00"
       }
     ]
   }
