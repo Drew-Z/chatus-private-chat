@@ -15,7 +15,7 @@
   "branch": "codex/oauth-mcp-governance",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "29a051d1ae578c3a5d7a3c3a1fe4832b722321eb",
   "pr_url": null,
   "subtasks": [],
   "children": [],
