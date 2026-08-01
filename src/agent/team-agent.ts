@@ -446,6 +446,24 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         }
         this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (4, ${Date.now()})`;
       }
+      if (version < 5) {
+        this.sql`
+          CREATE TABLE capability_tool_trust_v5 (
+            conversation_id TEXT NOT NULL,
+            tool_id TEXT NOT NULL,
+            review_revision TEXT NOT NULL,
+            approved_at INTEGER NOT NULL,
+            PRIMARY KEY (conversation_id, tool_id, review_revision)
+          )
+        `;
+        this.sql`
+          INSERT INTO capability_tool_trust_v5 (conversation_id, tool_id, review_revision, approved_at)
+          SELECT conversation_id, tool_id, '', approved_at FROM capability_tool_trust
+        `;
+        this.sql`DROP TABLE capability_tool_trust`;
+        this.sql`ALTER TABLE capability_tool_trust_v5 RENAME TO capability_tool_trust`;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (5, ${Date.now()})`;
+      }
     });
   }
 
@@ -2079,8 +2097,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       conversationId: this.chatId,
       runTool: prepared.runTool,
       approvals: {
-        isTrusted: (targetConversationId, toolId) => this.isToolTrusted(targetConversationId, toolId),
-        markTrusted: (targetConversationId, toolId) => this.markToolTrusted(targetConversationId, toolId),
+        isTrusted: (targetConversationId, toolId, reviewRevision) => (
+          this.isToolTrusted(targetConversationId, toolId, reviewRevision)
+        ),
+        markTrusted: (targetConversationId, toolId, reviewRevision) => (
+          this.markToolTrusted(targetConversationId, toolId, reviewRevision)
+        ),
       },
       ...(prepared.memoryToolEnabled && memoryRecord
         ? {
@@ -2639,21 +2661,23 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     });
   }
 
-  private isToolTrusted(conversationId: string, toolId: string): boolean {
+  private isToolTrusted(conversationId: string, toolId: string, reviewRevision: string): boolean {
     const rows = this.sql<{ trusted: number }>`
       SELECT 1 AS trusted
       FROM capability_tool_trust
-      WHERE conversation_id = ${conversationId} AND tool_id = ${toolId}
+      WHERE conversation_id = ${conversationId}
+        AND tool_id = ${toolId}
+        AND review_revision = ${reviewRevision}
       LIMIT 1
     `;
     return rows.length > 0;
   }
 
-  private markToolTrusted(conversationId: string, toolId: string): void {
+  private markToolTrusted(conversationId: string, toolId: string, reviewRevision: string): void {
     this.sql`
-      INSERT INTO capability_tool_trust (conversation_id, tool_id, approved_at)
-      VALUES (${conversationId}, ${toolId}, ${Date.now()})
-      ON CONFLICT(conversation_id, tool_id)
+      INSERT INTO capability_tool_trust (conversation_id, tool_id, review_revision, approved_at)
+      VALUES (${conversationId}, ${toolId}, ${reviewRevision}, ${Date.now()})
+      ON CONFLICT(conversation_id, tool_id, review_revision)
       DO UPDATE SET approved_at = excluded.approved_at
     `;
   }

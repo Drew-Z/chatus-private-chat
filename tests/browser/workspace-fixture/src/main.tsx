@@ -7,6 +7,7 @@ import { MessageView, type MessageAction } from "../../../../client/src/componen
 import { AdminOperationsContent, AdminOperationsPanel } from "../../../../client/src/components/AdminOperationsPanel";
 import { AdminWorkspace } from "../../../../client/src/components/AdminWorkspace";
 import { ConfirmDialog } from "../../../../client/src/components/ConfirmDialog";
+import { McpConnectionsDialog, type McpConnectionNotice } from "../../../../client/src/components/McpConnectionsDialog";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import {
@@ -131,6 +132,15 @@ const memberSession: SessionProjection = {
   },
   skills: [{ id: "project", label: "项目协作", description: "合成测试能力", toolIds: ["search"] }],
   tools: [{ id: "search", label: "项目资料检索", description: "合成测试工具", source: "builtin", confirmation: "always" }],
+  mcpConnections: [{
+    serverId: "docs",
+    label: "项目文档服务",
+    connected: true,
+    reviewRequired: false,
+    grantedScopes: ["mcp.tools.read"],
+    expiresAt: now + 3_600_000,
+    status: "connected",
+  }],
   agent: { transport: "websocket", basePath: "agent", instance: "visual-fixture" },
 };
 
@@ -160,6 +170,7 @@ const guestSession: SessionProjection = {
   },
   skills: [],
   tools: [],
+  mcpConnections: [],
   agent: { transport: "websocket", basePath: "agent", instance: "visual-guest-fixture" },
 };
 
@@ -397,6 +408,7 @@ function WorkspaceFixture() {
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const [operationsFilter, setOperationsFilter] = useState("");
   const [adminLoggedOut, setAdminLoggedOut] = useState(false);
+  const [mcpNotice, setMcpNotice] = useState<McpConnectionNotice | null>({ kind: "warning", text: "一个连接需要重新授权或管理员重审。" });
   const forcedPhase = readTurnPhase(params.get("phase"));
   const turnPhase = forcedPhase || (busy ? "waiting-first-output" : "completed");
   const turnBusy = isActiveTurnPhase(turnPhase);
@@ -461,6 +473,27 @@ function WorkspaceFixture() {
 
   if (params.get("view") === "confirm-dialog") return <ConfirmDialogFixture />;
 
+  if (params.get("view") === "mcp-connections") {
+    return (
+      <main data-visual-fixture="true" style={{ minHeight: "100dvh", background: "var(--surface-muted)" }}>
+        <McpConnectionsDialog
+          connections={[
+            ...memberSession.mcpConnections,
+            { serverId: "workspace", label: "Workspace Operations with a deliberately long label", connected: false, reviewRequired: true, grantedScopes: ["files.read", "files.write"], status: "review_required" },
+            { serverId: "catalog", label: "Catalog", connected: false, reviewRequired: false, grantedScopes: [], status: "disconnected" },
+          ]}
+          busyServerId=""
+          notice={mcpNotice}
+          onClose={() => undefined}
+          onRefresh={async () => setMcpNotice({ kind: "success", text: "连接状态已刷新。" })}
+          onConnect={async () => setMcpNotice({ kind: "success", text: "合成授权跳转已验证。" })}
+          onDiscover={async () => setMcpNotice({ kind: "success", text: "已生成发现候选：3 个工具，1 个被拒绝。" })}
+          onRevoke={async () => setMcpNotice({ kind: "success", text: "MCP 授权已撤销。" })}
+        />
+      </main>
+    );
+  }
+
   if (params.get("view") === "admin-members") {
     if (adminLoggedOut) return <main data-visual-fixture="true"><p role="status">管理员 fixture 已退出。</p></main>;
     return (
@@ -476,6 +509,7 @@ function WorkspaceFixture() {
         session={session}
         conversation={activeConversation}
         routeId={routeId}
+        mcpConnections={session.mcpConnections}
         connectionState={connectionState}
         busy={turnBusy}
         accountBusy={false}
@@ -484,6 +518,7 @@ function WorkspaceFixture() {
         onOpenSidebar={() => setSidebarOpen(true)}
         onOpenRouteSettings={() => { setSidebarView("settings"); setSidebarOpen(true); }}
         onOpenMemory={() => undefined}
+        onOpenMcpConnections={() => undefined}
         onReturnToParent={() => {
           if (parentConversation) setActiveId(parentConversation.id);
         }}

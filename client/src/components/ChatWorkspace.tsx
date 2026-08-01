@@ -8,9 +8,13 @@ import {
   createAgentConversation,
   deleteAgentConversation,
   deleteUserData,
+  discoverMemberMcpOAuthTools,
   exportUserData,
+  fetchMcpOAuthConnections,
   listAgentConversations,
+  revokeMcpOAuthConnection,
   revokeAllSessions,
+  startMcpOAuthConnection,
   submitFeedback,
   updateAgentConversation,
   type AgentConversationBranchAction,
@@ -43,14 +47,20 @@ import { MemoryPanel } from "./MemoryPanel";
 import { MessageComposer } from "./MessageComposer";
 import { MessageView, type MessageAction } from "./MessageView";
 import { WorkspaceHeader, type ConnectionState } from "./WorkspaceHeader";
+import { McpConnectionsDialog, type McpConnectionNotice } from "./McpConnectionsDialog";
 import type { UIMessage } from "ai";
+import type { McpOAuthCallbackResult } from "../lib/mcp-oauth";
 
 export function ChatWorkspace({
   session,
+  mcpOAuthResult,
+  onMcpOAuthResultConsumed,
   onMemberLogin,
   onLogout,
 }: {
   session: SessionProjection;
+  mcpOAuthResult: McpOAuthCallbackResult | null;
+  onMcpOAuthResultConsumed: () => void;
   onMemberLogin: () => void;
   onLogout: () => Promise<void>;
 }) {
@@ -66,11 +76,94 @@ export function ChatWorkspace({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarView, setSidebarView] = useState<"history" | "files" | "settings">("history");
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [mcpConnectionsOpen, setMcpConnectionsOpen] = useState(false);
+  const [mcpConnections, setMcpConnections] = useState(session.mcpConnections);
+  const [mcpBusyServerId, setMcpBusyServerId] = useState("");
+  const [mcpConnectionNotice, setMcpConnectionNotice] = useState<McpConnectionNotice | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const bootstrapped = useRef(false);
+  const mcpRefresh = useRef<Promise<void> | null>(null);
   const conversationSnapshots = useRef(new Map<string, AgentConversation>());
   const settingsQueues = useRef(new Map<string, Promise<void>>());
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
+  const accountOperationBusy = accountBusy || Boolean(mcpBusyServerId);
+
+  const refreshMcpConnections = useCallback((): Promise<void> => {
+    if (session.access !== "member") return Promise.resolve();
+    if (mcpRefresh.current) return mcpRefresh.current;
+    setMcpBusyServerId("__refresh__");
+    const task = fetchMcpOAuthConnections()
+      .then((result) => setMcpConnections(result.connections))
+      .catch((error) => {
+        setMcpConnectionNotice({ kind: "error", text: errorMessage(error, "MCP 连接状态刷新失败。") });
+      })
+      .finally(() => {
+        if (mcpRefresh.current !== task) return;
+        mcpRefresh.current = null;
+        setMcpBusyServerId("");
+      });
+    mcpRefresh.current = task;
+    return task;
+  }, [session.access]);
+
+  useEffect(() => {
+    if (!mcpOAuthResult) return;
+    setMcpConnectionsOpen(true);
+    setMcpConnectionNotice(mcpOAuthResult === "connected"
+      ? { kind: "success", text: "MCP 已连接。" }
+      : mcpOAuthResult === "review_required"
+        ? { kind: "warning", text: "MCP 配置已变化，需要重新授权或管理员重审。" }
+        : { kind: "error", text: "MCP 授权未完成，请重试。" });
+    onMcpOAuthResultConsumed();
+    void refreshMcpConnections();
+  }, [mcpOAuthResult, onMcpOAuthResultConsumed, refreshMcpConnections]);
+
+  async function connectMcp(serverId: string) {
+    if (busy || accountBusy || mcpBusyServerId) return;
+    setMcpBusyServerId(serverId);
+    setMcpConnectionNotice(null);
+    try {
+      const result = await startMcpOAuthConnection(serverId);
+      window.location.assign(result.authorizationUrl);
+    } catch (error) {
+      setMcpConnectionNotice({ kind: "error", text: errorMessage(error, "MCP 授权无法启动。") });
+    } finally {
+      setMcpBusyServerId("");
+    }
+  }
+
+  async function discoverMcpTools(serverId: string) {
+    if (busy || accountBusy || mcpBusyServerId) return;
+    setMcpBusyServerId(serverId);
+    setMcpConnectionNotice(null);
+    try {
+      const candidate = await discoverMemberMcpOAuthTools(serverId);
+      setMcpConnectionNotice({
+        kind: "success",
+        text: `已生成发现候选：${candidate.tools} 个工具，${candidate.rejected} 个被拒绝。`,
+      });
+    } catch (error) {
+      setMcpConnectionNotice({ kind: "error", text: errorMessage(error, "MCP 工具发现失败。") });
+    } finally {
+      setMcpBusyServerId("");
+    }
+  }
+
+  async function revokeMcpConnection(serverId: string) {
+    if (busy || accountBusy || mcpBusyServerId) return;
+    setMcpBusyServerId(serverId);
+    setMcpConnectionNotice(null);
+    try {
+      await revokeMcpOAuthConnection(serverId);
+      const result = await fetchMcpOAuthConnections();
+      setMcpConnections(result.connections);
+      setMcpConnectionNotice({ kind: "success", text: "MCP 授权已撤销。" });
+    } catch (error) {
+      setMcpConnectionNotice({ kind: "error", text: errorMessage(error, "MCP 授权撤销失败。") });
+    } finally {
+      setMcpBusyServerId("");
+    }
+  }
 
   const refreshConversations = useCallback(async (preferredId?: string) => {
     const next = await listAgentConversations();
@@ -140,7 +233,7 @@ export function ChatWorkspace({
     sourceMessageId: string,
     editedText?: string,
   ) => {
-    if (busy || accountBusy) throw new Error("请先停止当前任务。");
+    if (busy || accountOperationBusy) throw new Error("请先停止当前任务。");
     setWorkspaceError("");
     const currentSource = conversationSnapshots.current.get(source.id) || source;
     const result = await createAgentConversationBranch(currentSource, {
@@ -152,7 +245,7 @@ export function ChatWorkspace({
     updateConversationInList(result.conversation);
     setActiveId(result.conversation.id);
     setSidebarOpen(false);
-  }, [accountBusy, busy, updateConversationInList]);
+  }, [accountOperationBusy, busy, updateConversationInList]);
 
   const renameConversation = async (conversation: AgentConversation, title: string) => {
     setWorkspaceError("");
@@ -215,6 +308,7 @@ export function ChatWorkspace({
 
   const handleLogout = async () => {
     if (busy || accountBusy) return;
+    if (mcpBusyServerId) return;
     clearUserDrafts(session.user);
     await onLogout();
   };
@@ -228,13 +322,13 @@ export function ChatWorkspace({
     : null;
   const parentMissing = Boolean(activeConversation?.parentChatId && !parentConversation);
   const returnToParentConversation = () => {
-    if (!parentConversation || busy || accountBusy) return;
+    if (!parentConversation || busy || accountOperationBusy) return;
     setActiveId(parentConversation.id);
     setSidebarOpen(false);
   };
 
   const handleRevokeAllSessions = async () => {
-    if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
+    if (busy || accountOperationBusy) throw new Error("请等待当前任务或账号操作完成。");
     setAccountBusy(true);
     try {
       await revokeAllSessions();
@@ -246,7 +340,7 @@ export function ChatWorkspace({
   };
 
   const handleDeleteUserData = async () => {
-    if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
+    if (busy || accountOperationBusy) throw new Error("请等待当前任务或账号操作完成。");
     setAccountBusy(true);
     try {
       await deleteUserData();
@@ -258,7 +352,7 @@ export function ChatWorkspace({
   };
 
   const handleUserDataExport = async () => {
-    if (busy || accountBusy) throw new Error("请等待当前任务或账号操作完成。");
+    if (busy || accountOperationBusy) throw new Error("请等待当前任务或账号操作完成。");
     setAccountBusy(true);
     try {
       const result = await exportUserData();
@@ -295,14 +389,20 @@ export function ChatWorkspace({
         session={session}
         conversation={activeConversation}
         routeId={routeId}
+        mcpConnections={mcpConnections}
         connectionState={connectionState}
         busy={busy}
-        accountBusy={accountBusy}
+        accountBusy={accountOperationBusy}
         parentConversation={parentConversation}
         parentMissing={parentMissing}
         onOpenSidebar={() => setSidebarOpen(true)}
         onOpenRouteSettings={openRouteSettings}
         onOpenMemory={() => setMemoryOpen(true)}
+        onOpenMcpConnections={() => {
+          setMcpConnectionsOpen(true);
+          setMcpConnectionNotice(null);
+          void refreshMcpConnections();
+        }}
         onReturnToParent={returnToParentConversation}
         onMemberLogin={onMemberLogin}
         onLogout={handleLogout}
@@ -318,7 +418,7 @@ export function ChatWorkspace({
           skillMode={skillMode}
           skillIds={skillIds}
           view={sidebarView}
-          busy={busy || accountBusy}
+          busy={busy || accountOperationBusy}
           loading={loading}
           onClose={() => setSidebarOpen(false)}
           onViewChange={setSidebarView}
@@ -356,7 +456,7 @@ export function ChatWorkspace({
               routeId={routeId}
               skillMode={skillMode}
               skillIds={skillIds}
-              blocked={accountBusy}
+              blocked={accountOperationBusy}
               onBusyChange={setBusy}
               onConnectionStateChange={setConnectionState}
               onConversationChanged={handleConversationChanged}
@@ -371,6 +471,18 @@ export function ChatWorkspace({
         </section>
       </div>
       {session.capabilities.memory && <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />}
+      {session.access === "member" && mcpConnectionsOpen && (
+        <McpConnectionsDialog
+          connections={mcpConnections}
+          busyServerId={busy || accountBusy ? "__blocked__" : mcpBusyServerId}
+          notice={mcpConnectionNotice}
+          onClose={() => { if (!mcpBusyServerId) setMcpConnectionsOpen(false); }}
+          onRefresh={refreshMcpConnections}
+          onConnect={connectMcp}
+          onDiscover={discoverMcpTools}
+          onRevoke={revokeMcpConnection}
+        />
+      )}
     </main>
   );
 }

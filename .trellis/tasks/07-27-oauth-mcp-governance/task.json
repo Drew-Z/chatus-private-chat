@@ -3,7 +3,7 @@
   "name": "oauth-mcp-governance",
   "title": "OAuth MCP 授权与治理",
   "description": "管理员 OAuth 配置、成员 PKCE、加密 token、漂移重审和副作用确认。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-07-27",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/oauth-mcp-governance",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
@@ -22,5 +22,56 @@
   "parent": "07-27-product-experience-governance-q3",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Final validation passed; Vite client build and structural checks including OAuth callback and MCP single-flight guards",
+        "at": "2026-08-01T16:39:55.731925+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Final validation passed; 40 files and 501 tests using only local fixtures",
+        "at": "2026-08-01T16:39:56.753298+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Final validation passed; 77 passed and 33 viewport-conditional skips across the five-view workspace matrix",
+        "at": "2026-08-01T16:39:57.772701+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Final validation passed; 1 local fake-Provider Agent browser test",
+        "at": "2026-08-01T16:39:58.968276+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Final validation passed; Worker, React client, and browser TypeScript checks",
+        "at": "2026-08-01T16:40:00.163480+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Final validation passed; Wrangler 4.110.0 built 6464.12 KiB and gzip 1310.10 KiB without deployment",
+        "at": "2026-08-01T16:40:01.236601+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Final validation passed; no whitespace errors",
+        "at": "2026-08-01T16:40:02.422421+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Final validation passed; repository consistency OK",
+        "at": "2026-08-01T16:40:25.687112+00:00"
+      }
+    ]
+  }
 }

@@ -1,5 +1,6 @@
 import type {
   AdminConfig,
+  AdminMcpAuthConfig,
   AdminMcpDiscoveryResponse,
   AdminMcpServerConfig,
   AdminSkillConfig,
@@ -9,6 +10,7 @@ import type {
 export const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
 export const MCP_SECRET_REF_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
 export const BUILTIN_TEXT_STATS_ID = "builtin:text_stats";
+export const MCP_OAUTH_CALLBACK_PATH = "/api/mcp/oauth/callback" as const;
 
 export type CapabilityValidation = { ok: true } | { ok: false; message: string };
 
@@ -29,7 +31,16 @@ export type ToolPolicyDraft = {
   confirmation: AdminToolConfig["confirmation"];
 };
 
-export type McpServerDraft = AdminMcpServerConfig & { id: string };
+export type McpServerDraft = Omit<AdminMcpServerConfig, "auth"> & {
+  id: string;
+  authType: AdminMcpAuthConfig["type"];
+  secretRef: string;
+  issuer: string;
+  clientId: string;
+  scopes: string;
+  clientSecretRef: string;
+  configRevision: string;
+};
 
 export function compareCapabilityText(left: string, right: string): number {
   if (left < right) return -1;
@@ -79,13 +90,19 @@ export function createToolPolicyDraft(tool: AdminToolConfig): ToolPolicyDraft {
 }
 
 export function createMcpServerDraft(server: AdminMcpServerConfig | undefined, id: string): McpServerDraft {
+  const auth = server?.auth;
   return {
     id,
     enabled: server?.enabled ?? false,
     label: server?.label || "",
     endpoint: server?.endpoint || "https://",
-    authType: server?.authType || "none",
-    ...(server?.secretRef ? { secretRef: server.secretRef } : {}),
+    authType: auth?.type || "none",
+    secretRef: auth?.type === "bearer" || auth?.type === "x-api-key" ? auth.secretRef : "",
+    issuer: auth?.type === "oauth2" ? auth.issuer : "",
+    clientId: auth?.type === "oauth2" ? auth.clientId : "",
+    scopes: auth?.type === "oauth2" ? auth.scopes.join(" ") : "",
+    clientSecretRef: auth?.type === "oauth2" ? auth.clientSecretRef || "" : "",
+    configRevision: auth?.type === "oauth2" ? auth.configRevision : "",
   };
 }
 
@@ -123,8 +140,19 @@ export function validateMcpServerDraft(
   if (previousId !== draft.id && hasOwn(config.mcpServers, draft.id)) return invalid("这个 MCP Server ID 已存在。");
   if (!draft.label.trim() || draft.label.trim().length > 80) return invalid("MCP Server 名称不能为空且最多 80 个字符。");
   if (!isHttpsEndpoint(draft.endpoint)) return invalid("MCP endpoint 必须是有效的公开 HTTPS 地址。");
-  if (draft.authType !== "none" && !MCP_SECRET_REF_PATTERN.test(draft.secretRef || "")) {
-    return invalid("启用认证时必须填写有效的 Secret Ref。");
+  if ((draft.authType === "bearer" || draft.authType === "x-api-key") && !MCP_SECRET_REF_PATTERN.test(draft.secretRef.trim())) {
+    return invalid("静态认证必须填写有效的 Secret Ref。");
+  }
+  if (draft.authType === "oauth2") {
+    if (!isHttpsOAuthIssuer(draft.issuer)) return invalid("OAuth issuer 必须是有效的公开 HTTPS 地址。");
+    const clientId = draft.clientId.trim();
+    if (!clientId || clientId.length > 256 || /[\u0000-\u001f\u007f]/.test(clientId)) {
+      return invalid("OAuth Client ID 必填且最多 256 个字符。");
+    }
+    if (!parseMcpOAuthScopes(draft.scopes).length) return invalid("OAuth 至少需要一个有效 Scope。");
+    if (draft.clientSecretRef.trim() && !MCP_SECRET_REF_PATTERN.test(draft.clientSecretRef.trim())) {
+      return invalid("OAuth Client Secret Ref 格式无效。");
+    }
   }
   return { ok: true };
 }
@@ -164,6 +192,7 @@ export function applyToolPolicyDraft(config: AdminConfig, toolId: string, draft:
         label: draft.label.trim(),
         ...(draft.description.trim() ? { description: draft.description.trim() } : { description: undefined }),
         confirmation: draft.confirmation,
+        ...(tool.executor.type === "mcp" && draft.enabled ? { reviewRequired: false } : {}),
       },
     },
   };
@@ -186,8 +215,7 @@ export function applyMcpServerDraft(config: AdminConfig, previousId: string | nu
     enabled: draft.enabled,
     label: draft.label.trim(),
     endpoint: draft.endpoint.trim(),
-    authType: draft.authType,
-    ...(draft.authType !== "none" && draft.secretRef?.trim() ? { secretRef: draft.secretRef.trim() } : {}),
+    auth: createMcpAuthConfig(draft),
   };
   return { ...next, mcpServers };
 }
@@ -215,16 +243,23 @@ export function mergeMcpDiscovery(
   for (const candidate of candidates) {
     const { id, ...toolConfig } = candidate;
     const existing = tools[id];
-    const sameFingerprint = existing?.executor.type === "mcp"
+    const sameReview = existing?.executor.type === "mcp"
       && existing.executor.serverId === result.serverId
-      && existing.schemaFingerprint === candidate.schemaFingerprint;
+      && existing.executor.remoteName === candidate.executor.remoteName
+      && existing.schemaFingerprint === candidate.schemaFingerprint
+      && existing.securityFingerprint === candidate.securityFingerprint
+      && existing.sideEffect === candidate.sideEffect
+      && existing.reviewRevision === candidate.reviewRevision;
     if (!existing) added += 1;
-    else if (sameFingerprint) unchanged += 1;
+    else if (sameReview) unchanged += 1;
     else changed += 1;
     tools[id] = {
       ...toolConfig,
-      enabled: sameFingerprint ? existing.enabled : false,
-      confirmation: sameFingerprint && existing.confirmation === "always" ? "always" : "first-per-conversation",
+      enabled: sameReview ? existing.enabled : false,
+      confirmation: candidate.sideEffect === "read"
+        ? sameReview && existing.confirmation === "always" ? "always" : "first-per-conversation"
+        : "always",
+      reviewRequired: sameReview ? existing.reviewRequired === true : true,
     };
   }
   return { config: { ...config, tools }, added, changed, unchanged };
@@ -305,6 +340,46 @@ function isHttpsEndpoint(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isHttpsOAuthIssuer(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return url.protocol === "https:"
+      && Boolean(hostname)
+      && hostname !== "localhost"
+      && !hostname.endsWith(".localhost")
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
+function createMcpAuthConfig(draft: McpServerDraft): AdminMcpAuthConfig {
+  if (draft.authType === "none") return { version: 1, type: "none" };
+  if (draft.authType === "bearer" || draft.authType === "x-api-key") {
+    return { version: 1, type: draft.authType, secretRef: draft.secretRef.trim() };
+  }
+  return {
+    version: 1,
+    type: "oauth2",
+    issuer: draft.issuer.trim().replace(/\/$/, ""),
+    clientId: draft.clientId.trim(),
+    scopes: parseMcpOAuthScopes(draft.scopes),
+    callbackPath: MCP_OAUTH_CALLBACK_PATH,
+    configRevision: draft.configRevision,
+    ...(draft.clientSecretRef.trim() ? { clientSecretRef: draft.clientSecretRef.trim() } : {}),
+  };
+}
+
+function parseMcpOAuthScopes(value: string): string[] {
+  return [...new Set(value.split(/\s+/).map((scope) => scope.trim()).filter((scope) => (
+    scope.length > 0 && scope.length <= 120 && !/\s/.test(scope)
+  )))].slice(0, 32).sort(compareCapabilityText);
 }
 
 function hasOwn(value: object, key: string): boolean {

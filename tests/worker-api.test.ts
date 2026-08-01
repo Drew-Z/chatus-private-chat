@@ -101,6 +101,120 @@ async function readCapabilityEvents(response: Response): Promise<any[]> {
     .map((line) => JSON.parse(line.slice(6)));
 }
 
+async function seedMcpOAuthData(label: string, serverId: string) {
+  const state = env.USER_STATE.getByName(label);
+  const now = Date.now();
+  const auth = {
+    version: 1 as const,
+    type: "oauth2" as const,
+    issuer: "https://export-issuer.example",
+    clientId: "chatus-export-test",
+    scopes: ["tools.read"],
+    callbackPath: "/api/mcp/oauth/callback",
+    configRevision: "a".repeat(64),
+  };
+  const accessToken = `oauth-access-${serverId}`;
+  const refreshToken = `oauth-refresh-${serverId}`;
+  await state.storeMcpOAuthToken({
+    ownerLabel: label,
+    serverId,
+    auth,
+    token: {
+      accessToken,
+      refreshToken,
+      expiresAt: now + 60 * 60_000,
+      grantedScopes: [...auth.scopes],
+      issuer: auth.issuer,
+      clientId: auth.clientId,
+      configRevision: auth.configRevision,
+    },
+    nowMs: now,
+  });
+  await state.storeMcpOAuthState({
+    ownerLabel: label,
+    state: "s".repeat(43),
+    sessionFingerprint: "b".repeat(64),
+    serverId,
+    configRevision: auth.configRevision,
+    verifier: "v".repeat(43),
+    callbackUrl: "https://example.test/api/mcp/oauth/callback",
+    expiresAt: now + 60_000,
+    nowMs: now,
+  });
+  await state.storeMcpOAuthDiscoveryCandidate({
+    ownerLabel: label,
+    serverId,
+    configRevision: auth.configRevision,
+    discovery: {
+      serverId,
+      rejected: 0,
+      tools: [{
+        id: `mcp:${serverId}:lookup`,
+        label: "Lookup",
+        description: "Secret-free candidate",
+        inputSchema: { type: "object", properties: {} },
+        confirmation: "first-per-conversation",
+        executor: { type: "mcp", serverId, remoteName: "lookup" },
+        schemaFingerprint: "c".repeat(64),
+        securityFingerprint: "d".repeat(64),
+        sideEffect: "read",
+        reviewRevision: "e".repeat(64),
+        reviewRequired: true,
+      }],
+    },
+    nowMs: now,
+  });
+  return { state, accessToken, refreshToken };
+}
+
+async function readUntilCapabilityConfirmation(response: Response): Promise<{
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  decoder: TextDecoder;
+  buffer: string;
+  events: any[];
+  confirmation: any;
+}> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const events: any[] = [];
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error("Capability stream ended before confirmation");
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      const line = frame.split(/\r?\n/).find((entry) => entry.startsWith("data: "));
+      if (!line) continue;
+      const event = JSON.parse(line.slice(6));
+      events.push(event);
+      if (event.type === "confirmation_required") {
+        return { reader, decoder, buffer, events, confirmation: event };
+      }
+    }
+  }
+}
+
+async function drainCapabilityReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  decoder: TextDecoder,
+  initialBuffer: string,
+): Promise<any[]> {
+  let buffer = initialBuffer;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+  }
+  buffer += decoder.decode();
+  return buffer
+    .split("\n\n")
+    .map((frame) => frame.split(/\r?\n/).find((entry) => entry.startsWith("data: ")))
+    .filter((line): line is string => Boolean(line))
+    .map((line) => JSON.parse(line.slice(6)));
+}
+
 function openAiTextEvent(text: string): string {
   return `data: ${JSON.stringify({
     choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
@@ -1706,7 +1820,6 @@ describe("Worker API", () => {
               endpoint: "https://mcp.example/rpc",
               authType: "none",
             },
-            malformed: { endpoint: "http://localhost", authType: "unknown" },
           },
           tools: {
             "builtin:text_stats": {
@@ -1747,7 +1860,8 @@ describe("Worker API", () => {
     });
     expect(configResponse.status).toBe(200);
     const saved = await configResponse.json() as any;
-    expect(saved.config.mcpServers).not.toHaveProperty("malformed");
+    expect(saved.config.mcpServers.remote).toMatchObject({ auth: { version: 1, type: "none" } });
+    expect(saved.config.mcpServers.remote).not.toHaveProperty("authType");
     expect(saved.config.tools).not.toHaveProperty("malformed");
     expect(saved.config.skills).not.toHaveProperty("malformed");
     expect(saved.config.tools["mcp:remote:lookup"].confirmation).toBe("first-per-conversation");
@@ -3372,6 +3486,7 @@ describe("Worker API", () => {
     const agentConversation = (await agentChat.json() as { conversation: { id: string } }).conversation;
     const rootAgent = await getRootAgent(label);
     const conversationAgent = await getConversationAgent(label, agentConversation.id);
+    const oauthData = await seedMcpOAuthData(label, "purge-oauth");
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(0);
 
     const identityStorageKey = "chatus:agent-identity:v1";
@@ -3418,6 +3533,16 @@ describe("Worker API", () => {
     await expect(env.CHAT_STORE.get(legacyChatIndexKey)).resolves.toBeNull();
     await expect(env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json")).resolves.toEqual(preservedConfig);
     await expect(env.CHAT_STORE.get(preservedRouteSecretKey)).resolves.toBe(preservedRouteSecretRecord);
+    await runInDurableObject(oauthData.state, async (_instance, state) => {
+      for (const table of [
+        "mcp_oauth_states",
+        "mcp_oauth_tokens",
+        "mcp_oauth_discovery_candidates",
+        "mcp_oauth_owner",
+      ]) {
+        expect(state.storage.sql.exec<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table}`).one().count).toBe(0);
+      }
+    });
     await runInDurableObject(rootAgent, async (_instance, state) => {
       await expect(state.storage.get(identityStorageKey)).resolves.toBeUndefined();
     });
@@ -3468,6 +3593,7 @@ describe("Worker API", () => {
 
   it("exports bounded user conversations and memory without message metadata or file URLs", async () => {
     const { cookie, label } = await login();
+    const oauthData = await seedMcpOAuthData(label, "export-oauth");
     await apiRequest("/api/agent/memory", cookie, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -3528,6 +3654,11 @@ describe("Worker API", () => {
     expect(JSON.stringify(payload)).not.toContain("internal");
     expect(JSON.stringify(payload)).not.toContain("data:image");
     expect(JSON.stringify(payload)).not.toContain("omit");
+    expect(JSON.stringify(payload)).not.toContain(oauthData.accessToken);
+    expect(JSON.stringify(payload)).not.toContain(oauthData.refreshToken);
+    expect(JSON.stringify(payload)).not.toContain("ciphertext");
+    expect(JSON.stringify(payload)).not.toContain("mcp_oauth");
+    expect(JSON.stringify(payload)).not.toContain("export-issuer.example");
   });
 
   it("keeps user exports isolated and requires an authenticated session", async () => {
@@ -4024,7 +4155,7 @@ describe("Worker API", () => {
     expect(JSON.stringify(audit)).not.toContain(secret);
   });
 
-  it("discovers bounded read-only MCP tools using saved secret references", async () => {
+  it("discovers bounded governed MCP tools using saved secret references", async () => {
     const cookie = await adminLogin();
     expect((await apiRequest("/api/admin/mcp-secrets/MCP_DISCOVERY_KEY", cookie, {
       method: "PUT",
@@ -4096,15 +4227,27 @@ describe("Worker API", () => {
     expect(response.status, JSON.stringify(payload)).toBe(200);
     expect(payload).toMatchObject({
       serverId: "fixture",
-      rejected: 2,
-      tools: [{
-        id: "mcp:fixture:lookup",
-        label: "Lookup",
-        confirmation: "first-per-conversation",
-        executor: { type: "mcp", serverId: "fixture", remoteName: "lookup" },
-      }],
+      rejected: 1,
+      tools: [
+        {
+          id: "mcp:fixture:lookup",
+          label: "Lookup",
+          confirmation: "first-per-conversation",
+          sideEffect: "read",
+          reviewRequired: true,
+          executor: { type: "mcp", serverId: "fixture", remoteName: "lookup" },
+        },
+        {
+          id: "mcp:fixture:delete_item",
+          confirmation: "always",
+          sideEffect: "destructive",
+          reviewRequired: true,
+        },
+      ],
     });
     expect(payload.tools[0].schemaFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(payload.tools[0].securityFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(payload.tools[0].reviewRevision).toMatch(/^[a-f0-9]{64}$/);
     expect(seenHeaders.some((headers) => headers.get("Authorization") === "Bearer mcp-discovery-secret")).toBe(true);
     expect(JSON.stringify(payload)).not.toContain("mcp-discovery-secret");
     expect(JSON.stringify(payload)).not.toContain("mcp-discovery.example");
@@ -4122,10 +4265,300 @@ describe("Worker API", () => {
     await expect(unsafe.json()).resolves.toMatchObject({ error: "mcp_endpoint_invalid" });
   });
 
+  it("projects persisted MCP drift as disabled until an explicit revisioned review", async () => {
+    const cookie = await adminLogin();
+    const snapshot = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
+    const reviewRevision = "d".repeat(64);
+    snapshot.config.mcpServers = {
+      fixture: {
+        enabled: true,
+        label: "Fixture",
+        endpoint: "https://drift.example/rpc",
+        auth: { version: 1, type: "none" },
+      },
+    };
+    snapshot.config.tools = {
+      ...snapshot.config.tools,
+      "mcp:fixture:lookup": {
+        enabled: true,
+        label: "Lookup",
+        inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        confirmation: "first-per-conversation",
+        executor: { type: "mcp", serverId: "fixture", remoteName: "lookup" },
+        schemaFingerprint: "a".repeat(64),
+        securityFingerprint: "b".repeat(64),
+        sideEffect: "read",
+        reviewRevision,
+        reviewRequired: false,
+      },
+    };
+    const savedResponse = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: snapshot.config, expectedRevision: snapshot.revision }),
+    });
+    expect(savedResponse.status).toBe(200);
+
+    await env.CHAT_STORE.put("config:mcp_tool_drift", JSON.stringify({
+      version: 1,
+      tools: {
+        "mcp:fixture:lookup": { reviewRevision, observedAt: "2026-08-01T12:00:00.000Z" },
+      },
+    }));
+    const drifted = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
+    expect(drifted.config.tools["mcp:fixture:lookup"]).toMatchObject({
+      enabled: false,
+      reviewRequired: true,
+      reviewRevision,
+    });
+    expect(JSON.stringify(await env.CHAT_STORE.get("config:mcp_tool_drift"))).not.toContain("drift.example");
+
+    drifted.config.tools["mcp:fixture:lookup"].enabled = true;
+    drifted.config.tools["mcp:fixture:lookup"].reviewRequired = false;
+    const reviewedResponse = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: drifted.config, expectedRevision: drifted.revision }),
+    });
+    expect(reviewedResponse.status).toBe(200);
+    await expect(env.CHAT_STORE.get("config:mcp_tool_drift")).resolves.toBeNull();
+    const reviewed = await reviewedResponse.json() as any;
+    expect(reviewed.config.tools["mcp:fixture:lookup"]).toMatchObject({ enabled: true, reviewRequired: false });
+
+    await env.CHAT_STORE.put("config:mcp_tool_drift", JSON.stringify({
+      version: 1,
+      tools: { "mcp:fixture:lookup": { reviewRevision, observedAt: "not-a-date", endpoint: "https://forbidden.example" } },
+    }));
+    const malformed = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
+    expect(malformed.config.tools["mcp:fixture:lookup"]).toMatchObject({ enabled: true, reviewRequired: false });
+    expect(JSON.stringify(malformed)).not.toContain("forbidden.example");
+  });
+
+  it("keeps the member OAuth PKCE and encrypted token lifecycle server-side", async () => {
+    const adminCookie = await adminLogin();
+    const snapshotResponse = await apiRequest("/api/admin/config", adminCookie);
+    const snapshot = await snapshotResponse.json() as any;
+    snapshot.config.mcpServers = {
+      oauth: {
+        enabled: true,
+        label: "OAuth tools",
+        endpoint: "https://oauth-mcp.example/rpc",
+        auth: {
+          version: 1,
+          type: "oauth2",
+          issuer: "https://issuer.example",
+          clientId: "chatus-worker-test",
+          scopes: ["profile", "tools.read"],
+          callbackPath: "/api/mcp/oauth/callback",
+        },
+      },
+    };
+    const savedResponse = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: snapshot.config, expectedRevision: snapshot.revision }),
+    });
+    const saved = await savedResponse.json() as any;
+    expect(savedResponse.status, JSON.stringify(saved)).toBe(200);
+    expect(saved.config.mcpServers.oauth.auth).toMatchObject({
+      version: 1,
+      type: "oauth2",
+      callbackPath: "/api/mcp/oauth/callback",
+    });
+    expect(saved.config.mcpServers.oauth.auth.configRevision).toMatch(/^[a-f0-9]{64}$/);
+
+    let tokenCalls = 0;
+    let mcpRemoteCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      if (url.origin === "https://oauth-mcp.example") {
+        expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer worker-oauth-access");
+        if (init?.method === "DELETE") return new Response(null, { status: 405 });
+        const payload = JSON.parse(String(init?.body));
+        mcpRemoteCalls += 1;
+        if (payload.method === "initialize") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: payload.params.protocolVersion,
+              capabilities: { tools: {} },
+              serverInfo: { name: "oauth-fixture", version: "1.0.0" },
+            },
+          }), { headers: { "Content-Type": "application/json" } });
+        }
+        if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
+        if (payload.method === "tools/list") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { tools: [{
+              name: "lookup",
+              title: "Lookup",
+              description: "Find public information",
+              inputSchema: { type: "object", properties: { query: { type: "string" } } },
+              annotations: { readOnlyHint: true, destructiveHint: false },
+              execution: { taskSupport: "forbidden" },
+            }] },
+          }), { headers: { "Content-Type": "application/json" } });
+        }
+        throw new Error(`unexpected OAuth MCP method ${payload.method}`);
+      }
+      if (url.pathname.startsWith("/.well-known/")) {
+        return new Response(JSON.stringify({
+          issuer: "https://issuer.example",
+          authorization_endpoint: "https://issuer.example/authorize",
+          token_endpoint: "https://issuer.example/token",
+          code_challenge_methods_supported: ["S256"],
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      expect(url.toString()).toBe("https://issuer.example/token");
+      tokenCalls += 1;
+      const body = new URLSearchParams(String(init?.body));
+      expect(body.get("grant_type")).toBe("authorization_code");
+      expect(body.get("code")).toBe("fixture-code");
+      expect(body.get("redirect_uri")).toBe("https://example.test/api/mcp/oauth/callback");
+      expect(body.get("code_verifier")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      return new Response(JSON.stringify({
+        access_token: "worker-oauth-access",
+        refresh_token: "worker-oauth-refresh",
+        token_type: "Bearer",
+        expires_in: 3600,
+        scope: "profile tools.read",
+      }), { headers: { "Content-Type": "application/json" } });
+    });
+
+    const member = await login(`oauth-member-${crypto.randomUUID()}`);
+    const before = await apiRequest("/api/session", member.cookie).then((response) => response.json()) as any;
+    expect(before.mcpConnections).toEqual([expect.objectContaining({
+      serverId: "oauth",
+      label: "OAuth tools",
+      connected: false,
+      status: "disconnected",
+      grantedScopes: [],
+    })]);
+    expect(JSON.stringify(before)).not.toContain("issuer.example");
+    expect(JSON.stringify(before)).not.toContain("oauth-mcp.example");
+
+    const startResponse = await apiRequest("/api/mcp/oauth/start", member.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: "oauth" }),
+    });
+    const start = await startResponse.json() as any;
+    expect(startResponse.status, JSON.stringify(start)).toBe(200);
+    const authorizationUrl = new URL(start.authorizationUrl);
+    expect(authorizationUrl.origin).toBe("https://issuer.example");
+    expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe("https://example.test/api/mcp/oauth/callback");
+    const state = authorizationUrl.searchParams.get("state");
+    expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const callback = await apiRequest(
+      `/api/mcp/oauth/callback?state=${encodeURIComponent(state)}&code=fixture-code`,
+      member.cookie,
+      { redirect: "manual" },
+    );
+    expect(callback.status).toBe(303);
+    expect(callback.headers.get("Location")).toBe("https://example.test/react-chat/?mcpOAuth=connected");
+    expect(tokenCalls).toBe(1);
+
+    const statusResponse = await apiRequest("/api/mcp/oauth/status", member.cookie);
+    const status = await statusResponse.json() as any;
+    expect(statusResponse.status).toBe(200);
+    expect(status.connections).toEqual([expect.objectContaining({
+      serverId: "oauth",
+      label: "OAuth tools",
+      connected: true,
+      reviewRequired: false,
+      status: "connected",
+      grantedScopes: ["profile", "tools.read"],
+    })]);
+    expect(JSON.stringify(status)).not.toContain("worker-oauth-access");
+    expect(JSON.stringify(status)).not.toContain("worker-oauth-refresh");
+    expect(JSON.stringify(status)).not.toContain("issuer.example");
+
+    const memberDiscoveryResponse = await apiRequest("/api/mcp/oauth/discovery", member.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: "oauth" }),
+    });
+    const memberDiscovery = await memberDiscoveryResponse.json() as any;
+    expect(memberDiscoveryResponse.status, JSON.stringify(memberDiscovery)).toBe(200);
+    expect(memberDiscovery).toMatchObject({ serverId: "oauth", tools: 1, rejected: 0 });
+    expect(memberDiscovery.candidateId).toMatch(/^[a-f0-9-]{36}$/);
+    const remoteCallsAfterMemberDiscovery = mcpRemoteCalls;
+
+    const adminCandidateResponse = await apiRequest("/api/admin/mcp-discovery", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: "oauth", memberLabel: member.label }),
+    });
+    const adminCandidate = await adminCandidateResponse.json() as any;
+    expect(adminCandidateResponse.status, JSON.stringify(adminCandidate)).toBe(200);
+    expect(adminCandidate).toMatchObject({
+      serverId: "oauth",
+      rejected: 0,
+      tools: [{
+        id: "mcp:oauth:lookup",
+        sideEffect: "read",
+        confirmation: "first-per-conversation",
+        reviewRequired: true,
+      }],
+    });
+    expect(mcpRemoteCalls).toBe(remoteCallsAfterMemberDiscovery);
+    expect(JSON.stringify(memberDiscovery)).not.toContain("worker-oauth-access");
+    expect(JSON.stringify(adminCandidate)).not.toContain("worker-oauth-access");
+    expect(JSON.stringify(adminCandidate)).not.toContain("issuer.example");
+    expect(JSON.stringify(adminCandidate)).not.toContain("oauth-mcp.example");
+
+    const replay = await apiRequest(
+      `/api/mcp/oauth/callback?state=${encodeURIComponent(state)}&code=fixture-code`,
+      member.cookie,
+      { redirect: "manual" },
+    );
+    expect(replay.status).toBe(303);
+    expect(replay.headers.get("Location")).toBe("https://example.test/react-chat/?mcpOAuth=error");
+    expect(tokenCalls).toBe(1);
+
+    const userState = env.USER_STATE.getByName(member.label);
+    await runInDurableObject(userState, async (_instance, durableState) => {
+      const record = durableState.storage.sql.exec<{ encrypted_record: string }>(
+        "SELECT encrypted_record FROM mcp_oauth_tokens WHERE server_id = 'oauth'",
+      ).one().encrypted_record;
+      expect(record).not.toContain("worker-oauth-access");
+      expect(record).not.toContain("worker-oauth-refresh");
+      const candidate = durableState.storage.sql.exec<{ discovery_json: string }>(
+        "SELECT discovery_json FROM mcp_oauth_discovery_candidates WHERE server_id = 'oauth'",
+      ).one().discovery_json;
+      expect(candidate).not.toContain("worker-oauth-access");
+      expect(candidate).not.toContain("worker-oauth-refresh");
+      expect(candidate).not.toContain("issuer.example");
+    });
+    const audit = await apiRequest("/api/admin/audit", adminCookie).then((response) => response.json()) as any;
+    expect(JSON.stringify(audit)).not.toContain("worker-oauth-access");
+    expect(JSON.stringify(audit)).not.toContain("worker-oauth-refresh");
+
+    const revoke = await apiRequest("/api/mcp/oauth/revoke", member.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: "oauth" }),
+    });
+    await expect(revoke.json()).resolves.toEqual({ ok: true, serverId: "oauth" });
+    await runInDurableObject(userState, async (_instance, durableState) => {
+      expect(durableState.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM mcp_oauth_discovery_candidates",
+      ).one().count).toBe(0);
+    });
+    const after = await apiRequest("/api/mcp/oauth/status", member.cookie).then((response) => response.json()) as any;
+    expect(after.connections).toEqual([expect.objectContaining({ connected: false, status: "disconnected" })]);
+  });
+
   it("continues the same capability stream after MCP approval and remembers conversation trust", async () => {
     const adminCookie = await adminLogin();
     const schema = { type: "object", properties: { query: { type: "string" } }, required: ["query"] };
     let mcpCallCount = 0;
+    let destructive = false;
     const providerBodies: any[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
@@ -4152,7 +4585,7 @@ describe("Worker API", () => {
               name: "lookup",
               title: "Lookup",
               inputSchema: schema,
-              annotations: { readOnlyHint: true, destructiveHint: false },
+              annotations: { readOnlyHint: !destructive, destructiveHint: destructive },
               execution: { taskSupport: "forbidden" },
             }] },
           }), { headers: { "Content-Type": "application/json" } });
@@ -4226,7 +4659,7 @@ describe("Worker API", () => {
           authType: "none",
         },
       },
-      tools: { [discoveredTool.id]: { ...discoveredTool, enabled: true } },
+      tools: { [discoveredTool.id]: { ...discoveredTool, enabled: true, reviewRequired: false } },
       skills: {
         remote: {
           enabled: true,
@@ -4236,7 +4669,8 @@ describe("Worker API", () => {
         },
       },
     }));
-    const { cookie } = await login();
+    const member = await login();
+    const { cookie } = member;
     const startChat = () => apiRequest("/api/chat", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
@@ -4315,6 +4749,103 @@ describe("Worker API", () => {
       expect.objectContaining({ type: "tool", event: expect.objectContaining({ status: "approved", confirmation: "conversation" }) }),
       { type: "assistant_delta", text: "远程查询完成" },
     ]));
+
+    destructive = true;
+    const destructiveDiscovery = await apiRequest("/api/admin/mcp-discovery", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId: "approval",
+        endpoint: "https://approval-mcp.example/rpc",
+        authType: "none",
+      }),
+    }).then((item) => item.json()) as any;
+    const destructiveTool = destructiveDiscovery.tools[0];
+    expect(destructiveTool).toMatchObject({
+      id: discoveredTool.id,
+      confirmation: "always",
+      sideEffect: "destructive",
+      reviewRequired: true,
+    });
+    const destructiveConfig = JSON.parse((await env.CHAT_STORE.get(ROUTES_CONFIG_KEY))!);
+    destructiveConfig.tools[destructiveTool.id] = {
+      ...destructiveTool,
+      enabled: true,
+      reviewRequired: false,
+    };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(destructiveConfig));
+
+    const firstDestructive = await readUntilCapabilityConfirmation(await startChat());
+    const callsBeforeApproval = mcpCallCount;
+    const invalidConversation = await apiRequest("/api/tool-approvals", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        runId: firstDestructive.confirmation.runId,
+        callId: firstDestructive.confirmation.callId,
+        decision: "conversation",
+      }),
+    });
+    expect(invalidConversation.status).toBe(400);
+    await expect(invalidConversation.json()).resolves.toEqual({ error: "invalid_tool_approval_decision" });
+    expect(mcpCallCount).toBe(callsBeforeApproval);
+    const firstOnce = await apiRequest("/api/tool-approvals", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        runId: firstDestructive.confirmation.runId,
+        callId: firstDestructive.confirmation.callId,
+        decision: "once",
+      }),
+    });
+    expect(firstOnce.status).toBe(200);
+    await drainCapabilityReader(firstDestructive.reader, firstDestructive.decoder, firstDestructive.buffer);
+    expect(mcpCallCount).toBe(callsBeforeApproval + 1);
+
+    const secondDestructive = await readUntilCapabilityConfirmation(await startChat());
+    const secondOnce = await apiRequest("/api/tool-approvals", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        runId: secondDestructive.confirmation.runId,
+        callId: secondDestructive.confirmation.callId,
+        decision: "once",
+      }),
+    });
+    expect(secondOnce.status).toBe(200);
+    await drainCapabilityReader(secondDestructive.reader, secondDestructive.decoder, secondDestructive.buffer);
+    expect(mcpCallCount).toBe(callsBeforeApproval + 2);
+
+    const deniedDestructive = await readUntilCapabilityConfirmation(await startChat());
+    const callsBeforeDeny = mcpCallCount;
+    const denied = await apiRequest("/api/tool-approvals", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        runId: deniedDestructive.confirmation.runId,
+        callId: deniedDestructive.confirmation.callId,
+        decision: "deny",
+      }),
+    });
+    expect(denied.status).toBe(200);
+    await drainCapabilityReader(deniedDestructive.reader, deniedDestructive.decoder, deniedDestructive.buffer);
+    expect(mcpCallCount).toBe(callsBeforeDeny);
+
+    const cancelledDestructive = await readUntilCapabilityConfirmation(await startChat());
+    const callsBeforeCancel = mcpCallCount;
+    await cancelledDestructive.reader.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(mcpCallCount).toBe(callsBeforeCancel);
+
+    await runInDurableObject(env.USER_STATE.getByName(member.label), async (instance) => {
+      (instance as unknown as { toolConfirmationTimeoutMs: number }).toolConfirmationTimeoutMs = 10;
+    });
+    const callsBeforeTimeout = mcpCallCount;
+    const timeoutEvents = await readCapabilityEvents(await startChat());
+    expect(timeoutEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", code: "tool_confirmation_timeout" }),
+    ]));
+    expect(mcpCallCount).toBe(callsBeforeTimeout);
   });
 
   it("rejects a managed ciphertext moved to a different key reference", async () => {

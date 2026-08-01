@@ -67,6 +67,10 @@ const adminMemberConfig: AdminConfig = {
       confirmation: "first-per-conversation",
       executor: { type: "mcp", serverId: "docs", remoteName: "search" },
       schemaFingerprint: "d".repeat(64),
+      securityFingerprint: "e".repeat(64),
+      sideEffect: "read",
+      reviewRevision: "f".repeat(64),
+      reviewRequired: false,
     },
   },
   mcpServers: {
@@ -74,8 +78,7 @@ const adminMemberConfig: AdminConfig = {
       enabled: true,
       label: "Documentation service with a long synthetic name",
       endpoint: "https://docs.example/mcp",
-      authType: "bearer",
-      secretRef: "DOCS_MCP",
+      auth: { version: 1, type: "bearer", secretRef: "DOCS_MCP" },
     },
   },
 };
@@ -1127,8 +1130,7 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
         serverId: "docs",
         label: currentConfig.mcpServers.docs.label,
         endpoint: "https://docs.example/mcp",
-        authType: "bearer",
-        secretRef: "DOCS_MCP",
+        auth: { version: 1, type: "bearer", secretRef: "DOCS_MCP" },
       });
       discoveryCount += 1;
       await json({
@@ -1141,6 +1143,10 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
           confirmation: "first-per-conversation",
           executor: { type: "mcp", serverId: "docs", remoteName: "search" },
           schemaFingerprint: "e".repeat(64),
+          securityFingerprint: "f".repeat(64),
+          sideEffect: "read",
+          reviewRevision: "a".repeat(64),
+          reviewRequired: true,
         }],
         rejected: 1,
       });
@@ -1184,7 +1190,7 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
   expect(secretWriteCount).toBe(1);
 
   await page.getByRole("button", { name: "发现工具" }).click();
-  await expect(page.getByText(/Schema 变更 1/)).toBeVisible();
+  await expect(page.getByText(/治理变更 1/)).toBeVisible();
   expect(discoveryCount).toBe(1);
   expect(currentConfig.tools["mcp:docs:search"]).toMatchObject({ enabled: false, schemaFingerprint: "e".repeat(64) });
 
@@ -1214,6 +1220,33 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
   await page.getByRole("dialog", { name: /删除 MCP Server/ }).getByRole("button", { name: "删除 Server" }).click();
   await expect(page.getByRole("tab", { name: "MCP" })).toBeFocused();
   await expect(page.getByText("暂无MCP Server", { exact: true })).toBeVisible();
+});
+
+test("member OAuth MCP connections stay actionable and contained", async ({ page }, testInfo) => {
+  await page.goto("/?view=mcp-connections");
+  const dialog = page.getByRole("dialog", { name: "MCP 连接" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(".mcp-connection-row")).toHaveCount(3);
+  await expect(dialog.getByText("已连接", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("需要重审", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("未连接", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "关闭 MCP 连接" })).toBeFocused();
+
+  await dialog.getByRole("button", { name: "生成发现候选" }).click();
+  await expect(dialog.getByText("已生成发现候选：3 个工具，1 个被拒绝。")).toBeVisible();
+
+  const geometry = await page.evaluate(() => {
+    const dialogElement = document.querySelector<HTMLElement>(".mcp-connections-dialog");
+    if (!dialogElement) throw new Error("missing MCP connection dialog");
+    const rect = dialogElement.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      dialogFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1,
+      contentFits: dialogElement.scrollWidth <= dialogElement.clientWidth + 1,
+    };
+  });
+  expect(geometry).toEqual({ documentFits: true, dialogFits: true, contentFits: true });
+  await attachScreenshot(page, testInfo, "mcp-connections");
 });
 
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {

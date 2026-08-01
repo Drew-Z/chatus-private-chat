@@ -106,6 +106,7 @@ export function isToolExecutorAvailable(tool: ToolConfig, config: CapabilityRegi
 
 export function normalizeToolConfirmation(tool: ToolConfig): ToolConfirmation {
   if (tool.executor.type === "builtin") return tool.confirmation === "always" ? "always" : "auto";
+  if (tool.sideEffect === "write" || tool.sideEffect === "destructive") return "always";
   return tool.confirmation === "always" ? "always" : "first-per-conversation";
 }
 

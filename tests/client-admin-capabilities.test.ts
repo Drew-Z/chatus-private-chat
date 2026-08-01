@@ -35,12 +35,12 @@ function createConfig(): AdminConfig {
     },
     tools: {
       "builtin:text_stats": { enabled: true, label: "Text stats", inputSchema: { type: "object" }, confirmation: "auto", executor: { type: "builtin", name: "text_stats" } },
-      "mcp:docs:search": { enabled: true, label: "Search", inputSchema: { type: "object" }, confirmation: "always", executor: { type: "mcp", serverId: "docs", remoteName: "search" }, schemaFingerprint: "1".repeat(64) },
-      "mcp:other:read": { enabled: true, label: "Read", inputSchema: { type: "object" }, confirmation: "first-per-conversation", executor: { type: "mcp", serverId: "other", remoteName: "read" }, schemaFingerprint: "2".repeat(64) },
+      "mcp:docs:search": { enabled: true, label: "Search", inputSchema: { type: "object" }, confirmation: "always", executor: { type: "mcp", serverId: "docs", remoteName: "search" }, schemaFingerprint: "1".repeat(64), securityFingerprint: "a".repeat(64), sideEffect: "read", reviewRevision: "b".repeat(64), reviewRequired: false },
+      "mcp:other:read": { enabled: true, label: "Read", inputSchema: { type: "object" }, confirmation: "first-per-conversation", executor: { type: "mcp", serverId: "other", remoteName: "read" }, schemaFingerprint: "2".repeat(64), securityFingerprint: "c".repeat(64), sideEffect: "read", reviewRevision: "d".repeat(64), reviewRequired: false },
     },
     mcpServers: {
-      docs: { enabled: true, label: "Docs", endpoint: "https://docs.example/mcp", authType: "bearer", secretRef: "DOCS_MCP" },
-      other: { enabled: true, label: "Other", endpoint: "https://other.example/mcp", authType: "none" },
+      docs: { enabled: true, label: "Docs", endpoint: "https://docs.example/mcp", auth: { version: 1, type: "bearer", secretRef: "DOCS_MCP" } },
+      other: { enabled: true, label: "Other", endpoint: "https://other.example/mcp", auth: { version: 1, type: "none" } },
     },
   };
 }
@@ -86,6 +86,14 @@ describe("typed capability administration helpers", () => {
     });
   });
 
+  it("clears matching MCP review state only through explicit enablement", () => {
+    const config = createConfig();
+    config.tools["mcp:docs:search"] = { ...config.tools["mcp:docs:search"], enabled: false, reviewRequired: true };
+    const original = config.tools["mcp:docs:search"];
+    const next = applyToolPolicyDraft(config, "mcp:docs:search", { ...createToolPolicyDraft(original), enabled: true });
+    expect(next.tools["mcp:docs:search"]).toMatchObject({ enabled: true, reviewRequired: false });
+  });
+
   it("forbids builtin deletion and removes remote tool references", () => {
     const config = createConfig();
     expect(canDeleteTool(config.tools["builtin:text_stats"])).toBe(false);
@@ -112,6 +120,37 @@ describe("typed capability administration helpers", () => {
     expect(next.users.bill.allowedTools).toEqual(["builtin:text_stats"]);
   });
 
+  it("round-trips versioned static, none, and OAuth MCP authentication", () => {
+    const config = createConfig();
+    expect(applyMcpServerDraft(config, "docs", createMcpServerDraft(config.mcpServers.docs, "docs")).mcpServers.docs.auth)
+      .toEqual({ version: 1, type: "bearer", secretRef: "DOCS_MCP" });
+    expect(applyMcpServerDraft(config, "other", createMcpServerDraft(config.mcpServers.other, "other")).mcpServers.other.auth)
+      .toEqual({ version: 1, type: "none" });
+
+    const oauthDraft = {
+      ...createMcpServerDraft(undefined, "oauth"),
+      enabled: true,
+      label: "OAuth MCP",
+      endpoint: "https://mcp.example/rpc",
+      authType: "oauth2" as const,
+      issuer: "https://identity.example/",
+      clientId: "chatus-client",
+      scopes: "tools.write tools.read tools.read",
+      clientSecretRef: "MCP_OAUTH_CLIENT_SECRET",
+    };
+    expect(validateMcpServerDraft(oauthDraft, config, null)).toEqual({ ok: true });
+    expect(applyMcpServerDraft(config, null, oauthDraft).mcpServers.oauth.auth).toEqual({
+      version: 1,
+      type: "oauth2",
+      issuer: "https://identity.example",
+      clientId: "chatus-client",
+      scopes: ["tools.read", "tools.write"],
+      callbackPath: "/api/mcp/oauth/callback",
+      configRevision: "",
+      clientSecretRef: "MCP_OAUTH_CLIENT_SECRET",
+    });
+  });
+
   it("deletes only tools owned by the selected MCP server", () => {
     const next = deleteMcpServer(createConfig(), "docs");
     expect(next.mcpServers.docs).toBeUndefined();
@@ -132,16 +171,22 @@ describe("typed capability administration helpers", () => {
     };
     const unchanged = mergeMcpDiscovery(config, discovery);
     expect(unchanged).toMatchObject({ added: 1, changed: 0, unchanged: 1 });
-    expect(unchanged.config.tools["mcp:docs:new"]).toMatchObject({ enabled: false, confirmation: "first-per-conversation" });
-    expect(unchanged.config.tools["mcp:docs:search"]).toMatchObject({ enabled: true, confirmation: "always" });
+    expect(unchanged.config.tools["mcp:docs:new"]).toMatchObject({ enabled: false, confirmation: "first-per-conversation", reviewRequired: true });
+    expect(unchanged.config.tools["mcp:docs:search"]).toMatchObject({ enabled: true, confirmation: "always", reviewRequired: false });
 
     const changed = mergeMcpDiscovery(config, {
       ...discovery,
       tools: [discoveredTool("mcp:docs:search", "search", "4".repeat(64))],
     });
     expect(changed).toMatchObject({ added: 0, changed: 1, unchanged: 0 });
-    expect(changed.config.tools["mcp:docs:search"]).toMatchObject({ enabled: false, confirmation: "first-per-conversation", schemaFingerprint: "4".repeat(64) });
+    expect(changed.config.tools["mcp:docs:search"]).toMatchObject({ enabled: false, confirmation: "first-per-conversation", schemaFingerprint: "4".repeat(64), reviewRequired: true });
     expect(changed.config.tools["mcp:other:read"]).toBeDefined();
+
+    const destructive = mergeMcpDiscovery(config, {
+      ...discovery,
+      tools: [discoveredTool("mcp:docs:search", "search", "1".repeat(64), "destructive")],
+    });
+    expect(destructive.config.tools["mcp:docs:search"]).toMatchObject({ enabled: false, confirmation: "always", sideEffect: "destructive", reviewRequired: true });
   });
 
   it("rebases only locally changed capability registries and assignment fields", () => {
@@ -165,14 +210,23 @@ describe("typed capability administration helpers", () => {
   });
 });
 
-function discoveredTool(id: string, remoteName: string, schemaFingerprint: string): AdminMcpDiscoveryResponse["tools"][number] {
+function discoveredTool(
+  id: string,
+  remoteName: string,
+  schemaFingerprint: string,
+  sideEffect: "read" | "write" | "destructive" = "read",
+): AdminMcpDiscoveryResponse["tools"][number] {
   return {
     id,
     label: remoteName,
     description: `${remoteName} description`,
     inputSchema: { type: "object", properties: {} },
-    confirmation: "first-per-conversation",
+    confirmation: sideEffect === "read" ? "first-per-conversation" : "always",
     executor: { type: "mcp", serverId: "docs", remoteName },
     schemaFingerprint,
+    securityFingerprint: "a".repeat(64),
+    sideEffect,
+    reviewRevision: "b".repeat(64),
+    reviewRequired: true,
   };
 }

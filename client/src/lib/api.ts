@@ -61,6 +61,7 @@ export type SessionProjection = {
   };
   skills: SkillProjection[];
   tools: ToolProjection[];
+  mcpConnections: McpOAuthConnection[];
   agent: { transport: string; basePath: string; instance: string };
 };
 
@@ -205,14 +206,25 @@ export type AdminModelDiscoveryResponse = {
   endpoint: string;
 };
 
-export type AdminMcpAuthType = "none" | "bearer" | "x-api-key";
+export type AdminMcpAuthConfig =
+  | { version: 1; type: "none" }
+  | { version: 1; type: "bearer" | "x-api-key"; secretRef: string }
+  | {
+      version: 1;
+      type: "oauth2";
+      issuer: string;
+      clientId: string;
+      scopes: string[];
+      callbackPath: "/api/mcp/oauth/callback";
+      configRevision: string;
+      clientSecretRef?: string;
+    };
 
 export type AdminMcpServerConfig = {
   enabled: boolean;
   label: string;
   endpoint: string;
-  authType: AdminMcpAuthType;
-  secretRef?: string;
+  auth: AdminMcpAuthConfig;
 };
 
 export type AdminMcpSecretMetadata = {
@@ -237,26 +249,59 @@ export type AdminMcpSecretMutationResponse = {
   item: AdminMcpSecretMetadata;
 };
 
-export type AdminMcpDiscoveryRequest = {
-  serverId: string;
-  label?: string;
-  endpoint: string;
-  authType: AdminMcpAuthType;
-  secretRef?: string;
-};
+export type AdminMcpDiscoveryRequest =
+  | { serverId: string; label?: string; endpoint: string; auth: Exclude<AdminMcpAuthConfig, { type: "oauth2" }> }
+  | { serverId: string; memberLabel: string };
 
 export type AdminMcpDiscoveredTool = {
   id: string;
   label: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  confirmation: "first-per-conversation";
+  confirmation: "first-per-conversation" | "always";
   executor: {
     type: "mcp";
     serverId: string;
     remoteName: string;
   };
   schemaFingerprint: string;
+  securityFingerprint: string;
+  sideEffect: "read" | "write" | "destructive";
+  reviewRevision: string;
+  reviewRequired: true;
+};
+
+export type McpOAuthConnection = {
+  serverId: string;
+  label: string;
+  connected: boolean;
+  reviewRequired: boolean;
+  grantedScopes: string[];
+  expiresAt?: number;
+  status: "connected" | "expired" | "review_required" | "disconnected";
+};
+
+export type McpOAuthStartResponse = {
+  serverId: string;
+  authorizationUrl: string;
+};
+
+export type McpOAuthStatusResponse = {
+  connections: McpOAuthConnection[];
+};
+
+export type McpOAuthDiscoveryCandidate = {
+  candidateId: string;
+  serverId: string;
+  createdAt: number;
+  expiresAt: number;
+  tools: number;
+  rejected: number;
+};
+
+export type McpOAuthRevokeResponse = {
+  ok: true;
+  serverId: string;
 };
 
 export type AdminMcpDiscoveryResponse = {
@@ -410,6 +455,10 @@ export type AdminToolConfig = {
     | { type: "builtin"; name: "text_stats" }
     | { type: "mcp"; serverId: string; remoteName: string };
   schemaFingerprint?: string;
+  securityFingerprint?: string;
+  sideEffect?: "read" | "write" | "destructive";
+  reviewRevision?: string;
+  reviewRequired?: boolean;
   [key: string]: unknown;
 };
 
@@ -777,6 +826,47 @@ export async function discoverAdminMcpTools(request: AdminMcpDiscoveryRequest): 
   });
   if (!isAdminMcpDiscoveryResponse(data)) {
     throw new ApiError("invalid_admin_mcp_discovery_response", "MCP 工具发现结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function startMcpOAuthConnection(serverId: string): Promise<McpOAuthStartResponse> {
+  const data = await requestJson("/api/mcp/oauth/start", {
+    method: "POST",
+    body: JSON.stringify({ serverId }),
+  });
+  if (!isMcpOAuthStartResponse(data)) {
+    throw new ApiError("invalid_mcp_oauth_start_response", "MCP 授权地址格式无效。", 502);
+  }
+  return data;
+}
+
+export async function fetchMcpOAuthConnections(): Promise<McpOAuthStatusResponse> {
+  const data = await requestJson("/api/mcp/oauth/status");
+  if (!isMcpOAuthStatusResponse(data)) {
+    throw new ApiError("invalid_mcp_oauth_status_response", "MCP 连接状态格式无效。", 502);
+  }
+  return data;
+}
+
+export async function discoverMemberMcpOAuthTools(serverId: string): Promise<McpOAuthDiscoveryCandidate> {
+  const data = await requestJson("/api/mcp/oauth/discovery", {
+    method: "POST",
+    body: JSON.stringify({ serverId }),
+  });
+  if (!isMcpOAuthDiscoveryCandidate(data)) {
+    throw new ApiError("invalid_mcp_oauth_discovery_response", "MCP 发现候选格式无效。", 502);
+  }
+  return data;
+}
+
+export async function revokeMcpOAuthConnection(serverId: string): Promise<McpOAuthRevokeResponse> {
+  const data = await requestJson("/api/mcp/oauth/revoke", {
+    method: "POST",
+    body: JSON.stringify({ serverId }),
+  });
+  if (!isMcpOAuthRevokeResponse(data)) {
+    throw new ApiError("invalid_mcp_oauth_revoke_response", "MCP 断开结果格式无效。", 502);
   }
   return data;
 }
@@ -1202,6 +1292,7 @@ export function isSessionProjection(value: unknown): value is SessionProjection 
   if (!Array.isArray(value.routes) || !value.routes.every(isRouteProjection)) return false;
   if (!Array.isArray(value.skills) || !value.skills.every(isSkillProjection)) return false;
   if (!Array.isArray(value.tools) || !value.tools.every(isToolProjection)) return false;
+  if (!Array.isArray(value.mcpConnections) || !value.mcpConnections.every(isMcpOAuthConnection)) return false;
   const routeIds = value.routes.map((route) => route.id);
   const skillIds = value.skills.map((skill) => skill.id);
   const toolIds = value.tools.map((tool) => tool.id);
@@ -1215,6 +1306,7 @@ export function isSessionProjection(value: unknown): value is SessionProjection 
     && new Set(routeIds).size === routeIds.length
     && new Set(skillIds).size === skillIds.length
     && new Set(toolIds).size === toolIds.length
+    && new Set(value.mcpConnections.map((connection) => connection.serverId)).size === value.mcpConnections.length
     && value.skills.every((skill) => skill.toolIds.every((toolId) => toolIds.includes(toolId)))
     && isNonNegativeInteger(value.usage.used)
     && isNonNegativeInteger(value.usage.remaining)
@@ -1243,6 +1335,7 @@ function isGuestSessionProjection(value: SessionProjection, routeIds: string[]):
     && value.hasUserSystemPrompt === false
     && value.skills.length === 0
     && value.tools.length === 0
+    && value.mcpConnections.length === 0
     && value.routes.length <= 1
     && value.routes.every((route) => route.supportsTools === false)
     && restrictedCapabilities
@@ -1356,6 +1449,76 @@ export function isAdminMcpDiscoveryResponse(value: unknown): value is AdminMcpDi
   const serverId = value.serverId;
   if (!value.tools.every((tool) => isAdminMcpDiscoveredTool(tool, serverId))) return false;
   return new Set(value.tools.map((tool) => tool.id)).size === value.tools.length;
+}
+
+export function isMcpOAuthConnection(value: unknown): value is McpOAuthConnection {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      "serverId",
+      "label",
+      "connected",
+      "reviewRequired",
+      "grantedScopes",
+      "expiresAt",
+      "status",
+    ])
+    || !isCapabilityId(value.serverId, 80)
+    || !isBoundedText(value.label, 80, false)
+    || typeof value.connected !== "boolean"
+    || typeof value.reviewRequired !== "boolean"
+    || !isOAuthScopeArray(value.grantedScopes)
+    || (value.expiresAt !== undefined && (!Number.isSafeInteger(value.expiresAt) || Number(value.expiresAt) <= 0))
+    || (value.status !== "connected"
+      && value.status !== "expired"
+      && value.status !== "review_required"
+      && value.status !== "disconnected")) {
+    return false;
+  }
+  if (value.status === "connected") return value.connected && !value.reviewRequired;
+  if (value.status === "review_required") return !value.connected && value.reviewRequired;
+  if (value.status === "expired") return !value.connected && !value.reviewRequired && value.expiresAt !== undefined;
+  return !value.connected
+    && !value.reviewRequired
+    && value.grantedScopes.length === 0
+    && value.expiresAt === undefined;
+}
+
+export function isMcpOAuthStartResponse(value: unknown): value is McpOAuthStartResponse {
+  return isRecord(value)
+    && hasExactKeys(value, ["serverId", "authorizationUrl"])
+    && isCapabilityId(value.serverId, 80)
+    && isSafeMcpEndpoint(value.authorizationUrl);
+}
+
+export function isMcpOAuthStatusResponse(value: unknown): value is McpOAuthStatusResponse {
+  return isRecord(value)
+    && hasExactKeys(value, ["connections"])
+    && Array.isArray(value.connections)
+    && value.connections.length <= 20
+    && value.connections.every(isMcpOAuthConnection)
+    && new Set(value.connections.map((connection) => connection.serverId)).size === value.connections.length;
+}
+
+export function isMcpOAuthDiscoveryCandidate(value: unknown): value is McpOAuthDiscoveryCandidate {
+  return isRecord(value)
+    && hasExactKeys(value, ["candidateId", "serverId", "createdAt", "expiresAt", "tools", "rejected"])
+    && typeof value.candidateId === "string"
+    && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.candidateId)
+    && isCapabilityId(value.serverId, 80)
+    && Number.isSafeInteger(value.createdAt)
+    && Number(value.createdAt) > 0
+    && Number.isSafeInteger(value.expiresAt)
+    && Number(value.expiresAt) > Number(value.createdAt)
+    && isNonNegativeInteger(value.tools)
+    && Number(value.tools) <= 200
+    && isNonNegativeInteger(value.rejected);
+}
+
+export function isMcpOAuthRevokeResponse(value: unknown): value is McpOAuthRevokeResponse {
+  return isRecord(value)
+    && hasExactKeys(value, ["ok", "serverId"])
+    && value.ok === true
+    && isCapabilityId(value.serverId, 80);
 }
 
 export function isAdminReliabilitySnapshot(value: unknown): value is AdminReliabilitySnapshot {
@@ -2419,7 +2582,19 @@ function isAdminSkillConfig(value: unknown): value is AdminSkillConfig {
 
 function isAdminToolConfig(value: unknown): value is AdminToolConfig {
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["enabled", "label", "description", "inputSchema", "confirmation", "executor", "schemaFingerprint"])
+    || !hasOnlyKeys(value, [
+      "enabled",
+      "label",
+      "description",
+      "inputSchema",
+      "confirmation",
+      "executor",
+      "schemaFingerprint",
+      "securityFingerprint",
+      "sideEffect",
+      "reviewRevision",
+      "reviewRequired",
+    ])
     || typeof value.enabled !== "boolean"
     || !isBoundedText(value.label, 80, false)
     || (value.description !== undefined && !isBoundedText(value.description, 1_000, true))
@@ -2430,43 +2605,74 @@ function isAdminToolConfig(value: unknown): value is AdminToolConfig {
     )
     || !isRecord(value.inputSchema)
     || !isRecord(value.executor)
-    || (value.schemaFingerprint !== undefined && !isSchemaFingerprint(value.schemaFingerprint))) {
+    || (value.schemaFingerprint !== undefined && !isSchemaFingerprint(value.schemaFingerprint))
+    || (value.securityFingerprint !== undefined && !isSchemaFingerprint(value.securityFingerprint))
+    || (value.reviewRevision !== undefined && !isSchemaFingerprint(value.reviewRevision))
+    || (value.sideEffect !== undefined
+      && value.sideEffect !== "read"
+      && value.sideEffect !== "write"
+      && value.sideEffect !== "destructive")
+    || (value.reviewRequired !== undefined && typeof value.reviewRequired !== "boolean")) {
     return false;
   }
   if (value.executor.type === "builtin") {
     return hasExactKeys(value.executor, ["type", "name"])
       && value.executor.name === "text_stats"
       && (value.confirmation === "auto" || value.confirmation === "always")
-      && value.schemaFingerprint === undefined;
+      && value.schemaFingerprint === undefined
+      && value.securityFingerprint === undefined
+      && value.sideEffect === undefined
+      && value.reviewRevision === undefined
+      && value.reviewRequired === undefined;
   }
   return value.executor.type === "mcp"
     && hasExactKeys(value.executor, ["type", "serverId", "remoteName"])
     && isCapabilityId(value.executor.serverId, 80)
     && isMcpRemoteName(value.executor.remoteName)
     && value.confirmation !== "auto"
-    && isSchemaFingerprint(value.schemaFingerprint);
+    && isSchemaFingerprint(value.schemaFingerprint)
+    && isSchemaFingerprint(value.securityFingerprint)
+    && (value.sideEffect === "read" || value.sideEffect === "write" || value.sideEffect === "destructive")
+    && isSchemaFingerprint(value.reviewRevision)
+    && typeof value.reviewRequired === "boolean"
+    && (value.sideEffect === "read" || value.confirmation === "always");
 }
 
 function isAdminMcpServerConfig(value: unknown): value is AdminMcpServerConfig {
   return isRecord(value)
-    && hasOnlyKeys(value, ["enabled", "label", "endpoint", "authType", "secretRef"])
+    && hasExactKeys(value, ["enabled", "label", "endpoint", "auth"])
     && typeof value.enabled === "boolean"
     && isBoundedText(value.label, 80, false)
     && isSafeMcpEndpoint(value.endpoint)
-    && (value.authType === "none" || value.authType === "bearer" || value.authType === "x-api-key")
-    && (value.secretRef === undefined || isRouteSecretRef(value.secretRef))
-    && (value.authType === "none" ? value.secretRef === undefined : value.secretRef !== undefined);
+    && isAdminMcpAuthConfig(value.auth);
 }
 
 function isAdminMcpDiscoveredTool(value: unknown, serverId: string): value is AdminMcpDiscoveredTool {
   if (!isRecord(value)
-    || !hasExactKeys(value, ["id", "label", "description", "inputSchema", "confirmation", "executor", "schemaFingerprint"])
+    || !hasExactKeys(value, [
+      "id",
+      "label",
+      "description",
+      "inputSchema",
+      "confirmation",
+      "executor",
+      "schemaFingerprint",
+      "securityFingerprint",
+      "sideEffect",
+      "reviewRevision",
+      "reviewRequired",
+    ])
     || !isCapabilityId(value.id, 160)
     || !isBoundedText(value.label, 80, false)
     || !isBoundedText(value.description, 1_000, true)
     || !isRecord(value.inputSchema)
-    || value.confirmation !== "first-per-conversation"
+    || (value.confirmation !== "first-per-conversation" && value.confirmation !== "always")
     || !isSchemaFingerprint(value.schemaFingerprint)
+    || !isSchemaFingerprint(value.securityFingerprint)
+    || (value.sideEffect !== "read" && value.sideEffect !== "write" && value.sideEffect !== "destructive")
+    || !isSchemaFingerprint(value.reviewRevision)
+    || value.reviewRequired !== true
+    || value.confirmation !== (value.sideEffect === "read" ? "first-per-conversation" : "always")
     || !isRecord(value.executor)
     || !hasExactKeys(value.executor, ["type", "serverId", "remoteName"])
     || value.executor.type !== "mcp"
@@ -2475,6 +2681,36 @@ function isAdminMcpDiscoveredTool(value: unknown, serverId: string): value is Ad
     return false;
   }
   return value.id === `mcp:${serverId}:${value.executor.remoteName}`;
+}
+
+function isAdminMcpAuthConfig(value: unknown): value is AdminMcpAuthConfig {
+  if (!isRecord(value) || value.version !== 1) return false;
+  if (value.type === "none") return hasExactKeys(value, ["version", "type"]);
+  if (value.type === "bearer" || value.type === "x-api-key") {
+    return hasExactKeys(value, ["version", "type", "secretRef"])
+      && isRouteSecretRef(value.secretRef);
+  }
+  return value.type === "oauth2"
+    && hasOnlyKeys(value, [
+      "version",
+      "type",
+      "issuer",
+      "clientId",
+      "scopes",
+      "callbackPath",
+      "configRevision",
+      "clientSecretRef",
+    ])
+    && isSafeOAuthIssuer(value.issuer)
+    && typeof value.clientId === "string"
+    && value.clientId.length > 0
+    && value.clientId.length <= 256
+    && !/[\u0000-\u001f\u007f]/.test(value.clientId)
+    && isOAuthScopeArray(value.scopes)
+    && value.scopes.length > 0
+    && value.callbackPath === "/api/mcp/oauth/callback"
+    && isSchemaFingerprint(value.configRevision)
+    && (value.clientSecretRef === undefined || isRouteSecretRef(value.clientSecretRef));
 }
 
 async function requestJson(path: string, init: RequestInit = {}): Promise<unknown> {
@@ -2591,6 +2827,34 @@ function isUniqueCapabilityIdArray(value: unknown, maxLength: number, maxItems: 
 
 function isSchemaFingerprint(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isOAuthScopeArray(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length <= 32
+    && value.every((scope) => (
+      typeof scope === "string"
+      && scope.length > 0
+      && scope.length <= 120
+      && scope.trim() === scope
+      && !/\s/.test(scope)
+    ))
+    && new Set(value).size === value.length;
+}
+
+function isSafeOAuthIssuer(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2_048 || value !== value.trim().replace(/\/$/, "")) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:"
+      && Boolean(url.hostname)
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash;
+  } catch {
+    return false;
+  }
 }
 
 function isMcpRemoteName(value: unknown): value is string {

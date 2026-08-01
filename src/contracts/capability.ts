@@ -1,6 +1,7 @@
 import type { ToolEventSummary } from "./chat";
 
 export type ToolConfirmation = "auto" | "first-per-conversation" | "always";
+export type McpToolSideEffect = "read" | "write" | "destructive";
 
 export type ToolExecutor =
   | { type: "builtin"; name: "text_stats" }
@@ -23,16 +24,35 @@ export type ToolConfig = {
   confirmation?: ToolConfirmation;
   executor: ToolExecutor;
   schemaFingerprint?: string;
+  securityFingerprint?: string;
+  sideEffect?: McpToolSideEffect;
+  reviewRevision?: string;
+  reviewRequired?: boolean;
 };
 
 export type McpAuthType = "none" | "bearer" | "x-api-key";
+
+export type McpAuthConfig =
+  | { version: 1; type: "none" }
+  | { version: 1; type: "bearer" | "x-api-key"; secretRef: string }
+  | McpOAuth2AuthConfig;
+
+export type McpOAuth2AuthConfig = {
+  version: 1;
+  type: "oauth2";
+  issuer: string;
+  clientId: string;
+  scopes: string[];
+  callbackPath: string;
+  configRevision: string;
+  clientSecretRef?: string;
+};
 
 export type McpServerConfig = {
   enabled?: boolean;
   label: string;
   endpoint: string;
-  authType: McpAuthType;
-  secretRef?: string;
+  auth: McpAuthConfig;
 };
 
 export type NormalizedToolDefinition = {

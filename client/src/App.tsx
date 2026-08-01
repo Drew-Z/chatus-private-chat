@@ -6,6 +6,7 @@ import { AdminApp } from "./components/AdminApp";
 import { PageState } from "./components/PageState";
 import { createGuestSession, fetchSession, login, logout, type SessionProjection } from "./lib/api";
 import type { ClientSurface } from "./lib/routing";
+import { consumeMcpOAuthCallback, type McpOAuthCallbackResult } from "./lib/mcp-oauth";
 
 type AppState =
   | { status: "loading" }
@@ -21,6 +22,7 @@ export function App({ surface = "chat" }: { surface?: ClientSurface }) {
 function ChatApp() {
   const [state, setState] = useState<AppState>({ status: "loading" });
   const [memberLoginOpen, setMemberLoginOpen] = useState(false);
+  const [mcpOAuthResult, setMcpOAuthResult] = useState<McpOAuthCallbackResult | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -34,6 +36,13 @@ function ChatApp() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const callback = consumeMcpOAuthCallback(window.location.href);
+    if (!callback) return;
+    window.history.replaceState(window.history.state, "", callback.relativeUrl);
+    setMcpOAuthResult(callback.result);
+  }, []);
 
   if (state.status === "loading") {
     return <PageState title="正在连接 Chatus" detail="正在恢复登录状态和 Agent 连接。" />;
@@ -64,6 +73,8 @@ function ChatApp() {
       <ChatWorkspace
         key={state.session.user}
         session={state.session}
+        mcpOAuthResult={mcpOAuthResult}
+        onMcpOAuthResultConsumed={() => setMcpOAuthResult(null)}
         onMemberLogin={() => setMemberLoginOpen(true)}
         onLogout={async () => {
           await logout();

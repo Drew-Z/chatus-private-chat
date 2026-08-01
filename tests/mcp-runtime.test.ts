@@ -11,8 +11,7 @@ const server: McpServerConfig = {
   enabled: true,
   label: "Fixture",
   endpoint: "https://mcp.example/rpc",
-  authType: "bearer",
-  secretRef: "MCP_FIXTURE_KEY",
+  auth: { version: 1, type: "bearer", secretRef: "MCP_FIXTURE_KEY" },
 };
 
 const schema = {
@@ -29,7 +28,7 @@ async function fingerprint(value: string): Promise<string> {
 function createFixtureFetch() {
   const methods: string[] = [];
   const headers: Headers[] = [];
-  let lookupAnnotations = { readOnlyHint: true, destructiveHint: false };
+  let lookupAnnotations: Record<string, boolean> = { readOnlyHint: true, destructiveHint: false };
   const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     headers.push(new Headers(init?.headers));
     if (init?.method === "DELETE") {
@@ -80,7 +79,7 @@ function createFixtureFetch() {
     fetcher,
     headers,
     methods,
-    setLookupAnnotations(annotations: { readOnlyHint: boolean; destructiveHint: boolean }) {
+    setLookupAnnotations(annotations: Record<string, boolean>) {
       lookupAnnotations = annotations;
     },
   };
@@ -96,7 +95,12 @@ function rpcResponse(
   });
 }
 
-function definition(schemaFingerprint: string): NormalizedToolDefinition {
+function definition(tool: {
+  schemaFingerprint: string;
+  securityFingerprint: string;
+  sideEffect: "read" | "write" | "destructive";
+  reviewRevision: string;
+}): NormalizedToolDefinition {
   return {
     id: "mcp:fixture:lookup",
     providerName: "mcp_fixture_lookup",
@@ -110,13 +114,17 @@ function definition(schemaFingerprint: string): NormalizedToolDefinition {
       inputSchema: schema,
       confirmation: "first-per-conversation",
       executor: { type: "mcp", serverId: "fixture", remoteName: "lookup" },
-      schemaFingerprint,
+      schemaFingerprint: tool.schemaFingerprint,
+      securityFingerprint: tool.securityFingerprint,
+      sideEffect: tool.sideEffect,
+      reviewRevision: tool.reviewRevision,
+      reviewRequired: false,
     },
   };
 }
 
 describe("MCP runtime", () => {
-  it("discovers reviewed read-only tools through the injected secret resolver", async () => {
+  it("discovers read and side-effect tools through the injected secret resolver", async () => {
     const fixture = createFixtureFetch();
     const resolveSecret = vi.fn(async () => "fixture-secret");
     const runtime = createMcpRuntime({ resolveSecret, fingerprint, fetch: fixture.fetcher });
@@ -125,15 +133,27 @@ describe("MCP runtime", () => {
 
     expect(result).toMatchObject({
       serverId: "fixture",
-      rejected: 1,
-      tools: [{
-        id: "mcp:fixture:lookup",
-        label: "Lookup",
-        confirmation: "first-per-conversation",
-        executor: { type: "mcp", serverId: "fixture", remoteName: "lookup" },
-      }],
+      rejected: 0,
+      tools: [
+        {
+          id: "mcp:fixture:lookup",
+          label: "Lookup",
+          confirmation: "first-per-conversation",
+          sideEffect: "read",
+          reviewRequired: true,
+          executor: { type: "mcp", serverId: "fixture", remoteName: "lookup" },
+        },
+        {
+          id: "mcp:fixture:delete_item",
+          confirmation: "always",
+          sideEffect: "destructive",
+          reviewRequired: true,
+        },
+      ],
     });
     expect(result.tools[0].schemaFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.tools[0].securityFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.tools[0].reviewRevision).toMatch(/^[a-f0-9]{64}$/);
     expect(resolveSecret).toHaveBeenCalledOnce();
     expect(resolveSecret).toHaveBeenCalledWith("MCP_FIXTURE_KEY");
     expect(fixture.headers.some((headers) => headers.get("Authorization") === "Bearer fixture-secret")).toBe(true);
@@ -142,24 +162,67 @@ describe("MCP runtime", () => {
     expect(JSON.stringify(result)).not.toContain("mcp.example");
   });
 
+  it("uses a member OAuth token and rejects OAuth config revision drift before tools/call", async () => {
+    const fixture = createFixtureFetch();
+    const resolveSecret = vi.fn(async () => "static-secret");
+    const resolveOAuthAccessToken = vi.fn(async () => "member-access-token");
+    const oauthServer: McpServerConfig = {
+      ...server,
+      auth: {
+        version: 1,
+        type: "oauth2",
+        issuer: "https://issuer.example",
+        clientId: "chatus",
+        scopes: ["tools.read"],
+        callbackPath: "/api/mcp/oauth/callback",
+        configRevision: "oauth-config-v1",
+      },
+    };
+    const runtime = createMcpRuntime({
+      resolveSecret,
+      resolveOAuthAccessToken,
+      fingerprint,
+      fetch: fixture.fetcher,
+    });
+    const discovery = await runtime.discoverTools("fixture", oauthServer, new AbortController().signal);
+
+    expect(resolveSecret).not.toHaveBeenCalled();
+    expect(resolveOAuthAccessToken).toHaveBeenCalledWith("fixture", oauthServer, expect.any(AbortSignal));
+    expect(fixture.headers.some((headers) => headers.get("Authorization") === "Bearer member-access-token")).toBe(true);
+
+    const execution = runtime.createExecution();
+    const changedServer: McpServerConfig = {
+      ...oauthServer,
+      auth: { ...oauthServer.auth, configRevision: "oauth-config-v2" },
+    };
+    await expect(execution.executeTool(
+      definition(discovery.tools[0]),
+      { query: "blocked" },
+      changedServer,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: "mcp_tool_changed" });
+    expect(fixture.methods.filter((method) => method === "tools/call")).toHaveLength(0);
+    await execution.close();
+  });
+
   it("reuses one session, verifies the reviewed schema, and closes the execution", async () => {
     const fixture = createFixtureFetch();
     const resolveSecret = vi.fn(async () => "fixture-secret");
     const runtime = createMcpRuntime({ resolveSecret, fingerprint, fetch: fixture.fetcher });
     const discovery = await runtime.discoverTools("fixture", server, new AbortController().signal);
     const execution = runtime.createExecution();
-    const tool = definition(discovery.tools[0].schemaFingerprint);
+    const tool = definition(discovery.tools[0]);
 
     await expect(execution.executeTool(tool, { query: "first" }, server, new AbortController().signal))
       .resolves.toEqual({ content: "result:first" });
     await expect(execution.executeTool(tool, { query: "second" }, server, new AbortController().signal))
       .resolves.toEqual({ content: "result:second" });
     expect(fixture.methods.filter((method) => method === "initialize")).toHaveLength(2);
-    expect(fixture.methods.filter((method) => method === "tools/list")).toHaveLength(2);
+    expect(fixture.methods.filter((method) => method === "tools/list")).toHaveLength(3);
     expect(fixture.methods.filter((method) => method === "tools/call")).toHaveLength(2);
     expect(resolveSecret).toHaveBeenCalledTimes(2);
 
-    const stale = definition("0".repeat(64));
+    const stale = definition({ ...discovery.tools[0], schemaFingerprint: "0".repeat(64) });
     await expect(execution.executeTool(stale, { query: "blocked" }, server, new AbortController().signal))
       .rejects.toMatchObject({ code: "mcp_tool_changed" });
     expect(fixture.methods.filter((method) => method === "tools/call")).toHaveLength(2);
@@ -171,8 +234,10 @@ describe("MCP runtime", () => {
 
   it("rejects read-only annotation drift before calling the reviewed tool", async () => {
     const fixture = createFixtureFetch();
+    const recordToolDrift = vi.fn(async () => undefined);
     const runtime = createMcpRuntime({
       resolveSecret: async () => "fixture-secret",
+      recordToolDrift,
       fingerprint,
       fetch: fixture.fetcher,
     });
@@ -181,14 +246,82 @@ describe("MCP runtime", () => {
     const execution = runtime.createExecution();
 
     await expect(execution.executeTool(
-      definition(discovery.tools[0].schemaFingerprint),
+      definition(discovery.tools[0]),
       { query: "blocked" },
       server,
       new AbortController().signal,
     )).rejects.toMatchObject({ code: "mcp_tool_changed" });
     expect(fixture.methods.filter((method) => method === "tools/call")).toHaveLength(0);
+    expect(recordToolDrift).toHaveBeenCalledOnce();
+    expect(recordToolDrift).toHaveBeenCalledWith("mcp:fixture:lookup", discovery.tools[0].reviewRevision);
 
     await execution.close();
+  });
+
+  it("refreshes the remote tool snapshot before every call", async () => {
+    const fixture = createFixtureFetch();
+    const recordToolDrift = vi.fn(async () => undefined);
+    const runtime = createMcpRuntime({
+      resolveSecret: async () => "fixture-secret",
+      recordToolDrift,
+      fingerprint,
+      fetch: fixture.fetcher,
+    });
+    const discovery = await runtime.discoverTools("fixture", server, new AbortController().signal);
+    const execution = runtime.createExecution();
+    const tool = definition(discovery.tools[0]);
+
+    await expect(execution.executeTool(tool, { query: "first" }, server, new AbortController().signal))
+      .resolves.toEqual({ content: "result:first" });
+    fixture.setLookupAnnotations({ readOnlyHint: false, destructiveHint: true });
+    await expect(execution.executeTool(tool, { query: "blocked" }, server, new AbortController().signal))
+      .rejects.toMatchObject({ code: "mcp_tool_changed" });
+
+    expect(fixture.methods.filter((method) => method === "initialize")).toHaveLength(2);
+    expect(fixture.methods.filter((method) => method === "tools/list")).toHaveLength(3);
+    expect(fixture.methods.filter((method) => method === "tools/call")).toHaveLength(1);
+    expect(recordToolDrift).toHaveBeenCalledWith("mcp:fixture:lookup", discovery.tools[0].reviewRevision);
+    await execution.close();
+  });
+
+  it("rejects security annotation and review-state drift before calling the reviewed tool", async () => {
+    const fixture = createFixtureFetch();
+    const runtime = createMcpRuntime({
+      resolveSecret: async () => "fixture-secret",
+      fingerprint,
+      fetch: fixture.fetcher,
+    });
+    const discovery = await runtime.discoverTools("fixture", server, new AbortController().signal);
+    fixture.setLookupAnnotations({ readOnlyHint: true, destructiveHint: false, openWorldHint: true });
+    const execution = runtime.createExecution();
+
+    await expect(execution.executeTool(
+      definition(discovery.tools[0]),
+      { query: "blocked" },
+      server,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: "mcp_tool_changed" });
+    expect(fixture.methods.filter((method) => method === "tools/call")).toHaveLength(0);
+    await execution.close();
+
+    const cleanFixture = createFixtureFetch();
+    const cleanRuntime = createMcpRuntime({
+      resolveSecret: async () => "fixture-secret",
+      fingerprint,
+      fetch: cleanFixture.fetcher,
+    });
+    const cleanDiscovery = await cleanRuntime.discoverTools("fixture", server, new AbortController().signal);
+    const reviewPending = definition(cleanDiscovery.tools[0]);
+    reviewPending.config.reviewRequired = true;
+    const cleanExecution = cleanRuntime.createExecution();
+    await expect(cleanExecution.executeTool(
+      reviewPending,
+      { query: "blocked" },
+      server,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: "mcp_tool_changed" });
+    expect(cleanFixture.methods.filter((method) => method === "tools/call")).toHaveLength(0);
+    await cleanExecution.close();
   });
 
   it("rejects unsafe destinations, redirects, and oversized protocol responses", async () => {
@@ -207,7 +340,7 @@ describe("MCP runtime", () => {
     });
     await expect(redirectRuntime.discoverTools(
       "redirect",
-      { ...server, endpoint: "https://redirect.example/rpc", authType: "none", secretRef: undefined },
+      { ...server, endpoint: "https://redirect.example/rpc", auth: { version: 1, type: "none" } },
       new AbortController().signal,
     )).rejects.toMatchObject({ code: "mcp_redirect_rejected" });
 
@@ -218,7 +351,7 @@ describe("MCP runtime", () => {
     });
     await expect(oversizedRuntime.discoverTools(
       "oversized",
-      { ...server, endpoint: "https://oversized.example/rpc", authType: "none", secretRef: undefined },
+      { ...server, endpoint: "https://oversized.example/rpc", auth: { version: 1, type: "none" } },
       new AbortController().signal,
     )).rejects.toSatisfy((error: unknown) =>
       error instanceof McpRuntimeError && error.code === "mcp_protocol_error",

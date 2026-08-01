@@ -1,7 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Tool as McpRemoteTool } from "@modelcontextprotocol/sdk/types.js";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
-import type { McpServerConfig, NormalizedToolDefinition } from "../contracts/capability";
+import type {
+  McpServerConfig,
+  McpToolSideEffect,
+  NormalizedToolDefinition,
+  ToolConfirmation,
+} from "../contracts/capability";
 
 export const MCP_REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 export const MAX_MCP_TOOL_SCHEMA_CHARS = 32_768;
@@ -17,9 +23,13 @@ export type McpDiscoveredTool = {
   label: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  confirmation: "first-per-conversation";
+  confirmation: Extract<ToolConfirmation, "first-per-conversation" | "always">;
   executor: { type: "mcp"; serverId: string; remoteName: string };
   schemaFingerprint: string;
+  securityFingerprint: string;
+  sideEffect: McpToolSideEffect;
+  reviewRevision: string;
+  reviewRequired: true;
 };
 
 export type McpDiscoveryResult = {
@@ -45,6 +55,12 @@ export type McpRuntime = {
 
 export type McpRuntimeDependencies = {
   resolveSecret(secretRef: string): Promise<string>;
+  resolveOAuthAccessToken?(
+    serverId: string,
+    server: McpServerConfig,
+    signal: AbortSignal,
+  ): Promise<string>;
+  recordToolDrift?(toolId: string, reviewRevision: string): Promise<void>;
   fingerprint(value: string): Promise<string>;
   fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 };
@@ -52,7 +68,16 @@ export type McpRuntimeDependencies = {
 type ActiveMcpSession = {
   client: Client;
   transport: StreamableHTTPClientTransport;
-  tools: Map<string, { schemaFingerprint: string; taskSupport: string; readOnly: boolean }>;
+  configKey: string;
+  tools: Map<string, McpRuntimeToolSnapshot>;
+};
+
+type McpRuntimeToolSnapshot = {
+  schemaFingerprint: string;
+  securityFingerprint: string;
+  sideEffect: McpToolSideEffect;
+  reviewRevision: string;
+  taskSupport: string;
 };
 
 export class McpRuntimeError extends Error {
@@ -71,6 +96,28 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
 
   const fingerprintSchema = (value: unknown) => dependencies.fingerprint(stableJsonStringify(value));
 
+  const inspectRemoteTool = async (
+    remoteTool: McpRemoteTool,
+    server: McpServerConfig,
+  ): Promise<McpRuntimeToolSnapshot | null> => {
+    const inputSchema = normalizeMcpToolSchema(remoteTool.inputSchema);
+    if (!inputSchema || !MCP_REMOTE_NAME_PATTERN.test(remoteTool.name)) return null;
+    const schemaFingerprint = await fingerprintSchema(inputSchema);
+    const taskSupport = remoteTool.execution?.taskSupport || "forbidden";
+    const sideEffect = classifyMcpToolSideEffect(remoteTool.annotations);
+    const securityFingerprint = await dependencies.fingerprint(stableJsonStringify({
+      annotations: normalizeMcpSecurityAnnotations(remoteTool.annotations),
+      taskSupport,
+    }));
+    const reviewRevision = await dependencies.fingerprint(stableJsonStringify({
+      schemaFingerprint,
+      securityFingerprint,
+      sideEffect,
+      oauthConfigRevision: server.auth.type === "oauth2" ? server.auth.configRevision : "",
+    }));
+    return { schemaFingerprint, securityFingerprint, sideEffect, reviewRevision, taskSupport };
+  };
+
   const openSession = async (
     serverId: string,
     server: McpServerConfig,
@@ -86,15 +133,7 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
       throw new McpRuntimeError("mcp_endpoint_invalid", `MCP 服务 ${serverId} 的地址不允许访问`);
     }
 
-    const headers = new Headers();
-    if (server.authType !== "none") {
-      const secretRef = server.secretRef || "";
-      if (!secretRef) throw new McpRuntimeError("mcp_auth_unavailable", `MCP 服务 ${serverId} 缺少 Secret Ref`);
-      const secret = await dependencies.resolveSecret(secretRef);
-      if (!secret) throw new McpRuntimeError("mcp_auth_unavailable", `MCP 服务 ${serverId} 的认证密钥不可用`);
-      if (server.authType === "bearer") headers.set("Authorization", `Bearer ${secret}`);
-      else headers.set("X-API-Key", secret);
-    }
+    const headers = await resolveMcpHeaders(dependencies, serverId, server, signal);
 
     const transport = new StreamableHTTPClientTransport(endpoint, {
       requestInit: { headers },
@@ -116,7 +155,12 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
         timeout: MCP_CALL_TIMEOUT_MS,
         maxTotalTimeout: MCP_CALL_TIMEOUT_MS,
       });
-      return { client, transport, tools: new Map() };
+      return {
+        client,
+        transport,
+        configKey: stableJsonStringify({ endpoint: server.endpoint, auth: server.auth }),
+        tools: new Map(),
+      };
     } catch (error) {
       await transport.close().catch(() => undefined);
       if (error instanceof McpRuntimeError) throw error;
@@ -124,7 +168,12 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
     }
   };
 
-  const loadRuntimeTools = async (session: ActiveMcpSession, signal: AbortSignal): Promise<void> => {
+  const loadRuntimeTools = async (
+    session: ActiveMcpSession,
+    server: McpServerConfig,
+    signal: AbortSignal,
+  ): Promise<Map<string, McpRuntimeToolSnapshot>> => {
+    const tools = new Map<string, McpRuntimeToolSnapshot>();
     let cursor: string | undefined;
     for (let page = 0; page < MAX_MCP_TOOL_PAGES; page += 1) {
       const result = await session.client.listTools(cursor ? { cursor } : undefined, {
@@ -133,21 +182,28 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
         maxTotalTimeout: MCP_CALL_TIMEOUT_MS,
       });
       for (const tool of result.tools) {
-        const inputSchema = normalizeMcpToolSchema(tool.inputSchema);
-        if (!inputSchema || !MCP_REMOTE_NAME_PATTERN.test(tool.name)) continue;
-        session.tools.set(tool.name, {
-          schemaFingerprint: await fingerprintSchema(inputSchema),
-          taskSupport: tool.execution?.taskSupport || "forbidden",
-          readOnly: isReadOnlyMcpTool(tool.annotations),
-        });
-        if (session.tools.size > MAX_MCP_TOOLS) {
+        const snapshot = await inspectRemoteTool(tool, server);
+        if (!snapshot) continue;
+        tools.set(tool.name, snapshot);
+        if (tools.size > MAX_MCP_TOOLS) {
           throw new McpRuntimeError("mcp_protocol_error", "MCP 工具数量超过限制");
         }
       }
       cursor = result.nextCursor;
-      if (!cursor) return;
+      if (!cursor) return tools;
     }
     throw new McpRuntimeError("mcp_protocol_error", "MCP 工具列表分页超过限制");
+  };
+
+  const throwToolDrift = async (
+    definition: NormalizedToolDefinition,
+    message: string,
+  ): Promise<never> => {
+    const reviewRevision = definition.config.reviewRevision;
+    if (reviewRevision) {
+      await dependencies.recordToolDrift?.(definition.id, reviewRevision).catch(() => undefined);
+    }
+    throw new McpRuntimeError("mcp_tool_changed", message);
   };
 
   return {
@@ -166,14 +222,13 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
           for (const remoteTool of result.tools) {
             const remoteName = normalizeBoundedText(remoteTool.name, 128);
             const inputSchema = normalizeMcpToolSchema(remoteTool.inputSchema);
-            const readOnly = isReadOnlyMcpTool(remoteTool.annotations);
-            const taskSupport = remoteTool.execution?.taskSupport || "forbidden";
+            const snapshot = await inspectRemoteTool(remoteTool, server);
             if (
               !remoteName
               || !MCP_REMOTE_NAME_PATTERN.test(remoteName)
               || !inputSchema
-              || !readOnly
-              || taskSupport === "required"
+              || !snapshot
+              || snapshot.taskSupport === "required"
             ) {
               rejected += 1;
               continue;
@@ -183,9 +238,13 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
               label: normalizeBoundedText(remoteTool.title, 80) || remoteName,
               description: normalizeBoundedText(remoteTool.description, 1_000),
               inputSchema,
-              confirmation: "first-per-conversation",
+              confirmation: snapshot.sideEffect === "read" ? "first-per-conversation" : "always",
               executor: { type: "mcp", serverId, remoteName },
-              schemaFingerprint: await fingerprintSchema(inputSchema),
+              schemaFingerprint: snapshot.schemaFingerprint,
+              securityFingerprint: snapshot.securityFingerprint,
+              sideEffect: snapshot.sideEffect,
+              reviewRevision: snapshot.reviewRevision,
+              reviewRequired: true,
             });
             if (tools.length >= MAX_MCP_TOOLS) break;
           }
@@ -216,25 +275,45 @@ export function createMcpRuntime(dependencies: McpRuntimeDependencies): McpRunti
           }
 
           let session = sessions.get(executor.serverId);
+          const configKey = stableJsonStringify({ endpoint: server.endpoint, auth: server.auth });
+          if (session && session.configKey !== configKey) {
+            sessions.delete(executor.serverId);
+            await closeMcpSession(session);
+            session = undefined;
+          }
           if (!session) {
             session = await openSession(executor.serverId, server, signal);
-            try {
-              await loadRuntimeTools(session, signal);
-            } catch (error) {
-              await closeMcpSession(session);
-              throw error;
-            }
             sessions.set(executor.serverId, session);
+          }
+          try {
+            session.tools = await loadRuntimeTools(session, server, signal);
+          } catch (error) {
+            sessions.delete(executor.serverId);
+            await closeMcpSession(session);
+            throw error;
           }
           const remote = session.tools.get(executor.remoteName);
           if (!remote) {
-            throw new McpRuntimeError("mcp_tool_changed", "MCP 工具已不存在，请管理员重新发现");
+            return throwToolDrift(definition, "MCP 工具已不存在，请管理员重新发现");
           }
           if (!definition.config.schemaFingerprint || remote.schemaFingerprint !== definition.config.schemaFingerprint) {
-            throw new McpRuntimeError("mcp_tool_changed", "MCP 工具 Schema 已变化，请管理员重新发现并启用");
+            return throwToolDrift(definition, "MCP 工具 Schema 已变化，请管理员重新发现并启用");
           }
-          if (!remote.readOnly) {
-            throw new McpRuntimeError("mcp_tool_changed", "MCP 工具只读标注已变化，请管理员重新发现并启用");
+          if (
+            !definition.config.securityFingerprint
+            || remote.securityFingerprint !== definition.config.securityFingerprint
+          ) {
+            return throwToolDrift(definition, "MCP 工具安全标注已变化，请管理员重新发现并启用");
+          }
+          if (!definition.config.sideEffect || remote.sideEffect !== definition.config.sideEffect) {
+            return throwToolDrift(definition, "MCP 工具副作用分类已变化，请管理员重新发现并启用");
+          }
+          if (
+            !definition.config.reviewRevision
+            || remote.reviewRevision !== definition.config.reviewRevision
+            || definition.config.reviewRequired === true
+          ) {
+            return throwToolDrift(definition, "MCP 工具审查版本已失效，请管理员重新审查并启用");
           }
           if (remote.taskSupport === "required") {
             throw new McpRuntimeError("mcp_tool_unsupported", "首版不支持必须使用 Task 的 MCP 工具");
@@ -292,6 +371,39 @@ export function normalizeMcpToolSchema(value: unknown): Record<string, unknown> 
   } catch {
     return null;
   }
+}
+
+async function resolveMcpHeaders(
+  dependencies: McpRuntimeDependencies,
+  serverId: string,
+  server: McpServerConfig,
+  signal: AbortSignal,
+): Promise<Headers> {
+  const headers = new Headers();
+  if (server.auth.type === "none") return headers;
+  if (server.auth.type === "oauth2") {
+    let accessToken = "";
+    try {
+      accessToken = await dependencies.resolveOAuthAccessToken?.(serverId, server, signal) || "";
+    } catch (error) {
+      const reviewRequired = isRecord(error) && error.code === "mcp_oauth_review_required";
+      throw new McpRuntimeError(
+        reviewRequired ? "mcp_oauth_review_required" : "mcp_oauth_reconnect_required",
+        reviewRequired ? `MCP 服务 ${serverId} 需要重新审查` : `MCP 服务 ${serverId} 需要重新连接`,
+      );
+    }
+    if (!accessToken) {
+      throw new McpRuntimeError("mcp_oauth_reconnect_required", `MCP 服务 ${serverId} 需要重新连接`);
+    }
+    headers.set("Authorization", `Bearer ${accessToken}`);
+    return headers;
+  }
+
+  const secret = await dependencies.resolveSecret(server.auth.secretRef);
+  if (!secret) throw new McpRuntimeError("mcp_auth_unavailable", `MCP 服务 ${serverId} 的认证密钥不可用`);
+  if (server.auth.type === "bearer") headers.set("Authorization", `Bearer ${secret}`);
+  else headers.set("X-API-Key", secret);
+  return headers;
 }
 
 function createMcpFetch(
@@ -429,10 +541,24 @@ function normalizeBoundedText(value: unknown, maxChars: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
 }
 
-function isReadOnlyMcpTool(annotations: unknown): boolean {
-  return isRecord(annotations)
-    && annotations.readOnlyHint === true
-    && annotations.destructiveHint !== true;
+export function classifyMcpToolSideEffect(annotations: unknown): McpToolSideEffect {
+  if (isRecord(annotations) && annotations.destructiveHint === true) return "destructive";
+  if (isRecord(annotations) && annotations.readOnlyHint === true) return "read";
+  return "write";
+}
+
+function normalizeMcpSecurityAnnotations(annotations: unknown): Record<string, boolean | null> {
+  const record = isRecord(annotations) ? annotations : {};
+  return {
+    readOnlyHint: normalizeMcpAnnotationHint(record.readOnlyHint),
+    destructiveHint: normalizeMcpAnnotationHint(record.destructiveHint),
+    idempotentHint: normalizeMcpAnnotationHint(record.idempotentHint),
+    openWorldHint: normalizeMcpAnnotationHint(record.openWorldHint),
+  };
+}
+
+function normalizeMcpAnnotationHint(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

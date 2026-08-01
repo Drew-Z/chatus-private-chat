@@ -1216,6 +1216,7 @@ export function AdminWorkspace({
         ) : activeView === "capabilities" ? (
           <CapabilityAdminPanel
             snapshot={data.snapshot}
+            members={data.members}
             onSnapshot={applyPoolSnapshot}
             onSessionExpired={onSessionExpired}
             onDirtyChange={setPoolDirty}
