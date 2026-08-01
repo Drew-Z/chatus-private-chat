@@ -15,6 +15,16 @@ type CapabilityAssignment = {
   allowedTools?: string[];
 };
 
+type ConversationSkillMode = "automatic" | "manual";
+
+type AgentSkillSelectionMetadata = {
+  mode: "automatic";
+  source: "model" | "last_success" | "admin_default";
+  skills: Array<{ id: string; label: string }>;
+  reason?: "timeout" | "provider_busy" | "provider_error"
+    | "empty_response" | "invalid_response" | "no_valid_skills";
+};
+
 getPublicCapabilities(config, assignment): { skills: PublicSkill[]; tools: PublicTool[] }
 getSelectedSkills(config, value, assignment?): SelectedSkill[]
 ```
@@ -26,6 +36,8 @@ POST  /api/chat
 POST  /api/agent/conversations
 PATCH /api/agent/conversations/:id
 POST  /agent?chatId=:chatId
+
+chatus_conversations.skill_mode TEXT NOT NULL DEFAULT 'manual'
 ```
 
 ### 3. Contracts
@@ -34,8 +46,15 @@ POST  /agent?chatId=:chatId
 - `allowedSkills: []` explicitly assigns no Skills. Do not collapse these two states during normalization or effective-user merging.
 - Stored Skill IDs are normalized to at most 50 unique IDs of at most 80 characters. User values override defaults through the existing effective-user merge.
 - `/api/session` exposes only enabled, assigned Skills. It never exposes Skill instructions.
-- Creating a member conversation with omitted `skillIds` persists up to the first three enabled, assigned Skills in the public registry's stable administrator order. Explicit `skillIds: []` remains a manual no-Skill selection; explicit non-empty values retain the existing authorization checks.
-- Guest creates always persist an empty Skill selection. Existing/imported conversations are not backfilled, PATCH omission means no change, PATCH `skillIds: []` clears the selection, and branches continue to inherit the source selection after current-access repair.
+- Schema migration v4 adds `skill_mode`. Existing rows and legacy imports are `manual`; new member conversations default to `automatic`; guests are always normalized to `manual` with `skillIds: []`. The upgrader must tolerate a pre-existing column when the v4 marker is missing.
+- In `manual`, persisted `skillIds` are the exact selection. In `automatic`, the same column is only the last successful selector snapshot. Recording an automatic snapshot must not advance `updatedAt`, because it is not a user settings edit.
+- Explicit `manual` create with omitted `skillIds` derives up to three assigned Skills in stable administrator order. Explicit `skillIds: []` remains a no-Skill manual selection. Branches preserve mode and repair the snapshot/selection against current access.
+- The conversation Agent reads the authoritative mode and snapshot from the root Agent. Browser request fields cannot override them. PATCH omission preserves the current member mode; every guest PATCH repairs mode and Skills to `manual` and `[]`.
+- Automatic selection sends only public candidate `id`, `label`, and `description` plus a bounded latest user message. It uses the selected logical route only, may try offerings within that route, emits at most 200 tokens, uses `maxRetries: 0`, has no tools, requires exact JSON `{ "skillIds": string[] }`, and accepts at most three unique assigned IDs.
+- A hard five-second boundary covers plan preparation, lease acquisition, Provider completion, telemetry, and release. The caller races the entire attempt against this boundary so an operation that ignores abort cannot delay the main turn or promote a late result.
+- After selection, reload configuration and re-run assignment/enabled filtering before prompt and tool construction. Failure falls back to the revalidated last-success snapshot, then the first three assigned Skills in administrator order.
+- Only `source: "model"` updates the snapshot. The actual per-turn result, source, and finite fallback reason are stored in assistant message metadata so history and branches retain truthful evidence.
+- Selector attempts use the separate `route-provider-skill-selection:` telemetry keyspace and never update chat reliability ordering. The main turn remains the only quota admission owner; selector offerings do not consume another user message unit.
 - Both `/api/chat` and `prepareTeamAgentTurn()` call `getSelectedSkills()` with the effective user assignment on every turn. Persisted or client-supplied old Skill IDs cannot restore a revoked Skill.
 - An unassigned or disabled Skill contributes neither instructions nor referenced tools. Executable tools remain the intersection of selected assigned Skills, `allowedTools`, enabled tool definitions, and available executors.
 - The admin user editor persists `allowedSkills` through the revision-checked configuration write. Skill rename and deletion update explicit user/default allow-lists before saving.
@@ -45,42 +64,58 @@ POST  /agent?chatId=:chatId
 - User `allowedSkills` references a missing Skill -> `400 invalid_config` with the user label and missing Skill ID.
 - Default `allowedSkills` references a missing Skill -> `400 invalid_config` with the missing Skill ID.
 - Conversation create/update requests an unassigned Skill -> `403 skill_not_allowed`.
-- Conversation create omits `skillIds` -> derive the current server-authorized default; do not use a cached browser session projection to manufacture the list.
-- Conversation create or PATCH sends `skillIds: []` -> preserve the explicit empty selection; never reinterpret it as automatic selection.
+- Member create omits mode -> persist `automatic` with an empty initial snapshot; do not manufacture a selection from a cached browser projection.
+- Member create/PATCH sends an unknown mode -> `400 invalid_skill_mode`.
+- Manual create omits `skillIds` -> derive the current server-authorized administrator default. Manual create/PATCH sends `skillIds: []` -> preserve the exact empty selection.
+- Guest create/PATCH sends `automatic` or any Skill IDs -> normalize to `manual` and `[]`, including repair of an abnormal legacy row.
+- Selector times out, is busy, fails, returns empty/malformed JSON, or returns no legal ID -> continue the main turn with `last_success` or `admin_default` metadata; never fail the turn solely because selection failed.
+- Selector returns a now-disabled, unassigned, unknown, or duplicate ID -> discard it during final revalidation; no revoked instructions or tools may enter the turn.
 - A stale chat turn includes a revoked Skill -> continue without that Skill, its instructions, or its tools.
 - A Skill exists but is disabled -> omit it from session projection and turn selection.
 
 ### 5. Good/Base/Bad Cases
 
-- Good: a member receives `allowedSkills: ["writing"]`; the session and both execution paths expose only `writing`.
-- Base: an older configuration has no `allowedSkills`; all enabled Skills remain available until an administrator saves an explicit list.
-- Bad: a saved conversation continues sending a revoked Skill ID; the server filters it before prompt and tool construction.
+- Good: an automatic conversation selects `writing` on its current logical route, reloads configuration, records isolated selector telemetry, and displays the validated result in the assistant message.
+- Base: a migrated conversation remains manual; a selector timeout uses the revalidated previous snapshot and the main answer continues while quota increments once.
+- Bad: the browser supplies `automatic` and forged IDs for a guest, or a selector returns a Skill revoked during the request; the execution boundary repairs/discards them before prompt and tool construction.
 
 ### 6. Tests Required
 
 - Registry unit tests assert assigned projection, missing-field compatibility, explicit empty denial, and selected-Skill filtering.
 - Worker API tests assert admin persistence, per-member `/api/session` projection, legacy `/api/chat` prompt filtering, and missing-reference rejection.
-- Worker API tests assert omitted create defaults, the three-Skill limit and stable order, deny-all/guest empty results, explicit empty preservation, PATCH distinction, and unauthorized rejection.
-- Team Agent tests assert a revoked persisted selection produces no selected Skill, instructions, or tool definitions.
-- Frontend structure checks assert the user Skill assignment control exists, is included in user saves, and ordinary new conversations omit `skillIds` so the server owns the default.
+- Worker API tests assert v4 idempotence, legacy/manual migration, automatic member defaults, guest repair, exact manual empty behavior, branch inheritance, export/import, PATCH omission, and unauthorized rejection.
+- Team Agent tests assert single-logical-route planning, offering fallback, strict JSON, 200-token/tool-free requests, a hard five-second late-result boundary, last-success/admin fallback, revocation races, isolated telemetry, and one quota charge.
+- Client decoder tests require exact `skillMode` and automatic metadata. Workspace Playwright asserts mode switching, disabled automatic checkboxes, guest-hidden controls, fallback labels, and local overflow bounds.
+- The local fake Provider Agent must identify non-streaming selector prompts before scenario markers, return a standard JSON completion, and count selector requests independently. No test may contact a live model.
+- Frontend structure checks assert Agent request bodies include mode and that hydration restores the server mode while guests remain manual.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 
 ```typescript
-const selectedSkills = getSelectedSkills(config, input.skillIds);
+const mode = body.skillMode;
+const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
+const selectedSkills = getSelectedSkills(config, body.skillIds, access.user);
 ```
 
-This validates only global Skill state and lets a stale conversation reuse a Skill after per-member revocation.
+This trusts browser settings and lets the selector cross logical-route boundaries. A late or revoked result can enter the prompt.
 
 #### Correct
 
 ```typescript
-const selectedSkills = getSelectedSkills(config, input.skillIds, access.user);
+const settings = await root.listConversations()
+  .then((items) => items.find(({ id }) => id === chatId));
+const prepared = await providerPlanRuntime(env, config).preparePlan({
+  routeIds: [settings.routeId],
+  accessRoutes: access.routes,
+  userApiKey,
+});
+// Race the whole attempt against 5 seconds, then reload config and revalidate.
+const selectedSkills = getSelectedSkills(reloadedConfig, attempt.skillIds, reloadedAccess.user);
 ```
 
-The effective assignment is enforced at the execution boundary on every turn.
+The root conversation is authoritative, logical fallback is excluded, the hard boundary rejects late results, and current assignment is enforced immediately before execution.
 
 ## Scenario: Typed Admin Member Assignment Workspace
 

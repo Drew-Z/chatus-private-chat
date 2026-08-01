@@ -17,6 +17,7 @@ import {
   type AgentConversation,
   type SessionProjection,
 } from "../lib/api";
+import type { ConversationSkillMode } from "../../../src/contracts/agent";
 import { friendlyAgentError } from "../lib/agent-errors";
 import {
   conversationAgentClientName,
@@ -56,6 +57,7 @@ export function ChatWorkspace({
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [activeId, setActiveId] = useState("");
   const [routeId, setRouteId] = useState(session.defaultRoute);
+  const [skillMode, setSkillMode] = useState<ConversationSkillMode>(session.access === "member" ? "automatic" : "manual");
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [workspaceError, setWorkspaceError] = useState("");
@@ -116,9 +118,10 @@ export function ChatWorkspace({
     setRouteId(activeConversation.routeId && allowedRoutes.has(activeConversation.routeId)
       ? activeConversation.routeId
       : session.defaultRoute);
+    setSkillMode(session.access === "guest" ? "manual" : activeConversation.skillMode);
     setSkillIds(activeConversation.skillIds.filter((id) => allowedSkills.has(id)).slice(0, 3));
     localStorage.setItem(activeConversationKey(session.user), activeConversation.id);
-  }, [activeConversation, session.defaultRoute, session.routes, session.skills, session.user]);
+  }, [activeConversation, session.access, session.defaultRoute, session.routes, session.skills, session.user]);
 
   const updateConversationInList = useCallback((updated: AgentConversation) => {
     conversationSnapshots.current.set(updated.id, updated);
@@ -184,7 +187,11 @@ export function ChatWorkspace({
     }
   };
 
-  const persistSettings = (patch: { routeId?: string; skillIds?: string[] }): Promise<void> => {
+  const persistSettings = (patch: {
+    routeId?: string;
+    skillMode?: ConversationSkillMode;
+    skillIds?: string[];
+  }): Promise<void> => {
     const conversationId = activeConversation?.id;
     if (!conversationId) return Promise.resolve();
     setWorkspaceError("");
@@ -308,6 +315,7 @@ export function ChatWorkspace({
           conversations={conversations}
           activeId={activeId}
           routeId={routeId}
+          skillMode={skillMode}
           skillIds={skillIds}
           view={sidebarView}
           busy={busy || accountBusy}
@@ -320,6 +328,10 @@ export function ChatWorkspace({
           onDelete={removeConversation}
           onConversationUpdated={updateConversationInList}
           onRouteChange={(nextRouteId) => { setRouteId(nextRouteId); void persistSettings({ routeId: nextRouteId }); }}
+          onSkillModeChange={(nextSkillMode) => {
+            setSkillMode(nextSkillMode);
+            void persistSettings({ skillMode: nextSkillMode });
+          }}
           onSkillChange={(nextSkillIds) => { setSkillIds(nextSkillIds); void persistSettings({ skillIds: nextSkillIds }); }}
           onRevokeAllSessions={handleRevokeAllSessions}
           onDeleteUserData={handleDeleteUserData}
@@ -342,6 +354,7 @@ export function ChatWorkspace({
               session={session}
               conversation={activeConversation}
               routeId={routeId}
+              skillMode={skillMode}
               skillIds={skillIds}
               blocked={accountBusy}
               onBusyChange={setBusy}
@@ -366,6 +379,7 @@ function ConversationChat({
   session,
   conversation,
   routeId,
+  skillMode,
   skillIds,
   blocked,
   onBusyChange,
@@ -376,6 +390,7 @@ function ConversationChat({
   session: SessionProjection;
   conversation: AgentConversation;
   routeId: string;
+  skillMode: ConversationSkillMode;
   skillIds: string[];
   blocked: boolean;
   onBusyChange: (busy: boolean) => void;
@@ -427,7 +442,7 @@ function ConversationChat({
     credentials: "include",
     resume: true,
     cancelOnClientAbort: false,
-    body: () => ({ routeId, skillIds, chatId: conversation.id }),
+    body: () => ({ routeId, skillMode, skillIds, chatId: conversation.id }),
   });
   const turnPhase = resolveTurnPhase({
     status: chat.status,

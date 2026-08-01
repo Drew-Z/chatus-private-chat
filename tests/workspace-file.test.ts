@@ -180,7 +180,7 @@ describe("workspace file API and R2 recovery", () => {
         ).toArray().map((row) => row.name),
       };
     });
-    expect(schema.versions).toEqual([1, 2, 3]);
+    expect(schema.versions).toEqual([1, 2, 3, 4]);
     expect(schema.tables).toEqual([
       "conversation_file_refs",
       "workspace_file_operations",

@@ -129,6 +129,10 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
     };
     const code = document.querySelector<HTMLElement>(".code-block pre");
     const transcript = document.querySelector<HTMLElement>(".message-column");
+    const skillSelection = document.querySelector<HTMLElement>(".message-skill-selection");
+    const skillMessage = skillSelection?.closest<HTMLElement>(".message");
+    const skillSelectionRect = skillSelection?.getBoundingClientRect();
+    const skillMessageRect = skillMessage?.getBoundingClientRect();
     return {
       documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       bodyFits: document.body.scrollWidth <= document.body.clientWidth,
@@ -144,6 +148,13 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
       action: rect(".composer-action"),
       codeScrollsLocally: Boolean(code && code.scrollWidth > code.clientWidth),
       transcriptScrollFits: Boolean(transcript && transcript.scrollWidth <= transcript.clientWidth),
+      skillSelectionScrollFits: Boolean(skillSelection && skillSelection.scrollWidth <= skillSelection.clientWidth),
+      skillSelectionInsideMessage: Boolean(
+        skillSelectionRect
+        && skillMessageRect
+        && skillSelectionRect.left >= skillMessageRect.left - 1
+        && skillSelectionRect.right <= skillMessageRect.right + 1
+      ),
     };
   });
 
@@ -159,6 +170,8 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   expect(geometry.transcript.left).toBeGreaterThanOrEqual(0);
   expect(geometry.transcript.right).toBeLessThanOrEqual(viewport!.width);
   expect(geometry.transcriptScrollFits).toBe(true);
+  expect(geometry.skillSelectionScrollFits).toBe(true);
+  expect(geometry.skillSelectionInsideMessage).toBe(true);
   expect(geometry.codeScrollsLocally).toBe(true);
 
   if (viewport!.width <= 520) {
@@ -311,6 +324,7 @@ test("file workspace stays contained and exposes exact version selection", async
           summary: "Synthetic visual fixture",
           pinned: false,
           routeId: "reasoning",
+          skillMode: "automatic",
           skillIds: ["project"],
           messageCount: 8,
           workspaceFiles: body.files.map((ref) => ({
@@ -416,6 +430,12 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await expect(page.getByRole("button", { name: "成员登录" })).toBeVisible();
   await expect(page.getByRole("button", { name: "查看线路与状态" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "记忆" })).toHaveCount(0);
+  const openSidebar = page.getByRole("button", { name: "打开会话" });
+  if (await openSidebar.isVisible()) await openSidebar.click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(page.getByRole("group", { name: "Skill 模式" })).toHaveCount(0);
+  await expect(page.getByText("Skills", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".skill-option")).toHaveCount(0);
 
   const geometry = await page.evaluate(() => {
     const headerRoute = document.querySelector<HTMLElement>(".header-route-button.static");
@@ -435,6 +455,26 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await attachScreenshot(page, testInfo, "guest-workspace");
 });
 
+test("member Skill mode switches between automatic and exact manual selection", async ({ page }) => {
+  await page.getByRole("button", { name: "查看线路与状态" }).click();
+  const mode = page.getByRole("group", { name: "Skill 模式" });
+  const automatic = mode.getByRole("button", { name: "自动" });
+  const manual = mode.getByRole("button", { name: "手动" });
+  const projectSkill = page.locator(".skill-option").filter({ hasText: "项目协作" }).getByRole("checkbox");
+
+  await expect(automatic).toHaveAttribute("aria-pressed", "true");
+  await expect(manual).toHaveAttribute("aria-pressed", "false");
+  await expect(projectSkill).toBeChecked();
+  await expect(projectSkill).toBeDisabled();
+
+  await manual.click();
+  await expect(automatic).toHaveAttribute("aria-pressed", "false");
+  await expect(manual).toHaveAttribute("aria-pressed", "true");
+  await expect(projectSkill).toBeEnabled();
+  await projectSkill.uncheck();
+  await expect(projectSkill).not.toBeChecked();
+});
+
 test("message edit restores focus and rich content remains visible", async ({ page }) => {
   const edit = page.getByRole("button", { name: "编辑并分支发送" });
   await edit.click();
@@ -443,6 +483,11 @@ test("message edit restores focus and rich content remains visible", async ({ pa
   await page.getByRole("button", { name: "取消" }).click();
   await expect(edit).toBeFocused();
   await expect(page.locator(".message-sources")).toContainText("来源 · 2");
+  const skillSelection = page.getByRole("region", { name: "本轮自动 Skill" });
+  await expect(skillSelection).toContainText("自动 Skill");
+  await expect(skillSelection).toContainText("上次成功");
+  await expect(skillSelection).toContainText("项目协作");
+  await expect(skillSelection).toContainText("选择超时，已回退");
   await expect(page.getByRole("button", { name: "继续生成并创建分支" })).toBeVisible();
 
   const colors = await page.evaluate(() => {

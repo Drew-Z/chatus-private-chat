@@ -68,6 +68,19 @@ try {
       allowBringYourOwnKey: false,
     },
     publicAccess: { enabled: false },
+    users: {
+      "e2e-member": { allowedSkills: ["e2e-skill"] },
+    },
+    skills: {
+      "e2e-skill": {
+        enabled: true,
+        label: "E2E Skill",
+        description: "Deterministic Skill used by the local fake Provider acceptance suite.",
+        instructions: "Follow the deterministic end-to-end scenario marker.",
+        order: 1,
+      },
+    },
+    tools: {},
     routes: {
       "e2e-chat": {
         label: "E2E chat",
@@ -164,6 +177,7 @@ try {
 
 function createFakeProvider(expectedProviderKey) {
   const state = {
+    selectorRequests: 0,
     delayedRequests: 0,
     singleChunkRequests: 0,
     recoveryRequests: 0,
@@ -194,6 +208,24 @@ function createFakeProvider(expectedProviderKey) {
       const messages = Array.isArray(body.messages) ? body.messages : [];
       const userText = latestUserText(messages);
       const toolResult = messages.findLast((message) => message?.role === "tool");
+      const selectorSkillIds = readSelectorSkillIds(body, messages);
+
+      if (selectorSkillIds !== null) {
+        state.selectorRequests += 1;
+        writeJson(response, 200, {
+          id: "chatcmpl-chatus-selector",
+          object: "chat.completion",
+          created: 1,
+          model: "e2e-model",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: JSON.stringify({ skillIds: selectorSkillIds.slice(0, 3) }) },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        });
+        return;
+      }
 
       if (toolResult) {
         state.memoryContinuationRequests += 1;
@@ -397,6 +429,24 @@ function latestUserText(messages) {
     if (messages[index]?.role === "user") return collectUserText([messages[index]]);
   }
   return "";
+}
+
+function readSelectorSkillIds(body, messages) {
+  if (body.stream === true) return null;
+  const hasSelectorPrompt = messages.some((message) => (
+    typeof message?.content === "string"
+    && message.content.includes('Return only strict JSON with exactly this shape: {"skillIds":["id"]}.')
+  ));
+  if (!hasSelectorPrompt) return null;
+  try {
+    const value = JSON.parse(latestUserText(messages));
+    if (!Array.isArray(value?.skills)) return [];
+    return value.skills
+      .map((skill) => skill?.id)
+      .filter((id, index, ids) => typeof id === "string" && id.length > 0 && ids.indexOf(id) === index);
+  } catch {
+    return [];
+  }
 }
 
 function containsAttachedFile(messages) {

@@ -36,6 +36,9 @@ import {
   type AgentConversationSummary,
   type AgentMemoryMutationResult,
   type AgentMemoryRecord,
+  type AgentMessageMetadata,
+  type AgentSkillSelectionMetadata,
+  type ConversationSkillMode,
   type TeamAgentIdentityError,
   type TeamAgentIdentityResult,
   type TeamAgentProps,
@@ -132,6 +135,7 @@ type ConversationRow = {
   pinned: number;
   route_id: string;
   parent_chat_id: string;
+  skill_mode: string;
   skill_ids: string;
   message_count: number;
   deleted_at: number;
@@ -139,7 +143,6 @@ type ConversationRow = {
 
 type PendingConversationActivity = {
   routeId?: string;
-  skillIds: string[];
 };
 
 type ConversationCleanupRow = {
@@ -436,6 +439,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         this.sql`ALTER TABLE workspace_file_versions ADD COLUMN extracted_chars INTEGER NOT NULL DEFAULT 0`;
         this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (3, ${Date.now()})`;
       }
+      if (version < 4) {
+        const conversationColumns = this.sql<{ name: string }>`PRAGMA table_info(chatus_conversations)`;
+        if (!conversationColumns.some((column) => column.name === "skill_mode")) {
+          this.sql`ALTER TABLE chatus_conversations ADD COLUMN skill_mode TEXT NOT NULL DEFAULT 'manual'`;
+        }
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (4, ${Date.now()})`;
+      }
     });
   }
 
@@ -469,7 +479,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.requireRootScope();
     return this.sql<ConversationRow>`
       SELECT id, title, created_at, updated_at, summary, pinned, route_id,
-        parent_chat_id, skill_ids, message_count, deleted_at
+        parent_chat_id, skill_mode, skill_ids, message_count, deleted_at
       FROM chatus_conversations
       WHERE deleted_at = 0
       ORDER BY pinned DESC, updated_at DESC
@@ -553,6 +563,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         pinned: false,
         routeId: normalized.routeId,
         parentChatId: normalized.sourceId,
+        skillMode: normalized.skillMode,
         skillIds: normalized.skillIds || [],
         messageCount: 0,
       }, 0);
@@ -633,18 +644,36 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const routeId = patch.routeId === undefined
       ? current.route_id
       : boundedString(patch.routeId, 80) || "";
+    const skillMode = patch.skillMode === undefined
+      ? normalizeSkillMode(current.skill_mode)
+      : normalizeSkillMode(patch.skillMode);
     const skillIds = patch.skillIds === undefined
       ? parseSkillIds(current.skill_ids)
       : normalizeSkillIds(patch.skillIds);
     const updatedAt = monotonicNow(current.updated_at);
     this.sql`
       UPDATE chatus_conversations
-      SET title = ${title}, route_id = ${routeId}, skill_ids = ${JSON.stringify(skillIds)}, updated_at = ${updatedAt}
+      SET title = ${title}, route_id = ${routeId}, skill_mode = ${skillMode},
+        skill_ids = ${JSON.stringify(skillIds)}, updated_at = ${updatedAt}
       WHERE id = ${id} AND deleted_at = 0
     `;
     const updated = this.getConversationRow(id);
     if (!updated) return { ok: false, error: "conversation_not_found" };
     return { ok: true, conversation: this.conversationSummary(updated) };
+  }
+
+  async recordAutomaticSkillSelection(idValue: string, skillIdsValue: string[]): Promise<boolean> {
+    this.requireRootScope();
+    const id = normalizeConversationId(idValue);
+    const current = id ? this.getConversationRow(id) : undefined;
+    if (!current || current.deleted_at !== 0 || normalizeSkillMode(current.skill_mode) !== "automatic") return false;
+    const skillIds = normalizeSkillIds(skillIdsValue);
+    this.sql`
+      UPDATE chatus_conversations
+      SET skill_ids = ${JSON.stringify(skillIds)}
+      WHERE id = ${id} AND deleted_at = 0 AND skill_mode = 'automatic'
+    `;
+    return true;
   }
 
   async recordConversationActivity(activity: AgentConversationActivity): Promise<void> {
@@ -661,6 +690,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         summary: "",
         pinned: false,
         routeId: activity.routeId,
+        skillMode: activity.skillMode,
         skillIds: normalizeSkillIds(activity.skillIds),
       });
       if (!created.ok) return;
@@ -670,12 +700,15 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const candidate = normalizeTitle(activity.titleCandidate);
     const title = isDefaultConversationTitle(current.title) && candidate ? candidate : current.title;
     const routeId = boundedString(activity.routeId, 80) || current.route_id;
+    const skillMode = activity.skillMode === undefined
+      ? normalizeSkillMode(current.skill_mode)
+      : normalizeSkillMode(activity.skillMode);
     const skillIds = activity.skillIds === undefined
       ? parseSkillIds(current.skill_ids)
       : normalizeSkillIds(activity.skillIds);
     this.sql`
       UPDATE chatus_conversations
-      SET title = ${title}, route_id = ${routeId}, skill_ids = ${JSON.stringify(skillIds)},
+      SET title = ${title}, route_id = ${routeId}, skill_mode = ${skillMode}, skill_ids = ${JSON.stringify(skillIds)},
         message_count = ${Math.max(0, Math.floor(activity.messageCount))}, updated_at = ${monotonicNow(current.updated_at)}
       WHERE id = ${id} AND deleted_at = 0
     `;
@@ -1999,9 +2032,15 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     let longTermMemory = "";
     let workspaceContext = "";
     let memoryRecord: AgentMemoryRecord | undefined;
-    if (this.accessKind === "member") {
-      try {
-        const root = await this.getRootAgent();
+    let root: Awaited<ReturnType<TeamAgent["getRootAgent"]>>;
+    let conversationSettings: AgentConversationSummary;
+    try {
+      root = await this.getRootAgent();
+      const conversations = await root.listConversations();
+      const storedConversation = conversations.find((conversation) => conversation.id === this.chatId);
+      if (!storedConversation) return chatErrorResponse("conversation_not_found", 404);
+      conversationSettings = storedConversation;
+      if (this.accessKind === "member") {
         const [loadedMemory, workspaceFiles] = await Promise.all([
           root.getMemory(),
           root.resolveConversationWorkspaceFiles(this.chatId),
@@ -2009,26 +2048,31 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         memoryRecord = loadedMemory;
         longTermMemory = memoryRecord.memory;
         workspaceContext = await this.loadWorkspaceContext(workspaceFiles);
-      } catch {
-        return chatErrorResponse("workspace_context_unavailable", 503);
       }
+    } catch {
+      return chatErrorResponse("workspace_context_unavailable", 503);
     }
     const prepared = await prepareTeamAgentTurn(this.env, session, {
       messages: toLegacyMessages(this.messages),
       continuation: options?.continuation === true,
-      routeId: boundedString(body.routeId, 80),
-      skillIds: stringArray(body.skillIds, MAX_SELECTED_SKILLS, 80),
+      routeId: conversationSettings.routeId || boundedString(body.routeId, 80),
+      skillMode: conversationSettings.skillMode,
+      skillIds: conversationSettings.skillIds,
       userApiKey: boundedString(body.userApiKey, 8_192),
       sessionSummary: boundedString(body.sessionSummary, 1_200),
       temperature: finiteNumber(body.temperature),
       longTermMemory,
       workspaceContext,
+      abortSignal: options?.abortSignal,
     });
 
     if (!prepared.ok) {
       return chatErrorResponse(prepared.error, prepared.status);
     }
-    this.pendingActivity = { routeId: prepared.routeId, skillIds: prepared.skillIds };
+    this.pendingActivity = { routeId: prepared.routeId };
+    if (prepared.skillSnapshotIds) {
+      await root.recordAutomaticSkillSelection(this.chatId, prepared.skillSnapshotIds).catch(() => false);
+    }
 
     const tools = createAgentToolSet({
       definitions: prepared.toolDefinitions,
@@ -2093,8 +2137,11 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
       return result.toUIMessageStreamResponse({
         originalMessages: this.messages,
-        messageMetadata: ({ part }) => part.type === "finish" && part.finishReason === "length"
-          ? { finishReason: "length" as const }
+        messageMetadata: ({ part }) => part.type === "finish"
+          ? {
+              ...(part.finishReason === "length" ? { finishReason: "length" as const } : {}),
+              ...(prepared.skillSelection ? { skillSelection: prepared.skillSelection } : {}),
+            }
           : undefined,
         headers: {
           "Cache-Control": "no-store",
@@ -2119,7 +2166,6 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         messageCount: this.messages.length,
         titleCandidate: deriveConversationTitle(this.messages),
         routeId: activity?.routeId,
-        skillIds: activity?.skillIds,
       });
     } catch {
       // The transcript is authoritative; the root index can be repaired on the next request.
@@ -2208,7 +2254,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private getConversationRow(id: string): ConversationRow | undefined {
     return this.sql<ConversationRow>`
       SELECT id, title, created_at, updated_at, summary, pinned, route_id,
-        parent_chat_id, skill_ids, message_count, deleted_at
+        parent_chat_id, skill_mode, skill_ids, message_count, deleted_at
       FROM chatus_conversations WHERE id = ${id} LIMIT 1
     `[0];
   }
@@ -2491,11 +2537,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.sql`
       INSERT INTO chatus_conversations(
         id, title, created_at, updated_at, summary, pinned, route_id,
-        parent_chat_id, skill_ids, message_count, deleted_at
+        parent_chat_id, skill_mode, skill_ids, message_count, deleted_at
       ) VALUES (
         ${input.id}, ${input.title}, ${input.createdAt}, ${input.updatedAt}, ${input.summary},
         ${input.pinned ? 1 : 0}, ${input.routeId || ""}, ${input.parentChatId || ""},
-        ${JSON.stringify(normalizeSkillIds(input.skillIds))}, ${Math.max(0, Math.floor(input.messageCount || 0))}, ${deletedAt}
+        ${normalizeSkillMode(input.skillMode)}, ${JSON.stringify(normalizeSkillIds(input.skillIds))},
+        ${Math.max(0, Math.floor(input.messageCount || 0))}, ${deletedAt}
       )
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
@@ -2505,6 +2552,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         pinned = excluded.pinned,
         route_id = excluded.route_id,
         parent_chat_id = excluded.parent_chat_id,
+        skill_mode = excluded.skill_mode,
         skill_ids = excluded.skill_ids,
         message_count = excluded.message_count,
         deleted_at = excluded.deleted_at
@@ -2755,6 +2803,7 @@ function normalizeConversationInput(input: AgentConversationInput): AgentConvers
     pinned: input.pinned === true,
     routeId: boundedString(input.routeId, 80),
     parentChatId: normalizeConversationId(input.parentChatId) || undefined,
+    skillMode: normalizeSkillMode(input.skillMode),
     skillIds: normalizeSkillIds(input.skillIds),
     messageCount: Math.max(0, Math.floor(input.messageCount || 0)),
   };
@@ -2798,6 +2847,7 @@ function normalizeConversationBranchInput(
     destinationId,
     title: normalizeTitle(input.title) || DEFAULT_CONVERSATION_TITLE,
     routeId: boundedString(input.routeId, 80),
+    skillMode: normalizeSkillMode(input.skillMode),
     skillIds: normalizeSkillIds(input.skillIds),
     launch,
   };
@@ -2901,15 +2951,47 @@ function normalizeConversationBranchOperationState(
 function normalizeBranchBody(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) return {};
   const routeId = boundedString(value.routeId, 80);
+  const skillMode = normalizeSkillMode(value.skillMode);
   const skillIds = normalizeSkillIds(value.skillIds);
   return {
     ...(routeId ? { routeId } : {}),
+    skillMode,
     skillIds,
   };
 }
 
-function normalizeAgentMessageMetadata(value: unknown): { finishReason: "length" } | undefined {
-  return isRecord(value) && value.finishReason === "length" ? { finishReason: "length" } : undefined;
+function normalizeAgentMessageMetadata(value: unknown): AgentMessageMetadata | undefined {
+  if (!isRecord(value)) return undefined;
+  const finishReason = value.finishReason === "length" ? "length" as const : undefined;
+  const skillSelection = normalizeAgentSkillSelectionMetadata(value.skillSelection);
+  return finishReason || skillSelection
+    ? { ...(finishReason ? { finishReason } : {}), ...(skillSelection ? { skillSelection } : {}) }
+    : undefined;
+}
+
+function normalizeAgentSkillSelectionMetadata(value: unknown): AgentSkillSelectionMetadata | undefined {
+  if (!isRecord(value) || value.mode !== "automatic") return undefined;
+  const source = value.source;
+  if (source !== "model" && source !== "last_success" && source !== "admin_default") return undefined;
+  if (!Array.isArray(value.skills) || value.skills.length > MAX_SELECTED_SKILLS) return undefined;
+  const skills = value.skills.flatMap((skill) => {
+    if (!isRecord(skill)) return [];
+    const id = boundedString(skill.id, 80);
+    const label = boundedString(skill.label, 80);
+    return id && label ? [{ id, label }] : [];
+  });
+  if (skills.length !== value.skills.length || new Set(skills.map(({ id }) => id)).size !== skills.length) return undefined;
+  const reason = value.reason;
+  if (
+    reason !== undefined
+    && reason !== "timeout"
+    && reason !== "provider_busy"
+    && reason !== "provider_error"
+    && reason !== "empty_response"
+    && reason !== "invalid_response"
+    && reason !== "no_valid_skills"
+  ) return undefined;
+  return { mode: "automatic", source, skills, ...(reason ? { reason } : {}) };
 }
 
 function findPreviousUserMessageIndex(messages: UIMessage[], beforeIndex: number): number {
@@ -2929,6 +3011,7 @@ function conversationRowToSummary(row: ConversationRow): Omit<AgentConversationS
     pinned: row.pinned === 1,
     routeId: row.route_id || undefined,
     parentChatId: row.parent_chat_id || undefined,
+    skillMode: normalizeSkillMode(row.skill_mode),
     skillIds: parseSkillIds(row.skill_ids),
     messageCount: Math.max(0, row.message_count),
   };
@@ -3079,6 +3162,10 @@ function isDefaultConversationTitle(value: string): boolean {
 
 function normalizeSkillIds(value: unknown): string[] {
   return stringArray(value, MAX_SELECTED_SKILLS, 80);
+}
+
+function normalizeSkillMode(value: unknown): ConversationSkillMode {
+  return value === "automatic" ? "automatic" : "manual";
 }
 
 function parseSkillIds(value: string): string[] {

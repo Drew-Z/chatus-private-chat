@@ -9,6 +9,10 @@ import type {
   WorkspaceFileProjection,
   WorkspaceFileVersionProjection,
 } from "../../../src/contracts/workspace-file";
+import type {
+  AgentSkillSelectionMetadata,
+  ConversationSkillMode,
+} from "../../../src/contracts/agent";
 
 export type RouteProjection = {
   id: string;
@@ -543,6 +547,7 @@ export type AgentConversation = {
   pinned: boolean;
   routeId?: string;
   parentChatId?: string;
+  skillMode: ConversationSkillMode;
   skillIds: string[];
   messageCount: number;
   workspaceFiles: WorkspaceConversationFileRef[];
@@ -997,6 +1002,7 @@ export async function listAgentConversations(): Promise<AgentConversation[]> {
 
 export async function createAgentConversation(input: {
   routeId?: string;
+  skillMode?: ConversationSkillMode;
   skillIds?: string[];
 } = {}): Promise<AgentConversation> {
   const data = await requestJson("/api/agent/conversations", {
@@ -1011,7 +1017,7 @@ export async function createAgentConversation(input: {
 
 export async function updateAgentConversation(
   conversation: AgentConversation,
-  patch: { title?: string; routeId?: string; skillIds?: string[] },
+  patch: { title?: string; routeId?: string; skillMode?: ConversationSkillMode; skillIds?: string[] },
 ): Promise<AgentConversation> {
   const data = await requestJson(`/api/agent/conversations/${encodeURIComponent(conversation.id)}`, {
     method: "PATCH",
@@ -1592,6 +1598,7 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
       "updatedAt",
       "summary",
       "pinned",
+      "skillMode",
       "skillIds",
       "messageCount",
       "workspaceFiles",
@@ -1605,6 +1612,7 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
     && value.updatedAt >= value.createdAt
     && typeof value.summary === "string"
     && typeof value.pinned === "boolean"
+    && (value.skillMode === "automatic" || value.skillMode === "manual")
     && (value.routeId === undefined || isNonEmptyString(value.routeId))
     && (value.parentChatId === undefined || isNonEmptyString(value.parentChatId))
     && isUniqueStringIdArray(value.skillIds)
@@ -1612,6 +1620,48 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
     && Array.isArray(value.workspaceFiles)
     && value.workspaceFiles.length <= 10
     && value.workspaceFiles.every(isWorkspaceConversationFileRef);
+}
+
+export function getAgentSkillSelectionMetadata(value: unknown): AgentSkillSelectionMetadata | undefined {
+  if (!isRecord(value) || !isRecord(value.skillSelection)) return undefined;
+  const selection = value.skillSelection;
+  if (
+    !hasExactKeys(selection, [
+      "mode",
+      "source",
+      "skills",
+      ...(selection.reason === undefined ? [] : ["reason"]),
+    ])
+    || selection.mode !== "automatic"
+    || (selection.source !== "model" && selection.source !== "last_success" && selection.source !== "admin_default")
+    || !Array.isArray(selection.skills)
+    || selection.skills.length > 3
+    || !selection.skills.every((skill) => (
+      isRecord(skill)
+      && hasExactKeys(skill, ["id", "label"])
+      && isNonEmptyString(skill.id)
+      && isNonEmptyString(skill.label)
+    ))
+    || new Set(selection.skills.map((skill) => (skill as { id: string }).id)).size !== selection.skills.length
+    || (
+      selection.reason !== undefined
+      && selection.reason !== "timeout"
+      && selection.reason !== "provider_busy"
+      && selection.reason !== "provider_error"
+      && selection.reason !== "empty_response"
+      && selection.reason !== "invalid_response"
+      && selection.reason !== "no_valid_skills"
+    )
+  ) return undefined;
+  return {
+    mode: "automatic",
+    source: selection.source,
+    skills: selection.skills.map((skill) => ({
+      id: (skill as { id: string }).id,
+      label: (skill as { label: string }).label,
+    })),
+    ...(selection.reason ? { reason: selection.reason } : {}),
+  };
 }
 
 export function isWorkspaceFileVersion(value: unknown): value is WorkspaceFileVersion {
@@ -1872,6 +1922,7 @@ function isUserDataExportConversation(value: unknown): value is UserDataExportCo
     "updatedAt",
     "summary",
     "pinned",
+    "skillMode",
     "skillIds",
     "messageCount",
     "messages",

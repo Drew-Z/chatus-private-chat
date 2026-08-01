@@ -554,9 +554,41 @@ describe("Worker API", () => {
     const created = await apiRequest("/api/agent/conversations", guest.cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "Guest-only conversation" }),
+      body: JSON.stringify({
+        title: "Guest-only conversation",
+        skillMode: "automatic",
+        skillIds: ["forged"],
+      }),
     });
     expect(created.status).toBe(201);
+    const createdPayload = await created.clone().json() as any;
+    expect(createdPayload).toMatchObject({
+      conversation: { skillMode: "manual", skillIds: [] },
+    });
+    const guestRoot = await getRootAgent(guest.payload.user);
+    const corrupted = await guestRoot.updateConversation({
+      id: createdPayload.conversation.id,
+      expectedUpdatedAt: createdPayload.conversation.updatedAt,
+      skillMode: "automatic",
+      skillIds: ["forged"],
+    });
+    expect(corrupted.ok).toBe(true);
+    const repaired = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(createdPayload.conversation.id)}`,
+      guest.cookie,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          skillMode: "automatic",
+          expectedUpdatedAt: corrupted.conversation?.updatedAt,
+        }),
+      },
+    );
+    expect(repaired.status).toBe(200);
+    await expect(repaired.json()).resolves.toMatchObject({
+      conversation: { skillMode: "manual", skillIds: [] },
+    });
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "bill:test-access-code");
 
     const loginResponse = await exports.default.fetch(new Request("https://example.test/api/login", {
@@ -1078,7 +1110,7 @@ describe("Worker API", () => {
     expect(JSON.stringify(persisted)).not.toContain("credentialReference");
   });
 
-  it("defaults only omitted member conversation Skills from the current assigned projection", async () => {
+  it("defaults new member conversations to automatic while preserving exact manual Skills", async () => {
     const label = `agent-skill-default-${crypto.randomUUID()}`;
     const config = {
       routes: {
@@ -1145,18 +1177,22 @@ describe("Worker API", () => {
 
     const omitted = await createConversation({ title: "Server default" });
     expect(omitted.response.status).toBe(201);
-    expect(omitted.payload.conversation.skillIds).toEqual(["alpha", "beta", "gamma"]);
+    expect(omitted.payload.conversation).toMatchObject({ skillMode: "automatic", skillIds: [] });
 
-    const explicitEmpty = await createConversation({ title: "Explicit empty", skillIds: [] });
+    const explicitEmpty = await createConversation({ title: "Explicit empty", skillMode: "manual", skillIds: [] });
     expect(explicitEmpty.response.status).toBe(201);
-    expect(explicitEmpty.payload.conversation.skillIds).toEqual([]);
+    expect(explicitEmpty.payload.conversation).toMatchObject({ skillMode: "manual", skillIds: [] });
 
     const explicitSelection = await createConversation({
       title: "Explicit selection",
+      skillMode: "manual",
       skillIds: ["delta", "beta", "delta"],
     });
     expect(explicitSelection.response.status).toBe(201);
-    expect(explicitSelection.payload.conversation.skillIds).toEqual(["delta", "beta"]);
+    expect(explicitSelection.payload.conversation).toMatchObject({
+      skillMode: "manual",
+      skillIds: ["delta", "beta"],
+    });
 
     const unauthorized = await createConversation({ skillIds: ["missing"] });
     expect(unauthorized.response.status).toBe(403);
@@ -1185,6 +1221,7 @@ describe("Worker API", () => {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          skillMode: "manual",
           skillIds: [],
           expectedUpdatedAt: preserved.conversation.updatedAt,
         }),
@@ -1197,17 +1234,17 @@ describe("Worker API", () => {
       ...config,
       users: { [label]: { displayName: "Skill default tester", allowedSkills: ["delta", "beta"] } },
     }));
-    const assigned = await createConversation({ title: "Assigned subset" });
+    const assigned = await createConversation({ title: "Assigned subset", skillMode: "manual" });
     expect(assigned.response.status).toBe(201);
-    expect(assigned.payload.conversation.skillIds).toEqual(["beta", "delta"]);
+    expect(assigned.payload.conversation).toMatchObject({ skillMode: "manual", skillIds: ["beta", "delta"] });
 
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       ...config,
       users: { [label]: { displayName: "Skill default tester", allowedSkills: [] } },
     }));
-    const denied = await createConversation({ title: "Denied Skills" });
+    const denied = await createConversation({ title: "Denied Skills", skillMode: "manual" });
     expect(denied.response.status).toBe(201);
-    expect(denied.payload.conversation.skillIds).toEqual([]);
+    expect(denied.payload.conversation).toMatchObject({ skillMode: "manual", skillIds: [] });
   });
 
   it("imports legacy chats and memory into Agent storage exactly once", async () => {
@@ -1249,7 +1286,7 @@ describe("Worker API", () => {
 
     const firstList = await apiRequest("/api/agent/conversations", cookie).then((response) => response.json()) as any;
     expect(firstList.conversations).toEqual([
-      expect.objectContaining({ id: legacyChatId, title: "Imported work", messageCount: 2 }),
+      expect.objectContaining({ id: legacyChatId, title: "Imported work", skillMode: "manual", messageCount: 2 }),
     ]);
     const importedMessages = await getPersistedAgentMessages(await getConversationAgent(label, legacyChatId));
     expect(importedMessages.find((message) => message.role === "assistant")?.metadata).toEqual({
@@ -1278,7 +1315,7 @@ describe("Worker API", () => {
     const afterLaterSave = await apiRequest("/api/agent/conversations", cookie).then((response) => response.json()) as any;
     expect(afterLaterSave.conversations).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: legacyChatId, messageCount: 2 }),
-      expect.objectContaining({ id: laterLegacyChatId, messageCount: 1 }),
+      expect.objectContaining({ id: laterLegacyChatId, skillMode: "manual", messageCount: 1 }),
     ]));
 
     const importedMemory = await apiRequest("/api/agent/memory", cookie).then((response) => response.json()) as any;
@@ -1415,6 +1452,7 @@ describe("Worker API", () => {
         id: expect.any(String),
         title: expect.stringMatching(/ · 分支$/u),
         parentChatId: sourceId,
+        skillMode: "automatic",
         messageCount: 2,
       }),
       launch: "none",

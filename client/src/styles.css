@@ -559,6 +559,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .settings-heading > div { display: flex; align-items: center; gap: 7px; }
 .settings-section > small, .skill-option small, .usage-summary small { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .fixed-route-label { min-height: 40px; display: flex; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--control-radius); color: var(--ink); background: var(--surface-muted); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.skill-mode-control { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 13px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-muted); }
+.skill-mode-control button { min-width: 0; min-height: 34px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 700; }
+.skill-mode-control button[aria-pressed="true"] { color: var(--ink); background: var(--surface); box-shadow: 0 1px 3px rgba(28, 43, 35, .12); }
+.skill-mode-control button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .skill-list { display: grid; gap: 11px; }
 .skill-option { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; font-size: 13px; }
 .skill-option input { width: 16px; min-height: 16px; margin-top: 2px; accent-color: var(--accent); }
@@ -642,6 +646,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .message-file svg, .source-link svg { flex: 0 0 auto; }
 .message-file span, .source-link span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-file small { flex: 0 1 auto; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-skill-selection { min-width: 0; display: grid; gap: 6px; margin: 10px 0; padding: 8px 0; border-block: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.message-skill-selection-head { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.message-skill-selection-head svg { flex: 0 0 auto; color: var(--accent); }
+.message-skill-selection-head strong { color: var(--ink); }
+.message-skill-selection-head span { margin-left: auto; white-space: nowrap; }
+.message-skill-list { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+.message-skill-list span { max-width: 100%; padding: 3px 6px; border-radius: 4px; color: #33423a; background: var(--surface-muted); overflow-wrap: anywhere; }
+.message-skill-selection > small { color: var(--muted); font-size: 10px; line-height: 1.4; }
 .message-sources { min-width: 0; display: grid; gap: 6px; margin: 10px 0; padding-top: 9px; border-top: 1px solid var(--line); }
 .message-sources-label { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .message-sources .source-link { width: min(100%, 520px); margin: 0; }

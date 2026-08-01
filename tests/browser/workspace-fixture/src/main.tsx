@@ -36,6 +36,7 @@ const initialConversations: AgentConversation[] = [
     summary: "Synthetic visual fixture",
     pinned: false,
     routeId: "reasoning",
+    skillMode: "automatic",
     skillIds: ["project"],
     messageCount: 8,
     workspaceFiles: [],
@@ -48,6 +49,7 @@ const initialConversations: AgentConversation[] = [
     summary: "Synthetic visual fixture",
     pinned: false,
     routeId: "reasoning",
+    skillMode: "manual",
     skillIds: [],
     messageCount: 3,
     workspaceFiles: [],
@@ -60,6 +62,7 @@ const initialConversations: AgentConversation[] = [
     summary: "Synthetic visual fixture",
     pinned: false,
     routeId: "reasoning",
+    skillMode: "manual",
     skillIds: [],
     messageCount: 12,
     workspaceFiles: [],
@@ -73,6 +76,7 @@ const initialConversations: AgentConversation[] = [
     pinned: false,
     routeId: "reasoning",
     parentChatId: "visual-second",
+    skillMode: "manual",
     skillIds: ["project"],
     messageCount: 2,
     workspaceFiles: [],
@@ -86,6 +90,7 @@ const initialConversations: AgentConversation[] = [
     pinned: false,
     routeId: "reasoning",
     parentChatId: "deleted-parent",
+    skillMode: "automatic",
     skillIds: ["project"],
     messageCount: 2,
     workspaceFiles: [],
@@ -170,7 +175,15 @@ const messages: UIMessage[] = [
   {
     id: "assistant-visual",
     role: "assistant",
-    metadata: { finishReason: "length" },
+    metadata: {
+      finishReason: "length",
+      skillSelection: {
+        mode: "automatic",
+        source: "last_success",
+        reason: "timeout",
+        skills: [{ id: "project", label: "项目协作" }],
+      },
+    },
     parts: [
       {
         type: "text",
@@ -393,8 +406,9 @@ function WorkspaceFixture() {
   const connectionState = (params.get("connection") || "ready") as ConnectionState;
   const session = params.get("access") === "guest" ? guestSession : memberSession;
   const routeId = session.defaultRoute || "reasoning";
-  const skillIds = session.access === "member" ? ["project"] : [];
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
+  const skillMode = session.access === "member" ? activeConversation?.skillMode || "automatic" : "manual";
+  const skillIds = session.access === "member" ? activeConversation?.skillIds || [] : [];
   const parentConversation = activeConversation?.parentChatId
     ? conversations.find((conversation) => conversation.id === activeConversation.parentChatId) || null
     : null;
@@ -483,6 +497,7 @@ function WorkspaceFixture() {
           conversations={conversations}
           activeId={activeId}
           routeId={routeId}
+          skillMode={skillMode}
           skillIds={skillIds}
           view={sidebarView}
           busy={turnBusy || blocked}
@@ -495,7 +510,12 @@ function WorkspaceFixture() {
           onDelete={async (conversation) => setConversations((current) => current.filter((item) => item.id !== conversation.id))}
           onConversationUpdated={(conversation) => setConversations((current) => current.map((item) => item.id === conversation.id ? conversation : item))}
           onRouteChange={() => undefined}
-          onSkillChange={() => undefined}
+          onSkillModeChange={(nextSkillMode) => setConversations((current) => current.map((conversation) => (
+            conversation.id === activeId ? { ...conversation, skillMode: nextSkillMode } : conversation
+          )))}
+          onSkillChange={(nextSkillIds) => setConversations((current) => current.map((conversation) => (
+            conversation.id === activeId ? { ...conversation, skillIds: nextSkillIds } : conversation
+          )))}
           onRevokeAllSessions={async () => undefined}
           onDeleteUserData={async () => undefined}
           onExportUserData={async () => ({ truncated: false })}

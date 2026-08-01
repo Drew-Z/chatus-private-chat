@@ -2,7 +2,10 @@ import { env, exports } from "cloudflare:workers";
 import { stepCountIs, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentToolSet } from "../src/services/agent-tools";
-import { loadProviderRouteReliability } from "../src/services/route-reliability";
+import {
+  loadProviderRouteReliability,
+  loadSkillSelectionTelemetry,
+} from "../src/services/route-reliability";
 import { prepareTeamAgentTurn, type Session } from "../src/worker";
 
 const ROUTES_CONFIG_KEY = "config:routes_config";
@@ -297,6 +300,289 @@ describe("prepared TeamAgent turn", () => {
     await prepared.closeTools();
   });
 
+  it("selects automatic Skills within one logical route using a bounded tool-free request", async () => {
+    const label = `agent-auto-skill-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        first: {
+          label: "First",
+          type: "openai-chat",
+          baseUrl: "https://selector-first.example/v1",
+          apiKey: "first-test-key",
+          priority: 2,
+        },
+        second: {
+          label: "Second",
+          type: "openai-chat",
+          baseUrl: "https://selector-second.example/v1",
+          apiKey: "second-test-key",
+          priority: 1,
+        },
+        forbidden: {
+          label: "Forbidden",
+          type: "openai-chat",
+          baseUrl: "https://selector-forbidden.example/v1",
+          apiKey: "forbidden-test-key",
+        },
+      },
+      routes: {
+        primary: {
+          label: "Primary",
+          offerings: [
+            { providerId: "first", model: "selector-model" },
+            { providerId: "second", model: "selector-model" },
+          ],
+          fallbacks: ["forbidden"],
+        },
+        forbidden: {
+          label: "Forbidden",
+          offerings: [{ providerId: "forbidden", model: "other-logical-model" }],
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary", "forbidden"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+      users: { [label]: { allowedSkills: ["writing", "analysis"] } },
+      skills: {
+        writing: { enabled: true, label: "Writing", description: "Draft text", instructions: "Write clearly.", order: 1 },
+        analysis: { enabled: true, label: "Analysis", description: "Inspect evidence", instructions: "Analyze evidence.", order: 2 },
+      },
+      tools: {},
+    }));
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      requests.push({ url, body });
+      if (url.startsWith("https://selector-first.example/")) {
+        return new Response(JSON.stringify({ error: { message: "first unavailable" } }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.startsWith("https://selector-forbidden.example/")) {
+        throw new Error("selector crossed a logical route boundary");
+      }
+      return openAiCompletionResponse('{"skillIds":["analysis","analysis","unknown"]}');
+    });
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Compare the evidence" }],
+      skillMode: "automatic",
+      skillIds: ["writing"],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    expect(prepared.skillIds).toEqual(["analysis"]);
+    expect(prepared.skillSelection).toEqual({
+      mode: "automatic",
+      source: "model",
+      skills: [{ id: "analysis", label: "Analysis" }],
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests.every(({ body }) => body.max_tokens === 200 && body.tools === undefined)).toBe(true);
+    expect(requests.some(({ url }) => url.includes("selector-forbidden"))).toBe(false);
+    await expect(loadProviderRouteReliability(env, "primary", "first")).resolves.toBeNull();
+    await expect(loadSkillSelectionTelemetry(env, "primary", "first")).resolves.toMatchObject({
+      operation: "skill_selection",
+      attempts: 1,
+      successes: 0,
+      lastOutcome: "upstream_server",
+    });
+    await expect(loadSkillSelectionTelemetry(env, "primary", "second")).resolves.toMatchObject({
+      operation: "skill_selection",
+      attempts: 1,
+      successes: 1,
+      lastOutcome: "success",
+      lastFallback: true,
+    });
+    await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
+
+    const next = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "This is a second user turn" }],
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(next).toMatchObject({ ok: false, error: "rate_limited", status: 429 });
+  });
+
+  it("falls back from malformed automatic selection to the revalidated last success", async () => {
+    const label = `agent-auto-skill-fallback-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://selector-malformed.example/v1",
+          model: "selector-model",
+          apiKey: "selector-test-key",
+        },
+      },
+      defaults: { defaultRoute: "primary", allowedRoutes: ["primary"] },
+      users: { [label]: { allowedSkills: ["writing", "analysis"] } },
+      skills: {
+        writing: { enabled: true, label: "Writing", instructions: "Write clearly.", order: 1 },
+        analysis: { enabled: true, label: "Analysis", instructions: "Analyze evidence.", order: 2 },
+      },
+      tools: {},
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(openAiCompletionResponse("not json"));
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Continue the draft" }],
+      skillMode: "automatic",
+      skillIds: ["writing", "revoked"],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.skillIds).toEqual(["writing"]);
+    expect(prepared.skillSelection).toEqual({
+      mode: "automatic",
+      source: "last_success",
+      reason: "invalid_response",
+      skills: [{ id: "writing", label: "Writing" }],
+    });
+    await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
+  });
+
+  it("hard-bounds automatic selection at five seconds and ignores a late success", async () => {
+    const label = `agent-auto-skill-timeout-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://selector-timeout.example/v1",
+          model: "selector-model",
+          apiKey: "selector-test-key",
+        },
+      },
+      defaults: { defaultRoute: "primary", allowedRoutes: ["primary"] },
+      users: { [label]: { allowedSkills: ["analysis", "writing"] } },
+      skills: {
+        writing: { enabled: true, label: "Writing", instructions: "Write clearly.", order: 2 },
+        analysis: { enabled: true, label: "Analysis", instructions: "Analyze evidence.", order: 1 },
+      },
+      tools: {},
+    }));
+    let observedSignal: AbortSignal | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => new Promise<Response>((resolve, reject) => {
+      if (!init?.signal) return reject(new Error("selector request did not receive an abort signal"));
+      observedSignal = init.signal;
+      setTimeout(() => resolve(openAiCompletionResponse('{"skillIds":["writing"]}')), 5_250);
+    }));
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+    const startedAt = Date.now();
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Analyze and draft the result" }],
+      skillMode: "automatic",
+      skillIds: [],
+    });
+    expect(Date.now() - startedAt).toBeLessThan(5_500);
+    expect(observedSignal?.aborted).toBe(true);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.skillSnapshotIds).toBeUndefined();
+    expect(prepared.skillIds).toEqual(["analysis", "writing"]);
+    expect(prepared.skillSelection).toEqual({
+      mode: "automatic",
+      source: "admin_default",
+      reason: "timeout",
+      skills: [
+        { id: "analysis", label: "Analysis" },
+        { id: "writing", label: "Writing" },
+      ],
+    });
+    await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }, 8_000);
+
+  it("revalidates automatic model output after a concurrent Skill revocation", async () => {
+    const label = `agent-auto-skill-race-${crypto.randomUUID()}`;
+    const config = {
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://selector-race.example/v1",
+          model: "selector-model",
+          apiKey: "selector-test-key",
+        },
+      },
+      defaults: { defaultRoute: "primary", allowedRoutes: ["primary"] },
+      users: { [label]: { allowedSkills: ["writing", "analysis"] } },
+      skills: {
+        writing: { enabled: true, label: "Writing", instructions: "REVOKED WRITING INSTRUCTIONS", order: 1 },
+        analysis: { enabled: true, label: "Analysis", instructions: "SAFE ANALYSIS INSTRUCTIONS", order: 2 },
+      },
+      tools: {},
+    };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(config));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+        ...config,
+        users: { [label]: { allowedSkills: ["analysis"] } },
+      }));
+      return openAiCompletionResponse('{"skillIds":["writing"]}');
+    });
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+    const prepared = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Draft a report" }],
+      skillMode: "automatic",
+      skillIds: ["writing"],
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.skillIds).toEqual(["analysis"]);
+    expect(prepared.skillSelection).toEqual({
+      mode: "automatic",
+      source: "admin_default",
+      reason: "no_valid_skills",
+      skills: [{ id: "analysis", label: "Analysis" }],
+    });
+    expect(JSON.stringify(prepared.messages)).not.toContain("REVOKED WRITING INSTRUCTIONS");
+    expect(JSON.stringify(prepared.messages)).toContain("SAFE ANALYSIS INSTRUCTIONS");
+    await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
+  });
+
   it("enforces the guest route boundary and ignores guest-provided summaries in Agent turns", async () => {
     await configurePublicAgentAccess();
     const now = Date.now();
@@ -575,6 +861,24 @@ function openAiStreamResponse(text: string): Response {
   return new Response(body, {
     status: 200,
     headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+function openAiCompletionResponse(text: string): Response {
+  return new Response(JSON.stringify({
+    id: "chatcmpl-selector-test",
+    object: "chat.completion",
+    created: 1,
+    model: "selector-model",
+    choices: [{
+      index: 0,
+      message: { role: "assistant", content: text },
+      finish_reason: "stop",
+    }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
   });
 }
 
