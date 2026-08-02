@@ -55,7 +55,7 @@ jobs:
 
       - name: Retain production-acceptance summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-acceptance-${{ github.sha }}
           path: artifacts/production-acceptance/manifest.json

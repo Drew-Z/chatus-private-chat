@@ -41,7 +41,7 @@ jobs:
           fi
 
       - name: Retain deployment path classification
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-paths-${{ github.sha }}
           path: artifacts/path-classification/paths.json
@@ -202,7 +202,7 @@ jobs:
 
       - name: Retain deployment manifest
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-deployment-${{ github.sha }}
           path: artifacts/deployment/manifest.json

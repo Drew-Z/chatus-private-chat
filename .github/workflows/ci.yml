@@ -37,7 +37,7 @@ jobs:
           fi
 
       - name: Retain path classification
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-path-classification-${{ github.sha }}
           path: artifacts/path-classification/paths.json
@@ -95,7 +95,7 @@ jobs:
 
       - name: Retain quality manifest
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-quality-${{ github.sha }}
           path: artifacts/quality/manifest.json
@@ -117,7 +117,7 @@ jobs:
       - run: npm run test:browser:workspace
       - name: Retain Workspace Playwright artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: workspace-playwright-${{ github.sha }}
           path: test-results/workspace-visual
@@ -142,7 +142,7 @@ jobs:
         run: npm run test:browser:agent
       - name: Retain fake-Provider Agent artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-playwright-${{ github.sha }}
           path: test-results/agent-e2e-ci
