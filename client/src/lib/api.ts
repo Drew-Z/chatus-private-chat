@@ -1079,7 +1079,10 @@ export async function login(accessCode: string): Promise<{ ok: true } | { ok: fa
 }
 
 export async function logout(): Promise<void> {
-  await fetch("/api/logout", { method: "POST", credentials: "include" }).catch(() => undefined);
+  const data = await requestJson("/api/logout", { method: "POST" });
+  if (!isRecord(data) || !hasExactKeys(data, ["ok"]) || data.ok !== true) {
+    throw new ApiError("invalid_logout_response", "服务器返回了无法识别的退出结果。", 502);
+  }
 }
 
 export async function listAgentConversations(): Promise<AgentConversation[]> {

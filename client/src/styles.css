@@ -645,6 +645,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .connection.error .connection-dot { background: var(--danger); }
 .workspace-error, .offline-banner, .configuration-banner, .error-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 18px; font-size: 13px; }
 .workspace-error, .error-banner { color: #8d303a; background: var(--danger-soft); }
+.member-logout-error { flex-wrap: wrap; }
+.member-logout-error > span { min-width: 0; flex: 1 1 220px; overflow-wrap: anywhere; }
+.member-logout-error .error-actions { flex: 0 0 auto; }
 .offline-banner { justify-content: center; color: #70521b; background: var(--warning-soft); }
 .configuration-banner { justify-content: center; color: #46564e; background: #eef2f0; }
 .chat-loading { flex: 1; display: grid; place-items: center; align-content: center; gap: 16px; color: var(--muted); }

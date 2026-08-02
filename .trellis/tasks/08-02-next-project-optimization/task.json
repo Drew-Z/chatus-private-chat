@@ -1,0 +1,77 @@
+{
+  "id": "next-project-optimization",
+  "name": "next-project-optimization",
+  "title": "成员退出登录安全与恢复优化",
+  "description": "为普通成员退出补齐精确响应解码、fail-closed 工作区状态、草稿保留、可重试错误和 Worker/浏览器回归证据。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "member-logout-safety",
+  "package": null,
+  "priority": "P1",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-02",
+  "completedAt": null,
+  "branch": "codex/member-logout-fail-closed",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "1f0e2d16d429676a3050cb54ecb20330cca6e1a0",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/29",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structure checks passed.",
+        "at": "2026-08-02T02:25:29.097051+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "40 files and 506 tests passed.",
+        "at": "2026-08-02T02:25:30.140302+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "79 passed; 36 viewport-conditional skips.",
+        "at": "2026-08-02T02:25:31.221729+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "2 local fake-Provider Agent tests passed.",
+        "at": "2026-08-02T02:25:32.297277+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Root, client, and browser TypeScript checks passed.",
+        "at": "2026-08-02T02:25:33.375245+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler packaging dry-run passed; no deployment performed.",
+        "at": "2026-08-02T02:25:34.442160+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-02T02:25:35.511756+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed.",
+        "at": "2026-08-02T02:25:36.542380+00:00"
+      }
+    ]
+  }
+}

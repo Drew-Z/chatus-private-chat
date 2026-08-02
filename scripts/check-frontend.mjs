@@ -74,6 +74,7 @@ const reactMemoryPanel = await readText(path.join(root, "client/src/components/M
 const reactMessageView = await readText(path.join(root, "client/src/components/MessageView.tsx"));
 const reactComposer = await readText(path.join(root, "client/src/components/MessageComposer.tsx"));
 const reactWorkspaceHeader = await readText(path.join(root, "client/src/components/WorkspaceHeader.tsx"));
+const reactMemberLogoutNotice = await readText(path.join(root, "client/src/components/MemberLogoutNotice.tsx"));
 const reactMcpConnections = await readText(path.join(root, "client/src/components/McpConnectionsDialog.tsx"));
 const reactMcpOAuth = await readText(path.join(root, "client/src/lib/mcp-oauth.ts"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
@@ -107,8 +108,13 @@ assert(!reactClient.includes("createAgentConversation({ routeId: session.default
 assert(reactClient.includes("activeConversation.skillIds.filter"), "React client: existing conversations must restore their persisted Skill selection without applying create defaults");
 assert(reactClient.includes('setSkillMode(session.access === "guest" ? "manual" : activeConversation.skillMode)'), "React client: existing conversations must restore the authoritative Skill mode while guests stay manual");
 assert(reactClient.includes("addToolApprovalResponse"), "React client: tool approval rendering is missing");
-assert(reactClient.includes("if (busy || accountBusy) return;"), "React client: logout must not abandon an active Agent or account operation");
-assert(reactWorkspaceHeader.includes("disabled={busy || accountBusy}"), "React client: logout control must be disabled during an active Agent or account operation");
+const memberLogoutHandler = reactClient.match(/const handleLogout = async \(\) => \{[\s\S]*?\n  \};/)?.[0] || "";
+assert(memberLogoutHandler.includes("if (busy || accountOperationBusy || logoutInFlight.current) return;"), "React client: member logout must remain single-flight and must not abandon an active Agent or account operation");
+assert(memberLogoutHandler.includes('setLogoutState({ status: "pending" })') && memberLogoutHandler.includes('status: "error"'), "React client: member logout needs explicit pending and retryable error states");
+assert(memberLogoutHandler.indexOf("await onLogout();") >= 0 && memberLogoutHandler.indexOf("await onLogout();") < memberLogoutHandler.indexOf("clearUserDrafts(session.user);"), "React client: member drafts must clear only after authoritative logout success");
+assert(reactWorkspaceHeader.includes("logoutPending: boolean") && reactWorkspaceHeader.includes('const logoutLabel = logoutPending ? "正在退出登录" : "退出登录"'), "React client: logout control needs an explicit pending projection and accessible label");
+assert(reactWorkspaceHeader.includes("disabled={logoutPending || busy || accountBusy}") && reactWorkspaceHeader.includes("aria-label={logoutLabel}"), "React client: logout control must disable and announce its pending state");
+assert(reactClient.includes("<MemberLogoutNotice") && reactMemberLogoutNotice.includes('role="alert"') && reactMemberLogoutNotice.includes("重试退出"), "React client: failed member logout needs a dedicated accessible retry action");
 assert(reactClient.includes("if (mcpRefresh.current) return mcpRefresh.current") && reactClient.includes("mcpRefresh.current !== task"), "React client: MCP status refresh must stay single-flight and clear only its owning busy state");
 assert(reactApp.includes("consumeMcpOAuthCallback(window.location.href)") && reactApp.includes("window.history.replaceState"), "React client: MCP OAuth callback result must be consumed once and removed from the URL");
 assert(reactMcpOAuth.includes('url.searchParams.delete("mcpOAuth")') && reactMcpOAuth.includes("url.pathname"), "React client: MCP OAuth callback cleanup must preserve the current path and unrelated URL state");

@@ -48,8 +48,14 @@ import { MessageComposer } from "./MessageComposer";
 import { MessageView, type MessageAction } from "./MessageView";
 import { WorkspaceHeader, type ConnectionState } from "./WorkspaceHeader";
 import { McpConnectionsDialog, type McpConnectionNotice } from "./McpConnectionsDialog";
+import { MemberLogoutNotice } from "./MemberLogoutNotice";
 import type { UIMessage } from "ai";
 import type { McpOAuthCallbackResult } from "../lib/mcp-oauth";
+
+type LogoutState =
+  | { status: "idle" }
+  | { status: "pending" }
+  | { status: "error"; message: string };
 
 export function ChatWorkspace({
   session,
@@ -73,6 +79,7 @@ export function ChatWorkspace({
   const [workspaceError, setWorkspaceError] = useState("");
   const [busy, setBusy] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
+  const [logoutState, setLogoutState] = useState<LogoutState>({ status: "idle" });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarView, setSidebarView] = useState<"history" | "files" | "settings">("history");
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -82,11 +89,14 @@ export function ChatWorkspace({
   const [mcpConnectionNotice, setMcpConnectionNotice] = useState<McpConnectionNotice | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const bootstrapped = useRef(false);
+  const logoutInFlight = useRef(false);
   const mcpRefresh = useRef<Promise<void> | null>(null);
   const conversationSnapshots = useRef(new Map<string, AgentConversation>());
   const settingsQueues = useRef(new Map<string, Promise<void>>());
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
-  const accountOperationBusy = accountBusy || Boolean(mcpBusyServerId);
+  const logoutPending = logoutState.status === "pending";
+  const accountActionBusy = accountBusy || logoutPending;
+  const accountOperationBusy = accountActionBusy || Boolean(mcpBusyServerId);
 
   const refreshMcpConnections = useCallback((): Promise<void> => {
     if (session.access !== "member") return Promise.resolve();
@@ -119,7 +129,7 @@ export function ChatWorkspace({
   }, [mcpOAuthResult, onMcpOAuthResultConsumed, refreshMcpConnections]);
 
   async function connectMcp(serverId: string) {
-    if (busy || accountBusy || mcpBusyServerId) return;
+    if (busy || accountActionBusy || mcpBusyServerId) return;
     setMcpBusyServerId(serverId);
     setMcpConnectionNotice(null);
     try {
@@ -133,7 +143,7 @@ export function ChatWorkspace({
   }
 
   async function discoverMcpTools(serverId: string) {
-    if (busy || accountBusy || mcpBusyServerId) return;
+    if (busy || accountActionBusy || mcpBusyServerId) return;
     setMcpBusyServerId(serverId);
     setMcpConnectionNotice(null);
     try {
@@ -150,7 +160,7 @@ export function ChatWorkspace({
   }
 
   async function revokeMcpConnection(serverId: string) {
-    if (busy || accountBusy || mcpBusyServerId) return;
+    if (busy || accountActionBusy || mcpBusyServerId) return;
     setMcpBusyServerId(serverId);
     setMcpConnectionNotice(null);
     try {
@@ -307,10 +317,17 @@ export function ChatWorkspace({
   };
 
   const handleLogout = async () => {
-    if (busy || accountBusy) return;
-    if (mcpBusyServerId) return;
+    if (busy || accountOperationBusy || logoutInFlight.current) return;
+    logoutInFlight.current = true;
+    setLogoutState({ status: "pending" });
+    try {
+      await onLogout();
+    } catch (error) {
+      logoutInFlight.current = false;
+      setLogoutState({ status: "error", message: errorMessage(error, "退出登录失败，请重试。") });
+      return;
+    }
     clearUserDrafts(session.user);
-    await onLogout();
   };
 
   const openRouteSettings = () => {
@@ -393,6 +410,7 @@ export function ChatWorkspace({
         connectionState={connectionState}
         busy={busy}
         accountBusy={accountOperationBusy}
+        logoutPending={logoutPending}
         parentConversation={parentConversation}
         parentMissing={parentMissing}
         onOpenSidebar={() => setSidebarOpen(true)}
@@ -440,10 +458,13 @@ export function ChatWorkspace({
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
 
         <section className="chat-panel" aria-label="对话">
+          {logoutState.status === "error" && (
+            <MemberLogoutNotice message={logoutState.message} onRetry={handleLogout} />
+          )}
           {workspaceError && (
             <div className="workspace-error" role="alert">
               <span>{workspaceError}</span>
-              <button className="icon-button" type="button" onClick={handleRefresh} title="重新读取" aria-label="重新读取"><RefreshCw size={16} /></button>
+              <button className="icon-button" type="button" onClick={handleRefresh} disabled={accountOperationBusy} title="重新读取" aria-label="重新读取"><RefreshCw size={16} /></button>
             </div>
           )}
           {loading ? (
@@ -465,7 +486,7 @@ export function ChatWorkspace({
           ) : (
             <div className="chat-loading">
               <strong>无法打开会话</strong>
-              <button className="primary-button" type="button" onClick={() => void createConversation()}>新建对话</button>
+              <button className="primary-button" type="button" onClick={() => void createConversation()} disabled={accountOperationBusy}>新建对话</button>
             </div>
           )}
         </section>
@@ -474,7 +495,7 @@ export function ChatWorkspace({
       {session.access === "member" && mcpConnectionsOpen && (
         <McpConnectionsDialog
           connections={mcpConnections}
-          busyServerId={busy || accountBusy ? "__blocked__" : mcpBusyServerId}
+          busyServerId={busy || accountActionBusy ? "__blocked__" : mcpBusyServerId}
           notice={mcpConnectionNotice}
           onClose={() => { if (!mcpBusyServerId) setMcpConnectionsOpen(false); }}
           onRefresh={refreshMcpConnections}

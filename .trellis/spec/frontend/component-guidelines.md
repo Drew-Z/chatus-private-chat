@@ -137,6 +137,74 @@ onLogout();
 const page = paginateOperations(filtered, requestedPage, 20);
 ```
 
+## Scenario: Recoverable React Member Logout
+
+### 1. Scope / Trigger
+
+- Trigger: changing ordinary member logout, authenticated workspace account locks, or user-scoped draft cleanup.
+
+### 2. Signatures
+
+```text
+POST /api/logout -> { ok: true }
+```
+
+```typescript
+type LogoutState =
+  | { status: "idle" }
+  | { status: "pending" }
+  | { status: "error"; message: string };
+```
+
+### 3. Contracts
+
+- The browser sends member logout through the shared JSON request boundary and accepts only the exact envelope `{ ok: true }`. Network failures, non-2xx responses, empty or non-JSON bodies, `ok !== true`, and unknown keys reject as typed errors.
+- `ChatWorkspace` owns `idle | pending | error`. One in-flight guard prevents duplicate requests; pending joins the account-operation lock so conflicting account, MCP, conversation, message, and Composer actions cannot start.
+- `WorkspaceHeader` receives an explicit `logoutPending` projection. The icon-only logout control is disabled while pending and exposes `正在退出登录` through both its accessible label and title.
+- A failed request keeps the authenticated workspace, active conversation, Composer value, and every current-member draft key. A dedicated `role="alert"` renders the failure plus a `重试退出` command that invokes the same revocation path.
+- The current member's draft keys are cleared only after `onLogout()` resolves. Revoke-all and permanent-delete retain their separate server-mutation-first flows.
+- The Worker deletes `session:<token>` before returning the exact success envelope and clearing cookie. A KV deletion failure returns non-2xx without `Set-Cookie`; the original session remains valid for retry.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Network, HTTP, empty, non-JSON, false, or unknown-key response | Reject; keep workspace and drafts; show retry alert |
+| Logout is pending | Keep at most one request; disable the logout control and conflicting operations |
+| Session KV deletion rejects | Return `500`, send no clearing cookie, and preserve the member session |
+| Retry returns exact `{ ok: true }` | Leave the old member session and then clear its draft keys |
+| Logout flow runs | Make zero Provider, model-selection, MCP, or OAuth calls |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the first revocation attempt fails, the draft and workspace remain usable, and explicit retry succeeds before local cleanup.
+- Base: the first request returns exact success, session refresh reaches the configured guest/login surface, and only the old member's drafts are removed.
+- Bad: clear drafts before awaiting the API, swallow a rejected fetch, accept `{ ok: true, extra: true }`, or reuse a conversation-refresh action as the logout retry.
+
+### 6. Tests Required
+
+- Browser API tests accept only exact `{ ok: true }` and reject network, HTTP, empty/non-JSON, false, and unknown-key outcomes.
+- Worker integration injects target member-session KV deletion failure and asserts `500`, no clearing cookie, preserved session access, exact successful retry, and final unauthorized access with the old cookie.
+- Workspace fixtures render real presentational components for idle, pending, error, and retry at desktop and touch-enabled 390px; assert labels, disabled conflicts, keyboard retry, containment, and no horizontal overflow without `/api` or Agent calls.
+- Local fake-Provider Agent acceptance fills a draft, fails the first logout, compares workspace/session/storage fingerprints and Provider counters, retries against the local Worker, and asserts draft cleanup plus return to login.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+clearUserDrafts(session.user);
+await fetch("/api/logout", { method: "POST" }).catch(() => undefined);
+```
+
+#### Correct
+
+```typescript
+setLogoutState({ status: "pending" });
+await logout(); // exact decoder; throws on every failure
+clearUserDrafts(session.user);
+```
+
 ## Scenario: Model-Free First Setup Closure
 
 ### 1. Scope / Trigger

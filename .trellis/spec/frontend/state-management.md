@@ -16,7 +16,7 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 ## State Rules
 
 - Scope locally persisted values by user label where data belongs to a signed-in user.
-- Clear user drafts on logout and account deletion paths.
+- Clear user drafts only after authoritative logout/session revocation or account deletion succeeds. Network, HTTP, and response-decoder failures preserve the authenticated workspace and its current-member drafts for retry.
 - Keep derived UI state derived; do not persist values that can be recalculated from sessions/configuration.
 - Store timers, queues, and in-flight operations per entity using `Map`/`Set`, not one global slot.
 - Keep the newest server version during conflicts and preserve a recognizable local conflict copy when necessary.
