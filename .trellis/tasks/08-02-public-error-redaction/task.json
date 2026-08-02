@@ -83,6 +83,18 @@
         "status": "passed",
         "summary": "Logs, browser responses, MCP OAuth audits, and passive telemetry retain only approved bounded fields; no raw Provider or MCP payloads",
         "at": "2026-08-02T14:32:02.190835+00:00"
+      },
+      {
+        "command": "gh run view 30752965898",
+        "status": "passed",
+        "summary": "Workflow-dispatch PR quality passed for exact SHA e551eeda974840d6fbeba5991868ad961f449b47; changes, quality, Workspace Playwright, and local fake-Provider Agent jobs succeeded",
+        "at": "2026-08-02T14:58:13.997914+00:00"
+      },
+      {
+        "command": "gh api repos/Drew-Z/chatus-private-chat/actions/runs/30752965898/artifacts",
+        "status": "passed",
+        "summary": "Four unexpired artifacts retained through 2026-08-16: path classification 8835035397, Agent Playwright 8835050419, quality manifest 8835065589, Workspace Playwright 8835117241",
+        "at": "2026-08-02T14:58:14.691184+00:00"
       }
     ]
   }
