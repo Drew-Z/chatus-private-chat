@@ -1150,3 +1150,36 @@ Completed ordinary member logout fail-closed behavior and regression evidence; m
 ### Next Steps
 
 - None - task complete
+
+
+## Session 29: 归档后台配置兼容性恢复
+
+**Date**: 2026-08-02
+**Task**: 归档后台配置兼容性恢复
+**Branch**: `main`
+
+### Summary
+
+记录用户对 exact-SHA 生产 React 后台的正常访问确认，完成 AC7 并归档兼容性恢复任务。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d0248089df8c2a33d3ec1b9f3fb6619de24be406` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
