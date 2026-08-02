@@ -602,6 +602,53 @@ describe("React client runtime validation", () => {
     })).toBe(false);
   });
 
+  it("accepts incomplete legacy MCP tools only in the fail-closed review state", () => {
+    const legacyTool = {
+      enabled: false,
+      label: "Legacy lookup",
+      inputSchema: { type: "object", properties: { query: { type: "string" } } },
+      confirmation: "first-per-conversation",
+      executor: { type: "mcp", serverId: "docs", remoteName: "lookup" },
+      reviewRequired: true,
+    };
+    const snapshot = (tool: Record<string, unknown>) => ({
+      config: {
+        ...validAdminConfig,
+        tools: { ...validAdminConfig.tools, "mcp:docs:lookup": tool },
+        mcpServers: {
+          docs: {
+            enabled: true,
+            label: "Docs",
+            endpoint: "https://docs.example/mcp",
+            auth: { version: 1, type: "none" },
+          },
+        },
+      },
+      source: "kv",
+      revision: "a".repeat(64),
+    });
+
+    expect(isAdminConfigSnapshot(snapshot(legacyTool))).toBe(true);
+    expect(isAdminConfigSnapshot(snapshot({ ...legacyTool, enabled: true }))).toBe(false);
+    expect(isAdminConfigSnapshot(snapshot({ ...legacyTool, reviewRequired: false }))).toBe(false);
+    expect(isAdminConfigSnapshot(snapshot({ ...legacyTool, reviewRequired: undefined }))).toBe(false);
+    expect(isAdminConfigSnapshot(snapshot({ ...legacyTool, schemaFingerprint: "invalid" }))).toBe(false);
+    expect(isAdminConfigSnapshot(snapshot({
+      ...legacyTool,
+      executor: { type: "mcp", serverId: "docs", remoteName: "invalid name" },
+    }))).toBe(false);
+
+    expect(isAdminConfigSnapshot(snapshot({
+      ...legacyTool,
+      enabled: true,
+      schemaFingerprint: "b".repeat(64),
+      securityFingerprint: "c".repeat(64),
+      sideEffect: "read",
+      reviewRevision: "d".repeat(64),
+      reviewRequired: false,
+    }))).toBe(true);
+  });
+
   it("validates a secret-free member projection with unique labels", () => {
     expect(isAdminMemberListResponse({
       members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }],

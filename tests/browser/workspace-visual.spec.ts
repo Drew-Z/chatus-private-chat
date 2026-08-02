@@ -1122,6 +1122,15 @@ test("member policy editing and usage reset stay usable on desktop and touch", a
 test("capability registry keeps drafts, secrets, and review actions contained", async ({ page }, testInfo) => {
   test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "capability registry coverage targets desktop and 390px");
   let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
+  currentConfig.tools["mcp:docs:search"] = {
+    enabled: false,
+    label: "Legacy documentation search",
+    description: "Synthetic tool persisted before MCP governance fields were introduced.",
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    confirmation: "first-per-conversation",
+    executor: { type: "mcp", serverId: "docs", remoteName: "search" },
+    reviewRequired: true,
+  };
   let revision = "a".repeat(64);
   let secretWriteCount = 0;
   let discoveryCount = 0;
@@ -1220,6 +1229,7 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
   });
 
   await page.goto("/?view=admin-members");
+  await expect(page.getByText("无法读取管理配置", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "AI 能力" }).click();
   await expect(page.getByRole("heading", { name: "Skills", exact: true })).toBeVisible();
 
@@ -1276,6 +1286,11 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
   await page.getByRole("dialog", { name: /删除 MCP Server/ }).getByRole("button", { name: "删除 Server" }).click();
   await expect(page.getByRole("tab", { name: "MCP" })).toBeFocused();
   await expect(page.getByText("暂无MCP Server", { exact: true })).toBeVisible();
+  expect(currentConfig.mcpServers.docs).toBeUndefined();
+  expect(currentConfig.tools["mcp:docs:search"]).toBeUndefined();
+  expect(currentConfig.tools["builtin:text_stats"]).toBeDefined();
+  expect(currentConfig.providers.shared).toBeDefined();
+  expect(currentConfig.users.bill).toBeDefined();
 });
 
 test("member OAuth MCP connections stay actionable and contained", async ({ page }, testInfo) => {

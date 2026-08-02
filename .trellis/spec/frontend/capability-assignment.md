@@ -482,6 +482,7 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 ### 3. Contracts
 
 - Config is dual-read/new-write: legacy `authType/secretRef` remains readable, while every new admin save writes the exact versioned `auth` union. OAuth `configRevision` is server-derived from server ID, endpoint, issuer, client ID, normalized scopes, fixed callback, and optional client-secret reference.
+- Stored MCP tools from before four-dimensional governance remain readable only as recovery objects. Worker normalization forces an incomplete tool to `enabled: false` and `reviewRequired: true`; JSON may omit any missing `schemaFingerprint`, `securityFingerprint`, `sideEffect`, or `reviewRevision`. The React admin decoder accepts that incomplete shape only with both fail-closed flags exact, retains it for explicit deletion or same-ID rediscovery, and never synthesizes review data.
 - OAuth issuer, authorization endpoint, and token endpoint use public HTTPS URLs with no credentials, query, fragment, private literal address, redirect, or cross-origin metadata endpoint. The callback is derived from the current Chatus origin plus the fixed path; arbitrary redirect URIs are never accepted.
 - Authorization Code + PKCE uses S256. Server-side state is TTL-bounded, one-time, and bound to member owner, session fingerprint, server ID, callback URL, and config revision. Authorization codes, state, and verifiers never enter the React state or callback result URL.
 - Access and refresh tokens are encrypted with AES-GCM before `UserState` persistence. AAD binds `ownerLabel`, `serverId`, and token schema v1. `ROUTE_KEYS_MASTER_KEY` is the external 32-byte key; browser projections, audit, logs, user export, discovery candidates, and React persistence never contain token, IV, ciphertext, code, state, verifier, or client secret.
@@ -505,13 +506,16 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 | Side-effect approval is `conversation`, denied, cancelled, or times out | Reject conversation trust; deny/cancel/timeout produces zero remote calls |
 | Guest invokes any MCP OAuth endpoint | `403 capability_not_allowed`; no storage or remote call |
 | Browser response contains unknown or secret-like fields | Exact decoder rejects it instead of persisting the projection |
+| MCP tool governance is incomplete | Accept the admin snapshot only when the tool is disabled and review-required; reject enabled, non-review, malformed-present-field, or invalid-executor variants |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: one member completes PKCE, receives a secret-free connected projection, and a reviewed write tool asks for `once` confirmation on every call.
 - Good: security annotations change while the JSON schema stays stable; the runtime records drift and blocks the call until administrator review creates a new revision.
 - Base: an old bearer config round-trips through dual-read, and a stable read-only rediscovery retains explicit enablement and first-per-conversation policy.
+- Base: a pre-governance MCP tool loads disabled and review-required, survives an unrelated revisioned config save, and can be deleted or upgraded through same-ID rediscovery.
 - Bad: treat OAuth as X-API-Key, store tokens in browser state, accept provider redirects, reuse a token for another member, or keep trust after any review dimension changes.
+- Bad: require governance fields unconditionally and make one legacy tool block the whole admin workspace, or accept an incomplete tool while it is runnable.
 
 ### 6. Tests Required
 
@@ -520,6 +524,7 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 - Worker tests use only local fake OAuth/MCP and cover start/callback replay/swap/exchange failure, exact status/revoke projections, no token/audit/export/log leak, config/scope drift, member candidate review, and permanent deletion.
 - MCP runtime and Agent tests assert all four review dimensions before `tools/call`, persistent drift overlay, review-revision trust isolation, consecutive side-effect confirmations, invalid `conversation` decisions, and zero calls on deny/cancel/timeout.
 - Client tests assert exact versioned auth and connection decoders, OAuth admin round-trip, callback query consumption, busy deduplication boundaries, and guest denial. Workspace Playwright covers the five-view matrix; fake-Provider Agent Playwright remains separate.
+- Compatibility tests persist a governance-incomplete MCP tool, assert the Worker omits rather than fabricates missing fields, exercise GET/PUT/GET preservation, reject runnable incomplete client shapes, and prove the React admin recovery/delete/rediscovery path with local fixtures.
 - Run the complete project gate. No test may contact a live Provider, OAuth issuer, or MCP server.
 
 ### 7. Wrong vs Correct
@@ -547,3 +552,18 @@ const trustKey = `${toolId}:${reviewRevision}`;
 ```
 
 Member OAuth stays isolated, every governance dimension participates in review, and old trust cannot authorize a changed tool.
+
+For legacy admin projection compatibility, do not weaken the MCP decoder globally:
+
+```typescript
+// Wrong: one old fail-closed record rejects the complete admin snapshot.
+return hasAllGovernanceFields(tool);
+
+// Correct: complete tools use the full contract; incomplete tools are recovery-only.
+return hasAllGovernanceFields(tool)
+  || (allPresentGovernanceFieldsAreValid(tool)
+    && tool.enabled === false
+    && tool.reviewRequired === true);
+```
+
+This exception is read compatibility, not review. Missing fingerprints or revisions are never evidence that a tool is safe to execute.

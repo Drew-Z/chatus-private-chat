@@ -2628,17 +2628,20 @@ function isAdminToolConfig(value: unknown): value is AdminToolConfig {
       && value.reviewRevision === undefined
       && value.reviewRequired === undefined;
   }
-  return value.executor.type === "mcp"
-    && hasExactKeys(value.executor, ["type", "serverId", "remoteName"])
-    && isCapabilityId(value.executor.serverId, 80)
-    && isMcpRemoteName(value.executor.remoteName)
-    && value.confirmation !== "auto"
-    && isSchemaFingerprint(value.schemaFingerprint)
+  if (value.executor.type !== "mcp"
+    || !hasExactKeys(value.executor, ["type", "serverId", "remoteName"])
+    || !isCapabilityId(value.executor.serverId, 80)
+    || !isMcpRemoteName(value.executor.remoteName)
+    || value.confirmation === "auto"
+    || (value.sideEffect !== undefined && value.sideEffect !== "read" && value.confirmation !== "always")) {
+    return false;
+  }
+  const governanceComplete = isSchemaFingerprint(value.schemaFingerprint)
     && isSchemaFingerprint(value.securityFingerprint)
     && (value.sideEffect === "read" || value.sideEffect === "write" || value.sideEffect === "destructive")
-    && isSchemaFingerprint(value.reviewRevision)
-    && typeof value.reviewRequired === "boolean"
-    && (value.sideEffect === "read" || value.confirmation === "always");
+    && isSchemaFingerprint(value.reviewRevision);
+  if (governanceComplete) return typeof value.reviewRequired === "boolean";
+  return value.enabled === false && value.reviewRequired === true;
 }
 
 function isAdminMcpServerConfig(value: unknown): value is AdminMcpServerConfig {
