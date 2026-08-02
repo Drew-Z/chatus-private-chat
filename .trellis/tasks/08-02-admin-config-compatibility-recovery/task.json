@@ -15,7 +15,7 @@
   "branch": "codex/admin-config-compatibility-recovery-v2",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "d0248089df8c2a33d3ec1b9f3fb6619de24be406",
   "pr_url": null,
   "subtasks": [],
   "children": [],
