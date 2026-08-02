@@ -4,6 +4,7 @@ import { getAgentByName } from "agents";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
+import { isAdminConfigSnapshot } from "../client/src/lib/api";
 import worker, {
   getTeamAgentConversationInstanceName,
   getTeamAgentInstanceName,
@@ -4374,12 +4375,43 @@ describe("Worker API", () => {
   it("round-trips incomplete legacy MCP tools as disabled review-only config", async () => {
     const cookie = await adminLogin();
     const baseline = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
+    const providerKey = `combined-legacy-key-${crypto.randomUUID()}`;
+    const providerHeader = `combined-legacy-header-${crypto.randomUUID()}`;
+    baseline.config.providers.legacyCapacity = {
+      enabled: true,
+      label: "Legacy capacity",
+      type: "openai-chat",
+      baseUrl: "https://legacy-provider.example/v1",
+      apiKey: providerKey,
+      apiKeyRef: " LEGACY_CAPACITY_KEY ",
+      authHeader: " ",
+      headers: { "X-Legacy-Header": providerHeader },
+      concurrency: "bounded",
+      maxConcurrent: "100.5",
+      queueTimeoutMs: "10001",
+    };
+    baseline.config.routes.backup = {
+      ...structuredClone(baseline.config.routes.default),
+      label: "Backup",
+      fallbacks: [],
+    };
+    baseline.config.routes.default.fallbacks = ["backup", "backup"];
+    baseline.config.routes.default.maxTokens = "2048";
+    baseline.config.defaults.dailyMessageLimit = "321";
+    baseline.config.defaults.minuteMessageLimit = 1.5;
     baseline.config.mcpServers = {
       legacy: {
         enabled: true,
         label: "Legacy MCP",
-        endpoint: "https://legacy-mcp.example/rpc",
-        auth: { version: 1, type: "none" },
+        endpoint: "http://legacy-mcp.example/rpc",
+        auth: {
+          version: 1,
+          type: "oauth2",
+          issuer: "https://issuer.example",
+          clientId: "legacy-client",
+          scopes: [],
+          callbackPath: "/api/mcp/oauth/callback",
+        },
       },
     };
     baseline.config.tools = {
@@ -4398,6 +4430,31 @@ describe("Worker API", () => {
     const projectedResponse = await apiRequest("/api/admin/config", cookie);
     const projected = await projectedResponse.json() as any;
     expect(projectedResponse.status).toBe(200);
+    expect(isAdminConfigSnapshot(projected)).toBe(true);
+    expect(projected.config.tools["builtin:text_stats"]).not.toHaveProperty("reviewRequired");
+    expect(projected.config.routes.default).toMatchObject({ fallbacks: ["backup"], maxTokens: 2048 });
+    expect(projected.config.defaults.dailyMessageLimit).toBe(321);
+    expect(projected.config.defaults).not.toHaveProperty("minuteMessageLimit");
+    expect(projected.config.providers.legacyCapacity).toMatchObject({
+      apiKeyRef: "LEGACY_CAPACITY_KEY",
+      concurrency: "bounded",
+      maxConcurrent: 1,
+      hasLegacyKey: true,
+      hasCustomHeaders: true,
+    });
+    expect(projected.config.providers.legacyCapacity).not.toHaveProperty("apiKey");
+    expect(projected.config.providers.legacyCapacity).not.toHaveProperty("headers");
+    expect(projected.config.providers.legacyCapacity).not.toHaveProperty("authHeader");
+    expect(projected.config.providers.legacyCapacity).not.toHaveProperty("queueTimeoutMs");
+    expect(projected.config.mcpServers.legacy).toMatchObject({
+      enabled: false,
+      endpoint: "http://legacy-mcp.example/rpc",
+      auth: { version: 1, type: "oauth2", scopes: [] },
+    });
+    expect(projected.config.mcpServers.legacy.auth.configRevision).toMatch(/^[a-f0-9]{64}$/);
+    const projectedText = JSON.stringify(projected);
+    expect(projectedText).not.toContain(providerKey);
+    expect(projectedText).not.toContain(providerHeader);
     expect(projected.config.tools["mcp:legacy:lookup"]).toMatchObject({
       enabled: false,
       label: "Legacy lookup",
@@ -4409,7 +4466,17 @@ describe("Worker API", () => {
       expect(projected.config.tools["mcp:legacy:lookup"]).not.toHaveProperty(field);
     }
 
-    projected.config.defaults.dailyMessageLimit = 321;
+    const unsafeConfig = structuredClone(projected.config);
+    unsafeConfig.mcpServers.legacy.enabled = true;
+    const unsafeResponse = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: unsafeConfig, expectedRevision: projected.revision }),
+    });
+    expect(unsafeResponse.status).toBe(400);
+    await expect(unsafeResponse.json()).resolves.toMatchObject({ error: "invalid_config" });
+
+    projected.config.defaults.dailyMessageLimit = 322;
     const savedResponse = await apiRequest("/api/admin/config", cookie, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -4417,8 +4484,13 @@ describe("Worker API", () => {
     });
     const saved = await savedResponse.json() as any;
     expect(savedResponse.status, JSON.stringify(saved)).toBe(200);
-    expect(saved.config.defaults.dailyMessageLimit).toBe(321);
+    expect(isAdminConfigSnapshot(saved)).toBe(true);
+    expect(saved.config.defaults.dailyMessageLimit).toBe(322);
     expect(saved.config.tools["mcp:legacy:lookup"]).toMatchObject({ enabled: false, reviewRequired: true });
+    expect(saved.config.mcpServers.legacy).toMatchObject({ enabled: false, auth: { type: "oauth2", scopes: [] } });
+    const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json") as any;
+    expect(stored.providers.legacyCapacity.apiKey).toBe(providerKey);
+    expect(stored.providers.legacyCapacity.headers).toEqual({ "X-Legacy-Header": providerHeader });
 
     const reloaded = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
     expect(reloaded.config.tools["mcp:legacy:lookup"]).toMatchObject({
@@ -4426,7 +4498,8 @@ describe("Worker API", () => {
       label: "Legacy lookup",
       reviewRequired: true,
     });
-    expect(reloaded.config.defaults.dailyMessageLimit).toBe(321);
+    expect(isAdminConfigSnapshot(reloaded)).toBe(true);
+    expect(reloaded.config.defaults.dailyMessageLimit).toBe(322);
   });
 
   it("keeps the member OAuth PKCE and encrypted token lifecycle server-side", async () => {
