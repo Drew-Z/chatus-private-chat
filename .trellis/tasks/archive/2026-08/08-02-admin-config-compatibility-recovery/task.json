@@ -3,7 +3,7 @@
   "name": "admin-config-compatibility-recovery",
   "title": "后台配置兼容性恢复",
   "description": "恢复 React 后台对历史管理配置的 canonical 兼容读取，修复 builtin/MCP governance 投影漂移，并保持 fail-closed、可修复、可删除和可保存。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-02",
-  "completedAt": null,
+  "completedAt": "2026-08-02",
   "branch": "codex/admin-config-compatibility-recovery-v2",
   "base_branch": "main",
   "worktree_path": null,
@@ -125,6 +125,12 @@
         "status": "passed",
         "summary": "Exact-SHA Deploy Worker and Verify production passed; production-deployment artifact expires 2026-10-31 and deployment-paths artifact expires 2026-09-01.",
         "at": "2026-08-02T07:54:00.746460+00:00"
+      },
+      {
+        "command": "User acceptance of React admin @ 5cda024c0756e7ccd60bef0b09e3e3e51731ecc0",
+        "status": "passed",
+        "summary": "User explicitly confirmed the new React admin can be accessed normally after the exact-SHA production deployment.",
+        "at": "2026-08-02T08:11:39.4440942+00:00"
       }
     ]
   }

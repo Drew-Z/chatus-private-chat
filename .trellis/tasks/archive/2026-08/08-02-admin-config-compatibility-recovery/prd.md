@@ -33,7 +33,7 @@
 - [x] AC4. 单元或浏览器测试证明旧工具可删除、同 ID 重新发现可升级其治理字段，且其他 server/tool/provider/user 配置保持不变。
 - [x] AC5. 无关配置 PUT 往返不会重启用、静默删除或损坏旧工具；随后 GET 仍能被 React 解码。
 - [x] AC6. `npm run check:frontend`、相关 Vitest、`npm test`、`npm run typecheck`、`npx wrangler deploy --dry-run`、Workspace Playwright、`git diff --check` 和 Trellis 全量一致性验证通过。
-- [ ] AC7. work commit、PR CI、main 合并部署、exact SHA 生产后台验收及 artifacts 被记录后，任务才可归档。
+- [x] AC7. work commit、PR CI、main 合并部署、exact SHA 生产后台验收及 artifacts 被记录后，任务才可归档。
 - [x] AC8. 组合历史 fixture（至少包含重复 fallback、数字字符串/小数、隐藏凭据标记、越界 provider capacity 与治理不完整 MCP tool）经 Worker GET 后可被 React 精确解码，并在 PUT/GET 后保持安全语义。
 - [x] AC9. 历史不可执行 MCP server 被强制禁用但仍可编辑、删除和保存；同样的 endpoint/auth/scope 异常在启用状态继续被 Worker 和 React 拒绝。
 - [x] AC10. 第二轮修复不以移除 `/admin.html` 为前提；legacy 入口在 React 连续通过 exact-SHA 生产验收前继续作为紧急恢复面，其退役由 `08-02-frontend-legacy-experience` 独立治理。
