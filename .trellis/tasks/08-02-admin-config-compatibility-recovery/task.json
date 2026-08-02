@@ -107,6 +107,24 @@
         "status": "passed",
         "summary": "All 7 Trellis validation tests passed.",
         "at": "2026-08-02T07:10:20.572839+00:00"
+      },
+      {
+        "command": "GitHub PR CI run 30737870933 @ 134a4abb23cb18427afc226a3ce80f012c7465eb",
+        "status": "passed",
+        "summary": "PR #31 changes, quality, workspace-browser, and agent-browser jobs passed; path, quality, Workspace Playwright, and local fake-Provider artifacts retained.",
+        "at": "2026-08-02T07:53:58.665920+00:00"
+      },
+      {
+        "command": "GitHub squash merge PR #31",
+        "status": "passed",
+        "summary": "PR #31 merged through GitHub at 2026-08-02T07:36:08Z; exact main SHA 5cda024c0756e7ccd60bef0b09e3e3e51731ecc0.",
+        "at": "2026-08-02T07:53:59.692215+00:00"
+      },
+      {
+        "command": "GitHub Actions deployment run 30738127882 @ 5cda024c0756e7ccd60bef0b09e3e3e51731ecc0",
+        "status": "passed",
+        "summary": "Exact-SHA Deploy Worker and Verify production passed; production-deployment artifact expires 2026-10-31 and deployment-paths artifact expires 2026-09-01.",
+        "at": "2026-08-02T07:54:00.746460+00:00"
       }
     ]
   }
