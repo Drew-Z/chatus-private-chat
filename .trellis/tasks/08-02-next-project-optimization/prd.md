@@ -35,7 +35,7 @@
 - [x] AC6. Workspace Playwright 覆盖桌面和 touch 390px 的 pending/error/retry containment；本地 fake-Provider Agent Playwright 覆盖真实 App/Worker 的 fail-then-success 流程。
 - [x] AC7. 现有 revoke-all、permanent-delete、管理员退出、guest/login 和 OAuth MCP 测试保持通过。
 - [x] AC8. `npm run check:frontend`、`npm test`、`npm run test:browser:workspace`、`npm run test:browser:agent`、`npm run typecheck`、`npx wrangler deploy --dry-run`、`git diff --check` 和 `task.py validate-all` 全部通过。
-- [ ] AC9. 相关 frontend code-spec 扩展为成员退出 fail-closed 合约；工作 commit、PR、exact-SHA CI/部署/验收和归档证据可追踪。
+- [x] AC9. 相关 frontend code-spec 扩展为成员退出 fail-closed 合约；工作 commit、PR、exact-SHA CI/部署/验收和归档证据可追踪。
 
 ## Out of Scope
 

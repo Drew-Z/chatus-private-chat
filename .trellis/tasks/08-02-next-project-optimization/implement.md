@@ -12,7 +12,7 @@
 - [x] Run focused client/API/Worker/browser tests and fix findings through `trellis-check`.
 - [x] Run the full shipping gate sequentially: frontend check, Vitest, Workspace Playwright, Agent Playwright, typecheck, Wrangler dry-run, diff check, and Trellis consistency.
 - [x] Extend the frontend component code-spec from admin-only logout to ordinary member fail-closed logout.
-- [ ] Commit on a `codex/` branch, open a PR, verify exact-SHA CI/artifacts, merge through GitHub, verify main deployment/acceptance evidence, then archive and journal the task.
+- [x] Commit on a `codex/` branch, open a PR, verify exact-SHA CI/artifacts, merge through GitHub, verify main deployment/acceptance evidence, then archive and journal the task.
 
 ## Focused Validation
 

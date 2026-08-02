@@ -71,6 +71,24 @@
         "status": "passed",
         "summary": "Repository consistency passed.",
         "at": "2026-08-02T02:25:36.542380+00:00"
+      },
+      {
+        "command": "GitHub PR CI run 30729015108 @ 64c3d9261d607e4a569fc4d4bbf2be0987976d31",
+        "status": "passed",
+        "summary": "PR #29 CI completed successfully: changes, quality, workspace-browser, and agent-browser passed; retained path-classification, quality, fake-Provider Agent, and Workspace Playwright artifacts.",
+        "at": "2026-08-02T02:45:28.655403+00:00"
+      },
+      {
+        "command": "GitHub squash merge PR #29",
+        "status": "passed",
+        "summary": "PR #29 merged through GitHub at 2026-08-02T02:40:09Z; exact main SHA 2293498bc48d9755f0ca727c9dbc71b347a7f5d2.",
+        "at": "2026-08-02T02:45:28.827913+00:00"
+      },
+      {
+        "command": "GitHub Actions deployment run 30729264582 @ 2293498bc48d9755f0ca727c9dbc71b347a7f5d2",
+        "status": "passed",
+        "summary": "Exact-SHA deployment completed successfully; Deploy Worker and Verify production passed; production-deployment-2293498bc48d9755f0ca727c9dbc71b347a7f5d2 and deployment-paths artifacts retained.",
+        "at": "2026-08-02T02:45:28.998936+00:00"
       }
     ]
   }
