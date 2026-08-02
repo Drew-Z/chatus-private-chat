@@ -466,6 +466,12 @@ type McpToolReview = {
   reviewRevision: string;
   reviewRequired: boolean;
 };
+
+type AdminConfigSnapshot = {
+  config: SanitizedAdminConfig;
+  source: "kv" | "secret" | "default";
+  revision: string;
+};
 ```
 
 ```sql
@@ -483,6 +489,9 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 
 - Config is dual-read/new-write: legacy `authType/secretRef` remains readable, while every new admin save writes the exact versioned `auth` union. OAuth `configRevision` is server-derived from server ID, endpoint, issuer, client ID, normalized scopes, fixed callback, and optional client-secret reference.
 - Stored MCP tools from before four-dimensional governance remain readable only as recovery objects. Worker normalization forces an incomplete tool to `enabled: false` and `reviewRequired: true`; JSON may omit any missing `schemaFingerprint`, `securityFingerprint`, `sideEffect`, or `reviewRevision`. The React admin decoder accepts that incomplete shape only with both fail-closed flags exact, retains it for explicit deletion or same-ID rediscovery, and never synthesizes review data.
+- MCP governance fields are executor-specific. `normalizeToolRegistry` must omit `reviewRequired`, fingerprints, side-effect, and review revision for builtin tools; serializing `reviewRequired: false` on the always-present `builtin:text_stats` violates the React builtin union and rejects the complete admin snapshot.
+- `GET /api/admin/config` is a canonical cross-layer projection, not a raw storage dump. Worker normalization deduplicates route fallbacks, converts valid numeric strings to bounded safe integers, omits invalid optional integer values, trims blank optional credential metadata without truncating references, and preserves secret/header values only through `hasLegacyKey` / `hasCustomHeaders` shadows.
+- Historical MCP servers with non-executable endpoint/auth/scope state remain visible only as disabled recovery objects. The Worker preserves bounded editable metadata, normalizes an unusable auth union to `none` when necessary, and forces `enabled: false`; React accepts the recovery shape only while disabled. PUT permits that disabled form so administrators can repair or delete it, while enabled servers retain the complete public-HTTPS, auth, scope, and server-derived revision contract.
 - OAuth issuer, authorization endpoint, and token endpoint use public HTTPS URLs with no credentials, query, fragment, private literal address, redirect, or cross-origin metadata endpoint. The callback is derived from the current Chatus origin plus the fixed path; arbitrary redirect URIs are never accepted.
 - Authorization Code + PKCE uses S256. Server-side state is TTL-bounded, one-time, and bound to member owner, session fingerprint, server ID, callback URL, and config revision. Authorization codes, state, and verifiers never enter the React state or callback result URL.
 - Access and refresh tokens are encrypted with AES-GCM before `UserState` persistence. AAD binds `ownerLabel`, `serverId`, and token schema v1. `ROUTE_KEYS_MASTER_KEY` is the external 32-byte key; browser projections, audit, logs, user export, discovery candidates, and React persistence never contain token, IV, ciphertext, code, state, verifier, or client secret.
@@ -507,6 +516,9 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 | Guest invokes any MCP OAuth endpoint | `403 capability_not_allowed`; no storage or remote call |
 | Browser response contains unknown or secret-like fields | Exact decoder rejects it instead of persisting the projection |
 | MCP tool governance is incomplete | Accept the admin snapshot only when the tool is disabled and review-required; reject enabled, non-review, malformed-present-field, or invalid-executor variants |
+| Builtin tool contains any MCP governance field | Reject the snapshot; fix Worker normalization to omit the field rather than weakening the builtin decoder |
+| Historical fallback/limit/capacity is duplicated, numeric text, fractional, or out of bounds | GET emits a unique array and safe integer, or omits/falls back deterministically when no valid optional value exists |
+| Historical MCP endpoint/auth/scope is not executable | Preserve the record as disabled recovery state; reject the same shape when enabled and perform zero discovery/runtime calls |
 
 ### 5. Good / Base / Bad Cases
 
@@ -514,8 +526,11 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 - Good: security annotations change while the JSON schema stays stable; the runtime records drift and blocks the call until administrator review creates a new revision.
 - Base: an old bearer config round-trips through dual-read, and a stable read-only rediscovery retains explicit enablement and first-per-conversation policy.
 - Base: a pre-governance MCP tool loads disabled and review-required, survives an unrelated revisioned config save, and can be deleted or upgraded through same-ID rediscovery.
+- Base: a persisted mixed-era config with duplicate fallbacks, numeric-string quotas, fractional capacity, hidden credential values, and an incomplete MCP tool produces one canonical secret-free snapshot that the production React decoder accepts before and after PUT.
+- Base: an HTTP or empty-scope OAuth MCP server remains visible and removable while disabled; correcting its complete executable fields is required before enablement.
 - Bad: treat OAuth as X-API-Key, store tokens in browser state, accept provider redirects, reuse a token for another member, or keep trust after any review dimension changes.
 - Bad: require governance fields unconditionally and make one legacy tool block the whole admin workspace, or accept an incomplete tool while it is runnable.
+- Bad: attach `reviewRequired: false` to a builtin tool because a boolean MCP expression was reused for every executor, or truncate an overlong credential reference into a different binding name.
 
 ### 6. Tests Required
 
@@ -525,6 +540,8 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 - MCP runtime and Agent tests assert all four review dimensions before `tools/call`, persistent drift overlay, review-revision trust isolation, consecutive side-effect confirmations, invalid `conversation` decisions, and zero calls on deny/cancel/timeout.
 - Client tests assert exact versioned auth and connection decoders, OAuth admin round-trip, callback query consumption, busy deduplication boundaries, and guest denial. Workspace Playwright covers the five-view matrix; fake-Provider Agent Playwright remains separate.
 - Compatibility tests persist a governance-incomplete MCP tool, assert the Worker omits rather than fabricates missing fields, exercise GET/PUT/GET preservation, reject runnable incomplete client shapes, and prove the React admin recovery/delete/rediscovery path with local fixtures.
+- At least one Worker integration test must pass the exact serialized `GET /api/admin/config` JSON into the exported React `isAdminConfigSnapshot` decoder. The fixture includes the builtin tool plus multiple historical defects, asserts builtin MCP fields are absent, asserts credentials/headers are absent, and repeats the decoder assertion after PUT/GET.
+- Disabled MCP recovery tests prove invalid endpoint/empty OAuth scopes are readable and round-trippable only while disabled; enabled variants fail validation. Existing OAuth PKCE tests must stay green so revision generation is not disabled before `applyMcpOAuthConfigRevisions` runs.
 - Run the complete project gate. No test may contact a live Provider, OAuth issuer, or MCP server.
 
 ### 7. Wrong vs Correct
@@ -567,3 +584,19 @@ return hasAllGovernanceFields(tool)
 ```
 
 This exception is read compatibility, not review. Missing fingerprints or revisions are never evidence that a tool is safe to execute.
+
+Keep executor-specific governance and the real cross-layer decoder in the regression path:
+
+```typescript
+// Wrong: builtin tools serialize an MCP-only field and break the whole snapshot.
+const reviewRequired = executor.type === "mcp" && needsReview;
+tools[id] = { ...tool, reviewRequired };
+
+// Correct: builtin JSON omits MCP-only governance fields.
+const reviewRequired = executor.type === "mcp" ? needsReview : undefined;
+tools[id] = { ...tool, reviewRequired };
+
+// Required cross-layer assertion: do not duplicate the React shape by hand.
+const projected = await getAdminConfigThroughWorker();
+expect(isAdminConfigSnapshot(projected)).toBe(true);
+```

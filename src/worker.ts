@@ -6541,16 +6541,17 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   }
 
   for (const [serverId, server] of Object.entries(config.mcpServers || {})) {
-    if (!isValidMcpEndpoint(server.endpoint) || isForbiddenMcpUrl(new URL(server.endpoint))) {
+    if (server.enabled !== false && !isExecutableMcpServerConfig(server.endpoint, server.auth)) {
       return { ok: false, message: `MCP 服务 ${serverId} 必须使用有效的 HTTPS 地址` };
     }
     if (
-      (server.auth.type === "bearer" || server.auth.type === "x-api-key")
+      server.enabled !== false
+      && (server.auth.type === "bearer" || server.auth.type === "x-api-key")
       && !MANAGED_SECRET_REF_PATTERN.test(server.auth.secretRef)
     ) {
       return { ok: false, message: `MCP 服务 ${serverId} 使用认证时必须配置 Secret Ref` };
     }
-    if (server.auth.type === "oauth2" && !isValidMcpOAuthConfig(server.auth)) {
+    if (server.enabled !== false && server.auth.type === "oauth2" && !isValidMcpOAuthConfig(server.auth)) {
       return { ok: false, message: `MCP 服务 ${serverId} 的 OAuth 配置无效` };
     }
   }
@@ -6656,18 +6657,27 @@ function validateRawMcpConfiguration(value: unknown): { ok: true } | { ok: false
       return { ok: false, message: `MCP 服务 ${serverId} 配置无效` };
     }
     const endpoint = normalizeBoundedText(rawServer.endpoint, 2_048);
-    if (!isValidMcpEndpoint(endpoint) || isForbiddenMcpUrl(new URL(endpoint))) {
+    if (!endpoint) {
+      return { ok: false, message: `MCP 服务 ${serverId} 必须配置 endpoint` };
+    }
+    const disabledRecovery = rawServer.enabled === false;
+    if (!disabledRecovery && (!isValidMcpEndpoint(endpoint) || isForbiddenMcpUrl(new URL(endpoint)))) {
       return { ok: false, message: `MCP 服务 ${serverId} 必须使用可公开访问的 HTTPS 地址` };
     }
     const auth = normalizeMcpAuthConfig(rawServer);
-    if (!auth) return { ok: false, message: `MCP 服务 ${serverId} 的认证配置无效` };
-    if (auth.type === "oauth2") {
+    if (!auth && !disabledRecovery) return { ok: false, message: `MCP 服务 ${serverId} 的认证配置无效` };
+    if (!disabledRecovery && auth?.type === "oauth2") {
       const normalizedScopes = normalizeOAuthScopes(auth.scopes);
       if (!normalizedScopes.length || JSON.stringify(normalizedScopes) !== JSON.stringify(auth.scopes)) {
         return { ok: false, message: `MCP 服务 ${serverId} 的 OAuth scope 无效` };
       }
     }
-    if (!isRecord(rawServer.auth) && rawServer.authType === "none" && rawServer.secretRef !== undefined) {
+    if (
+      !disabledRecovery
+      && !isRecord(rawServer.auth)
+      && rawServer.authType === "none"
+      && rawServer.secretRef !== undefined
+    ) {
       return { ok: false, message: `MCP 服务 ${serverId} 无需认证时不能配置 Secret Ref` };
     }
   }
@@ -6751,15 +6761,15 @@ function normalizeAppConfig(value: unknown): AppConfig {
       baseUrl: legacy ? rawRoute.baseUrl as string : undefined,
       model: legacy ? rawRoute.model as string : undefined,
       apiKey: legacy && typeof rawRoute.apiKey === "string" ? rawRoute.apiKey : undefined,
-      apiKeyRef: legacy && typeof rawRoute.apiKeyRef === "string" ? rawRoute.apiKeyRef : undefined,
-      authHeader: legacy && typeof rawRoute.authHeader === "string" ? rawRoute.authHeader : undefined,
+      apiKeyRef: legacy ? normalizeOptionalText(rawRoute.apiKeyRef) : undefined,
+      authHeader: legacy ? normalizeOptionalText(rawRoute.authHeader) : undefined,
       authPrefix: legacy && typeof rawRoute.authPrefix === "string" ? rawRoute.authPrefix : undefined,
       directEndpoint: legacy && rawRoute.directEndpoint === true,
       headers: legacy ? normalizeStringRecord(rawRoute.headers) : undefined,
-      maxTokens: normalizePositiveNumber(rawRoute.maxTokens),
+      maxTokens: normalizePositiveInteger(rawRoute.maxTokens),
       temperature: normalizeNumber(rawRoute.temperature),
       fallbacks: Array.isArray(rawRoute.fallbacks)
-        ? rawRoute.fallbacks.filter((item): item is string => typeof item === "string")
+        ? normalizeStringIdList(rawRoute.fallbacks, 200, 160)
         : undefined,
       allowUserKey: rawRoute.allowUserKey !== false,
       requiresUserKey: rawRoute.requiresUserKey === true,
@@ -6846,8 +6856,8 @@ function normalizeProviderRegistry(value: unknown): Record<string, ProviderConfi
       type,
       baseUrl: rawProvider.baseUrl.trim(),
       apiKey: typeof rawProvider.apiKey === "string" ? rawProvider.apiKey : undefined,
-      apiKeyRef: typeof rawProvider.apiKeyRef === "string" ? rawProvider.apiKeyRef : undefined,
-      authHeader: typeof rawProvider.authHeader === "string" ? rawProvider.authHeader : undefined,
+      apiKeyRef: normalizeOptionalText(rawProvider.apiKeyRef),
+      authHeader: normalizeOptionalText(rawProvider.authHeader),
       authPrefix: typeof rawProvider.authPrefix === "string" ? rawProvider.authPrefix : undefined,
       directEndpoint: rawProvider.directEndpoint === true,
       headers: normalizeStringRecord(rawProvider.headers),
@@ -6856,8 +6866,10 @@ function normalizeProviderRegistry(value: unknown): Record<string, ProviderConfi
       supportsImages: rawProvider.supportsImages !== false,
       supportsTools: rawProvider.supportsTools === true,
       concurrency,
-      maxConcurrent: concurrency === "bounded" ? normalizePositiveNumber(rawProvider.maxConcurrent) : undefined,
-      queueTimeoutMs: normalizeNonNegativeNumber(rawProvider.queueTimeoutMs),
+      maxConcurrent: concurrency === "bounded"
+        ? normalizeBoundedInteger(rawProvider.maxConcurrent, 1, MAX_PROVIDER_CONCURRENCY) ?? 1
+        : undefined,
+      queueTimeoutMs: normalizeBoundedInteger(rawProvider.queueTimeoutMs, 0, MAX_PROVIDER_QUEUE_TIMEOUT_MS),
       priority: normalizeNumber(rawProvider.priority),
     };
   }
@@ -6924,9 +6936,9 @@ function normalizeUserConfig(value: unknown): UserConfig {
   if (typeof value.allowBringYourOwnKey === "boolean") {
     output.allowBringYourOwnKey = value.allowBringYourOwnKey;
   }
-  const dailyMessageLimit = normalizePositiveNumber(value.dailyMessageLimit);
+  const dailyMessageLimit = normalizePositiveInteger(value.dailyMessageLimit);
   if (dailyMessageLimit !== undefined) output.dailyMessageLimit = dailyMessageLimit;
-  const minuteMessageLimit = normalizePositiveNumber(value.minuteMessageLimit);
+  const minuteMessageLimit = normalizePositiveInteger(value.minuteMessageLimit);
   if (minuteMessageLimit !== undefined) output.minuteMessageLimit = minuteMessageLimit;
   if (value.blockedPrompts !== undefined) output.blockedPrompts = parsePromptList(value.blockedPrompts);
   if (typeof value.systemPrompt === "string") {
@@ -8595,25 +8607,33 @@ function normalizeStringRecord(value: unknown): Record<string, string> | undefin
   return Object.keys(output).length ? output : undefined;
 }
 
-function normalizePositiveNumber(value: unknown): number | undefined {
-  const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+function normalizePositiveInteger(value: unknown): number | undefined {
+  const parsed = parseConfigNumber(value);
+  return parsed !== undefined && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function normalizeNonNegativeNumber(value: unknown): number | undefined {
-  const parsed = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+function normalizeBoundedInteger(value: unknown, minimum: number, maximum: number): number | undefined {
+  const parsed = parseConfigNumber(value);
+  return parsed !== undefined && Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : undefined;
 }
 
 function normalizeNumber(value: unknown): number | undefined {
-  const parsed = typeof value === "number" ? value : Number(value);
+  return parseConfigNumber(value);
+}
+
+function parseConfigNumber(value: unknown): number | undefined {
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim()
+      ? Number(value)
+      : Number.NaN;
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function boundedInteger(value: unknown, minimum: number, maximum: number, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum
-    ? value
-    : fallback;
+  return normalizeBoundedInteger(value, minimum, maximum) ?? fallback;
 }
 
 function extractText(content: string | ChatPart[]): string {
@@ -8702,12 +8722,18 @@ function normalizeMcpServerRegistry(value: unknown): Record<string, McpServerCon
   for (const [rawId, rawServer] of Object.entries(value).slice(0, MAX_MCP_SERVERS)) {
     const id = normalizeCapabilityId(rawId, 80);
     if (!id || output[id] || !isRecord(rawServer)) continue;
-    const auth = normalizeMcpAuthConfig(rawServer);
-    if (!auth) continue;
     const endpoint = normalizeBoundedText(rawServer.endpoint, 2_048);
     if (!endpoint) continue;
+    const normalizedAuth = normalizeMcpAuthConfig(rawServer);
+    const invalidLegacyNone = !isRecord(rawServer.auth)
+      && rawServer.authType === "none"
+      && rawServer.secretRef !== undefined;
+    const auth = normalizedAuth || { version: 1, type: "none" } as const;
+    const executable = normalizedAuth !== null
+      && !invalidLegacyNone
+      && isExecutableMcpServerConfig(endpoint, auth, false);
     output[id] = {
-      enabled: rawServer.enabled === true,
+      enabled: rawServer.enabled === true && executable,
       label: normalizeBoundedText(rawServer.label, 80) || id,
       endpoint,
       auth,
@@ -8797,15 +8823,27 @@ function normalizeMcpOAuthClientId(value: unknown): string {
   return clientId && clientId.length <= 256 && !/[\u0000-\u001f\u007f]/.test(clientId) ? clientId : "";
 }
 
-function isValidMcpOAuthConfig(auth: McpOAuth2AuthConfig): boolean {
+function isValidMcpOAuthConfig(auth: McpOAuth2AuthConfig, requireConfigRevision = true): boolean {
   const scopes = normalizeOAuthScopes(auth.scopes);
   return normalizeMcpOAuthIssuer(auth.issuer) === auth.issuer
     && normalizeMcpOAuthClientId(auth.clientId) === auth.clientId
     && scopes.length > 0
     && JSON.stringify(scopes) === JSON.stringify(auth.scopes)
     && auth.callbackPath === MCP_OAUTH_CALLBACK_PATH
-    && isSecretFingerprint(auth.configRevision)
+    && (requireConfigRevision
+      ? isSecretFingerprint(auth.configRevision)
+      : auth.configRevision === "" || isSecretFingerprint(auth.configRevision))
     && (!auth.clientSecretRef || MANAGED_SECRET_REF_PATTERN.test(auth.clientSecretRef));
+}
+
+function isExecutableMcpServerConfig(
+  endpoint: string,
+  auth: McpServerConfig["auth"],
+  requireOAuthRevision = true,
+): boolean {
+  if (!isValidMcpEndpoint(endpoint) || isForbiddenMcpUrl(new URL(endpoint))) return false;
+  if (auth.type === "oauth2") return isValidMcpOAuthConfig(auth, requireOAuthRevision);
+  return auth.type === "none" || MANAGED_SECRET_REF_PATTERN.test(auth.secretRef);
 }
 
 function normalizeToolRegistry(
@@ -8848,9 +8886,11 @@ function normalizeToolRegistry(
     const reviewRevision = normalizeFingerprint(rawTool.reviewRevision);
     const governanceComplete = executor.type === "builtin"
       || Boolean(schemaFingerprint && securityFingerprint && sideEffect && reviewRevision);
-    const reviewRequired = executor.type === "mcp" && (rawTool.reviewRequired === true || !governanceComplete);
+    const reviewRequired = executor.type === "mcp"
+      ? rawTool.reviewRequired === true || !governanceComplete
+      : undefined;
     output[id] = {
-      enabled: rawTool.enabled === true && !reviewRequired,
+      enabled: rawTool.enabled === true && reviewRequired !== true,
       label: normalizeBoundedText(rawTool.label, 80) || remoteToolLabel(executor),
       description: normalizeBoundedText(rawTool.description, 1_000) || undefined,
       inputSchema: schema,
@@ -8946,6 +8986,11 @@ function normalizeCapabilityId(value: unknown, maxChars: number): string {
 
 function normalizeBoundedText(value: unknown, maxChars: number): string {
   return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
+}
+
+function normalizeOptionalText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.trim() || undefined;
 }
 
 function remoteToolLabel(executor: ToolExecutor): string {

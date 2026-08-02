@@ -2645,12 +2645,44 @@ function isAdminToolConfig(value: unknown): value is AdminToolConfig {
 }
 
 function isAdminMcpServerConfig(value: unknown): value is AdminMcpServerConfig {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["enabled", "label", "endpoint", "auth"])
+    || typeof value.enabled !== "boolean"
+    || !isBoundedText(value.label, 80, false)) {
+    return false;
+  }
+  if (value.enabled === false) {
+    return isBoundedText(value.endpoint, 2_048, false)
+      && isRecoverableAdminMcpAuthConfig(value.auth);
+  }
+  return isSafeMcpEndpoint(value.endpoint) && isAdminMcpAuthConfig(value.auth);
+}
+
+function isRecoverableAdminMcpAuthConfig(value: unknown): value is AdminMcpAuthConfig {
+  if (isAdminMcpAuthConfig(value)) return true;
   return isRecord(value)
-    && hasExactKeys(value, ["enabled", "label", "endpoint", "auth"])
-    && typeof value.enabled === "boolean"
-    && isBoundedText(value.label, 80, false)
-    && isSafeMcpEndpoint(value.endpoint)
-    && isAdminMcpAuthConfig(value.auth);
+    && value.version === 1
+    && value.type === "oauth2"
+    && hasOnlyKeys(value, [
+      "version",
+      "type",
+      "issuer",
+      "clientId",
+      "scopes",
+      "callbackPath",
+      "configRevision",
+      "clientSecretRef",
+    ])
+    && isSafeOAuthIssuer(value.issuer)
+    && typeof value.clientId === "string"
+    && value.clientId.length > 0
+    && value.clientId.length <= 256
+    && !/[\u0000-\u001f\u007f]/.test(value.clientId)
+    && isOAuthScopeArray(value.scopes)
+    && value.scopes.length === 0
+    && value.callbackPath === "/api/mcp/oauth/callback"
+    && isSchemaFingerprint(value.configRevision)
+    && (value.clientSecretRef === undefined || isRouteSecretRef(value.clientSecretRef));
 }
 
 function isAdminMcpDiscoveredTool(value: unknown, serverId: string): value is AdminMcpDiscoveredTool {

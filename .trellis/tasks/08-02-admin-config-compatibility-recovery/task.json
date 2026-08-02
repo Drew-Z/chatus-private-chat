@@ -1,0 +1,113 @@
+{
+  "id": "admin-config-compatibility-recovery",
+  "name": "admin-config-compatibility-recovery",
+  "title": "后台配置兼容性恢复",
+  "description": "恢复 React 后台对历史管理配置的 canonical 兼容读取，修复 builtin/MCP governance 投影漂移，并保持 fail-closed、可修复、可删除和可保存。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-02",
+  "completedAt": null,
+  "branch": "codex/admin-config-compatibility-recovery-v2",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "d0248089df8c2a33d3ec1b9f3fb6619de24be406",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/31",
+  "subtasks": [],
+  "children": [],
+  "parent": "08-02-project-hardening-followups",
+  "relatedFiles": [],
+  "notes": "PR #30 / 7624ccaa fixed incomplete MCP-tool decoding but production React admin still failed. V2 evidence must replace task commit/pr fields and pass exact-SHA production acceptance before archive; legacy /admin.html remains the rollback surface.",
+  "meta": {
+    "validation": [
+      {
+        "command": "npx vitest run tests/client-api.test.ts tests/client-admin-capabilities.test.ts tests/worker-api.test.ts",
+        "status": "passed",
+        "summary": "3 files and 170 focused tests passed.",
+        "at": "2026-08-02T04:15:01.142985+00:00"
+      },
+      {
+        "command": "GitHub PR CI run 30732070955 @ fe0fad36c4f871e38e91ca2d8bc8a648285af790",
+        "status": "passed",
+        "summary": "PR #30 changes, quality, workspace-browser, and agent-browser jobs passed; path, quality, Workspace Playwright, and local fake-Provider artifacts retained.",
+        "at": "2026-08-02T04:24:28.405628+00:00"
+      },
+      {
+        "command": "GitHub squash merge PR #30",
+        "status": "passed",
+        "summary": "PR #30 merged through GitHub at 2026-08-02T04:23:26Z; exact main SHA 7624ccaa9bc4294312bf0e08cdb42bd0fbb5e599.",
+        "at": "2026-08-02T04:24:28.582465+00:00"
+      },
+      {
+        "command": "GitHub Actions deployment run 30732289768 @ 7624ccaa9bc4294312bf0e08cdb42bd0fbb5e599",
+        "status": "passed",
+        "summary": "Exact-SHA Deploy Worker and Verify production passed; production-deployment and deployment-paths artifacts retained with 90-day and 30-day expiry respectively.",
+        "at": "2026-08-02T04:28:08.495479+00:00"
+      },
+      {
+        "command": "npx vitest run tests/client-api.test.ts tests/worker-api.test.ts",
+        "status": "passed",
+        "summary": "159 focused client/Worker tests passed, including exact Worker JSON to React decoder and GET/PUT/GET preservation.",
+        "at": "2026-08-02T07:10:10.330212+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "React production build and frontend structure checks passed.",
+        "at": "2026-08-02T07:10:11.392992+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "40 files and 510 tests passed.",
+        "at": "2026-08-02T07:10:12.485721+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "79 Playwright cases passed with 36 matrix-conditional skips; recovery UI coverage passed.",
+        "at": "2026-08-02T07:10:13.642453+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "2 isolated local fake-Provider Agent tests passed.",
+        "at": "2026-08-02T07:10:14.761270+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Root, client, and browser TypeScript checks passed after final edits.",
+        "at": "2026-08-02T07:10:15.928232+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler packaging dry-run passed; no deployment performed.",
+        "at": "2026-08-02T07:10:17.034156+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-02T07:10:18.119398+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed.",
+        "at": "2026-08-02T07:10:19.400954+00:00"
+      },
+      {
+        "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
+        "status": "passed",
+        "summary": "All 7 Trellis validation tests passed.",
+        "at": "2026-08-02T07:10:20.572839+00:00"
+      }
+    ]
+  }
+}

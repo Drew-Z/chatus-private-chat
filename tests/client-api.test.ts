@@ -649,6 +649,36 @@ describe("React client runtime validation", () => {
     }))).toBe(true);
   });
 
+  it("accepts invalid historical MCP execution metadata only while disabled", () => {
+    const recoveryServer = {
+      enabled: false,
+      label: "Legacy OAuth",
+      endpoint: "http://legacy-mcp.example/rpc",
+      auth: {
+        version: 1,
+        type: "oauth2",
+        issuer: "https://issuer.example",
+        clientId: "legacy-client",
+        scopes: [],
+        callbackPath: "/api/mcp/oauth/callback",
+        configRevision: "a".repeat(64),
+      },
+    };
+    const snapshot = (server: Record<string, unknown>) => ({
+      config: { ...validAdminConfig, mcpServers: { legacy: server } },
+      source: "kv",
+      revision: "a".repeat(64),
+    });
+
+    expect(isAdminConfigSnapshot(snapshot(recoveryServer))).toBe(true);
+    expect(isAdminConfigSnapshot(snapshot({ ...recoveryServer, enabled: true }))).toBe(false);
+    expect(isAdminConfigSnapshot(snapshot({ ...recoveryServer, endpoint: "" }))).toBe(false);
+    expect(isAdminConfigSnapshot(snapshot({
+      ...recoveryServer,
+      auth: { ...recoveryServer.auth, issuer: "http://issuer.example" },
+    }))).toBe(false);
+  });
+
   it("validates a secret-free member projection with unique labels", () => {
     expect(isAdminMemberListResponse({
       members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }],
