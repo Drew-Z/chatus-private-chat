@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
+- **Total Sessions**: 28
 - **Last Active**: 2026-08-02
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1118 | Active |
+| `journal-1.md` | ~1152 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-08-02 | Complete member logout fail-closed recovery | `1f0e2d16d429676a3050cb54ecb20330cca6e1a0`, `3a77ea668bd44801048fbe613d72c50c8d56a1ec` | `main` |
 | 27 | 2026-08-02 | Quarterly product experience governance audit | `efca07bb3164f1a34cc7a982b75b110b1a6f8d14` | `main` |
 | 26 | 2026-08-01 | Complete automatic Skill selection | `5fade7c`, `3f17dc1` | `main` |
 | 25 | 2026-08-01 | Complete async document ingest | `58c4a5c`, `9b18785`, `e1389bf`, `b1a8a40`, `22e5faf`, `1f9f436`, `2fff8c2`, `4085cb2` | `main` |

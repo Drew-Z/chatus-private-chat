@@ -1116,3 +1116,37 @@ Completed the parent requirement-to-evidence audit across all eight archived chi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: Complete member logout fail-closed recovery
+
+**Date**: 2026-08-02
+**Task**: Complete member logout fail-closed recovery
+**Branch**: `main`
+
+### Summary
+
+Completed ordinary member logout fail-closed behavior and regression evidence; merged PR #29 as main SHA 2293498bc48d9755f0ca727c9dbc71b347a7f5d2; verified PR CI run 30729015108, exact-SHA deployment and production acceptance run 30729264582, retained artifacts, docs-only deployment skip run 30729452044, and archived the task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1f0e2d16d429676a3050cb54ecb20330cca6e1a0` | (see git log) |
+| `3a77ea668bd44801048fbe613d72c50c8d56a1ec` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
