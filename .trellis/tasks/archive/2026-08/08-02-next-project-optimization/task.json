@@ -3,7 +3,7 @@
   "name": "next-project-optimization",
   "title": "成员退出登录安全与恢复优化",
   "description": "为普通成员退出补齐精确响应解码、fail-closed 工作区状态、草稿保留、可重试错误和 Worker/浏览器回归证据。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": "member-logout-safety",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-02",
-  "completedAt": null,
+  "completedAt": "2026-08-02",
   "branch": "codex/member-logout-fail-closed",
   "base_branch": "main",
   "worktree_path": null,
@@ -89,6 +89,12 @@
         "status": "passed",
         "summary": "Exact-SHA deployment completed successfully; Deploy Worker and Verify production passed; production-deployment-2293498bc48d9755f0ca727c9dbc71b347a7f5d2 and deployment-paths artifacts retained.",
         "at": "2026-08-02T02:45:28.998936+00:00"
+      },
+      {
+        "command": "GitHub Actions docs/Trellis-only run 30729452044 @ 3a77ea668bd44801048fbe613d72c50c8d56a1ec",
+        "status": "passed",
+        "summary": "Path classification passed; deploy job skipped; deployment-skipped job recorded the docs and Trellis-only skip; deployment-paths artifact retained.",
+        "at": "2026-08-02T02:47:34.792070+00:00"
       }
     ]
   }
