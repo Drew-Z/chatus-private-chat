@@ -2645,7 +2645,7 @@ describe("Worker API", () => {
       body: JSON.stringify({ routeId: "model", messages: [{ role: "user", content: "测试空流" }] }),
     });
     expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toMatchObject({ error: "upstream_error", status: 502 });
+    await expect(response.json()).resolves.toMatchObject({ error: "provider_protocol_error", status: 502 });
     await expect(env.CHAT_STORE.get(`${ROUTE_RELIABILITY_PREFIX}model`, "json")).resolves.toMatchObject({
       ok: false,
       outcome: "protocol_error",
@@ -2768,8 +2768,9 @@ describe("Worker API", () => {
       },
     }));
     const { cookie } = await login();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(
-      JSON.stringify({ error: { message: "invalid request" } }),
+    const providerBodyMarker = `PRIVATE_CAPABILITY_BODY_${crypto.randomUUID()}`;
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () => new Response(
+      JSON.stringify({ error: { message: providerBodyMarker } }),
       { status: 400, headers: { "Content-Type": "application/json" } },
     ));
 
@@ -2786,9 +2787,15 @@ describe("Worker API", () => {
     const events = await readCapabilityEvents(response);
 
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "error", code: "upstream_error" }),
+      expect.objectContaining({
+        type: "error",
+        code: "upstream_request_rejected",
+        message: "当前模型无法处理这次请求，请调整内容、切换模型或联系管理员。",
+      }),
       { type: "done" },
     ]));
+    expect(JSON.stringify(events)).not.toContain(providerBodyMarker);
+    expect(JSON.stringify(events)).not.toContain("terminal-tools.example");
     await expect(env.PROVIDER_COORDINATOR.getByName(providerId).inspect()).resolves.toMatchObject({ active: 0 });
   });
 
@@ -3182,7 +3189,9 @@ describe("Worker API", () => {
       routes: [{ id: "active" }],
     });
 
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("upstream failed", { status: 502 }));
+    const providerBodyMarker = `PRIVATE_PROVIDER_BODY_${crypto.randomUUID()}`;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () =>
+      new Response(providerBodyMarker, { status: 502 }));
     const chat = await apiRequest("/api/chat", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
@@ -3190,8 +3199,53 @@ describe("Worker API", () => {
     });
     const chatPayload = await chat.clone().json();
     expect(chat.status, JSON.stringify(chatPayload)).toBe(502);
+    expect(chatPayload).toMatchObject({
+      error: "upstream_unavailable",
+      message: "模型服务暂时不可用，请稍后重试或切换模型。",
+      routeId: "active",
+      status: 502,
+    });
+    expect(JSON.stringify(chatPayload)).not.toContain(providerBodyMarker);
+    expect(JSON.stringify(chatPayload)).not.toContain("active.example");
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("active.example");
+  });
+
+  it("classifies legacy chat Provider failures without exposing response bodies", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        classified: {
+          label: "Classified",
+          type: "openai-chat",
+          baseUrl: "https://classified.example/v1",
+          model: "classified-model",
+          apiKey: "classified-key",
+        },
+      },
+      defaults: { defaultRoute: "classified", allowedRoutes: ["classified"] },
+    }));
+    const { cookie } = await login();
+    const cases = [
+      { status: 400, code: "upstream_request_rejected", responseStatus: 502 },
+      { status: 401, code: "upstream_authentication_failed", responseStatus: 502 },
+      { status: 429, code: "upstream_rate_limited", responseStatus: 429 },
+      { status: 503, code: "upstream_unavailable", responseStatus: 502 },
+    ];
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    for (const item of cases) {
+      const marker = `PRIVATE_PROVIDER_${item.status}_${crypto.randomUUID()}`;
+      fetchMock.mockImplementationOnce(async () => new Response(marker, { status: item.status }));
+      const response = await apiRequest("/api/chat", cookie, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+        body: JSON.stringify({ routeId: "classified", messages: [{ role: "user", content: `测试 ${item.status}` }] }),
+      });
+      const text = await response.text();
+      expect(response.status, text).toBe(item.responseStatus);
+      expect(JSON.parse(text)).toMatchObject({ error: item.code, status: item.status });
+      expect(text).not.toContain(marker);
+      expect(text).not.toContain("classified.example");
+    }
   });
 
   it("does not register scheduled route health checks", () => {
@@ -4870,6 +4924,9 @@ describe("Worker API", () => {
     const seenHeaders: Headers[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      if (url.origin === "https://mcp-failure.example") {
+        return new Response(`PRIVATE_MCP_DISCOVERY_BODY_${url.pathname}`, { status: 500 });
+      }
       expect(url.origin).toBe("https://mcp-discovery.example");
       seenHeaders.push(new Headers(init?.headers));
       if (init?.method === "DELETE") return new Response(null, { status: 405 });
@@ -4956,6 +5013,26 @@ describe("Worker API", () => {
     expect(seenHeaders.some((headers) => headers.get("Authorization") === "Bearer mcp-discovery-secret")).toBe(true);
     expect(JSON.stringify(payload)).not.toContain("mcp-discovery-secret");
     expect(JSON.stringify(payload)).not.toContain("mcp-discovery.example");
+
+    const failedServerId = "private-failure-server";
+    const failed = await apiRequest("/api/admin/mcp-discovery", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        serverId: failedServerId,
+        endpoint: "https://mcp-failure.example/private-rpc",
+        authType: "none",
+      }),
+    });
+    const failedText = await failed.text();
+    expect(failed.status, failedText).toBe(502);
+    expect(JSON.parse(failedText)).toEqual({
+      error: "mcp_protocol_error",
+      message: "MCP 服务返回了无法识别的响应，请稍后重试或联系管理员。",
+    });
+    expect(failedText).not.toContain(failedServerId);
+    expect(failedText).not.toContain("mcp-failure.example");
+    expect(failedText).not.toContain("PRIVATE_MCP_DISCOVERY_BODY");
 
     const unsafe = await apiRequest("/api/admin/mcp-discovery", cookie, {
       method: "POST",
@@ -5373,6 +5450,11 @@ describe("Worker API", () => {
     const audit = await apiRequest("/api/admin/audit", adminCookie).then((response) => response.json()) as any;
     expect(JSON.stringify(audit)).not.toContain("worker-oauth-access");
     expect(JSON.stringify(audit)).not.toContain("worker-oauth-refresh");
+    expect(JSON.stringify(audit)).not.toContain(member.label);
+    expect(audit.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "mcp.oauth.connect", target: "oauth" }),
+      expect.objectContaining({ action: "mcp.oauth.discovery", target: "oauth:1/0" }),
+    ]));
 
     const revoke = await apiRequest("/api/mcp/oauth/revoke", member.cookie, {
       method: "POST",
@@ -5387,6 +5469,11 @@ describe("Worker API", () => {
     });
     const after = await apiRequest("/api/mcp/oauth/status", member.cookie).then((response) => response.json()) as any;
     expect(after.connections).toEqual([expect.objectContaining({ connected: false, status: "disconnected" })]);
+    const revokeAudit = await apiRequest("/api/admin/audit", adminCookie).then((response) => response.json()) as any;
+    expect(revokeAudit.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "mcp.oauth.revoke", target: "oauth" }),
+    ]));
+    expect(JSON.stringify(revokeAudit)).not.toContain(member.label);
   });
 
   it("continues the same capability stream after MCP approval and remembers conversation trust", async () => {
@@ -5394,6 +5481,7 @@ describe("Worker API", () => {
     const schema = { type: "object", properties: { query: { type: "string" } }, required: ["query"] };
     let mcpCallCount = 0;
     let destructive = false;
+    let mcpFailureMarker = "";
     const providerBodies: any[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
@@ -5430,7 +5518,9 @@ describe("Worker API", () => {
           return new Response(JSON.stringify({
             jsonrpc: "2.0",
             id: payload.id,
-            result: { content: [{ type: "text", text: `result:${payload.params.arguments.query}` }] },
+            result: mcpFailureMarker
+              ? { isError: true, content: [{ type: "text", text: mcpFailureMarker }] }
+              : { content: [{ type: "text", text: `result:${payload.params.arguments.query}` }] },
           }), { headers: { "Content-Type": "application/json" } });
         }
         throw new Error(`unexpected MCP method ${payload.method}`);
@@ -5584,6 +5674,17 @@ describe("Worker API", () => {
       expect.objectContaining({ type: "tool", event: expect.objectContaining({ status: "approved", confirmation: "conversation" }) }),
       { type: "assistant_delta", text: "远程查询完成" },
     ]));
+
+    mcpFailureMarker = `PRIVATE_MCP_TOOL_RESULT_${crypto.randomUUID()}`;
+    const failedEvents = await readCapabilityEvents(await startChat());
+    const publicFailure = failedEvents.find((event) => event.type === "error");
+    expect(publicFailure).toMatchObject({
+      code: "tool_execution_failed",
+      message: "工具执行失败，请稍后重试。",
+    });
+    expect(publicFailure.message).not.toContain(mcpFailureMarker);
+    expect(publicFailure.message).not.toContain("approval");
+    mcpFailureMarker = "";
 
     destructive = true;
     const destructiveDiscovery = await apiRequest("/api/admin/mcp-discovery", adminCookie, {
@@ -5883,6 +5984,69 @@ describe("Worker API", () => {
     }
   });
 
+  it("redacts Provider bodies and endpoints from model discovery failures", async () => {
+    const cookie = await adminLogin();
+    const endpoint = "https://private-model-discovery.example/v1";
+    const providerBodyMarker = `PRIVATE_MODEL_DISCOVERY_BODY_${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        privateModels: {
+          label: "Private model provider",
+          type: "openai-chat",
+          baseUrl: endpoint,
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {},
+      defaults: {},
+    }));
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () =>
+      new Response(providerBodyMarker, { status: 503 }));
+
+    const response = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "privateModels" }),
+    });
+    const text = await response.text();
+    expect(response.status, text).toBe(502);
+    expect(JSON.parse(text)).toEqual({
+      error: "upstream_unavailable",
+      message: "模型服务暂时不可用，请稍后重试或切换模型。",
+      status: 503,
+    });
+    expect(text).not.toContain(providerBodyMarker);
+    expect(text).not.toContain(endpoint);
+    expect(text).not.toContain("private-model-discovery.example");
+  });
+
+  it("classifies invalid model discovery JSON as a redacted protocol error", async () => {
+    const cookie = await adminLogin();
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        invalidModels: {
+          label: "Invalid model provider",
+          type: "openai-chat",
+          baseUrl: "https://invalid-model-discovery.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {},
+      defaults: {},
+    }));
+    vi.spyOn(globalThis, "fetch").mockImplementationOnce(async () =>
+      new Response("PRIVATE_INVALID_MODEL_JSON", { status: 200 }));
+    const response = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: "invalidModels" }),
+    });
+    await expect(response.json()).resolves.toEqual({
+      error: "provider_protocol_error",
+      message: "模型线路返回了无法识别的响应，请切换模型或联系管理员。",
+    });
+  });
+
   it("requires model discovery to use a saved provider or route", async () => {
     const cookie = await adminLogin();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -6090,6 +6254,7 @@ describe("Worker API", () => {
       averageLatencyMs: 240,
       lastOutcome: "upstream_server",
       observedAt: new Date().toISOString(),
+      requestId: "turn_reliability-123",
       lastFallback: true,
       fallbackCount: 1,
       streamSamples: 2,
@@ -6120,6 +6285,7 @@ describe("Worker API", () => {
           successes: 2,
           averageLatencyMs: 240,
           lastOutcome: "upstream_server",
+          requestId: "turn_reliability-123",
           lastFallback: true,
           fallbackCount: 1,
           streamSamples: 2,

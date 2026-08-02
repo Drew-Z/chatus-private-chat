@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, ShieldCheck } from "lucide-react";
+import { Check, Copy, RefreshCw, ShieldCheck } from "lucide-react";
 import { ApiError, fetchAdminReliability, type AdminReliabilityProvider, type AdminReliabilityRoute, type AdminReliabilitySnapshot } from "../lib/api";
+import { copyText } from "../lib/markdown";
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
 
@@ -39,7 +40,7 @@ export function ReliabilityAdminPanel({ onSessionExpired, onNotice, onDirtyChang
     if (!snapshot || !query) return snapshot?.providers || [];
     return snapshot.providers.map((provider) => ({
       ...provider,
-      routes: provider.routes.filter((route) => `${provider.providerId} ${provider.label} ${route.routeId} ${route.model} ${route.lastOutcome || ""}`.toLocaleLowerCase().includes(query)),
+      routes: provider.routes.filter((route) => `${provider.providerId} ${provider.label} ${route.routeId} ${route.model} ${route.lastOutcome || ""} ${route.requestId || ""}`.toLocaleLowerCase().includes(query)),
     })).filter((provider) => provider.providerId.toLocaleLowerCase().includes(query) || provider.label.toLocaleLowerCase().includes(query) || provider.routes.length > 0);
   }, [filter, snapshot]);
 
@@ -70,7 +71,7 @@ export function ReliabilityTable({ providers }: { providers: AdminReliabilityPro
   return (
     <div className="admin-reliability-table-wrap">
       <table className="admin-reliability-table">
-        <thead><tr><th>服务商</th><th>状态</th><th>容量策略</th><th>凭据</th><th>逻辑模型 / 上游模型</th><th>尝试</th><th>成功</th><th>平均延迟</th><th>首字输出</th><th>输出形态</th><th>最近结果</th><th>最近观察</th><th>Fallback</th></tr></thead>
+        <thead><tr><th>服务商</th><th>状态</th><th>容量策略</th><th>凭据</th><th>逻辑模型 / 上游模型</th><th>尝试</th><th>成功</th><th>平均延迟</th><th>首字输出</th><th>输出形态</th><th>最近结果</th><th>请求引用</th><th>最近观察</th><th>Fallback</th></tr></thead>
         <tbody>{providers.flatMap((provider) => provider.routes.length
           ? provider.routes.map((route) => <ReliabilityRow key={`${provider.providerId}-${route.routeId}`} provider={provider} route={route} />)
           : [<ReliabilityRow key={provider.providerId} provider={provider} />]
@@ -82,6 +83,23 @@ export function ReliabilityTable({ providers }: { providers: AdminReliabilityPro
 
 function ReliabilityRow({ provider, route }: { provider: AdminReliabilityProvider; route?: AdminReliabilityRoute }) {
   const routeEnabled = route?.enabled !== false;
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const copyRequestReference = async () => {
+    if (!route?.requestId) return;
+    try {
+      if (await copyText(route.requestId)) setCopied(true);
+    } catch {
+      // The passive record remains readable when clipboard access is unavailable.
+    }
+  };
+
   return (
     <tr>
       <td><strong>{provider.label}</strong><small>{provider.providerId}</small></td>
@@ -95,10 +113,15 @@ function ReliabilityRow({ provider, route }: { provider: AdminReliabilityProvide
       <td>{route?.streamSamples ? <><strong>{route.averageFirstVisibleLatencyMs}ms</strong><small>最近 {route.lastFirstVisibleLatencyMs}ms</small></> : <span className="muted">未知</span>}</td>
       <td>{route?.lastStreamShape ? <><span className={`reliability-badge ${route.lastStreamShape}`}>{streamShapeLabel(route.lastStreamShape)}</span><small>渐进 {route.progressiveSamples}/{route.streamSamples}</small></> : <span className="muted">未知</span>}</td>
       <td>{route?.lastOutcome ? <span className={`reliability-outcome ${route.lastOutcome === "success" ? "ok" : "bad"}`}>{outcomeLabel(route.lastOutcome)}</span> : <span className="muted">未知</span>}</td>
+      <td>{route?.requestId ? <span className="reliability-request-reference"><code title={route.requestId}>{compactRequestReference(route.requestId)}</code><button className="icon-button" type="button" onClick={() => void copyRequestReference()} title={copied ? "请求引用已复制" : "复制请求引用"} aria-label={copied ? "请求引用已复制" : "复制请求引用"}>{copied ? <Check size={14} /> : <Copy size={14} />}</button></span> : <span className="muted">暂无</span>}</td>
       <td>{route?.observedAt ? formatDate(route.observedAt) : <span className="muted">暂无</span>}</td>
       <td>{route?.lastFallback === undefined ? <span className="muted">未知</span> : `${route.fallbackCount || 0} 次${route.lastFallback ? " · 最近发生" : ""}`}</td>
     </tr>
   );
+}
+
+function compactRequestReference(requestId: string): string {
+  return requestId.length <= 24 ? requestId : `${requestId.slice(0, 14)}...${requestId.slice(-6)}`;
 }
 
 function streamShapeLabel(shape: AdminReliabilityRoute["lastStreamShape"]): string {

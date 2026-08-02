@@ -1283,6 +1283,7 @@ describe("React client runtime validation", () => {
       averageFirstVisibleLatencyMs: 85,
       lastFirstVisibleLatencyMs: 60,
       lastStreamShape: "progressive",
+      requestId: "turn_request-123",
     };
     const snapshot = {
       generatedAt: "2026-07-25T12:00:01.000Z",
@@ -1314,6 +1315,10 @@ describe("React client runtime validation", () => {
     expect(isAdminReliabilitySnapshot({
       ...snapshot,
       providers: [{ ...snapshot.providers[0], routes: [{ ...route, firstVisibleLatencyMs: 60 }] }],
+    })).toBe(false);
+    expect(isAdminReliabilitySnapshot({
+      ...snapshot,
+      providers: [{ ...snapshot.providers[0], routes: [{ ...route, requestId: "bad request id" }] }],
     })).toBe(false);
   });
 

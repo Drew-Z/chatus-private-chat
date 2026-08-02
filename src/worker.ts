@@ -20,7 +20,12 @@ import {
   type ConversationSkillMode,
   type TeamAgentProps,
 } from "./contracts/agent";
-import { agentErrorMessage } from "./contracts/agent-error";
+import {
+  agentErrorMessage,
+  createAgentErrorEnvelope,
+  projectAgentStreamError,
+  type AgentErrorCode,
+} from "./contracts/agent-error";
 import type {
   CapabilityAssignment,
   CapabilityToolExecutionResult,
@@ -155,8 +160,8 @@ import {
   clampNumber,
   createProviderToolHistory,
   DEFAULT_ANTHROPIC_VERSION,
-  formatUpstreamErrorMessage,
   ProviderToolError,
+  ProviderToolRuntimeError,
   setAuthHeader,
   type ProviderToolExecutionResult,
   type ProviderToolHistory,
@@ -339,6 +344,7 @@ type AdminReliabilityRouteProjection = {
   averageFirstVisibleLatencyMs?: number;
   lastFirstVisibleLatencyMs?: number;
   lastStreamShape?: "progressive" | "single_chunk";
+  requestId?: string;
 };
 
 type AdminReliabilityProviderProjection = {
@@ -5018,6 +5024,7 @@ async function handleGetAdminReliability(env: Env): Promise<Response> {
         averageLatencyMs: record?.averageLatencyMs || 0,
         ...(record?.lastOutcome ? { lastOutcome: record.lastOutcome } : {}),
         ...(record?.observedAt ? { observedAt: record.observedAt } : {}),
+        ...(record?.requestId ? { requestId: record.requestId } : {}),
         ...(record?.lastFallback === undefined ? {} : { lastFallback: record.lastFallback }),
         ...(record?.fallbackCount === undefined ? {} : { fallbackCount: record.fallbackCount }),
         ...(record?.streamSamples === undefined ? {} : {
@@ -5260,28 +5267,39 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
     });
     const text = await response.text();
     if (!response.ok) {
+      const error = projectAgentStreamError({ status: response.status });
       return jsonResponse(
         {
-          error: "model_list_failed",
-          message: formatUpstreamErrorMessage(text) || `上游返回 HTTP ${response.status}`,
+          error,
+          message: agentErrorMessage(error),
           status: response.status,
-          endpoint,
         },
         502,
       );
     }
-    const payload = JSON.parse(text) as unknown;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text) as unknown;
+    } catch {
+      return jsonResponse({
+        error: "provider_protocol_error",
+        message: agentErrorMessage("provider_protocol_error"),
+      }, 502);
+    }
     const models = extractModelList(payload);
     if (!models.length) {
-      return jsonResponse({ error: "empty_model_list", message: "上游没有返回可识别的模型列表", endpoint }, 502);
+      return jsonResponse({
+        error: "provider_protocol_error",
+        message: agentErrorMessage("provider_protocol_error"),
+      }, 502);
     }
     return jsonResponse({ models, count: models.length, endpoint });
   } catch (error) {
+    const projected = projectAgentStreamError(error);
     return jsonResponse(
       {
-        error: "model_list_failed",
-        message: error instanceof Error ? error.message : "拉取模型失败",
-        endpoint,
+        error: projected,
+        message: agentErrorMessage(projected),
       },
       502,
     );
@@ -6071,15 +6089,26 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     return jsonResponse({ error: "user_api_key_required", routeId: prepared.userKeyRequiredRouteId }, 400);
   }
   const remaining = [...prepared.candidates];
-  let lastError: { routeId: string; status: number; message: string } | null = prepared.lastError
-    ? { ...prepared.lastError, status: 500 }
+  let lastError: {
+    routeId: string;
+    status: number;
+    message: string;
+    error?: unknown;
+    code?: AgentErrorCode;
+  } | null = prepared.lastError
+    ? { ...prepared.lastError, status: 500, error: { status: 500 } }
     : null;
   let attemptedRoutes = 0;
 
   while (remaining.length) {
     const acquired = await acquireFirstAvailableProvider(env, remaining, request.signal);
     if (!acquired) {
-      lastError = { routeId: remaining[0].routeId, status: 429, message: "当前服务提供商繁忙，请稍后重试" };
+      lastError = {
+        routeId: remaining[0].routeId,
+        status: 429,
+        message: "当前服务提供商繁忙，请稍后重试",
+        code: "provider_busy",
+      };
       break;
     }
     const { candidate: route, lease } = acquired;
@@ -6138,7 +6167,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
         return response;
       }
 
-      lastError = result.error;
+      lastError = { ...result.error, error: { status: result.error.status } };
       await recordRouteReliability(env, {
         routeId,
         providerId: route.providerId,
@@ -6160,6 +6189,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
         routeId,
         status: status || 502,
         message: error instanceof Error ? error.message : "upstream request failed",
+        error,
       };
       await recordRouteReliability(env, {
         routeId,
@@ -6185,14 +6215,16 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     // route-level errors already recorded per attempt
   });
 
+  const publicError = lastError?.code
+    || projectAgentStreamError(lastError?.error || { status: lastError?.status || 502 });
   return jsonResponse(
     {
-      error: lastError?.status === 429 ? "provider_busy" : "upstream_error",
+      error: publicError,
       routeId: lastError?.routeId,
       status: lastError?.status,
-      message: lastError?.message || "no route succeeded",
+      message: agentErrorMessage(publicError),
     },
-    lastError?.status === 429 ? 429 : 502,
+    publicError === "provider_busy" || publicError === "upstream_rate_limited" ? 429 : 502,
   );
 }
 
@@ -6207,6 +6239,7 @@ export type TeamAgentTurnInput = {
   temperature?: number;
   longTermMemory?: string;
   workspaceContext?: string;
+  requestId?: string;
   abortSignal?: AbortSignal;
 };
 
@@ -6446,6 +6479,7 @@ export async function prepareTeamAgentTurn(
       const credential = credentials.get(routeProviderKey(event.routeId, event.providerId));
       if (credential) {
         await recordRouteReliability(env, {
+          requestId: input.requestId,
           routeId: event.routeId,
           providerId: event.providerId,
           ok: true,
@@ -6467,6 +6501,7 @@ export async function prepareTeamAgentTurn(
       const credential = credentials.get(routeProviderKey(event.routeId, event.providerId));
       if (credential) {
         await recordRouteReliability(env, {
+          requestId: input.requestId,
           routeId: event.routeId,
           providerId: event.providerId,
           ok: false,
@@ -8205,7 +8240,14 @@ async function runCapabilityLoopInner(
     } catch (error) {
       lastError = error instanceof ProviderToolError
         ? error
-        : new ProviderToolError(502, error instanceof Error ? error.message : "provider response is invalid", false);
+        : new ProviderToolError(
+          502,
+          error instanceof Error ? error.message : "provider response is invalid",
+          false,
+          error instanceof ProviderToolRuntimeError && error.code === "provider_protocol_error"
+            ? "protocol_error"
+            : undefined,
+        );
       await recordRouteReliability(args.env, {
         routeId,
         providerId: route.providerId,
@@ -8225,9 +8267,10 @@ async function runCapabilityLoopInner(
 
   if (!selected) {
     await recordChatMetric(args.env, { kind: "failure", label: args.session.label });
+    const publicError = lastError ? projectAgentStreamError(lastError) : "upstream_error";
     throw new CapabilityError(
-      lastError?.status === 429 ? "provider_busy" : "upstream_error",
-      lastError?.message || "no route succeeded",
+      publicError,
+      agentErrorMessage(publicError),
       true,
     );
   }
@@ -8366,9 +8409,10 @@ async function runCapabilityLoopInner(
         usedUserKey: selected.usedUserKey,
       });
       await recordChatMetric(args.env, { kind: "route_error", label: args.session.label, routeId: selected.routeId });
+      const publicError = projectAgentStreamError(error);
       throw new CapabilityError(
-        "upstream_error",
-        error instanceof Error ? error.message : "模型在工具调用后返回错误",
+        publicError,
+        agentErrorMessage(publicError),
         true,
       );
     }
@@ -8555,14 +8599,21 @@ function assertNotAborted(signal: AbortSignal): void {
 }
 
 function toCapabilityError(error: unknown): CapabilityError {
-  if (error instanceof CapabilityError) return error;
-  if (error instanceof McpRuntimeError) {
-    return new CapabilityError(error.code, error.message, error.retryable);
+  let code: string;
+  let retryable = true;
+  if (error instanceof CapabilityError) {
+    code = error.code;
+    retryable = error.retryable;
+  } else if (error instanceof McpRuntimeError) {
+    code = error.code;
+    retryable = error.retryable;
+  } else if (error instanceof DOMException && error.name === "AbortError") {
+    code = "request_cancelled";
+  } else {
+    code = "tool_execution_failed";
   }
-  if (error instanceof DOMException && error.name === "AbortError") {
-    return new CapabilityError("request_cancelled", "请求已取消", true);
-  }
-  return new CapabilityError("tool_execution_failed", error instanceof Error ? error.message : "工具执行失败", true);
+  const envelope = createAgentErrorEnvelope(code);
+  return new CapabilityError(envelope.error, envelope.message, retryable);
 }
 
 function providerErrorStatus(error: unknown): number | undefined {
@@ -9834,7 +9885,7 @@ async function handleMcpOAuthCallback(
       auth: server.auth,
       token,
     });
-    await appendAdminAudit(env, "mcp.oauth.connect", `${session.label}:${consumed.serverId}`);
+    await appendAdminAudit(env, "mcp.oauth.connect", consumed.serverId);
     return redirectMcpOAuthResult(url, connection.reviewRequired ? "review_required" : "connected");
   } catch {
     return redirectMcpOAuthResult(url, "error");
@@ -9864,7 +9915,7 @@ async function handleMcpOAuthDiscovery(request: Request, env: Env, session: Sess
       configRevision: server.auth.configRevision,
       discovery,
     });
-    await appendAdminAudit(env, "mcp.oauth.discovery", `${session.label}:${serverId}:${candidate.tools}/${candidate.rejected}`);
+    await appendAdminAudit(env, "mcp.oauth.discovery", `${serverId}:${candidate.tools}/${candidate.rejected}`);
     return jsonResponse(candidate);
   } catch (error) {
     if (error instanceof McpOAuthError) return mcpOAuthJsonError(error);
@@ -9879,7 +9930,7 @@ async function handleMcpOAuthRevoke(request: Request, env: Env, session: Session
   const serverId = normalizeCapabilityId(body.serverId, 80);
   if (!serverId) return jsonResponse({ error: "invalid_mcp_server_id", message: "MCP Server ID 格式无效" }, 400);
   await getUserState(env, session.label).revokeMcpOAuthConnection(session.label, serverId);
-  await appendAdminAudit(env, "mcp.oauth.revoke", `${session.label}:${serverId}`);
+  await appendAdminAudit(env, "mcp.oauth.revoke", serverId);
   return jsonResponse({ ok: true, serverId });
 }
 

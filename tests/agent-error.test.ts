@@ -18,14 +18,31 @@ describe("Agent error contract", () => {
       error: "agent_error",
       message: "本轮任务暂时失败，可以稍后重试。",
     });
+    expect(createAgentErrorEnvelope("unknown_internal_code")).toEqual({
+      error: "agent_error",
+      message: "本轮任务暂时失败，可以稍后重试。",
+    });
+    expect(createAgentErrorEnvelope("upstream_error", "turn_request-123")).toEqual({
+      error: "upstream_error",
+      message: "模型线路暂时不可用，请稍后重试或切换模型。",
+      requestId: "turn_request-123",
+    });
   });
 
-  it("accepts message-less envelopes but rejects expanded or malformed payloads", () => {
+  it("accepts legacy message-less envelopes and strict request references", () => {
     expect(parseAgentErrorEnvelope('{"error":"provider_busy"}')).toEqual({
       error: "provider_busy",
       message: "当前模型的可用线路都在忙，请稍后重试或切换模型。",
     });
     expect(parseAgentErrorEnvelope('{"error":"upstream_error","providerId":"private"}')).toBeUndefined();
+    expect(parseAgentErrorEnvelope('{"error":"upstream_error","message":"private upstream body"}')).toBeUndefined();
+    expect(parseAgentErrorEnvelope('{"error":"unknown_internal_code"}')).toBeUndefined();
+    expect(parseAgentErrorEnvelope('{"error":"upstream_error","requestId":"turn_request-123"}')).toEqual({
+      error: "upstream_error",
+      message: "模型线路暂时不可用，请稍后重试或切换模型。",
+      requestId: "turn_request-123",
+    });
+    expect(parseAgentErrorEnvelope('{"error":"upstream_error","requestId":"bad id"}')).toBeUndefined();
     expect(parseAgentErrorEnvelope('{"error":"UPSTREAM ERROR"}')).toBeUndefined();
     expect(parseAgentErrorEnvelope("not-json")).toBeUndefined();
   });
@@ -33,6 +50,8 @@ describe("Agent error contract", () => {
   it("projects provider failures into actionable public classes", () => {
     expect(projectAgentStreamError(namedError("ProviderBusyError"))).toBe("provider_busy");
     expect(projectAgentStreamError(namedError("ProviderProtocolError"))).toBe("provider_protocol_error");
+    expect(projectAgentStreamError({ name: "UpstreamRequestError", status: 502, outcome: "protocol_error" }))
+      .toBe("provider_protocol_error");
     expect(projectAgentStreamError(namedError("TimeoutError"))).toBe("upstream_timeout");
     expect(projectAgentStreamError(namedError("AbortError"))).toBe("request_cancelled");
     expect(projectAgentStreamError({ statusCode: 401, responseBody: "private upstream body" }))

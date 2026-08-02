@@ -1,7 +1,7 @@
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, RotateCw, WifiOff } from "lucide-react";
+import { RefreshCw, WifiOff } from "lucide-react";
 import {
   ApiError,
   createAgentConversationBranch,
@@ -22,7 +22,7 @@ import {
   type SessionProjection,
 } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
-import { friendlyAgentError } from "../lib/agent-errors";
+import { resolveAgentError } from "../lib/agent-errors";
 import {
   conversationAgentClientName,
   findRetrySourceMessageId,
@@ -49,6 +49,7 @@ import { MessageView, type MessageAction } from "./MessageView";
 import { WorkspaceHeader, type ConnectionState } from "./WorkspaceHeader";
 import { McpConnectionsDialog, type McpConnectionNotice } from "./McpConnectionsDialog";
 import { MemberLogoutNotice } from "./MemberLogoutNotice";
+import { AgentErrorBanner } from "./AgentErrorBanner";
 import type { UIMessage } from "ai";
 import type { McpOAuthCallbackResult } from "../lib/mcp-oauth";
 
@@ -609,6 +610,7 @@ function ConversationChat({
     canContinue: false,
     toolApprovalPending: false,
   }).retry;
+  const errorPresentation = chat.error ? resolveAgentError(chat.error.message, online) : null;
 
   useEffect(() => {
     onBusyChange(busy);
@@ -897,14 +899,14 @@ function ConversationChat({
           <div ref={endRef} />
         </div>
       </div>
-      {chat.error && (
-        <div className="error-banner" role="alert">
-          <span>{friendlyAgentError(chat.error.message, online)}</span>
-          <div className="error-actions">
-            {retryAvailability !== "hidden" && <button className="quiet-button icon-text-button" type="button" onClick={() => void retryFailedTurn()} disabled={retryAvailability !== "enabled" || retryBusy} title="重试这一轮" aria-label="重试这一轮"><RotateCw size={15} /><span>{retryBusy ? "重试中..." : "重试"}</span></button>}
-            <button className="icon-button" type="button" onClick={() => window.location.reload()} title="重新连接" aria-label="重新连接"><RefreshCw size={16} /></button>
-          </div>
-        </div>
+      {chat.error && errorPresentation && (
+        <AgentErrorBanner
+          presentation={errorPresentation}
+          retryAvailability={retryAvailability}
+          retryBusy={retryBusy}
+          onRetry={() => void retryFailedTurn()}
+          onReconnect={() => window.location.reload()}
+        />
       )}
       <MessageComposer
         value={input}

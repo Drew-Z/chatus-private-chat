@@ -1,17 +1,22 @@
 export type AgentErrorEnvelope = {
-  error: string;
+  error: AgentErrorCode;
   message: string;
+  requestId?: string;
 };
 
 const AGENT_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const AGENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 const GENERIC_AGENT_ERROR = "agent_error";
 
-const AGENT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+const AGENT_ERROR_MESSAGES = {
   agent_error: "本轮任务暂时失败，可以稍后重试。",
+  agent_runtime_error: "任务运行时暂时不可用，请稍后重试。",
   agent_identity_unavailable: "Agent 会话身份已失效，请刷新页面重新连接。",
   agent_identity_conflict: "Agent 会话身份发生冲突，请刷新页面重新连接。",
   agent_identity_corrupt: "Agent 会话状态无法恢复，请刷新页面重新连接。",
   agent_context_invalid: "工具续接上下文无法恢复，请刷新页面后重试。",
+  conversation_not_found: "当前会话不存在或已删除，请新建会话后重试。",
+  workspace_context_unavailable: "工作区上下文暂时无法加载，请稍后重试。",
   session_expired: "登录会话已过期，请重新登录。",
   public_access_disabled: "公开访问已关闭，请登录后继续。",
   no_routes_available: "当前没有可用模型，请联系管理员完成配置。",
@@ -43,19 +48,48 @@ const AGENT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   upstream_unavailable: "模型服务暂时不可用，请稍后重试或切换模型。",
   upstream_error: "模型线路暂时不可用，请稍后重试或切换模型。",
   request_cancelled: "本轮任务已停止。",
-};
+  tool_arguments_invalid: "工具参数无效，请调整请求后重试。",
+  tool_budget_exceeded: "本轮工具执行时间超过限制，请减少任务范围后重试。",
+  tool_call_limit: "本轮工具调用次数超过限制，请减少任务范围后重试。",
+  tool_call_limit_exceeded: "本轮工具调用次数超过限制，请减少任务范围后重试。",
+  tool_confirmation_required: "工具调用需要确认后才能继续。",
+  tool_confirmation_timeout: "工具确认已超时，请重新发起请求。",
+  tool_execution_failed: "工具执行失败，请稍后重试。",
+  tool_not_allowed: "当前工具未获授权，请联系管理员。",
+  tool_not_found: "当前工具不可用，请刷新页面或联系管理员。",
+  tool_result_too_large: "工具返回内容超过限制，请缩小任务范围后重试。",
+  tool_round_limit: "本轮工具交互次数超过限制，请减少任务范围后重试。",
+  tool_runtime_closed: "工具会话已结束，请重新发起请求。",
+  tool_time_budget_exceeded: "本轮工具执行时间超过限制，请减少任务范围后重试。",
+  mcp_auth_unavailable: "MCP 认证不可用，请重新连接或联系管理员。",
+  mcp_endpoint_invalid: "MCP 服务配置无效，请联系管理员检查配置。",
+  mcp_oauth_reconnect_required: "MCP 连接已失效，请重新连接。",
+  mcp_oauth_review_required: "MCP 权限或工具定义已变化，请重新审查后连接。",
+  mcp_protocol_error: "MCP 服务返回了无法识别的响应，请稍后重试或联系管理员。",
+  mcp_redirect_rejected: "MCP 服务连接被安全策略拒绝，请联系管理员。",
+  mcp_runtime_closed: "MCP 连接已结束，请重新发起请求。",
+  mcp_tool_changed: "MCP 工具配置已变化，请重新开始本轮请求。",
+  mcp_tool_unsupported: "当前 MCP 工具暂不可用，请联系管理员。",
+} as const;
+
+export type AgentErrorCode = keyof typeof AGENT_ERROR_MESSAGES;
 
 export function agentErrorMessage(error: string): string {
-  return AGENT_ERROR_MESSAGES[normalizeAgentErrorCode(error)] || AGENT_ERROR_MESSAGES[GENERIC_AGENT_ERROR];
+  return AGENT_ERROR_MESSAGES[normalizeAgentErrorCode(error)];
 }
 
-export function createAgentErrorEnvelope(error: string): AgentErrorEnvelope {
+export function createAgentErrorEnvelope(error: string, requestId?: string): AgentErrorEnvelope {
   const normalized = normalizeAgentErrorCode(error);
-  return { error: normalized, message: agentErrorMessage(normalized) };
+  const normalizedRequestId = normalizeAgentRequestId(requestId);
+  return {
+    error: normalized,
+    message: agentErrorMessage(normalized),
+    ...(normalizedRequestId ? { requestId: normalizedRequestId } : {}),
+  };
 }
 
-export function serializeAgentErrorEnvelope(error: string): string {
-  return JSON.stringify(createAgentErrorEnvelope(error));
+export function serializeAgentErrorEnvelope(error: string, requestId?: string): string {
+  return JSON.stringify(createAgentErrorEnvelope(error, requestId));
 }
 
 export function parseAgentErrorEnvelope(value: string): AgentErrorEnvelope | undefined {
@@ -63,24 +97,30 @@ export function parseAgentErrorEnvelope(value: string): AgentErrorEnvelope | und
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed)) return undefined;
     const keys = Object.keys(parsed);
-    if (keys.some((key) => key !== "error" && key !== "message")) return undefined;
-    if (typeof parsed.error !== "string" || !AGENT_ERROR_CODE_PATTERN.test(parsed.error)) return undefined;
+    if (keys.some((key) => key !== "error" && key !== "message" && key !== "requestId")) return undefined;
+    if (typeof parsed.error !== "string" || !isAgentErrorCode(parsed.error)) return undefined;
     if (parsed.message !== undefined && typeof parsed.message !== "string") return undefined;
+    const message = agentErrorMessage(parsed.error);
+    if (typeof parsed.message === "string" && parsed.message !== message) return undefined;
+    const requestId = normalizeAgentRequestId(parsed.requestId);
+    if (parsed.requestId !== undefined && !requestId) return undefined;
     return {
       error: parsed.error,
-      message: typeof parsed.message === "string" ? parsed.message : agentErrorMessage(parsed.error),
+      message,
+      ...(requestId ? { requestId } : {}),
     };
   } catch {
     return undefined;
   }
 }
 
-export function projectAgentStreamError(error: unknown): string {
+export function projectAgentStreamError(error: unknown): AgentErrorCode {
   const chain = errorChain(error);
   if (hasName(chain, "ProviderBusyError")) return "provider_busy";
   if (
     hasName(chain, "ProviderProtocolError")
     || chain.some((item) => item.code === "provider_protocol_error")
+    || chain.some((item) => item.outcome === "protocol_error")
   ) return "provider_protocol_error";
 
   const normalizedText = chain
@@ -105,9 +145,21 @@ export function projectAgentStreamError(error: unknown): string {
   return "upstream_error";
 }
 
-function normalizeAgentErrorCode(value: string): string {
+export function normalizeAgentRequestId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return AGENT_REQUEST_ID_PATTERN.test(normalized) ? normalized : undefined;
+}
+
+function normalizeAgentErrorCode(value: string): AgentErrorCode {
   const normalized = value.trim().toLowerCase();
-  return AGENT_ERROR_CODE_PATTERN.test(normalized) ? normalized : GENERIC_AGENT_ERROR;
+  return AGENT_ERROR_CODE_PATTERN.test(normalized) && isAgentErrorCode(normalized)
+    ? normalized
+    : GENERIC_AGENT_ERROR;
+}
+
+function isAgentErrorCode(value: string): value is AgentErrorCode {
+  return Object.prototype.hasOwnProperty.call(AGENT_ERROR_MESSAGES, value);
 }
 
 function errorChain(error: unknown): Record<string, unknown>[] {

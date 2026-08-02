@@ -281,6 +281,9 @@ describe("provider tool runtime", () => {
       signal: new AbortController().signal,
       usedUserKey: false,
       fetch: async () => new Response("not-json"),
-    })).rejects.toBeInstanceOf(ProviderToolError);
+    })).rejects.toMatchObject({
+      name: "ProviderToolError",
+      outcome: "protocol_error",
+    });
   });
 });

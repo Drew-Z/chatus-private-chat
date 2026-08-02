@@ -13,6 +13,7 @@ import type {
   AgentSkillSelectionMetadata,
   ConversationSkillMode,
 } from "../../../src/contracts/agent";
+import { normalizeAgentRequestId } from "../../../src/contracts/agent-error";
 
 export type RouteProjection = {
   id: string;
@@ -326,6 +327,7 @@ export type AdminReliabilityRoute = {
   averageFirstVisibleLatencyMs?: number;
   lastFirstVisibleLatencyMs?: number;
   lastStreamShape?: "progressive" | "single_chunk";
+  requestId?: string;
 };
 
 export type AdminReliabilityProvider = {
@@ -2455,6 +2457,7 @@ function isAdminReliabilityRoute(value: unknown): value is AdminReliabilityRoute
       "averageFirstVisibleLatencyMs",
       "lastFirstVisibleLatencyMs",
       "lastStreamShape",
+      "requestId",
     ])
     && isNonEmptyString(value.routeId)
     && isNonEmptyString(value.model)
@@ -2467,6 +2470,7 @@ function isAdminReliabilityRoute(value: unknown): value is AdminReliabilityRoute
     && value.averageLatencyMs <= 600_000
     && (value.lastOutcome === undefined || isNonEmptyString(value.lastOutcome))
     && (value.observedAt === undefined || isIsoDate(value.observedAt))
+    && (value.requestId === undefined || normalizeAgentRequestId(value.requestId) === value.requestId)
     && (value.lastFallback === undefined || typeof value.lastFallback === "boolean")
     && (value.fallbackCount === undefined || (isNonNegativeInteger(value.fallbackCount) && value.fallbackCount <= value.attempts))
     && hasValidAdminStreamEvidence(value, value.successes);

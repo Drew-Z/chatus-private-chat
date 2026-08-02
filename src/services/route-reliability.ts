@@ -1,4 +1,5 @@
 import type { ProviderStreamShape } from "../contracts/provider";
+import { normalizeAgentRequestId } from "../contracts/agent-error";
 import type { ProviderCoordinator } from "../provider-coordinator";
 
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
@@ -37,9 +38,11 @@ export type RouteReliabilityRecord = {
   httpStatusClass?: "4xx" | "5xx";
   firstVisibleLatencyMs?: number;
   streamShape?: ProviderStreamShape;
+  requestId?: string;
 };
 
 type CommonReliabilityWrite = {
+  requestId?: string;
   routeId: string;
   providerId?: string;
   ok: boolean;
@@ -97,6 +100,7 @@ export type ProviderRouteReliabilityRecord = {
   averageFirstVisibleLatencyMs?: number;
   lastFirstVisibleLatencyMs?: number;
   lastStreamShape?: ProviderStreamShape;
+  requestId?: string;
 };
 
 export type ProviderReliabilitySample = {
@@ -112,6 +116,7 @@ export type ProviderReliabilitySample = {
   httpStatusClass?: "4xx" | "5xx";
   firstVisibleLatencyMs?: number;
   streamShape?: ProviderStreamShape;
+  requestId?: string;
 };
 
 export async function recordRouteReliability(
@@ -125,6 +130,7 @@ export async function recordRouteReliability(
   if (args.usedUserKey) return;
   const outcome = args.outcome || classifyRouteReliability(args.ok, args.status, args.error);
   const streamEvidence = normalizeStreamEvidenceWrite(args);
+  const requestId = normalizeAgentRequestId(args.requestId);
   const record: RouteReliabilityRecord = {
     version: 2,
     source: "real_task",
@@ -136,6 +142,7 @@ export async function recordRouteReliability(
     fallback: args.fallback,
     httpStatusClass: toHttpStatusClass(args.status),
     ...streamEvidence,
+    ...(requestId ? { requestId } : {}),
   };
   try {
     const writes: Promise<void>[] = [
@@ -371,6 +378,7 @@ async function recordProviderRouteReliability(
       httpStatusClass: latest.httpStatusClass,
       firstVisibleLatencyMs: latest.firstVisibleLatencyMs,
       streamShape: latest.streamShape,
+      ...(latest.requestId ? { requestId: latest.requestId } : {}),
     },
   });
 }
@@ -395,6 +403,7 @@ export function normalizeProviderReliabilitySample(value: unknown): ProviderReli
     httpStatusClass: normalized.httpStatusClass,
     firstVisibleLatencyMs: normalized.firstVisibleLatencyMs,
     streamShape: normalized.streamShape,
+    ...(normalized.requestId ? { requestId: normalized.requestId } : {}),
   };
 }
 
@@ -462,6 +471,7 @@ export function reduceProviderRouteReliability(
       (previous?.fallbackCount || 0) + (latest.fallback ? 1 : 0),
     ),
     ...aggregateProviderStreamEvidence(previous, latest, successes),
+    ...(latest.requestId ? { requestId: latest.requestId } : {}),
   };
 }
 
@@ -485,6 +495,8 @@ function normalizeRouteReliability(value: unknown, routeId: string): RouteReliab
   ) return null;
   const streamEvidence = normalizeStoredStreamEvidence(value, value.ok);
   if (streamEvidence === null) return null;
+  const requestId = normalizeAgentRequestId(value.requestId);
+  if (value.requestId !== undefined && !requestId) return null;
   return {
     version: 2,
     source: "real_task",
@@ -496,6 +508,7 @@ function normalizeRouteReliability(value: unknown, routeId: string): RouteReliab
     fallback: value.fallback,
     httpStatusClass: value.httpStatusClass,
     ...streamEvidence,
+    ...(requestId ? { requestId } : {}),
   };
 }
 
@@ -520,6 +533,7 @@ export function normalizeProviderRouteReliability(
   const fallbackCount = typeof value.fallbackCount === "number" ? value.fallbackCount : undefined;
   const streamEvidence = normalizeStoredProviderStreamEvidence(value);
   if (streamEvidence === null) return null;
+  const requestId = normalizeAgentRequestId(value.requestId);
   if (
     typeof attempts !== "number"
     || !Number.isInteger(attempts)
@@ -537,6 +551,7 @@ export function normalizeProviderRouteReliability(
     || (value.fallbackCount !== undefined
       && (fallbackCount === undefined || !Number.isInteger(fallbackCount) || fallbackCount < 0 || fallbackCount > attempts))
     || (streamEvidence.streamSamples !== undefined && streamEvidence.streamSamples > successes)
+    || (value.requestId !== undefined && !requestId)
   ) return null;
   return {
     version: 2,
@@ -551,6 +566,7 @@ export function normalizeProviderRouteReliability(
     ...(value.lastFallback === undefined ? {} : { lastFallback: value.lastFallback }),
     ...(fallbackCount === undefined ? {} : { fallbackCount }),
     ...streamEvidence,
+    ...(requestId ? { requestId } : {}),
   };
 }
 

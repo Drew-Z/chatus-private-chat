@@ -695,6 +695,11 @@ test("reliability stream evidence stays contained on narrow viewports", async ({
   await page.goto("/?view=reliability");
   await expect(page.getByText("渐进", { exact: true })).toBeVisible();
   await expect(page.getByText("单块", { exact: true })).toBeVisible();
+  await expect(page.getByText("turn_reliability-123", { exact: true })).toBeVisible();
+  const copyReference = page.getByRole("button", { name: "复制请求引用" });
+  await expect(copyReference).toBeVisible();
+  await copyReference.click();
+  await expect(page.getByRole("button", { name: "请求引用已复制" })).toBeVisible();
   const geometry = await page.evaluate(() => {
     const wrap = document.querySelector<HTMLElement>(".admin-reliability-table-wrap");
     const table = document.querySelector<HTMLElement>(".admin-reliability-table");
@@ -711,6 +716,31 @@ test("reliability stream evidence stays contained on narrow viewports", async ({
   expect(geometry.wrapperFits).toBe(true);
   if ((page.viewportSize()?.width || 0) < 1160) expect(geometry.localOverflow).toBe(true);
   await attachScreenshot(page, testInfo, "reliability");
+});
+
+test("Agent errors expose only canonical copyable request references", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "error presentation coverage targets desktop and 390px");
+  await page.goto("/?view=agent-error");
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("当前模型的可用线路都在忙，请稍后重试或切换模型。");
+  await expect(alert).toContainText("请求引用 turn_request-123");
+  await expect(alert).not.toContainText("provider_busy");
+  const copyReference = page.getByRole("button", { name: "复制请求引用" });
+  await copyReference.click();
+  await expect(page.getByRole("button", { name: "请求引用已复制" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试这一轮" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "重新连接" })).toBeVisible();
+  const fits = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    body: document.body.scrollWidth <= document.body.clientWidth,
+    alert: (document.querySelector(".error-banner")?.getBoundingClientRect().right || Infinity) <= document.documentElement.clientWidth,
+  }));
+  expect(fits).toEqual({ document: true, body: true, alert: true });
+  await attachScreenshot(page, testInfo, "agent-error-reference");
+
+  await page.goto("/?view=agent-error&request=0");
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByRole("button", { name: "复制请求引用" })).toHaveCount(0);
 });
 
 test("operations data stays scannable with local table overflow", async ({ page }, testInfo) => {

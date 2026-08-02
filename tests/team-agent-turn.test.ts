@@ -24,6 +24,7 @@ describe("prepared TeamAgent turn", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("falls back before visible output and returns an AI SDK UI message stream", async () => {
+    const requestId = "turn_fallback-123";
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {
         primary: {
@@ -67,6 +68,7 @@ describe("prepared TeamAgent turn", () => {
 
     const prepared = await prepareTeamAgentTurn(env, session, {
       messages: [{ role: "user", content: "整理三条发布检查事项" }],
+      requestId,
     });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
@@ -93,6 +95,14 @@ describe("prepared TeamAgent turn", () => {
       ok: true,
       outcome: "success",
       fallback: true,
+    });
+    await expect(loadProviderRouteReliability(env, "primary", "legacy:primary")).resolves.toMatchObject({
+      requestId,
+      lastOutcome: "upstream_server",
+    });
+    await expect(loadProviderRouteReliability(env, "backup", "legacy:backup")).resolves.toMatchObject({
+      requestId,
+      lastOutcome: "success",
     });
     await prepared.closeTools();
   });

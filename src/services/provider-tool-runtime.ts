@@ -48,6 +48,7 @@ export class ProviderToolError extends Error {
     readonly status: number,
     message: string,
     readonly terminal: boolean,
+    readonly outcome?: "protocol_error",
   ) {
     super(message);
     this.name = "ProviderToolError";
@@ -91,7 +92,7 @@ export async function callProviderToolTurn(args: ProviderToolTurnArgs): Promise<
       : parseOpenAiToolTurn(payload, args.tools);
   } catch (error) {
     if (error instanceof ProviderToolRuntimeError) throw error;
-    throw new ProviderToolError(502, "上游返回了无法识别的工具响应", false);
+    throw new ProviderToolError(502, "上游返回了无法识别的工具响应", false, "protocol_error");
   }
 }
 
