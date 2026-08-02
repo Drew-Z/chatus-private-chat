@@ -19,6 +19,15 @@ export type LogicalModelDraft = AdminRouteConfig & { id: string };
 
 export type ValidationResult = { ok: true } | { ok: false; message: string };
 
+export type LegacyRouteMigrationCandidate = {
+  routeId: string;
+  label: string;
+  apiKeyRef: string;
+  status: "ready" | "blocked";
+  reason: "provider_backed" | "user_key_required" | "credential_configured" | "credential_missing" | "credential_unavailable";
+  needsCredential: boolean;
+};
+
 export function createProviderDraft(provider: AdminProviderConfig | undefined, id: string): ProviderDraft {
   return {
     ...(provider || {}),
@@ -137,6 +146,50 @@ export function projectAdminLogicalModels(config: AdminConfig): AdminLogicalMode
       referencedBy: [...(referencedBy.get(id) || [])].sort(compareStableText),
     }))
     .sort(compareLogicalModels);
+}
+
+export function projectLegacyRouteMigrations(
+  config: AdminConfig,
+  secrets: AdminRouteSecretMetadata[] = [],
+  apiKeyRefOverrides: Readonly<Record<string, string>> = {},
+): LegacyRouteMigrationCandidate[] {
+  const secretByRef = new Map(secrets.map((item) => [item.apiKeyRef, item]));
+  return Object.entries(config.routes)
+    .filter(([, route]) => hasLegacyRouteShadow(route))
+    .map(([routeId, route]): LegacyRouteMigrationCandidate => {
+      const apiKeyRef = apiKeyRefOverrides[routeId]?.trim()
+        || route.apiKeyRef?.trim()
+        || suggestLegacyRouteSecretRef(routeId);
+      if (route.offerings?.length) {
+        return { routeId, label: route.label, apiKeyRef, status: "ready", reason: "provider_backed", needsCredential: false };
+      }
+      if (route.requiresUserKey === true) {
+        return { routeId, label: route.label, apiKeyRef, status: "ready", reason: "user_key_required", needsCredential: false };
+      }
+      const secret = secretByRef.get(apiKeyRef);
+      if (secret?.status === "configured") {
+        return { routeId, label: route.label, apiKeyRef, status: "ready", reason: "credential_configured", needsCredential: false };
+      }
+      return {
+        routeId,
+        label: route.label,
+        apiKeyRef,
+        status: "blocked",
+        reason: secret?.status === "unavailable" ? "credential_unavailable" : "credential_missing",
+        needsCredential: true,
+      };
+    })
+    .sort((left, right) => compareStableText(left.label, right.label) || compareStableText(left.routeId, right.routeId));
+}
+
+export function suggestLegacyRouteSecretRef(routeId: string): string {
+  const base = routeId
+    .toLocaleUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^[^A-Z]+/, "")
+    .replace(/_+$/g, "")
+    || "LEGACY_ROUTE";
+  return `${base.slice(0, 59)}_KEY`;
 }
 
 export function compareProviders(left: Pick<AdminProvider, "label" | "id">, right: Pick<AdminProvider, "label" | "id">): number {
@@ -348,51 +401,6 @@ export function applyLogicalModelDraft(
   return { ...config, routes, users, defaults, publicAccess };
 }
 
-export function migrateLegacyLogicalModel(config: AdminConfig, routeId: string): { config: AdminConfig; providerId?: string } {
-  const route = config.routes[routeId];
-  if (!route || !isLegacyRoute(route) || !route.apiKeyRef) return { config };
-  const providerId = uniqueConfigId(config.providers, `${routeId}-provider`);
-  const provider: AdminProviderConfig = {
-    enabled: true,
-    label: route.label,
-    type: route.type!,
-    baseUrl: route.baseUrl!,
-    apiKeyRef: route.apiKeyRef,
-    ...(route.authHeader ? { authHeader: route.authHeader } : {}),
-    ...(route.authPrefix === undefined ? {} : { authPrefix: route.authPrefix }),
-    directEndpoint: route.directEndpoint === true,
-    allowUserKey: route.allowUserKey !== false,
-    requiresUserKey: route.requiresUserKey === true,
-    supportsImages: route.supportsImages !== false,
-    supportsTools: route.supportsTools === true,
-    concurrency: "unlimited",
-    queueTimeoutMs: 0,
-    priority: 0,
-    ...(route.hasLegacyKey ? { hasLegacyKey: true } : {}),
-    ...(route.hasCustomHeaders ? { hasCustomHeaders: true, headerSourceRouteId: routeId } : {}),
-  };
-  const migrated: AdminRouteConfig = { ...route, offerings: [{ providerId, model: route.model! }] };
-  for (const field of [
-    "type",
-    "baseUrl",
-    "model",
-    "apiKeyRef",
-    "authHeader",
-    "authPrefix",
-    "directEndpoint",
-    "hasLegacyKey",
-    "hasCustomHeaders",
-  ]) delete migrated[field];
-  return {
-    config: {
-      ...config,
-      providers: { ...config.providers, [providerId]: provider },
-      routes: { ...config.routes, [routeId]: migrated },
-    },
-    providerId,
-  };
-}
-
 export function addDiscoveredModels(
   config: AdminConfig,
   providerId: string,
@@ -465,6 +473,18 @@ function isLegacyRoute(route: AdminRouteConfig): boolean {
     && Boolean(route.baseUrl.trim())
     && typeof route.model === "string"
     && Boolean(route.model.trim());
+}
+
+function hasLegacyRouteShadow(route: AdminRouteConfig): boolean {
+  return route.type !== undefined
+    || route.baseUrl !== undefined
+    || route.model !== undefined
+    || route.apiKeyRef !== undefined
+    || route.authHeader !== undefined
+    || route.authPrefix !== undefined
+    || route.directEndpoint !== undefined
+    || route.hasLegacyKey === true
+    || route.hasCustomHeaders === true;
 }
 
 function compareStableText(left: string, right: string): number {

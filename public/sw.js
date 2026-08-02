@@ -1,12 +1,9 @@
-const CACHE_NAME = "chatus-shell-v6";
+const CACHE_NAME = "chatus-shell-v7";
 const SHELL_ASSETS = [
   "/",
   "/legacy/",
-  "/admin",
   "/styles.css",
   "/app.js",
-  "/admin.js",
-  "/admin-report.js",
   "/markdown.js",
   "/theme.js",
   "/pwa.js",
@@ -93,7 +90,6 @@ async function cacheApplicationShell() {
 }
 
 function navigationCacheKey(pathname) {
-  if (pathname.startsWith("/admin")) return "/admin";
   if (pathname.startsWith("/legacy")) return "/legacy/";
   if (pathname.startsWith("/react-chat")) return "/react-chat/";
   return "/";

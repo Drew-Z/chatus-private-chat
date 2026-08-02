@@ -6,6 +6,56 @@ if (!accessCode || !providerURL) throw new Error("Agent E2E runtime variables ar
 const memberAccessCode: string = accessCode;
 test.use({ screenshot: "off", trace: "off" });
 
+test("streaming follows a reader at the bottom without stealing an upward scroll", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await loginMember(page);
+  const messageList = page.locator(".message-list");
+  await sendMessage(page, "[e2e:scroll] 验证流式贴底");
+  const assistant = page.locator(".message.assistant").last();
+
+  await expect(assistant).toContainText("滚动第一段");
+  await expect.poll(() => transcriptDistanceFromBottom(messageList)).toBeLessThan(140);
+
+  const upwardPosition = await messageList.evaluate((element) => {
+    element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 320);
+    element.dispatchEvent(new Event("scroll"));
+    return { scrollTop: element.scrollTop, distance: element.scrollHeight - element.scrollTop - element.clientHeight };
+  });
+  expect(upwardPosition.distance).toBeGreaterThanOrEqual(250);
+
+  await expect(assistant).toContainText("滚动第二段");
+  const afterSecondChunk = await messageList.evaluate((element) => ({
+    scrollTop: element.scrollTop,
+    distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+  }));
+  expect(afterSecondChunk.distance).toBeGreaterThanOrEqual(250);
+  expect(Math.abs(afterSecondChunk.scrollTop - upwardPosition.scrollTop)).toBeLessThanOrEqual(2);
+  await expect(assistant).toContainText("滚动第三段完成");
+});
+
+test("legacy image input is keyboard reachable and opens the native chooser", async ({ page }) => {
+  await page.goto("/legacy/");
+  await page.getByLabel("访问码").fill(memberAccessCode);
+  await page.getByRole("button", { name: "进入 Chatus" }).click();
+  const imageButton = page.getByRole("button", { name: "添加图片" });
+  await expect(imageButton).toBeVisible();
+  await imageButton.focus();
+  await expect(imageButton).toBeFocused();
+
+  const chooserPromise = page.waitForEvent("filechooser");
+  await imageButton.press("Enter");
+  const chooser = await chooserPromise;
+  await chooser.setFiles({
+    name: "keyboard-pixel.gif",
+    mimeType: "image/gif",
+    buffer: Buffer.from(
+      "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+      "base64",
+    ),
+  });
+  await expect(page.locator("#attachmentRow .attachment img")).toBeVisible();
+});
+
 test("real Worker Agent transport preserves streaming, approval, attachments, and branches", async ({ page, request }) => {
   await loginMember(page);
 
@@ -158,12 +208,17 @@ type ProviderState = {
   memoryContinuationRequests: number;
   fileRequests: number;
   imageRequests: number;
+  scrollRequests: number;
 };
 
 async function providerState(request: APIRequestContext): Promise<ProviderState> {
   const response = await request.get(`${providerURL}/__state`);
   expect(response.ok()).toBe(true);
   return response.json() as Promise<ProviderState>;
+}
+
+async function transcriptDistanceFromBottom(messageList: Locator): Promise<number> {
+  return messageList.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
 }
 
 async function readMemory(page: Page): Promise<{ memory: string }> {

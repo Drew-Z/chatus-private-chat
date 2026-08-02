@@ -186,6 +186,7 @@ function createFakeProvider(expectedProviderKey) {
     memoryContinuationRequests: 0,
     fileRequests: 0,
     imageRequests: 0,
+    scrollRequests: 0,
   };
 
   const server = createHttpServer(async (request, response) => {
@@ -254,6 +255,16 @@ function createFakeProvider(expectedProviderKey) {
         await streamTextResponse(response, [
           { delayMs: 350, text: "渐进第一段" },
           { delayMs: 900, text: "渐进第二段" },
+        ]);
+        return;
+      }
+
+      if (userText.includes("[e2e:scroll]")) {
+        state.scrollRequests += 1;
+        await streamTextResponse(response, [
+          { delayMs: 250, text: `滚动第一段\n\n${Array.from({ length: 70 }, (_, index) => `第一段内容 ${index + 1}`).join("\n\n")}` },
+          { delayMs: 1_500, text: `\n\n滚动第二段\n\n${Array.from({ length: 35 }, (_, index) => `第二段内容 ${index + 1}`).join("\n\n")}` },
+          { delayMs: 1_500, text: "\n\n滚动第三段完成" },
         ]);
         return;
       }

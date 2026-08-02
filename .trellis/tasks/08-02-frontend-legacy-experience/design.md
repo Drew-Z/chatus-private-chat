@@ -10,12 +10,14 @@ Add `POST /api/admin/legacy-routes/migrate`:
 
 ```json
 {
-  "routeIds": ["logical-model-id"],
+  "routes": [
+    { "routeId": "logical-model-id", "apiKeyRef": "OPTIONAL_REMEDIATED_REF" }
+  ],
   "expectedRevision": "sha256"
 }
 ```
 
-The response is the normal sanitized admin config snapshot plus `migrated`, `alreadyMigrated`, and bounded per-route status metadata. It never includes endpoint values, credential values, custom header names/values, or raw exceptions.
+The exact response is the normal sanitized admin config snapshot plus `migrated`, `alreadyMigrated`, and `results`. `migrated` contains `{ routeId, providerId? }`; `providerId` is present when migration creates a Provider and omitted when an existing Provider-backed route only removes stale compatibility fields. `alreadyMigrated` contains route IDs, and `results` contains matching per-route records with status `migrated` or `already_migrated`. The client rejects unknown keys, inconsistent arrays, duplicate IDs, or any status/provider presence/value that does not match the corresponding aggregate. The response never includes endpoint values, credential values, custom header names/values, or raw exceptions.
 
 The Worker performs an all-or-nothing preflight against `loadEditableConfig`:
 
@@ -24,9 +26,10 @@ The Worker performs an all-or-nothing preflight against `loadEditableConfig`:
 3. Classify every requested route as legacy, already migrated, missing, or blocked.
 4. For a legacy route that does not require BYOK, resolve a credential from a copy with the inline `apiKey` removed. This allows managed storage or a same-name Worker binding but deliberately excludes the old plaintext shadow.
 5. Abort the whole batch if any requested legacy route is unsafe.
-6. Build one new Provider per route using a deterministic `<routeId>-provider` base and the existing collision-safe ID rule. Copy custom headers only inside the Worker process; never project them to the browser.
-7. Replace the route transport shadow with one Offering while preserving route-owned policy fields and every external route reference.
-8. Validate the resulting app config, write once to `ROUTES_CONFIG_KEY`, append one bounded audit event, and return the sanitized snapshot.
+6. After asynchronous credential preflight, reload the editable configuration and compare its revision with the preflight snapshot. A concurrent change returns `409 config_conflict` with zero writes. This is optimistic concurrency protection over KV, not a database transaction or CAS guarantee.
+7. Build one new Provider per route using a deterministic `<routeId>-provider` base and the existing collision-safe ID rule. Copy custom headers only inside the Worker process; never project them to the browser.
+8. Replace the route transport shadow with one Offering while preserving route-owned policy fields and every external route reference.
+9. Validate the resulting app config, write once to `ROUTES_CONFIG_KEY`, append one bounded audit event, and return the sanitized snapshot.
 
 A repeat call against the current revision treats routes that already have offerings and no transport shadow as `alreadyMigrated`; it creates no Provider and performs no write.
 
@@ -62,3 +65,5 @@ README, self-hosting, and operations docs name `/react-chat/admin` as the only a
 Streaming scroll tracks whether the viewport is still near the bottom; only that state follows new deltas. Legacy image controls receive native keyboard semantics and focus evidence. Browser tests cover `/`, `/legacy/`, `/react-chat/`, `/react-chat/admin`, and the `/admin.html` redirect at desktop and 390px widths.
 
 Admin chunk splitting is gated by measured compressed bytes and startup CPU. No split is added solely for architectural neatness.
+
+The final implementation build measured one JavaScript entry at 898.87 kB (249.67 kB gzip) and one stylesheet at 71.63 kB (12.70 kB gzip), compared with the recorded JavaScript baseline of 897.36 kB (249.26 kB gzip). The task has no pre-approved transfer threshold or startup-CPU budget, and no A/B CPU evidence was collected. Admin lazy loading is therefore not implemented in this task; a later performance task must establish a numeric budget and measure both transfer and startup CPU before changing the loading boundary.

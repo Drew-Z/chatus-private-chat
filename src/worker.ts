@@ -82,6 +82,12 @@ import {
   routeProviderKey,
 } from "./services/provider-router";
 import {
+  hasLegacyRouteShadow,
+  isLegacyRouteConfig,
+  migrateLegacyRouteConfiguration,
+  type LegacyRouteMigrationSelection,
+} from "./services/legacy-route-migration";
+import {
   buildCapabilityToolDefinitions,
   getPublicCapabilities,
   getSelectedSkills,
@@ -1671,6 +1677,12 @@ async function handleRequest(
   }
   if (
     request.method === "GET"
+    && (url.pathname === "/admin" || url.pathname === "/admin/" || url.pathname === "/admin.html")
+  ) {
+    return Response.redirect(new URL("/react-chat/admin", url).toString(), 308);
+  }
+  if (
+    request.method === "GET"
     && (url.pathname === "/react-chat/admin" || url.pathname === "/react-chat/admin/")
   ) {
     // Cloudflare Assets canonicalizes index.html to the directory URL, which would drop the admin pathname.
@@ -2197,6 +2209,10 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
   if (url.pathname === "/api/admin/config" && request.method === "PUT") {
     return handlePutAdminConfig(request, env);
+  }
+
+  if (url.pathname === "/api/admin/legacy-routes/migrate" && request.method === "POST") {
+    return handleMigrateAdminLegacyRoutes(request, env);
   }
 
   if (url.pathname === "/api/admin/route-secrets" && request.method === "GET") {
@@ -2831,6 +2847,127 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   return jsonResponse({ ok: true, config: sanitizeAdminConfig(normalized), source: "kv", revision: await configRevision(normalized) });
 }
 
+const MAX_LEGACY_ROUTE_MIGRATIONS = 100;
+
+async function handleMigrateAdminLegacyRoutes(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ routes?: unknown; expectedRevision?: unknown }>(request);
+  const selections = parseLegacyRouteMigrationSelections(body.routes);
+  if (!selections.ok) {
+    return jsonResponse({ error: "invalid_legacy_route_migration", message: selections.message }, 400);
+  }
+
+  const snapshot = await requireConfigMutationSnapshot(env, body.expectedRevision);
+  if (snapshot instanceof Response) return snapshot;
+
+  const pending: LegacyRouteMigrationSelection[] = [];
+  const alreadyMigrated: string[] = [];
+  const blocked: Array<{ routeId: string; reason: string }> = [];
+  for (const selection of selections.value) {
+    const route = snapshot.config.routes[selection.routeId];
+    if (!route) {
+      blocked.push({ routeId: selection.routeId, reason: "route_not_found" });
+      continue;
+    }
+    if (!hasLegacyRouteShadow(route)) {
+      alreadyMigrated.push(selection.routeId);
+      continue;
+    }
+    if (route.offerings?.length) {
+      pending.push(selection);
+      continue;
+    }
+    if (!isLegacyRouteConfig(route)) {
+      blocked.push({ routeId: selection.routeId, reason: "legacy_route_incomplete" });
+      continue;
+    }
+    const apiKeyRef = selection.apiKeyRef || route.apiKeyRef?.trim() || "";
+    if (route.requiresUserKey !== true) {
+      try {
+        const credential = await resolveRouteCredential(
+          { ...route, apiKey: undefined, ...(apiKeyRef ? { apiKeyRef } : {}) },
+          env,
+          "",
+        );
+        if (!credential.apiKey) {
+          blocked.push({ routeId: selection.routeId, reason: "credential_unresolved" });
+          continue;
+        }
+      } catch {
+        blocked.push({ routeId: selection.routeId, reason: "credential_unavailable" });
+        continue;
+      }
+    }
+    pending.push({ ...selection, ...(apiKeyRef ? { apiKeyRef } : {}) });
+  }
+
+  if (blocked.length) {
+    return jsonResponse({
+      error: "legacy_route_migration_blocked",
+      message: "旧渠道迁移被阻止，请先为所有渠道配置可用的密钥引用",
+      blocked,
+    }, 409);
+  }
+  if (!pending.length) {
+    return jsonResponse({
+      config: sanitizeAdminConfig(snapshot.config),
+      source: snapshot.source,
+      revision: snapshot.revision,
+      migrated: [],
+      alreadyMigrated,
+      results: alreadyMigrated.map((routeId) => ({ routeId, status: "already_migrated" })),
+    });
+  }
+
+  const migration = migrateLegacyRouteConfiguration(snapshot.config, pending);
+  const normalized = normalizeAppConfig(migration.config);
+  const validation = validateAppConfig(normalized);
+  if (!validation.ok) {
+    return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
+  }
+  const nextRevision = await configRevision(normalized);
+  const current = await requireConfigMutationSnapshot(env, snapshot.revision);
+  if (current instanceof Response) return current;
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(normalized));
+  await appendAdminAudit(env, "config.legacy-routes.migrate", String(migration.migrated.length));
+  const migrated = migration.migrated.map((record) => ({
+    routeId: record.routeId,
+    ...(record.providerId ? { providerId: record.providerId } : {}),
+  }));
+  return jsonResponse({
+    config: sanitizeAdminConfig(normalized),
+    source: "kv",
+    revision: nextRevision,
+    migrated,
+    alreadyMigrated,
+    results: [
+      ...migrated.map((record) => ({ ...record, status: "migrated" })),
+      ...alreadyMigrated.map((routeId) => ({ routeId, status: "already_migrated" })),
+    ],
+  });
+}
+
+function parseLegacyRouteMigrationSelections(value: unknown):
+  | { ok: true; value: LegacyRouteMigrationSelection[] }
+  | { ok: false; message: string } {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_LEGACY_ROUTE_MIGRATIONS) {
+    return { ok: false, message: `旧渠道列表必须包含 1 到 ${MAX_LEGACY_ROUTE_MIGRATIONS} 项` };
+  }
+  const routeIds = new Set<string>();
+  const selections: LegacyRouteMigrationSelection[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return { ok: false, message: "旧渠道迁移项格式无效" };
+    const routeId = normalizeBoundedText(item.routeId, 80);
+    const apiKeyRef = item.apiKeyRef === undefined ? "" : normalizeBoundedText(item.apiKeyRef, 64);
+    if (!routeId || routeIds.has(routeId)) return { ok: false, message: "旧渠道 ID 为空、过长或重复" };
+    if (item.apiKeyRef !== undefined && (!apiKeyRef || !MANAGED_SECRET_REF_PATTERN.test(apiKeyRef))) {
+      return { ok: false, message: "API Key Ref 格式无效" };
+    }
+    routeIds.add(routeId);
+    selections.push({ routeId, ...(apiKeyRef ? { apiKeyRef } : {}) });
+  }
+  return { ok: true, value: selections };
+}
+
 function sanitizeAdminConfig(config: AppConfig): Record<string, unknown> {
   const providers = Object.fromEntries(Object.entries(config.providers).map(([providerId, provider]) => {
     const { apiKey, headers, ...safeProvider } = provider;
@@ -2931,16 +3068,6 @@ function mergeHiddenCredentialShadows(existing: AppConfig, next: AppConfig, proj
     }
   }
   return { ...next, providers, routes };
-}
-
-function isLegacyRouteConfig(route: RouteConfig): boolean {
-  return Boolean(
-    (route.type === "openai-chat" || route.type === "anthropic-messages")
-    && typeof route.baseUrl === "string"
-    && route.baseUrl.trim()
-    && typeof route.model === "string"
-    && route.model.trim(),
-  );
 }
 
 async function configRevision(config: AppConfig): Promise<string> {
@@ -6764,7 +6891,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
       apiKeyRef: legacy ? normalizeOptionalText(rawRoute.apiKeyRef) : undefined,
       authHeader: legacy ? normalizeOptionalText(rawRoute.authHeader) : undefined,
       authPrefix: legacy && typeof rawRoute.authPrefix === "string" ? rawRoute.authPrefix : undefined,
-      directEndpoint: legacy && rawRoute.directEndpoint === true,
+      directEndpoint: legacy ? rawRoute.directEndpoint === true : undefined,
       headers: legacy ? normalizeStringRecord(rawRoute.headers) : undefined,
       maxTokens: normalizePositiveInteger(rawRoute.maxTokens),
       temperature: normalizeNumber(rawRoute.temperature),

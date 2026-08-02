@@ -195,6 +195,26 @@ export type AdminRouteSecretsSnapshot = {
   items: AdminRouteSecretMetadata[];
 };
 
+export type AdminLegacyRouteMigrationSelection = {
+  routeId: string;
+  apiKeyRef?: string;
+};
+
+export type AdminLegacyRouteMigrationRecord = {
+  routeId: string;
+  providerId?: string;
+};
+
+export type AdminLegacyRouteMigrationResultRecord =
+  | (AdminLegacyRouteMigrationRecord & { status: "migrated" })
+  | { routeId: string; status: "already_migrated" };
+
+export type AdminLegacyRouteMigrationResult = AdminConfigSnapshot & {
+  migrated: AdminLegacyRouteMigrationRecord[];
+  alreadyMigrated: string[];
+  results: AdminLegacyRouteMigrationResultRecord[];
+};
+
 export type AdminSecretMutationResponse = {
   ok: true;
   item: AdminRouteSecretMetadata;
@@ -730,6 +750,20 @@ export async function putAdminConfig(config: AdminConfig, expectedRevision: stri
   });
   if (!isAdminConfigSnapshot(data)) {
     throw new ApiError("invalid_admin_config_response", "配置保存结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function migrateAdminLegacyRoutes(
+  routes: AdminLegacyRouteMigrationSelection[],
+  expectedRevision: string,
+): Promise<AdminLegacyRouteMigrationResult> {
+  const data = await requestJson("/api/admin/legacy-routes/migrate", {
+    method: "POST",
+    body: JSON.stringify({ routes, expectedRevision }),
+  });
+  if (!isAdminLegacyRouteMigrationResult(data)) {
+    throw new ApiError("invalid_legacy_route_migration_response", "旧渠道迁移结果格式无效。", 502);
   }
   return data;
 }
@@ -1355,6 +1389,73 @@ export function isAdminConfigSnapshot(value: unknown): value is AdminConfigSnaps
     && isAdminConfig(value.config)
     && (value.source === "kv" || value.source === "secret" || value.source === "default")
     && isNonEmptyString(value.revision);
+}
+
+export function isAdminLegacyRouteMigrationResult(value: unknown): value is AdminLegacyRouteMigrationResult {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["config", "source", "revision", "migrated", "alreadyMigrated", "results"])) {
+    return false;
+  }
+  const rawMigrated = value.migrated;
+  const rawAlreadyMigrated = value.alreadyMigrated;
+  const rawResults = value.results;
+  if (!isAdminConfigSnapshot(value)
+    || !Array.isArray(rawMigrated)
+    || !Array.isArray(rawAlreadyMigrated)
+    || !Array.isArray(rawResults)
+    || rawResults.length < 1
+    || rawResults.length > 100) return false;
+
+  const migrated = rawMigrated.filter(isAdminLegacyRouteMigrationRecord);
+  const alreadyMigrated = rawAlreadyMigrated.filter(isAdminLegacyRouteMigrationId);
+  if (migrated.length !== rawMigrated.length
+    || alreadyMigrated.length !== rawAlreadyMigrated.length
+    || migrated.length + alreadyMigrated.length !== rawResults.length) {
+    return false;
+  }
+  const migratedByRoute = new Map(migrated.map((record) => [record.routeId, record.providerId]));
+  const alreadyIds = new Set(alreadyMigrated);
+  if (migratedByRoute.size !== migrated.length
+    || alreadyIds.size !== alreadyMigrated.length
+    || [...migratedByRoute.keys()].some((routeId) => alreadyIds.has(routeId))) {
+    return false;
+  }
+
+  const resultIds = new Set<string>();
+  for (const result of rawResults) {
+    if (!isRecord(result)
+      || !isAdminLegacyRouteMigrationId(result.routeId)) {
+      return false;
+    }
+    if (result.status === "migrated") {
+      if (!migratedByRoute.has(result.routeId)) return false;
+      const providerId = migratedByRoute.get(result.routeId);
+      if (providerId === undefined) {
+        if (!hasExactKeys(result, ["routeId", "status"]) || result.providerId !== undefined) return false;
+      } else if (!hasExactKeys(result, ["routeId", "providerId", "status"])
+        || result.providerId !== providerId) return false;
+    } else if (result.status === "already_migrated") {
+      if (!hasExactKeys(result, ["routeId", "status"])
+        || result.providerId !== undefined
+        || !alreadyIds.has(result.routeId)) return false;
+    } else {
+      return false;
+    }
+    if (resultIds.has(result.routeId)) return false;
+    resultIds.add(result.routeId);
+  }
+  return resultIds.size === rawResults.length;
+}
+
+function isAdminLegacyRouteMigrationRecord(value: unknown): value is AdminLegacyRouteMigrationRecord {
+  return isRecord(value)
+    && hasExactKeys(value, value.providerId === undefined ? ["routeId"] : ["routeId", "providerId"])
+    && isAdminLegacyRouteMigrationId(value.routeId)
+    && (value.providerId === undefined || isAdminLegacyRouteMigrationId(value.providerId));
+}
+
+function isAdminLegacyRouteMigrationId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 80;
 }
 
 export function isAdminSetupStatus(value: unknown): value is AdminSetupStatus {

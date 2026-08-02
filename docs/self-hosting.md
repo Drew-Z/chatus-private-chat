@@ -124,13 +124,13 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 }
 ```
 
-它不能覆盖 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、Cloudflare 凭据或三项实例 Variables。生产部署不再要求或读取 GitHub `ACCESS_CODES`；部署配置会启用 KV 托管模式。首次发布后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建成员并生成访问码；访问码只显示一次，忘记后直接轮换。更方便的长期做法是只设置一次 `ROUTE_KEYS_MASTER_KEY`，部署后在 `/admin.html` 中按 provider 的 `apiKeyRef` 录入和轮换托管密钥。密钥输入在提交后立即清空，页面和读取 API 只返回来源、状态与更新时间，永不回显明文。
+它不能覆盖 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、Cloudflare 凭据或三项实例 Variables。生产部署不再要求或读取 GitHub `ACCESS_CODES`；部署配置会启用 KV 托管模式。首次发布后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建成员并生成访问码；访问码只显示一次，忘记后直接轮换。更方便的长期做法是只设置一次 `ROUTE_KEYS_MASTER_KEY`，部署后在 `/react-chat/admin` 的服务商视图中按 provider 的 `apiKeyRef` 录入和轮换托管密钥。密钥输入在提交后立即清空，页面和读取 API 只返回来源、状态与更新时间，永不回显明文。
 
 公开访客访问仍默认关闭。启用前先让目标逻辑模型在成员账号下可用，并确认该 provider 的密钥来源是后台 KV 托管；同名 Worker Secret 或 `WORKER_SECRETS_JSON` 只能作为成员/兼容来源，不能让访客线路隐式可用。然后在 `/react-chat/admin` 的公开访问设置中选择唯一逻辑模型、设置 TTL 和额度。关闭公开访问开关即可回滚访客入口，不会撤销成员访问。
 
 Wrangler 的 `--secrets-file` 是增量上传：从 GitHub 删除一个可选 Secret 或从 `WORKER_SECRETS_JSON` 删除一个 key，**不会从 Cloudflare Worker 删除已经存在的远端 Secret**。需要撤销时，先确认后台状态显示的是 KV 托管还是 Worker Secret；KV 托管项在后台删除，Worker Secret 则要先让线路/`apiKeyRef` 停止引用它，再在 Cloudflare Dashboard 的 Worker Variables and Secrets 中显式删除，并重新运行部署与 smoke。仅删除 GitHub Secret 不是凭据撤销。
 
-管理后台可从 provider 拉取完整模型列表，并批量创建逻辑模型或合并 offering。新增模型不会复制 endpoint 或 credential，也不会自动修改成员 `allowedRoutes`。旧式 route 的 `type`、`baseUrl`、`model`、`apiKeyRef` 会继续投影为单一 `unlimited` provider；旧明文 key 只在服务端兼容保留，显式迁移前必须先让该 `apiKeyRef` 对应后台托管密钥或同名 Worker Secret。迁移只保存 credential reference 并移除旧内嵌字段，不会复制明文。
+管理后台可从 provider 拉取完整模型列表，并批量创建逻辑模型或合并 offering。新增模型不会复制 endpoint 或 credential，也不会自动修改成员 `allowedRoutes`。旧式 route 的 `type`、`baseUrl`、`model`、`apiKeyRef` 会继续投影为单一 `unlimited` provider。迁移必须在 `/react-chat/admin` 的服务商视图一次提交整批：服务端先检查每个 route 的安全状态，任一项阻断则全部不写入。托管 Key Ref、同名 Worker Secret 或明确 BYOK 合同可通过；只有内联明文 key 时，先用该 route 的 `apiKeyRef` 保存托管密钥再重试。迁移只保存 credential reference 并移除旧内嵌字段，不会复制明文。
 
 ## 4. 首次发布
 
@@ -152,7 +152,7 @@ Preflight 错误只指出缺失或无效的变量名，不输出 Secret 值。�
 - 公开访客验收：在新的隐私窗口打开生产 origin，确认可取得隔离访客会话、只看到固定访客模型和成员登录入口；禁用公开访问后确认访客入口关闭。不要用合成 prompt 或后台 completion 探测替代这一步。
 - 代码回滚：对错误提交执行 `git revert` 并推送 `main`，让完整 Actions 门禁重新发布。不要 force-push，也不要本地覆盖 Worker。
 - 配置恢复：GitHub Secrets 定义每次部署要上传的基线值，但不会自动清理远端旧 Worker Secret；后台 KV 配置是生产成员访问码的唯一来源。旧 `ACCESS_CODES` Secret 在托管模式下被忽略，确认 KV 成员正常后可在 Cloudflare Dashboard 中显式删除。托管 provider key 删除后可能回退同名 Worker Secret；撤销前先停止引用并确认当前来源。托管 provider key 依赖原 `ROUTE_KEYS_MASTER_KEY`，更换主密钥后需重新录入。
-- provider 配置迁移：旧式 route 可在迁移期间继续运行。先创建 provider 与 offering，核对逻辑模型 fallback、成员权限和密钥引用，再移除旧内嵌 endpoint 字段；配置回滚不应修改 Worker 名、KV ID 或 Account。
+- provider 配置迁移：旧式 route 可在迁移前继续运行。不要手工拆分创建和删除步骤；在 React 服务商视图查看整批安全状态并执行批量迁移。若阻断，只补齐原 `apiKeyRef` 的托管密钥后重试；成功后核对 route ID、fallback、defaults、成员权限、公开访问引用和真实任务遥测。配置回滚不应修改 Worker 名、KV ID 或 Account。
 - 用户数据恢复：设置中下载的 JSON 有脱敏和大小上限，可能带有 `truncated` / `messagesTruncated`，适合用户自行迁移或恢复已选择的会话，不是完整实例备份。
 - 数据边界：切换 KV ID、Worker 名或 Cloudflare Account 会指向新的存储边界，不是数据迁移。当前没有自动化 KV/DO 跨账号恢复工具；单个 SQLite Durable Object 的 PITR 也不能替代 KV、多个 Durable Object 与对象映射的一致恢复。现阶段不要删除旧 KV/UserState 数据；Agent 导入仍以这些源记录作为回滚证据。
 - 密钥保管：把 `ROUTE_KEYS_MASTER_KEY` 的原值保存在应用数据之外的受控密码库中。GitHub Secret 只能更新、不能回显，不能作为唯一可恢复副本；主密钥丢失或替换后，备份中的托管 provider key 密文无法解密，只能重新录入。

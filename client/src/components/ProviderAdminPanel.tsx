@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { KeyRound, Plus, RefreshCw, RotateCcw, Save, Search, Trash2, WandSparkles, X } from "lucide-react";
+import { KeyRound, Plus, RotateCcw, Save, Search, ShieldAlert, Trash2, WandSparkles, X } from "lucide-react";
 import {
   ApiError,
   discoverAdminProviderModels,
   fetchAdminConfig,
   fetchAdminRouteSecrets,
+  migrateAdminLegacyRoutes,
   putAdminConfig,
   putAdminRouteSecret,
   deleteAdminRouteSecret,
@@ -19,6 +20,8 @@ import {
   hasProviderIdConflict,
   projectAdminLogicalModels,
   projectAdminProviders,
+  projectLegacyRouteMigrations,
+  ROUTE_SECRET_REF_PATTERN,
   validateProviderDraft,
   type ProviderDraft,
 } from "../lib/admin-provider";
@@ -29,7 +32,8 @@ type Notice = { kind: "success" | "warning" | "error"; text: string };
 type ProviderConfirmation =
   | { kind: "select"; id: string }
   | { kind: "delete-provider"; id: string; label: string }
-  | { kind: "delete-secret"; ref: string };
+  | { kind: "delete-secret"; ref: string }
+  | { kind: "migrate-legacy"; routeIds: string[] };
 
 type ProviderAdminPanelProps = {
   snapshot: AdminConfigSnapshot;
@@ -65,10 +69,17 @@ export function ProviderAdminPanel({
   const [discoveryRouteId, setDiscoveryRouteId] = useState("");
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [confirmation, setConfirmation] = useState<ProviderConfirmation | null>(null);
+  const [legacyRefs, setLegacyRefs] = useState<Record<string, string>>({});
+  const [legacySecretValues, setLegacySecretValues] = useState<Record<string, string>>({});
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const providers = useMemo(() => projectAdminProviders(snapshot.config, secrets?.items || []), [snapshot.config, secrets]);
   const logicalModels = useMemo(() => projectAdminLogicalModels(snapshot.config), [snapshot.config]);
+  const legacyCandidates = useMemo(
+    () => projectLegacyRouteMigrations(snapshot.config, secrets?.items || [], legacyRefs),
+    [snapshot.config, secrets, legacyRefs],
+  );
+  const blockedLegacyCandidates = legacyCandidates.filter((candidate) => candidate.status === "blocked");
   const selectedProvider = providers.find((provider) => provider.id === selectedId) || null;
   const secretRef = draft?.apiKeyRef?.trim() || "";
   const selectedSecret = secretRef
@@ -89,6 +100,14 @@ export function ProviderAdminPanel({
   useEffect(() => {
     setSecretValue("");
   }, [secretRef]);
+
+  useEffect(() => {
+    setLegacyRefs((current) => Object.fromEntries(
+      projectLegacyRouteMigrations(snapshot.config, secrets?.items || [], current)
+        .map((candidate) => [candidate.routeId, candidate.apiKeyRef]),
+    ));
+    setLegacySecretValues({});
+  }, [snapshot.revision]);
 
   useEffect(() => {
     const first = Object.keys(snapshot.config.providers).sort((a, b) => a.localeCompare(b))[0] || null;
@@ -277,6 +296,79 @@ export function ProviderAdminPanel({
     }
   }
 
+  async function saveLegacySecret(routeId: string) {
+    const candidate = legacyCandidates.find((item) => item.routeId === routeId);
+    const value = legacySecretValues[routeId]?.trim() || "";
+    if (!candidate || !value || busy) return;
+    const apiKeyRef = candidate.apiKeyRef.trim();
+    if (!ROUTE_SECRET_REF_PATTERN.test(apiKeyRef)) {
+      onNotice({ kind: "error", text: "API Key Ref 格式无效。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const existing = secrets?.items.find((item) => item.apiKeyRef === apiKeyRef);
+      const result = await putAdminRouteSecret(apiKeyRef, value, existing?.revision);
+      setSecrets((current) => current ? {
+        ...current,
+        items: [...current.items.filter((item) => item.apiKeyRef !== apiKeyRef), result.item]
+          .sort((left, right) => left.apiKeyRef.localeCompare(right.apiKeyRef)),
+      } : current);
+      setLegacySecretValues((current) => ({ ...current, [routeId]: "" }));
+      onSetupChanged();
+      onNotice({ kind: "success", text: `${candidate.label} 的迁移密钥已保存。` });
+    } catch (error) {
+      setLegacySecretValues((current) => ({ ...current, [routeId]: "" }));
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      else onNotice({ kind: "error", text: getErrorMessage(error, "迁移密钥保存失败。") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function requestLegacyMigration() {
+    if (dirty) {
+      onNotice({ kind: "warning", text: "请先保存或放弃当前服务商草稿，再迁移旧渠道。" });
+      return;
+    }
+    if (blockedLegacyCandidates.length) {
+      onNotice({ kind: "warning", text: "请先为所有旧渠道配置可用密钥，再开始迁移。" });
+      return;
+    }
+    setConfirmation({ kind: "migrate-legacy", routeIds: legacyCandidates.map((candidate) => candidate.routeId) });
+  }
+
+  async function migrateLegacyRoutes(routeIds: string[]) {
+    if (busy || dirty) return;
+    const selected = legacyCandidates.filter((candidate) => routeIds.includes(candidate.routeId));
+    if (!selected.length || selected.some((candidate) => candidate.status !== "ready")) return;
+    setBusy(true);
+    try {
+      const next = await migrateAdminLegacyRoutes(
+        selected.map((candidate) => ({ routeId: candidate.routeId, ...(candidate.apiKeyRef ? { apiKeyRef: candidate.apiKeyRef } : {}) })),
+        snapshot.revision,
+      );
+      onSnapshot(next);
+      setLegacyRefs({});
+      setLegacySecretValues({});
+      await refreshSecrets();
+      onSetupChanged();
+      const handled = next.results.length;
+      const already = next.alreadyMigrated.length;
+      onNotice({
+        kind: "success",
+        text: already
+          ? `已处理 ${handled} 个旧渠道：迁移 ${next.migrated.length} 个，${already} 个已是最新配置。`
+          : `已迁移 ${next.migrated.length} 个旧渠道到服务商池。`,
+      });
+    } catch (error) {
+      await handleConfigError(error);
+      throw new Error(getErrorMessage(error, "旧渠道迁移失败。"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function confirmProviderAction() {
     if (!confirmation) return;
     if (confirmation.kind === "select") {
@@ -285,6 +377,10 @@ export function ProviderAdminPanel({
     }
     if (confirmation.kind === "delete-provider") {
       await deleteProvider(confirmation.id);
+      return;
+    }
+    if (confirmation.kind === "migrate-legacy") {
+      await migrateLegacyRoutes(confirmation.routeIds);
       return;
     }
     await removeSecret(confirmation.ref);
@@ -387,6 +483,36 @@ export function ProviderAdminPanel({
       </div>
 
       <div className="admin-pool-editor">
+        {legacyCandidates.length > 0 && (
+          <section className="admin-legacy-migration" aria-labelledby="legacy-migration-title">
+            <header>
+              <div><p className="eyebrow">CONFIG MIGRATION</p><h2 id="legacy-migration-title">待迁移旧渠道</h2><p>{legacyCandidates.length} 个渠道仍使用旧 route 配置。</p></div>
+              <button className="primary-button icon-text-button" type="button" onClick={requestLegacyMigration} disabled={busy || dirty || blockedLegacyCandidates.length > 0}>
+                <WandSparkles size={15} /><span>{busy ? "处理中..." : "迁移全部"}</span>
+              </button>
+            </header>
+            <div className="admin-legacy-migration-list">
+              {legacyCandidates.map((candidate) => (
+                <div className="admin-legacy-migration-row" key={candidate.routeId}>
+                  <div className="admin-legacy-migration-label">
+                    <span className={`status-dot ${candidate.status === "ready" ? "configured" : "missing"}`}>{candidate.status === "ready" ? "可迁移" : "需密钥"}</span>
+                    <span><strong>{candidate.label}</strong><small>{candidate.routeId}</small></span>
+                  </div>
+                  {candidate.needsCredential ? (
+                    <div className="admin-legacy-migration-secret">
+                      <label><span>API Key Ref</span><input value={candidate.apiKeyRef} onChange={(event) => setLegacyRefs((current) => ({ ...current, [candidate.routeId]: event.target.value }))} maxLength={64} autoComplete="off" /></label>
+                      <label><span>新密钥</span><input type="password" value={legacySecretValues[candidate.routeId] || ""} onChange={(event) => setLegacySecretValues((current) => ({ ...current, [candidate.routeId]: event.target.value }))} autoComplete="new-password" placeholder="只写入，不会回显" /></label>
+                      <button className="quiet-button icon-text-button" type="button" onClick={() => void saveLegacySecret(candidate.routeId)} disabled={busy || !ROUTE_SECRET_REF_PATTERN.test(candidate.apiKeyRef) || !legacySecretValues[candidate.routeId]?.trim()}><KeyRound size={14} /><span>保存密钥</span></button>
+                    </div>
+                  ) : (
+                    <p className="admin-legacy-migration-ready">{candidate.reason === "provider_backed" ? "将清理已失效的旧字段" : candidate.reason === "user_key_required" ? "沿用成员密钥策略" : `使用 ${candidate.apiKeyRef}`}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+            {blockedLegacyCandidates.length > 0 && <p className="admin-legacy-migration-warning"><ShieldAlert size={15} />所有渠道就绪后才会一次写入，当前不会改动配置。</p>}
+          </section>
+        )}
         {!draft ? (
           <div className="admin-pool-empty-state"><p>暂无服务商配置</p><button className="primary-button icon-text-button" type="button" onClick={() => selectProvider("__new__")}><Plus size={16} /><span>新增服务商</span></button></div>
         ) : (
@@ -447,7 +573,9 @@ export function ProviderAdminPanel({
 }
 
 function providerConfirmationKey(state: ProviderConfirmation): string {
-  return state.kind === "select" ? `${state.kind}:${state.id}` : state.kind === "delete-provider" ? `${state.kind}:${state.id}` : `${state.kind}:${state.ref}`;
+  if (state.kind === "select" || state.kind === "delete-provider") return `${state.kind}:${state.id}`;
+  if (state.kind === "delete-secret") return `${state.kind}:${state.ref}`;
+  return `${state.kind}:${state.routeIds.join(",")}`;
 }
 
 function providerConfirmationCopy(state: ProviderConfirmation) {
@@ -465,6 +593,15 @@ function providerConfirmationCopy(state: ProviderConfirmation) {
       description: `目标：${state.id}。该服务商配置将被永久删除。`,
       confirmLabel: "删除服务商",
       tone: "danger" as const,
+    };
+  }
+  if (state.kind === "migrate-legacy") {
+    return {
+      title: `迁移 ${state.routeIds.length} 个旧渠道？`,
+      description: `目标：${state.routeIds.join("、")}。迁移会保留逻辑模型 ID 和权限引用，并删除 route 中的旧接口字段。`,
+      confirmLabel: "确认迁移",
+      pendingLabel: "正在迁移...",
+      tone: "default" as const,
     };
   }
   return {

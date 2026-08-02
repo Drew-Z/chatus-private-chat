@@ -17,6 +17,7 @@ import {
   mergeDiscoveredOfferings,
   projectAdminLogicalModels,
   projectAdminProviders,
+  projectLegacyRouteMigrations,
   rebaseAdminConfigDraft,
   validateLogicalModelDraft,
   validateProviderDraft,
@@ -95,6 +96,59 @@ describe("typed provider administration helpers", () => {
     const models = projectAdminLogicalModels(config);
     expect(models.map((model) => model.id)).toEqual(["backup", "writer"]);
     expect(models.find((model) => model.id === "writer")).toMatchObject({ referencedBy: ["bill", "defaults", "公开访问"], supportsTools: true });
+  });
+
+  it("projects legacy route migration readiness without exposing endpoint details", () => {
+    const config = fixture();
+    config.routes.legacy = {
+      label: "Legacy inline",
+      type: "openai-chat",
+      baseUrl: "https://private-provider.example/v1",
+      model: "private-model",
+      apiKeyRef: "LEGACY_KEY",
+      hasLegacyKey: true,
+    };
+    config.routes.byok = {
+      label: "BYOK legacy",
+      type: "anthropic-messages",
+      baseUrl: "https://byok.example/v1",
+      model: "byok-model",
+      requiresUserKey: true,
+    };
+    config.routes.writer = {
+      ...config.routes.writer,
+      type: "openai-chat",
+      baseUrl: "https://stale.example/v1",
+      model: "stale-model",
+      hasLegacyKey: true,
+    };
+
+    const blocked = projectLegacyRouteMigrations(config, []);
+    expect(blocked.map((candidate) => candidate.routeId)).toEqual(["byok", "legacy", "writer"]);
+    expect(blocked.find((candidate) => candidate.routeId === "legacy")).toMatchObject({
+      apiKeyRef: "LEGACY_KEY",
+      status: "blocked",
+      reason: "credential_missing",
+      needsCredential: true,
+    });
+    expect(blocked.find((candidate) => candidate.routeId === "byok")).toMatchObject({ status: "ready", reason: "user_key_required" });
+    expect(blocked.find((candidate) => candidate.routeId === "writer")).toMatchObject({ status: "ready", reason: "provider_backed" });
+    expect(JSON.stringify(blocked)).not.toContain("private-provider.example");
+    expect(JSON.stringify(blocked)).not.toContain("private-model");
+
+    const ready = projectLegacyRouteMigrations(config, [{
+      apiKeyRef: "NEW_LEGACY_KEY",
+      source: "managed",
+      status: "configured",
+      managed: true,
+      environmentFallback: false,
+    }], { legacy: "NEW_LEGACY_KEY" });
+    expect(ready.find((candidate) => candidate.routeId === "legacy")).toMatchObject({
+      apiKeyRef: "NEW_LEGACY_KEY",
+      status: "ready",
+      reason: "credential_configured",
+      needsCredential: false,
+    });
   });
 
   it("guards provider deletion and validates duplicate or missing offerings", () => {

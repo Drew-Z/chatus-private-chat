@@ -2,19 +2,19 @@
 
 ## Ordered Checklist
 
-- [ ] Add pure legacy-route classification and migration helpers with deterministic Provider ID allocation and all-or-nothing result types.
-- [ ] Add credential preflight that excludes inline route keys while accepting managed/Worker references and explicit BYOK; keep diagnostics bounded and redacted.
-- [ ] Add authenticated, revision-checked `POST /api/admin/legacy-routes/migrate`, config validation, one-write persistence and bounded audit evidence.
-- [ ] Add Worker tests for authorization, conflict, atomic failure, collision, idempotence, secret/header redaction and cross-reference preservation.
-- [ ] Add typed client API decoding and Provider-panel migration inventory/action with `ConfirmDialog`, shared snapshot refresh and conflict/session recovery.
-- [ ] Remove the client-only legacy migration draft path and add pure/client/browser tests for migrated and blocked states.
-- [ ] Verify provider-plan/chat fixtures resolve the migrated Provider + Offering with the same route ID and behavior.
-- [ ] Remove `public/admin.html`, `public/admin.js`, `public/admin-report.js`, their unit/structure assertions, service-worker cache entries and deployment fingerprint inputs.
-- [ ] Add exact `/admin.html` permanent redirect coverage and verify the old UI/assets are no longer served.
-- [ ] Update README, self-hosting and operations docs to the React admin path and safe migration recovery flow; record retirement of raw JSON reset and CSV export.
-- [ ] Fix streaming near-bottom auto-scroll and legacy image keyboard semantics; add desktop/390px/direct-entry Playwright coverage.
-- [ ] Measure admin bundle compressed transfer and startup CPU; split only if the documented budget is exceeded and the split improves it materially.
-- [ ] Run focused tests, then the full shipping gate and Trellis consistency checks.
+- [x] Add pure legacy-route classification and migration helpers with deterministic Provider ID allocation and all-or-nothing result types.
+- [x] Add credential preflight that excludes inline route keys while accepting managed/Worker references and explicit BYOK; keep diagnostics bounded and redacted.
+- [x] Add authenticated, revision-checked `POST /api/admin/legacy-routes/migrate`, config validation, one-write persistence and bounded audit evidence.
+- [x] Add Worker tests for authorization, conflict, atomic failure, collision, idempotence, secret/header redaction and cross-reference preservation.
+- [x] Add typed client API decoding and Provider-panel migration inventory/action with `ConfirmDialog`, shared snapshot refresh and conflict/session recovery.
+- [x] Remove the client-only legacy migration draft path and add pure/client/browser tests for migrated and blocked states.
+- [x] Verify provider-plan/chat fixtures resolve the migrated Provider + Offering with the same route ID and behavior.
+- [x] Remove `public/admin.html`, `public/admin.js`, `public/admin-report.js`, their unit/structure assertions, service-worker cache entries and deployment fingerprint inputs.
+- [x] Add exact `/admin.html` permanent redirect coverage and verify the old UI/assets are no longer served.
+- [x] Update README, self-hosting and operations docs to the React admin path and safe migration recovery flow; record retirement of raw JSON reset and CSV export.
+- [x] Fix streaming near-bottom auto-scroll and legacy image keyboard semantics; add desktop/390px/direct-entry Playwright coverage.
+- [x] Measure the admin bundle compressed transfer; record that no startup-CPU budget or A/B evidence exists and do not split without that decision boundary.
+- [x] Run focused tests, then the full shipping gate and Trellis consistency checks.
 - [ ] Update frontend/platform specs, commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
 - [ ] Record exact main SHA deployment and user acceptance of both React admin access and production legacy-route migration before archive.
 

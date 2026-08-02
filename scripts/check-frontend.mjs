@@ -11,10 +11,9 @@ async function readText(file) {
 
 const pages = [
   { html: "public/index.html", script: "public/app.js" },
-  { html: "public/admin.html", script: "public/admin.js" },
 ];
 
-for (const file of ["public/app.js", "public/admin.js", "public/admin-report.js", "public/markdown.js", "public/theme.js", "public/pwa.js", "public/sw.js"]) {
+for (const file of ["public/app.js", "public/markdown.js", "public/theme.js", "public/pwa.js", "public/sw.js"]) {
   execFileSync(process.execPath, ["--check", file], { cwd: root, stdio: "inherit" });
 }
 
@@ -62,8 +61,6 @@ assert(installHandler && !installHandler.includes("skipWaiting"), "sw.js: update
 
 const chatScript = await readText(path.join(root, "public/app.js"));
 const chatHtml = await readText(path.join(root, "public/index.html"));
-const adminScript = await readText(path.join(root, "public/admin.js"));
-const adminHtml = await readText(path.join(root, "public/admin.html"));
 const styles = await readText(path.join(root, "public/styles.css"));
 const icons = await readText(path.join(root, "public/icons.svg"));
 const workerScript = await readText(path.join(root, "src/worker.ts"));
@@ -124,7 +121,12 @@ assert(reactClient.includes("resolvePendingDraftAction("), "React client: SDK re
 assert(reactClient.includes("const value = input || pendingSubmission?.text || \"\""), "React client: submitted text must remain device-persisted until the request settles");
 assert(reactClient.includes("draftGeneration.current === submittedDraftGeneration") && reactClient.includes("setAttachments(submittedAttachments)"), "React client: rejected sends must restore the complete submitted draft only when no newer draft exists");
 assert(reactClient.includes("retryFailedTurn") && reactClient.includes('onBranch(conversation, "resend"'), "React client: failed turns need an in-place retry branch action");
-assert(reactClient.includes("messageListRef") && reactClient.includes("nearBottom"), "React client: streaming scroll must respect manual transcript scrolling");
+assert(
+  reactClient.includes("shouldFollowOutput")
+    && reactClient.includes("onScroll={(event) =>")
+    && reactClient.includes("cancelAnimationFrame(frame)"),
+  "React client: streaming scroll must preserve pre-render follow intent and cancel stale frames",
+);
 assert(reactSidebar.includes("session.tools.map") && reactSidebar.includes("selectedToolIds"), "React sidebar: assigned tools and current Skill activation must remain visible");
 assert(reactSidebar.includes('tool.source === "mcp"'), "React sidebar: MCP tools must remain distinguishable without exposing server details");
 assert(reactSidebar.includes("onRevokeAllSessions") && reactSidebar.includes("onDeleteUserData") && reactSidebar.includes("onExportUserData"), "React sidebar: account data actions are missing");
@@ -187,6 +189,8 @@ assert(reactAdminWorkspace.includes('status: "loading"') && reactAdminWorkspace.
 assert(reactAdminWorkspace.includes("await adminLogout()") && reactAdminWorkspace.indexOf("await adminLogout()") < reactAdminWorkspace.indexOf("onLogout();"), "React admin: logout must leave authenticated state only after server revocation succeeds");
 assert(reactProviderAdmin.includes("createProviderDraft") && reactProviderAdmin.includes("使用服务器版本"), "React admin: provider drafts need shared normalization and an explicit conflict reset");
 assert(reactProviderAdmin.includes('type="password"') && (reactProviderAdmin.match(/setSecretValue\(\"\"\)/g) || []).length >= 2, "React admin: provider credentials must be write-only and cleared after mutations");
+assert(reactProviderAdmin.includes("projectLegacyRouteMigrations") && reactProviderAdmin.includes("migrateAdminLegacyRoutes") && reactProviderAdmin.includes("ConfirmDialog"), "React admin: legacy routes need one revisioned server migration flow");
+assert(reactProviderAdmin.includes("legacySecretValues") && reactProviderAdmin.includes('autoComplete="new-password"'), "React admin: blocked legacy migrations need a write-only credential recovery path");
 assert(reactAdminWorkspace.includes("onSetupChanged={() => void refreshSetupStatus()}") && (reactProviderAdmin.match(/onSetupChanged\(\);/g) || []).length >= 2, "React admin: provider credential writes and deletes must refresh setup status");
 assert(reactProviderAdmin.includes("secretCanEdit") && reactProviderAdmin.includes("hasProviderIdConflict"), "React admin: provider key writes and renames must stay scoped and collision-safe");
 assert(reactLogicalModelAdmin.includes("createLogicalModelDraft") && reactLogicalModelAdmin.includes("使用服务器版本"), "React admin: logical-model drafts need shared normalization and an explicit conflict reset");
@@ -238,6 +242,7 @@ assert(reactBuild.includes('/manifest.webmanifest'), "React client: built page i
 assert(reactSourceHtml.includes('meta name="chatus-release" content="development"'), "React source: release placeholder is missing");
 assert(deployWorkflow.includes('"public/react-chat/index.html"'), "Deploy workflow: React build must receive the release fingerprint");
 assert(deployWorkflow.includes('"public/legacy/index.html"'), "Deploy workflow: legacy rollback shell must receive the release fingerprint");
+assert(!deployWorkflow.includes('"public/admin.html"'), "Deploy workflow: removed static admin must not receive release fingerprints");
 assert(wranglerConfig.includes('"DEFAULT_CLIENT": "react"'), "Wrangler: React must be the default client after cutover");
 const reactAssets = [...reactBuild.matchAll(/(?:src|href)=["'](\/react-chat\/assets\/[^"']+)["']/g)].map((match) => match[1]);
 assert(reactAssets.some((asset) => asset.endsWith(".js")), "React client: built JavaScript asset is missing");
@@ -250,6 +255,7 @@ assert(workerScript.includes('url.pathname === "/legacy"'), "Worker: legacy roll
 assert(workerScript.includes('fetchRewrittenAsset(request, env, url, "/legacy/")'), "Worker: legacy rollback shell is missing");
 assert(workerScript.includes('env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html"'), "Worker: React default and legacy rollback selection is missing");
 assert(workerScript.includes('url.pathname === "/react-chat/admin"') && workerScript.includes('fetchRewrittenAsset(request, env, url, "/react-chat/")'), "Worker: typed admin shell fallback must preserve the admin pathname without an Assets index redirect");
+assert(workerScript.includes('url.pathname === "/admin.html"') && workerScript.includes('new URL("/react-chat/admin", url)'), "Worker: removed static admin aliases must redirect to React admin");
 assert(workerScript.includes('url.pathname === "/api/admin/members"'), "Worker: typed admin member projection is missing");
 assert(workerScript.includes('url.pathname === "/api/admin/setup-status"') && workerScript.includes('url.pathname === "/api/admin/setup-smoke"'), "Worker: authenticated setup status and local smoke endpoints are missing");
 assert(workerScript.includes('url.pathname === "/api/admin/reliability"') && workerScript.includes("isRecentProviderRouteReliability"), "Worker: typed reliability must expose only recent passive provider-pair records");
@@ -261,17 +267,18 @@ assert(workerScript.includes("MAX_USER_DATA_EXPORT_BYTES") && workerScript.inclu
 assert(workerScript.includes('error: "last_access_code"') && workerScript.includes("requireAccessCodeMutationSnapshot"), "Worker: member access revocation needs last-code and revision protection");
 assert(serviceWorker.includes('if (pathname.startsWith("/legacy")) return "/legacy/"'), "sw.js: legacy navigation cache must stay isolated");
 assert(serviceWorker.includes('if (pathname.startsWith("/react-chat")) return "/react-chat/"'), "sw.js: React navigation cache must stay isolated");
-assert(serviceWorker.includes('if (pathname.startsWith("/admin")) return "/admin"'), "sw.js: admin navigation cache must stay isolated");
 assert(serviceWorker.includes('url.pathname.startsWith("/agent")'), "sw.js: Agent transport must never be cached");
 assert(serviceWorker.includes('fetch("/react-chat/")'), "sw.js: install must discover the generated React shell");
 assert(legacyBuild === chatHtml, "Legacy build: generated rollback shell drifted from public/index.html");
 assert(chatScript.includes('./markdown.js?v=development'), "app.js: markdown module must share the release fingerprint");
-assert(adminScript.includes('./admin-report.js?v=development'), "admin.js: report module must share the release fingerprint");
-assert(adminHtml.includes('href="/react-chat/admin"'), "admin.html: typed member-capability entry is missing");
-assert(serviceWorker.includes('"/admin-report.js"'), "sw.js: offline admin shell must include the report module");
+assert(!serviceWorker.includes('"/admin.js"') && !serviceWorker.includes('"/admin-report.js"'), "sw.js: removed static admin assets must not remain in the shell cache");
 assert(serviceWorker.includes('"/icons.svg"'), "sw.js: offline chat shell must include the Lucide sprite");
 assert(icons.includes("lucide-static v1.24.0 - ISC"), "icons.svg: missing Lucide license provenance");
 assert(chatHtml.includes("/icons.svg?v=development#"), "index.html: Lucide sprite references must share the release fingerprint");
+assert(chatHtml.includes('<button class="icon-button" id="imageInputButton" type="button" title="添加图片" aria-label="添加图片">'), "index.html: image input needs a native keyboard-reachable button");
+assert(chatScript.includes('imageInputButton.addEventListener("click", () => imageInput.click())'), "app.js: image input button must open the native file chooser");
+assert(chatScript.includes("imageInputButton.disabled = imageInput.disabled"), "app.js: image input button must mirror the hidden input disabled state");
+assert(styles.includes(".icon-button:disabled"), "styles.css: native icon buttons need a disabled state");
 const spriteIconIds = new Set([...icons.matchAll(/<symbol id="([a-z0-9-]+)"/g)].map((match) => match[1]));
 const staticIconNames = [...chatHtml.matchAll(/icons\.svg\?v=development#([a-z0-9-]+)/g)].map((match) => match[1]);
 const actionIconNames = [...chatScript.matchAll(/actionButton\("([a-z0-9-]+)"/g)].map((match) => match[1]);
@@ -302,9 +309,6 @@ assert(chatScript.includes("clearUserDrafts(previousUser);"), "app.js: logout mu
 assert(chatScript.includes('connectionState.classList.add("route-unhealthy")'), "app.js: selected unhealthy route must be visible");
 assert(chatScript.includes("近期真实任务异常，失败时会尝试备用线路"), "app.js: passive route failures must explain fallback");
 assert(!chatScript.includes("巡检"), "app.js: chat UI must not imply automatic route probes");
-assert(!adminScript.includes("自动巡检"), "admin.js: admin UI must not imply automatic route probes");
-assert(!adminScript.includes("缺少近期健康检查"), "admin.js: admin UI must not require recurring manual probes");
-assert(adminHtml.includes("刷新状态") && adminHtml.includes("刷新全部"), "admin.html: route controls must describe passive status refresh");
 assert(!workerScript.includes("17 × 23") && !workerScript.includes("task_validation_failed"), "worker.ts: diagnostics must not contain model probe tasks");
 assert(chatScript.includes('openModelPicker(event.key === "ArrowUp" ? "last" : "selected")'), "app.js: model picker trigger needs arrow-key navigation");
 assert(chatScript.includes('event.key === "Tab"'), "app.js: model picker must close when keyboard focus leaves");
@@ -369,84 +373,10 @@ const diagnosticSource = chatScript.slice(diagnosticStart, diagnosticEnd);
 assert(!diagnosticSource.includes("userApiKey"), "app.js: diagnostics must not include API keys");
 assert(styles.includes("button:focus-visible"), "styles.css: keyboard controls need a visible focus ring");
 assert(styles.includes("@media (prefers-reduced-motion: reduce)"), "styles.css: motion needs an accessibility fallback");
-for (const file of ["public/app.js", "public/admin.js", "public/theme.js"]) {
+for (const file of ["public/app.js", "public/theme.js"]) {
   const source = await readText(path.join(root, file));
   assert(!source.includes(".style."), `${file}: inline styles weaken the CSP`);
 }
-assert(adminScript.includes('window.addEventListener("beforeunload"'), "admin.js: unsaved configuration needs a page-leave warning");
-assert(adminScript.includes("confirmDiscardChanges"), "admin.js: internal navigation must protect unsaved configuration");
-assert(adminScript.includes("resetUnsavedEditors"), "admin.js: discarded edits must restore saved form values");
-assert(adminScript.includes('attentionPanel.hidden = currentAdminSection !== "overview" || alerts.length === 0'), "admin.js: overview alerts must not leak into other admin sections after refresh");
-assert(adminScript.includes('markDirty("access")'), "admin.js: generated access codes must be marked unsaved");
-assert(adminScript.includes("expectedRevision: configRevision"), "admin.js: config saves must reject stale editors");
-assert(adminScript.includes('method: "DELETE",\n    body: JSON.stringify({ expectedRevision: configRevision })'), "admin.js: config resets must reject stale editors");
-assert(adminScript.includes("attemptSaveConfig"), "admin.js: form save failures need visible feedback");
-assert(adminScript.includes("expectedRevision: accessRevision"), "admin.js: access-code saves must reject stale editors");
-assert(adminScript.includes("expectedRevision: memoryRevision"), "admin.js: memory saves must reject stale editors");
-assert(adminHtml.includes('id="providerSecretInput" type="password" autocomplete="new-password"'), "admin.html: managed provider key must use a write-only password input");
-assert(adminScript.includes("/api/admin/route-secrets/"), "admin.js: managed provider keys need the authenticated vault API");
-assert((adminScript.match(/clearProviderSecretInput\(\)/g) || []).length >= 5, "admin.js: provider key input must be cleared across save and navigation transitions");
-const routeSaveStart = adminScript.indexOf('routeForm.addEventListener("submit"');
-const routeSaveEnd = adminScript.indexOf("skillSelect?.addEventListener", routeSaveStart);
-const routeSaveSource = adminScript.slice(routeSaveStart, routeSaveEnd);
-assert(routeSaveSource && !routeSaveSource.includes("providerSecretInput"), "admin.js: raw provider keys must never enter logical model configuration");
-assert(routeSaveSource.includes("replaceRouteReferences(previous, routeId)"), "admin.js: logical model renames must preserve user and fallback references");
-assert(routeSaveSource.includes("restoreModelAdminState(rollbackState)"), "admin.js: failed logical model saves must restore the previous local configuration");
-const providerSaveStart = adminScript.indexOf('providerForm?.addEventListener("submit"');
-const providerSaveEnd = adminScript.indexOf("deleteProviderButton", providerSaveStart);
-const providerSaveSource = adminScript.slice(providerSaveStart, providerSaveEnd);
-assert(adminScript.includes('const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;'), "admin.js: provider IDs must use the server-compatible safe grammar");
-assert(adminHtml.includes('id="providerIdInput" autocomplete="off" placeholder="openrouter" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,79}" maxlength="80"'), "admin.html: provider ID input must expose the server-compatible pattern and length");
-assert(providerSaveSource && !providerSaveSource.includes("providerSecretInput"), "admin.js: raw provider keys must never enter provider configuration");
-assert(providerSaveSource.includes("restoreModelAdminState(rollbackState)"), "admin.js: failed provider saves must restore the previous local configuration");
-const modelFetchStart = adminScript.indexOf("async function fetchProviderModels()");
-const modelFetchEnd = adminScript.indexOf("function invalidateRouteModels", modelFetchStart);
-const modelFetchSource = adminScript.slice(modelFetchStart, modelFetchEnd);
-assert(modelFetchSource.includes("providerId") && !modelFetchSource.includes("providerSecretInput"), "admin.js: model listing must identify the provider without sending plaintext keys");
-assert(!adminHtml.includes("<datalist"), "admin.html: provider models must not use a native datalist");
-for (const id of ["providerForm", "providerAdminSelect", "routeForm", "routeOfferingsList", "addRouteOfferingButton", "providerModelDialog", "providerModelSearchInput", "providerModelList", "providerModelPrefixInput", "providerModelSelectionStatus", "batchAddOfferingsButton"]) {
-  assert(adminHtml.includes(`id="${id}"`), `admin.html: missing model chooser control #${id}`);
-}
-const modelListStart = adminScript.indexOf("function renderProviderModelList()");
-const modelListEnd = adminScript.indexOf("function updateProviderModelSelection", modelListStart);
-const modelListSource = adminScript.slice(modelListStart, modelListEnd);
-const modelFilterSource = modelListSource.slice(0, modelListSource.indexOf("for (const model of visible)"));
-assert(modelFilterSource.includes("providerModelSearchInput") && !/\bproviderModelInput\b/.test(modelFilterSource), "admin.js: model search must be independent from the offering editor");
-assert(modelListSource.includes("当前显示完整列表"), "admin.js: opening the chooser must expose the full fetched model list");
-const batchCreateStart = adminScript.indexOf("async function addSelectedProviderOfferings()");
-const batchCreateEnd = adminScript.indexOf("function findLogicalRouteForModel", batchCreateStart);
-const batchCreateSource = adminScript.slice(batchCreateStart, batchCreateEnd);
-assert(batchCreateSource.includes("providerId") && batchCreateSource.includes("uniqueRouteId"), "admin.js: batch offerings need provider references and collision-safe IDs");
-assert(!batchCreateSource.includes("providerSecretInput") && !batchCreateSource.includes("baseUrl") && !batchCreateSource.includes("apiKeyRef"), "admin.js: batch offerings must not duplicate endpoint or credentials");
-assert(!batchCreateSource.includes("allowedRoutes"), "admin.js: batch offerings must preserve explicit user route permissions");
-assert(adminScript.includes("function normalizeClientConfig") && adminScript.slice(adminScript.indexOf("function normalizeClientConfig"), adminScript.indexOf("function renderCapabilityEditors")).includes("providers"), "admin.js: provider registry must survive editor normalization");
-assert(adminScript.includes('typeof value === "object" && !Array.isArray(value)'), "admin.js: config objects must reject arrays during client normalization");
-assert(adminScript.includes("migrateLegacyRoute") && adminScript.includes("isLegacyRoute"), "admin.js: legacy routes need an explicit migration path");
-assert(adminScript.includes("provider?.hasLegacyKey === true"), "admin.js: provider secret status must use the sanitized legacy-key marker");
-const legacyMigrationStart = adminScript.indexOf("async function migrateLegacyRoute()");
-const legacyMigrationEnd = adminScript.indexOf("function splitCsv", legacyMigrationStart);
-const legacyMigrationSource = adminScript.slice(legacyMigrationStart, legacyMigrationEnd);
-assert(legacyMigrationSource.includes("current.hasLegacyKey === true") && legacyMigrationSource.includes("isConfiguredRouteSecret"), "admin.js: legacy migration must require a safe server-side credential before dropping a hidden key");
-assert(!legacyMigrationSource.includes("apiKey: current.apiKey"), "admin.js: legacy migration must never copy plaintext keys into provider configuration");
-for (const id of [
-  "allowedSkillsBox", "allowedToolsBox", "routeToolsInput", "capabilitySkillsPanel", "capabilityToolsPanel", "capabilityMcpPanel",
-  "skillForm", "skillToolsBox", "toolForm", "mcpForm", "mcpSecretInput", "discoverMcpToolsButton",
-]) {
-  assert(adminHtml.includes(`id="${id}"`), `admin.html: missing AI capability control #${id}`);
-}
-assert(adminScript.includes("allowedSkills: checkedValues(allowedSkillsBox)"), "admin.js: user saves must persist Skill assignments");
-assert(adminHtml.includes('id="mcpSecretInput" type="password" autocomplete="new-password"'), "admin.html: MCP secret must use a write-only password input");
-assert(adminScript.includes("/api/admin/mcp-secrets/"), "admin.js: MCP credentials need the authenticated write-only vault API");
-assert((adminScript.match(/clearMcpSecretInput\(\)/g) || []).length >= 5, "admin.js: MCP plaintext must clear across save and navigation transitions");
-const mcpSaveStart = adminScript.indexOf('mcpForm?.addEventListener("submit"');
-const mcpSaveEnd = adminScript.indexOf('deleteMcpButton?.addEventListener', mcpSaveStart);
-const mcpSaveSource = adminScript.slice(mcpSaveStart, mcpSaveEnd);
-assert(mcpSaveSource && !mcpSaveSource.includes("mcpSecretInput"), "admin.js: raw MCP credentials must never enter config saves");
-const discoveryStart = adminScript.indexOf("async function discoverMcpTools()");
-const discoveryEnd = adminScript.indexOf("async function checkRouteHealth", discoveryStart);
-const discoverySource = adminScript.slice(discoveryStart, discoveryEnd);
-assert(discoverySource.includes("schemaChanged") && discoverySource.includes("enabled: existing && !schemaChanged"), "admin.js: new or schema-changed MCP tools must remain disabled");
-assert(discoverySource && !discoverySource.includes("mcpSecretInput.value"), "admin.js: MCP discovery must use only saved secret references");
 
 console.log("Frontend structure checks passed");
 
