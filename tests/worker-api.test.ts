@@ -4371,6 +4371,64 @@ describe("Worker API", () => {
     expect(JSON.stringify(malformed)).not.toContain("forbidden.example");
   });
 
+  it("round-trips incomplete legacy MCP tools as disabled review-only config", async () => {
+    const cookie = await adminLogin();
+    const baseline = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
+    baseline.config.mcpServers = {
+      legacy: {
+        enabled: true,
+        label: "Legacy MCP",
+        endpoint: "https://legacy-mcp.example/rpc",
+        auth: { version: 1, type: "none" },
+      },
+    };
+    baseline.config.tools = {
+      ...baseline.config.tools,
+      "mcp:legacy:lookup": {
+        enabled: true,
+        label: "Legacy lookup",
+        description: "Persisted before MCP governance fields were introduced.",
+        inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        confirmation: "first-per-conversation",
+        executor: { type: "mcp", serverId: "legacy", remoteName: "lookup" },
+      },
+    };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(baseline.config));
+
+    const projectedResponse = await apiRequest("/api/admin/config", cookie);
+    const projected = await projectedResponse.json() as any;
+    expect(projectedResponse.status).toBe(200);
+    expect(projected.config.tools["mcp:legacy:lookup"]).toMatchObject({
+      enabled: false,
+      label: "Legacy lookup",
+      confirmation: "first-per-conversation",
+      executor: { type: "mcp", serverId: "legacy", remoteName: "lookup" },
+      reviewRequired: true,
+    });
+    for (const field of ["schemaFingerprint", "securityFingerprint", "sideEffect", "reviewRevision"]) {
+      expect(projected.config.tools["mcp:legacy:lookup"]).not.toHaveProperty(field);
+    }
+
+    projected.config.defaults.dailyMessageLimit = 321;
+    const savedResponse = await apiRequest("/api/admin/config", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: projected.config, expectedRevision: projected.revision }),
+    });
+    const saved = await savedResponse.json() as any;
+    expect(savedResponse.status, JSON.stringify(saved)).toBe(200);
+    expect(saved.config.defaults.dailyMessageLimit).toBe(321);
+    expect(saved.config.tools["mcp:legacy:lookup"]).toMatchObject({ enabled: false, reviewRequired: true });
+
+    const reloaded = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
+    expect(reloaded.config.tools["mcp:legacy:lookup"]).toMatchObject({
+      enabled: false,
+      label: "Legacy lookup",
+      reviewRequired: true,
+    });
+    expect(reloaded.config.defaults.dailyMessageLimit).toBe(321);
+  });
+
   it("keeps the member OAuth PKCE and encrypted token lifecycle server-side", async () => {
     const adminCookie = await adminLogin();
     const snapshotResponse = await apiRequest("/api/admin/config", adminCookie);

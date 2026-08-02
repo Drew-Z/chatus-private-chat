@@ -189,6 +189,40 @@ describe("typed capability administration helpers", () => {
     expect(destructive.config.tools["mcp:docs:search"]).toMatchObject({ enabled: false, confirmation: "always", sideEffect: "destructive", reviewRequired: true });
   });
 
+  it("recovers a legacy MCP tool through explicit delete or same-ID discovery", () => {
+    const config = createConfig();
+    config.tools["mcp:docs:search"] = {
+      enabled: false,
+      label: "Legacy search",
+      inputSchema: { type: "object" },
+      confirmation: "first-per-conversation",
+      executor: { type: "mcp", serverId: "docs", remoteName: "search" },
+      reviewRequired: true,
+    };
+
+    const removed = deleteRemoteTool(config, "mcp:docs:search");
+    expect(removed.tools["mcp:docs:search"]).toBeUndefined();
+    expect(removed.tools["mcp:other:read"]).toEqual(config.tools["mcp:other:read"]);
+    expect(removed.providers).toEqual(config.providers);
+
+    const recovered = mergeMcpDiscovery(config, {
+      serverId: "docs",
+      rejected: 0,
+      tools: [discoveredTool("mcp:docs:search", "search", "4".repeat(64))],
+    });
+    expect(recovered).toMatchObject({ added: 0, changed: 1, unchanged: 0 });
+    expect(recovered.config.tools["mcp:docs:search"]).toMatchObject({
+      enabled: false,
+      schemaFingerprint: "4".repeat(64),
+      securityFingerprint: "a".repeat(64),
+      sideEffect: "read",
+      reviewRevision: "b".repeat(64),
+      reviewRequired: true,
+    });
+    expect(recovered.config.tools["mcp:other:read"]).toEqual(config.tools["mcp:other:read"]);
+    expect(recovered.config.providers).toEqual(config.providers);
+  });
+
   it("rebases only locally changed capability registries and assignment fields", () => {
     const base = createConfig();
     const local = deleteRemoteTool(base, "mcp:docs:search");
