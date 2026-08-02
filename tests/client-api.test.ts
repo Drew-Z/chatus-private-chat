@@ -8,6 +8,7 @@ import {
   fetchAdminSetupStatus,
   getAgentSkillSelectionMetadata,
   isAdminConfigSnapshot,
+  isAdminLegacyRouteMigrationResult,
   isAdminAuditSnapshot,
   isAdminFeedbackSnapshot,
   isAdminMemberCredentialResponse,
@@ -35,6 +36,7 @@ import {
   isWorkspaceFile,
   isWorkspaceFileVersion,
   logout,
+  migrateAdminLegacyRoutes,
   retryWorkspaceDocumentIngest,
   setConversationWorkspaceFiles,
   submitFeedback,
@@ -397,6 +399,68 @@ describe("admin setup client contract", () => {
       status: 502,
     });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("posts bounded legacy migration selections and requires a config snapshot response", async () => {
+    const snapshot = {
+      config: validAdminConfig,
+      source: "kv",
+      revision: "a".repeat(64),
+      migrated: [{ routeId: "legacy", providerId: "legacy-provider" }],
+      alreadyMigrated: [],
+      results: [{ routeId: "legacy", providerId: "legacy-provider", status: "migrated" }],
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify(snapshot),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const routes = [{ routeId: "legacy", apiKeyRef: "LEGACY_KEY" }];
+    await expect(migrateAdminLegacyRoutes(routes, "b".repeat(64))).resolves.toEqual(snapshot);
+    expect(isAdminLegacyRouteMigrationResult(snapshot)).toBe(true);
+    expect(isAdminLegacyRouteMigrationResult({
+      ...snapshot,
+      migrated: [{ routeId: "legacy" }],
+      results: [{ routeId: "legacy", status: "migrated" }],
+    })).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/admin/legacy-routes/migrate",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({ routes, expectedRevision: "b".repeat(64) }),
+      }),
+    );
+
+    fetchSpy.mockResolvedValueOnce(new Response(
+      JSON.stringify({ ok: true, config: validAdminConfig }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    await expect(migrateAdminLegacyRoutes(routes, "b".repeat(64))).rejects.toMatchObject<ApiError>({
+      code: "invalid_legacy_route_migration_response",
+      status: 502,
+    });
+    expect(isAdminLegacyRouteMigrationResult({
+      ...snapshot,
+      results: [{ routeId: "legacy", status: "already_migrated" }],
+    })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResult({
+      ...snapshot,
+      results: [{ routeId: "legacy", status: "migrated" }],
+    })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResult({
+      ...snapshot,
+      migrated: [{ routeId: "legacy" }],
+      results: [{ routeId: "legacy", providerId: "unexpected-provider", status: "migrated" }],
+    })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResult({
+      ...snapshot,
+      results: [{ routeId: "legacy", providerId: "different-provider", status: "migrated" }],
+    })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResult({
+      ...snapshot,
+      results: [{ routeId: "legacy", providerId: "legacy-provider", status: "migrated", apiKey: "hidden" }],
+    })).toBe(false);
   });
 });
 

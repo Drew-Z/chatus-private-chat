@@ -2991,9 +2991,12 @@ describe("Worker API", () => {
     expect(typedAdminSlash.status).toBe(200);
     expect(await typedAdminSlash.text()).toContain('id="root"');
 
-    const fullAdmin = await exports.default.fetch(new Request("https://example.test/admin.html"));
-    expect(fullAdmin.status).toBe(200);
-    expect(await fullAdmin.text()).toContain('href="/react-chat/admin"');
+    for (const path of ["/admin", "/admin/", "/admin.html"]) {
+      const retiredAdmin = await exports.default.fetch(new Request(`https://example.test${path}`, { redirect: "manual" }));
+      expect(retiredAdmin.status).toBe(308);
+      expect(retiredAdmin.headers.get("Location")).toBe("https://example.test/react-chat/admin");
+      expect(await retiredAdmin.text()).not.toContain("Admin");
+    }
   });
 
   it("resets both current-day usage stores and records a bounded admin audit entry", async () => {
@@ -4023,6 +4026,227 @@ describe("Worker API", () => {
     const afterMigration = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json") as any;
     expect(afterMigration.providers["legacy-provider"].headers).toEqual({ "X-Legacy-Token": legacyHeader });
     expect(afterMigration.routes.legacy.headers).toBeUndefined();
+  });
+
+  it("migrates legacy routes atomically without trusting inline credentials", async () => {
+    const cookie = await adminLogin();
+    const managedSecret = `managed-migration-${crypto.randomUUID()}`;
+    const inlineSecret = `inline-migration-${crypto.randomUUID()}`;
+    const blockedSecret = `blocked-migration-${crypto.randomUUID()}`;
+    const hiddenHeader = `hidden-header-${crypto.randomUUID()}`;
+    const savedSecret = await putRouteSecret(cookie, "LEGACY_MIGRATION_KEY", managedSecret);
+    expect(savedSecret.status).toBe(200);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        "legacy-provider": {
+          label: "Existing collision",
+          type: "openai-chat",
+          baseUrl: "https://existing.example/v1",
+        },
+        shared: {
+          label: "Shared",
+          type: "openai-chat",
+          baseUrl: "https://shared.example/v1",
+          apiKeyRef: "LEGACY_MIGRATION_KEY",
+        },
+      },
+      routes: {
+        legacy: {
+          label: "Legacy",
+          type: "openai-chat",
+          baseUrl: "https://legacy.example/v1",
+          model: "legacy-v1",
+          apiKey: inlineSecret,
+          apiKeyRef: "LEGACY_MIGRATION_KEY",
+          headers: { "X-Hidden": hiddenHeader },
+          fallbacks: ["byok"],
+          maxTokens: 2048,
+          temperature: 0.4,
+          supportsImages: true,
+        },
+        byok: {
+          label: "BYOK",
+          type: "anthropic-messages",
+          baseUrl: "https://byok.example/v1",
+          model: "byok-v1",
+          requiresUserKey: true,
+          allowUserKey: true,
+        },
+        blocked: {
+          label: "Blocked",
+          type: "openai-chat",
+          baseUrl: "https://blocked.example/v1",
+          model: "blocked-v1",
+          apiKey: blockedSecret,
+        },
+        pooled: {
+          label: "Pooled",
+          offerings: [{ providerId: "shared", model: "shared-v1" }],
+          type: "openai-chat",
+          baseUrl: "https://stale.example/v1",
+          model: "stale-v1",
+          apiKey: "stale-inline-secret",
+        },
+      },
+      users: { alice: { defaultRoute: "legacy", allowedRoutes: ["legacy", "byok"] } },
+      defaults: { defaultRoute: "legacy", allowedRoutes: ["legacy", "byok", "pooled"] },
+      publicAccess: {
+        enabled: false,
+        routeId: "legacy",
+        sessionTtlSeconds: 3600,
+        dailyMessageLimit: 10,
+        minuteMessageLimit: 2,
+        sourceDailyMessageLimit: 100,
+        sourceMinuteMessageLimit: 10,
+      },
+    }));
+
+    const initial = await apiRequest("/api/admin/config", cookie).then((response) => response.json()) as any;
+    const requestBody = {
+      routes: [{ routeId: "legacy" }, { routeId: "byok" }, { routeId: "pooled" }],
+      expectedRevision: initial.revision,
+    };
+    const unauthenticated = await exports.default.fetch(new Request("https://example.test/api/admin/legacy-routes/migrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    }));
+    expect(unauthenticated.status).toBe(401);
+
+    const stale = await apiRequest("/api/admin/legacy-routes/migrate", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...requestBody, expectedRevision: "0".repeat(64) }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "config_conflict" });
+
+    const blocked = await apiRequest("/api/admin/legacy-routes/migrate", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        routes: [{ routeId: "legacy" }, { routeId: "blocked" }],
+        expectedRevision: initial.revision,
+      }),
+    });
+    const blockedText = await blocked.text();
+    expect(blocked.status).toBe(409);
+    expect(blockedText).not.toContain(inlineSecret);
+    expect(blockedText).not.toContain(blockedSecret);
+    expect(blockedText).not.toContain(hiddenHeader);
+    expect(JSON.parse(blockedText)).toMatchObject({
+      error: "legacy_route_migration_blocked",
+      blocked: [{ routeId: "blocked", reason: "credential_unresolved" }],
+    });
+    const afterBlocked = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json") as any;
+    expect(afterBlocked.routes.legacy.apiKey).toBe(inlineSecret);
+    expect(afterBlocked.providers).not.toHaveProperty("legacy-provider-2");
+
+    const concurrentConfig = {
+      ...afterBlocked,
+      users: { ...afterBlocked.users, concurrent: { displayName: "Concurrent admin" } },
+    };
+    let configReads = 0;
+    const concurrentStore = new Proxy(env.CHAT_STORE, {
+      get(target, property) {
+        if (property === "get") {
+          return async (key: string, ...args: unknown[]) => {
+            if (key === ROUTES_CONFIG_KEY && ++configReads === 2) return JSON.stringify(concurrentConfig);
+            return (target.get as (...parameters: unknown[]) => Promise<unknown>).call(target, key, ...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const concurrentEnv = new Proxy(env, {
+      get(target, property, receiver) {
+        if (property === "CHAT_STORE") return concurrentStore;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const concurrent = await worker.fetch(new Request("https://example.test/api/admin/legacy-routes/migrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify(requestBody),
+    }), concurrentEnv);
+    expect(concurrent.status).toBe(409);
+    await expect(concurrent.json()).resolves.toMatchObject({ error: "config_conflict" });
+    expect(configReads).toBe(2);
+    await expect(env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json")).resolves.toEqual(afterBlocked);
+
+    const migrated = await apiRequest("/api/admin/legacy-routes/migrate", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    const migratedText = await migrated.text();
+    expect(migrated.status, migratedText).toBe(200);
+    expect(migratedText).not.toContain(managedSecret);
+    expect(migratedText).not.toContain(inlineSecret);
+    expect(migratedText).not.toContain(hiddenHeader);
+    expect(isAdminConfigSnapshot(JSON.parse(migratedText))).toBe(true);
+    const migratedPayload = JSON.parse(migratedText) as any;
+    expect(migratedPayload.migrated).toEqual([
+      { routeId: "legacy", providerId: "legacy-provider-2" },
+      { routeId: "byok", providerId: "byok-provider" },
+      { routeId: "pooled" },
+    ]);
+    expect(migratedPayload.alreadyMigrated).toEqual([]);
+    expect(migratedPayload.results).toEqual([
+      { routeId: "legacy", providerId: "legacy-provider-2", status: "migrated" },
+      { routeId: "byok", providerId: "byok-provider", status: "migrated" },
+      { routeId: "pooled", status: "migrated" },
+    ]);
+    const stored = await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json") as any;
+    expect(stored.providers["legacy-provider-2"]).toMatchObject({
+      label: "Legacy",
+      type: "openai-chat",
+      baseUrl: "https://legacy.example/v1",
+      apiKeyRef: "LEGACY_MIGRATION_KEY",
+      headers: { "X-Hidden": hiddenHeader },
+    });
+    expect(stored.providers["legacy-provider-2"]).not.toHaveProperty("apiKey");
+    expect(stored.providers["byok-provider"]).toMatchObject({ requiresUserKey: true, allowUserKey: true });
+    expect(stored.routes.legacy).toMatchObject({
+      label: "Legacy",
+      offerings: [{ providerId: "legacy-provider-2", model: "legacy-v1" }],
+      fallbacks: ["byok"],
+      maxTokens: 2048,
+      temperature: 0.4,
+      supportsImages: true,
+    });
+    expect(stored.routes.legacy).not.toHaveProperty("type");
+    expect(stored.routes.legacy).not.toHaveProperty("apiKeyRef");
+    expect(stored.routes.byok).not.toHaveProperty("baseUrl");
+    expect(stored.routes.pooled.offerings).toHaveLength(1);
+    expect(stored.routes.pooled.offerings[0]).toMatchObject({ providerId: "shared", model: "shared-v1" });
+    expect(stored.routes.pooled).not.toHaveProperty("model");
+    expect(stored.users.alice).toEqual({ defaultRoute: "legacy", allowedRoutes: ["legacy", "byok"] });
+    expect(stored.defaults).toEqual({ defaultRoute: "legacy", allowedRoutes: ["legacy", "byok", "pooled"] });
+    expect(stored.publicAccess.routeId).toBe("legacy");
+
+    const repeated = await apiRequest("/api/admin/legacy-routes/migrate", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...requestBody, expectedRevision: migratedPayload.revision }),
+    });
+    const repeatedPayload = await repeated.json() as any;
+    expect(repeated.status).toBe(200);
+    expect(repeatedPayload.revision).toBe(migratedPayload.revision);
+    expect(repeatedPayload.migrated).toEqual([]);
+    expect(repeatedPayload.alreadyMigrated).toEqual(["legacy", "byok", "pooled"]);
+    expect(repeatedPayload.results).toEqual([
+      { routeId: "legacy", status: "already_migrated" },
+      { routeId: "byok", status: "already_migrated" },
+      { routeId: "pooled", status: "already_migrated" },
+    ]);
+    expect(await env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json")).toEqual(stored);
+    const audit = await env.CHAT_STORE.get(ADMIN_AUDIT_KEY) || "";
+    expect(audit).toContain("config.legacy-routes.migrate");
+    expect(audit).not.toContain(managedSecret);
+    expect(audit).not.toContain(inlineSecret);
+    expect(audit).not.toContain(hiddenHeader);
   });
 
   it("encrypts, rotates and deletes managed route keys without exposing plaintext", async () => {

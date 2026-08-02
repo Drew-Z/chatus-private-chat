@@ -9,7 +9,7 @@ The default client uses React hooks plus the Cloudflare Agents SDK hooks. Legacy
 - React effects must declare their owning entity dependencies and clean up listeners, animation frames, and stale async generations.
 - Small custom hooks may wrap stable browser lifecycle state, such as online/offline status; do not hide server mutations or ownership changes inside opaque hooks.
 - Legacy pages register listeners once at module initialization. Event handlers validate input, update module state, then call focused render/persistence helpers.
-- Use `beforeunload` only for real unsaved state. `public/admin.js` warns when configuration editors are dirty.
+- Use `beforeunload` only for real unsaved state. The React administrator workspace warns for dirty revisioned editors and one-time credential state; the legacy chat page does not own administrator drafts.
 - Keep service-worker lifecycle behavior in `public/pwa.js` and `public/sw.js`, not in page controllers.
 
 ## Data Fetching

@@ -553,6 +553,7 @@ function ConversationChat({
   const [lastSubmittedAttachments, setLastSubmittedAttachments] = useState<DraftAttachment[]>([]);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const shouldFollowOutput = useRef(true);
   const wasBusy = useRef(false);
   const submissionGeneration = useRef(0);
   const draftGeneration = useRef(0);
@@ -678,12 +679,12 @@ function ConversationChat({
   }, []);
 
   useEffect(() => {
-    const container = messageListRef.current;
-    const nearBottom = !container
-      || container.scrollHeight - container.scrollTop - container.clientHeight < 140;
-    if (!nearBottom && !chat.isRecovering) return;
+    if (!shouldFollowOutput.current) return;
     const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
-    window.requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end", behavior }));
+    const frame = window.requestAnimationFrame(() => {
+      if (shouldFollowOutput.current) endRef.current?.scrollIntoView({ block: "end", behavior });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [chat.messages, chat.isRecovering]);
 
   const finishAttachmentRead = (attachment: DraftAttachment) => {
@@ -840,7 +841,15 @@ function ConversationChat({
       {!online && <div className="offline-banner" role="status"><WifiOff size={16} /><span>当前离线。已保留草稿，恢复网络后可以继续发送。</span></div>}
       {!routeAvailable && <div className="configuration-banner" role="status">当前没有可用模型线路，请联系管理员完成配置。</div>}
       {messageActionError && <div className="workspace-error" role="alert"><span>{messageActionError}</span><button className="icon-button" type="button" onClick={() => setMessageActionError("")} title="关闭提示" aria-label="关闭提示">×</button></div>}
-      <div ref={messageListRef} className="message-list" aria-live="polite">
+      <div
+        ref={messageListRef}
+        className="message-list"
+        aria-live="polite"
+        onScroll={(event) => {
+          const container = event.currentTarget;
+          shouldFollowOutput.current = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
+        }}
+      >
         <div className="message-column">
           {chat.messages.length === 0 && (
             <div className="empty-state">

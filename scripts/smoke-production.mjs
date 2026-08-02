@@ -69,13 +69,20 @@ async function runChecks() {
   if (expectedCommit) assert(legacyHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "legacy: release meta does not match deployment");
   if (expectedCommit) assert(legacyHtml.includes(`/app.js?v=${expectedCommit}`), "legacy: asset version does not match deployment");
 
-  const admin = await request(`/admin?smoke=${marker}`);
+  const admin = await request(`/react-chat/admin?smoke=${marker}`);
   assert(admin.status === 200, `admin: expected 200, got ${admin.status}`);
   assertSecurityHeaders(admin, "admin");
   const adminHtml = await admin.text();
-  assert(adminHtml.includes('id="adminLoginView"'), "admin: login view missing");
-  assert(adminHtml.includes('id="releaseGrid"') || adminHtml.includes('class="release-grid"'), "admin: production status panel missing");
+  assert(adminHtml.includes('id="root"'), "admin: React root missing");
+  assert(adminHtml.includes('/react-chat/assets/'), "admin: React assets missing");
   if (expectedCommit) assert(adminHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "admin: release meta does not match deployment");
+
+  const legacyAdminAlias = await request(`/admin.html?smoke=${marker}`, { redirect: "manual" });
+  assert(legacyAdminAlias.status === 308, `admin alias: expected 308, got ${legacyAdminAlias.status}`);
+  const legacyAdminLocation = new URL(legacyAdminAlias.headers.get("location") || "", baseUrl);
+  assert(legacyAdminLocation.origin === baseUrl.origin, "admin alias: redirect must remain same-origin");
+  assert(legacyAdminLocation.pathname === "/react-chat/admin", "admin alias: redirect target mismatch");
+  assert(legacyAdminLocation.search === "", "admin alias: redirect must not retain query data");
 
   if (expectedCommit) {
     const fingerprintedAsset = await request(`/app.js?v=${expectedCommit}`);

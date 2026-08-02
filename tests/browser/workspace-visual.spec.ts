@@ -867,6 +867,205 @@ test("admin setup guide keeps the six-step order and runs model-free smoke", asy
   await attachScreenshot(page, testInfo, "admin-setup-guide");
 });
 
+test("legacy route migration remediates credentials and projects providers", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "migration coverage targets desktop and 390px");
+  let revision = "a".repeat(64);
+  let secretMetadata: Record<string, unknown> | null = null;
+  let releaseMigration!: () => void;
+  const migrationGate = new Promise<void>((resolve) => { releaseMigration = resolve; });
+  let migrationRequest: { routes: Array<{ routeId: string; apiKeyRef?: string }>; expectedRevision: string } | null = null;
+  let currentConfig = structuredClone(adminMemberConfig);
+  currentConfig.routes = {
+    primary: {
+      ...currentConfig.routes.primary,
+      type: "openai-chat",
+      baseUrl: "https://stale.example/v1",
+      model: "stale-model",
+    },
+    legacy: {
+      label: "Legacy route",
+      type: "openai-chat",
+      baseUrl: "https://legacy.example/v1",
+      model: "legacy-model",
+      apiKeyRef: "LEGACY_KEY",
+      fallbacks: ["byok"],
+    },
+    byok: {
+      label: "BYOK route",
+      type: "anthropic-messages",
+      baseUrl: "https://byok.example/v1",
+      model: "byok-model",
+      requiresUserKey: true,
+      allowUserKey: true,
+    },
+  };
+  currentConfig.defaults = {
+    ...currentConfig.defaults,
+    defaultRoute: "legacy",
+    allowedRoutes: ["legacy", "byok", "primary"],
+  };
+  currentConfig.users.bill = {
+    ...currentConfig.users.bill,
+    defaultRoute: "legacy",
+    allowedRoutes: ["legacy", "byok"],
+  };
+  currentConfig.publicAccess = { ...currentConfig.publicAccess, routeId: "legacy" };
+
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({ members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }], accessRevision: "c".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      await json(adminSetupReady);
+      return;
+    }
+    if (url.pathname === "/api/admin/route-secrets" && request.method() === "GET") {
+      await json({ masterKeyReady: true, items: secretMetadata ? [secretMetadata] : [] });
+      return;
+    }
+    if (url.pathname === "/api/admin/route-secrets/LEGACY_KEY" && request.method() === "PUT") {
+      expect(request.postDataJSON()).toEqual({ apiKey: "fixture-managed-key" });
+      secretMetadata = {
+        apiKeyRef: "LEGACY_KEY",
+        source: "managed",
+        status: "configured",
+        managed: true,
+        environmentFallback: false,
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        revision: "d".repeat(64),
+      };
+      await json({ ok: true, item: secretMetadata });
+      return;
+    }
+    if (url.pathname === "/api/admin/legacy-routes/migrate" && request.method() === "POST") {
+      migrationRequest = request.postDataJSON();
+      expect(migrationRequest?.expectedRevision).toBe(revision);
+      expect(migrationRequest?.routes).toEqual([
+        { routeId: "byok", apiKeyRef: "BYOK_KEY" },
+        { routeId: "legacy", apiKeyRef: "LEGACY_KEY" },
+        { routeId: "primary", apiKeyRef: "PRIMARY_KEY" },
+      ]);
+      await migrationGate;
+      currentConfig = {
+        ...currentConfig,
+        providers: {
+          ...currentConfig.providers,
+          "byok-provider": {
+            label: "BYOK route",
+            type: "anthropic-messages",
+            baseUrl: "https://byok.example/v1",
+            requiresUserKey: true,
+          },
+          "legacy-provider": {
+            label: "Legacy route",
+            type: "openai-chat",
+            baseUrl: "https://legacy.example/v1",
+            apiKeyRef: "LEGACY_KEY",
+          },
+        },
+        routes: {
+          primary: {
+            label: "Primary",
+            enabled: true,
+            offerings: [{ providerId: "shared", model: "synthetic-model" }],
+          },
+          legacy: {
+            label: "Legacy route",
+            offerings: [{ providerId: "legacy-provider", model: "legacy-model" }],
+            fallbacks: ["byok"],
+          },
+          byok: {
+            label: "BYOK route",
+            offerings: [{ providerId: "byok-provider", model: "byok-model" }],
+            requiresUserKey: true,
+            allowUserKey: true,
+          },
+        },
+      };
+      revision = "b".repeat(64);
+      await json({
+        config: currentConfig,
+        source: "kv",
+        revision,
+        migrated: [
+          { routeId: "byok", providerId: "byok-provider" },
+          { routeId: "legacy", providerId: "legacy-provider" },
+          { routeId: "primary" },
+        ],
+        alreadyMigrated: [],
+        results: [
+          { routeId: "byok", providerId: "byok-provider", status: "migrated" },
+          { routeId: "legacy", providerId: "legacy-provider", status: "migrated" },
+          { routeId: "primary", status: "migrated" },
+        ],
+      });
+      return;
+    }
+    throw new Error(`unexpected legacy migration fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  await page.getByRole("button", { name: "服务商" }).click();
+  const migration = page.locator(".admin-legacy-migration");
+  await expect(migration.getByRole("heading", { name: "待迁移旧渠道" })).toBeVisible();
+  await expect(migration.getByText("3 个渠道仍使用旧 route 配置。", { exact: true })).toBeVisible();
+  await expect(migration.getByText("可迁移", { exact: true })).toHaveCount(2);
+  await expect(migration.getByText("需密钥", { exact: true })).toHaveCount(1);
+  await expect(migration.getByRole("button", { name: "迁移全部" })).toBeDisabled();
+
+  const blockedRow = migration.locator(".admin-legacy-migration-row").filter({ hasText: "Legacy route" });
+  await blockedRow.getByLabel("新密钥").fill("fixture-managed-key");
+  await blockedRow.getByRole("button", { name: "保存密钥" }).click();
+  await expect(blockedRow.getByLabel("新密钥")).toHaveCount(0);
+  await expect(blockedRow.getByText("使用 LEGACY_KEY", { exact: true })).toBeVisible();
+  await expect(page.getByText("Legacy route 的迁移密钥已保存。", { exact: true })).toBeVisible();
+  await expect(migration.getByRole("button", { name: "迁移全部" })).toBeEnabled();
+
+  await migration.getByRole("button", { name: "迁移全部" }).click();
+  const dialog = page.getByRole("dialog", { name: "迁移 3 个旧渠道？" });
+  await expect(dialog).toContainText("保留逻辑模型 ID 和权限引用");
+  await dialog.getByRole("button", { name: "确认迁移" }).click();
+  await expect(dialog.getByRole("button", { name: "正在迁移..." })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  releaseMigration();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("已迁移 3 个旧渠道到服务商池。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "待迁移旧渠道" })).toHaveCount(0);
+  const providerList = page.getByRole("listbox", { name: "服务商列表" });
+  const migratedProvider = providerList.getByRole("button").filter({ hasText: "legacy-provider" });
+  await expect(migratedProvider).toContainText("已配置");
+  await migratedProvider.focus();
+  await expect(migratedProvider).toBeFocused();
+  await migratedProvider.press("Enter");
+  await expect(page.locator(".admin-reference-list")).toContainText("legacy");
+  expect(currentConfig.defaults.allowedRoutes).toEqual(["legacy", "byok", "primary"]);
+  expect(currentConfig.users.bill.allowedRoutes).toEqual(["legacy", "byok"]);
+  expect(currentConfig.publicAccess.routeId).toBe("legacy");
+  expect(currentConfig.routes.legacy).not.toHaveProperty("type");
+
+  const geometry = await page.evaluate(() => ({
+    documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+  }));
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.bodyFits).toBe(true);
+  await attachScreenshot(page, testInfo, "legacy-route-migration");
+});
+
 test("admin workspace initial error is distinct from loading and retryable", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-1440", "state transition coverage needs one desktop browser pass");
   let release!: () => void;

@@ -322,7 +322,7 @@ button {
 
 .route-block select:disabled,
 .route-block input:disabled,
-.icon-button.disabled {
+.icon-button:disabled {
   cursor: not-allowed;
   opacity: 0.52;
 }

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Chatus serves the typed React/Vite client under `client/` as the default teammate experience. The framework-free client remains deployable at `/legacy/` as a rollback surface, while the legacy administration page remains under `public/` until its own typed migration.
+Chatus serves the typed React/Vite client under `client/` as the default teammate and administrator experience. The framework-free chat client remains deployable at `/legacy/` as a rollback surface. Legacy administrator URLs are compatibility redirects to the React administrator shell, not separate assets.
 
 ## Directory Layout
 
@@ -19,9 +19,7 @@ client/
 public/
 ├── index.html, app.js          # legacy user chat source, served through /legacy/
 ├── legacy/                     # generated independent legacy rollback shell
-├── admin.html, admin.js        # administration shell and behavior
 ├── markdown.js                 # reusable markdown rendering helpers
-├── admin-report.js             # reusable report/CSV helpers
 ├── theme.js, pwa.js, sw.js     # cross-page browser behavior
 └── styles.css                  # shared application styles
 src/
@@ -50,8 +48,7 @@ tests/
 ├── client-api.test.ts
 ├── client-markdown.test.ts
 ├── client-state.test.ts
-├── markdown.test.ts
-└── admin-report.test.ts
+└── markdown.test.ts
 scripts/
 └── check-frontend.mjs          # static frontend contract checks
 ```
@@ -61,10 +58,10 @@ scripts/
 - Keep the typed Agent client under `client/`; use React components for product views and runtime-validated helpers for HTTP projections and pure state recovery.
 - Build the typed client to `public/react-chat/` with Vite. Treat that directory as generated output: ignore it in Git and regenerate it through `npm run build:client` or `npm run check:frontend` before deployment.
 - Serve the React shell at `/` and `/react-chat/`; serve an independent generated copy of the framework-free chat shell at `/legacy/`. `DEFAULT_CLIENT=legacy` is the emergency root rollback switch.
-- Keep legacy chat/admin DOM orchestration in `public/app.js` or `public/admin.js`; new teammate-facing product behavior belongs in React.
-- Extract pure, testable behavior when it is reusable or security-sensitive. Examples: `client/src/lib/api.ts`, `client/src/lib/markdown.ts`, `client/src/lib/state.ts`, `public/markdown.js`, and `public/admin-report.js`.
+- Keep legacy chat DOM orchestration in `public/app.js`; teammate and administrator product behavior belongs in React.
+- Extract pure, testable behavior when it is reusable or security-sensitive. Examples: `client/src/lib/api.ts`, `client/src/lib/markdown.ts`, `client/src/lib/state.ts`, and `public/markdown.js`.
 - Keep shared and legacy browser assets at the `public/` root. Vite content-hashed assets live under `public/react-chat/assets/` and receive immutable caching.
-- Keep navigation cache keys isolated for `/`, `/react-chat/`, `/legacy/`, and `/admin`; one shell must never overwrite another shell's offline fallback.
+- Keep navigation cache keys isolated for `/`, `/react-chat/`, and `/legacy/`; one shell must never overwrite another shell's offline fallback. `/admin`, `/admin/`, and `/admin.html` are uncached `308` compatibility redirects to `/react-chat/admin`.
 - Keep Worker composition in `src/index.ts`: it exports the default gateway plus every Wrangler Durable Object class.
 - Keep per-member Agent lifecycle and persistence behavior under `src/agent/`; gateway authentication and server-side instance selection stay in `src/worker.ts`.
 - Keep cross-runtime state and transport shapes under `src/contracts/`; validate untrusted request or storage data before it becomes one of these types.
@@ -74,7 +71,7 @@ scripts/
 
 ## Naming Conventions
 
-- Use lowercase kebab-case for multiword public asset names, such as `admin-report.js`.
+- Use lowercase kebab-case for multiword public asset names.
 - Use descriptive camelCase for functions and state variables.
 - Keep test names aligned with their module or boundary: `markdown.test.ts`, `user-state.test.ts`.
 - Asset imports include the release placeholder, for example `./markdown.js?v=development`; deployment replaces the fingerprint.

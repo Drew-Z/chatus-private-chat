@@ -78,6 +78,8 @@ Before generating the production config, GitHub Actions runs `scripts/provision-
 
 Production deploy and production member acceptance share the `chatus-production-mutation` concurrency group with `cancel-in-progress: false`. New production mutations wait instead of canceling an upload, smoke, generated-file cleanup, or temporary-member cleanup. Deploy checks that `GITHUB_SHA` is still the remote `main` tip early for fast failure and again immediately before the real Wrangler upload.
 
+Production smoke requests `/react-chat/admin` directly and requires the React root, built assets, release metadata, and ordinary security headers. It separately requests `/admin.html` with redirect following disabled, requires status `308`, and resolves `Location` against the configured production origin before asserting the exact same-origin `/react-chat/admin` target with no retained query. It must not use old static-admin DOM IDs as release evidence.
+
 If Wrangler upload succeeds but the post-deploy smoke still observes an older release marker, the attempt remains failed and its manifest artifact remains authoritative evidence. Recovery may rerun the failed deploy job only through GitHub Actions and only while remote `main` is still the same `GITHUB_SHA`; the rerun must repeat provisioning, upload, exact-SHA smoke, and artifact retention. Task closure additionally requires a successful `Production member acceptance` run checked out at that exact SHA. A local production probe, a newer SHA, or the successful upload step alone cannot replace these gates.
 
 ## 4. Validation & Error Matrix
@@ -109,6 +111,8 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 | Checked-out SHA is no longer the `main` tip | Fail before deployment, including the late pre-upload guard |
 | Generated Wrangler config fails current Wrangler validation | Fail dry-run before deployment |
 | Post-deploy SHA smoke fails | Fail the workflow; do not report release success |
+| React administrator shell lacks root/assets/security headers/release metadata | Fail smoke for the deployed SHA |
+| `/admin.html` follows automatically, is not `308`, changes origin/path, or retains query data | Fail smoke; do not accept the final React `200` as proof of the redirect contract |
 | Upload succeeds but smoke temporarily observes an older release marker | Retain the failed manifest; rerun the failed deploy job through Actions only while `main` remains the same SHA, then require exact-SHA smoke and member acceptance to pass |
 | Managed KV key is absent (`null`) | Allow a non-blank same-name Worker Secret fallback |
 | Managed KV key exists but is empty or malformed | Return `invalid_record`; never read the Worker fallback |
@@ -145,6 +149,7 @@ If Wrangler upload succeeds but the post-deploy smoke still observes an older re
 - Reject invalid names/IDs/URLs, mismatched workers.dev hosts, missing/disabled routes, bad references, weak legacy/admin credentials, malformed master keys, invalid access-code mode, and reserved Secret overrides.
 - Assert every newly introduced Durable Object uses a SQLite-backed migration and reject `new_classes` in the checked-in Wrangler contract.
 - Import workflow/config files as raw fixtures and assert all six Repository Variables, generated `--config`, shared non-canceling production concurrency, early and late stale-SHA checks, parameterized production URL, one `WORKSPACE_FILES` binding, exact Queue topology/settings, provisioning before config generation, and absence of a local `deploy` script.
+- Statically or locally exercise production-smoke request construction: direct React admin verification includes release/security contracts, while the retired alias uses `redirect: "manual"` and asserts the exact same-origin `308` target without old DOM selectors.
 - Parse the checked-in `.env.example` `ROUTES_CONFIG` after dotenv quote removal and require non-empty provider and route registries.
 - Run `node --check` for deployment preparation and every provisioning script.
 - Run `node --check scripts/provision-document-ingest-queues.mjs` and assert its logs/errors contain Queue names or bounded status/codes only, never tokens.

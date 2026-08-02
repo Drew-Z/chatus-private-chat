@@ -35,7 +35,7 @@ const promptInput = document.querySelector("#promptInput");
 const sendButton = document.querySelector("#sendButton");
 const stopButton = document.querySelector("#stopButton");
 const imageInput = document.querySelector("#imageInput");
-const imageInputLabel = document.querySelector("label[for='imageInput']");
+const imageInputButton = document.querySelector("#imageInputButton");
 const attachmentRow = document.querySelector("#attachmentRow");
 const connectionState = document.querySelector("#connectionState");
 const routeSelect = document.querySelector("#routeSelect");
@@ -403,6 +403,7 @@ imageInput.addEventListener("change", async () => {
   await addImageFiles(imageInput.files);
   imageInput.value = "";
 });
+imageInputButton.addEventListener("click", () => imageInput.click());
 promptInput.addEventListener("input", () => {
   autoResizePrompt();
   updateComposerMeta();
@@ -615,6 +616,7 @@ function setOfflineMode(nextOffline) {
   promptInput.disabled = offlineMode || isBusy;
   sendButton.disabled = offlineMode || isBusy || currentUsage?.remaining === 0;
   imageInput.disabled = offlineMode || isBusy || getSelectedRoute()?.supportsImages === false;
+  imageInputButton.disabled = imageInput.disabled;
   if (capabilityButton) capabilityButton.disabled = offlineMode || isBusy || !skills.length;
   memoryInput.readOnly = offlineMode;
   saveMemoryButton.disabled = offlineMode;
@@ -2108,8 +2110,8 @@ function updateRouteControls() {
   }
   const supportsImages = route?.supportsImages !== false;
   imageInput.disabled = offlineMode || !supportsImages || isBusy;
-  imageInputLabel.classList.toggle("disabled", offlineMode || !supportsImages);
-  imageInputLabel.title = offlineMode ? "离线模式下不能添加图片" : supportsImages ? "添加图片" : "当前线路不支持图片";
+  imageInputButton.disabled = imageInput.disabled;
+  imageInputButton.title = offlineMode ? "离线模式下不能添加图片" : supportsImages ? "添加图片" : "当前线路不支持图片";
   if (composerHint) {
     composerHint.textContent = offlineMode
       ? "离线只读，网络恢复后可继续发送"
@@ -2966,6 +2968,7 @@ function setBusy(nextBusy) {
   if (nextBusy) closeCapabilityPopover();
   userApiKeyInput.disabled = offlineMode || nextBusy;
   imageInput.disabled = offlineMode || nextBusy || getSelectedRoute()?.supportsImages === false;
+  imageInputButton.disabled = imageInput.disabled;
   if (suggestMemoryButton) suggestMemoryButton.disabled = offlineMode || nextBusy;
 }
 function updateUsage(usage) {

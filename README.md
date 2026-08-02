@@ -48,10 +48,10 @@ Browser
 - 聊天体验：Markdown、代码块复制和表格渲染；历史消息编辑、重发、重新生成和截断续写都会创建独立分支，并支持会话搜索导出和移动端抽屉侧栏。
 - 安装与更新：支持 PWA 安装；检测到新版本后由用户确认刷新，不会在回答生成中途强制接管。
 - 回答反馈：朋友可标记“有帮助 / 需改进”，后台查看近期好评率；只记录线路与消息标识，不保存反馈对应的对话正文。
-- 管理后台：`/react-chat/admin` 管理成员访问与公开访客入口；`/admin.html` 仍保留完整静态后台回滚面，可管理高级线路、服务商、长期记忆和 7 日用量/错误率；线路状态来自配置就绪度与真实任务的脱敏遥测，不发送主动测活提示。
-- 后台编辑保护：用户、线路、访问码、JSON 和长期记忆存在未保存修改时，切换对象、刷新、退出或关闭页面前会提醒确认。
+- 管理后台：`/react-chat/admin` 是唯一管理入口，覆盖成员、服务商、逻辑模型、能力、公开访问、可靠性和运营视图；`/admin`、`/admin/`、`/admin.html` 在当前 0.x 兼容期仅做同源 `308` 重定向，不再提供旧 UI。线路状态来自配置就绪度与真实任务的脱敏遥测，不发送主动测活提示。
+- 后台编辑保护：成员、服务商、逻辑模型、能力和一次性凭据存在未保存或未确认状态时，切换对象、刷新、退出或关闭页面前会提醒确认。
 - 配置并发保护：后台保存或恢复 Secret 配置时校验版本指纹，避免旧标签页或另一台设备覆盖较新的线路与用户配置。
-- 凭据并发保护：访问码保存、轮换、撤销和恢复 Secret 时校验版本指纹，旧后台不能恢复已经失效的访问码。
+- 凭据并发保护：访问码保存、轮换、撤销和托管密钥修改时校验版本指纹；已撤销访问码不会从环境配置恢复。
 - 记忆并发保护：用户设置页与管理后台保存长期记忆时校验用户级版本指纹，避免多设备无声覆盖。
 
 ## 本地配置
@@ -185,7 +185,7 @@ ACCESS_CODES="friend:code-one,alice:code-two"
 - provider 忙时会先跳过并尝试其他 offering；全部候选都忙才统一等待，`queueTimeoutMs` 只能是 `0..10000` 毫秒，超时返回稳定的忙碌错误，不打断已有请求。
 - fallback 只发生在首次可见输出之前。HTTP `200` 中的错误事件、畸形 SSE、空流或只有 `[DONE]` 的响应仍会被判为失败并尝试下一个候选；一旦已有文本、推理、工具或审批输出，后续断流会直接报错，不会把另一个 provider 的内容拼到同一回答中。用户取消也不会触发 fallback。
 - `requiresUserKey`、`allowUserKey`、`enabled`、`directEndpoint`、`blockedPrompts` 的语义保持不变；新配置的密钥只写 `apiKeyRef`，明文 key 不进入配置。
-- 旧式 route 中的 `type`、`baseUrl`、`model`、`apiKeyRef` 仍可读取，并会投影为 `legacy:<routeId>` 的单一 `unlimited` provider offering。旧明文 key 只在服务端兼容保留，管理 API 永不回显；显式迁移前，原 `apiKeyRef` 必须已有后台托管密钥或同名 Worker Secret。迁移只保存引用并删除旧内嵌 key，不会复制明文。
+- 旧式 route 中的 `type`、`baseUrl`、`model`、`apiKeyRef` 仍可读取，并会投影为 `legacy:<routeId>` 的单一 `unlimited` provider offering。在 `/react-chat/admin` 的服务商视图执行批量迁移：服务端先预检整批，再一次写入；任一项阻断则整批零写入。旧明文 key 只在服务端兼容保留且永不回显或复制；若它是唯一来源，先用该 route 的 `apiKeyRef` 保存托管密钥再重试。同名 Worker Secret 和明确 BYOK 合同也可通过预检。
 
 ## GitHub Actions Secrets
 
@@ -205,7 +205,7 @@ CHATUS_PRODUCTION_URL   完整 HTTPS origin，不带路径，例如 https://chat
 ```text
 CLOUDFLARE_API_TOKEN   Cloudflare API Token，用于 GitHub Actions 部署
 CLOUDFLARE_ACCOUNT_ID  当前 Cloudflare 账号 ID
-ADMIN_TOKEN            管理后台登录 token，用于 /react-chat/admin 和 /admin.html
+ADMIN_TOKEN            管理后台登录 token，用于 /react-chat/admin
 ROUTES_CONFIG          provider、逻辑模型与成员权限配置；provider-pool 模式必需，只有旧单线路 fallback 可由 UPSTREAM_API_KEY 替代
 ROUTE_KEYS_MASTER_KEY  可选但推荐，后台加密管理 provider key 的一次性主密钥
 WORKER_SECRETS_JSON    可选，JSON 对象，用于上传动态 provider key
@@ -224,7 +224,7 @@ UPSTREAM_API_KEY       可选，旧单线路 fallback
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-把输出仅保存为 GitHub Secret `ROUTE_KEYS_MASTER_KEY`，再通过 `Deploy to Cloudflare` 工作流发布一次。之后可以在 `/admin.html` 的服务商编辑器中填写 `API Key Ref`，输入新密钥并点击“保存密钥”；密钥会使用 AES-GCM 加密后写入 KV，页面和 API 都不会读回明文。
+把输出仅保存为 GitHub Secret `ROUTE_KEYS_MASTER_KEY`，再通过 `Deploy to Cloudflare` 工作流发布一次。之后可以在 `/react-chat/admin` 的服务商视图中填写 `API Key Ref`，输入新密钥并点击“保存密钥”；密钥会使用 AES-GCM 加密后写入 KV，页面和 API 都不会读回明文。
 
 已有 Worker Secret 仍然兼容。也可以把这些动态 key 集中放进 GitHub Secret `WORKER_SECRETS_JSON`，让 Actions 部署时一起上传：
 
@@ -259,10 +259,10 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 访问：
 
 ```text
-https://你的 Worker 域名/admin.html
+https://你的 Worker 域名/react-chat/admin
 ```
 
-后台使用单独的 `ADMIN_TOKEN` 登录。成员与访问控制优先使用 `/react-chat/admin`；其余尚未迁移的设置仍在 `/admin.html`。登录后可以：
+后台使用单独的 `ADMIN_TOKEN` 登录。`/react-chat/admin` 是唯一管理 UI；`/admin`、`/admin/` 和 `/admin.html` 仅为旧书签保留 `308` 兼容重定向。登录后可以：
 
 - 查看今天每个朋友的用量、剩余额度、活跃 session、长期记忆长度。
 - 创建、轮换和撤销成员访问码；访问码由服务端生成、仅显示一次并存入 KV，不需要 GitHub `ACCESS_CODES`。
@@ -270,10 +270,9 @@ https://你的 Worker 域名/admin.html
 - 在服务商池中一次配置 provider 的协议、`baseUrl`、`apiKeyRef`、并发模式和默认优先级，并把多个上游模型映射成用户可选的逻辑模型。
 - 拉取 provider 的完整模型列表，批量创建逻辑模型或合并 offering；批量操作不复制 endpoint/key，也不自动扩大成员的 `allowedRoutes`。
 - 在不重新部署的情况下新增、替换或删除后台加密 provider key；后台只显示配置状态，不回显密钥。
-- 直接编辑完整 `ROUTES_CONFIG` JSON，处理 `headers`、`authHeader`、`directEndpoint` 等高级字段。
-- 删除 provider/线路的 KV 覆盖配置，恢复到 GitHub Actions 上传的 `ROUTES_CONFIG` / Worker Secret 基线。
+- 在服务商视图检查待迁移旧渠道并一次批量迁移为 Provider + Offering；只有内联 Key 时先保存相同 `API Key Ref`，任一阻断都会保持整批零写入。
 
-后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret；如果删除后台覆盖配置，Worker 会重新读取 Secret。provider 密钥解析优先级为：用户 BYOK（允许时）→ 旧式 route/provider `apiKey` → 后台加密密钥 → 同名 Worker Secret。`requiresUserKey` 会阻止使用所有服务端密钥。成员访问码是独立的 KV 托管状态，删除或撤销后不会回退到 GitHub/Worker `ACCESS_CODES`；后台托管 provider key 删除后若存在同名 Worker Secret，才会按兼容规则恢复。
+后台保存的配置写入 Cloudflare KV，优先级高于 `ROUTES_CONFIG` Secret。旧静态后台的完整 JSON 编辑、整库重置和 CSV 报告已经退役；恢复应通过带 revision 的具体编辑器、凭据来源规则或 GitHub Actions 基线发布完成，而不是删除整套 KV 配置。provider 密钥解析优先级为：用户 BYOK（允许时）→ 旧式 route/provider `apiKey` → 后台加密密钥 → 同名 Worker Secret。`requiresUserKey` 会阻止使用所有服务端密钥。成员访问码是独立的 KV 托管状态，删除或撤销后不会回退到 GitHub/Worker `ACCESS_CODES`；后台托管 provider key 删除后若存在同名 Worker Secret，才会按兼容规则恢复。
 
 ## 公开访客访问
 
@@ -311,7 +310,7 @@ https://你的 Worker 域名/admin.html
 - 线路状态刷新只读取配置就绪度和真实任务的脱敏遥测，不发送 completion 或隐藏探测提示。
 - 生产配置不注册线路测活 Cron，也不会在后台自动向模型发送探测请求。
 - 服务商支持从上游安全拉取完整模型列表；浏览器只发送 `providerId`，密钥由服务端解析，批量选择后生成或合并逻辑模型 offering。
-- 可导出每日趋势、线路成功率和用户额度概况 CSV；报表不包含访问码、API Key、Base URL、Prompt、记忆或对话正文。
+- 旧静态后台的 CSV 报告已退役；运营数据在 React 后台按视图查看，不提供实例级运营 CSV 导出。
 
 ## 会话同步 API
 

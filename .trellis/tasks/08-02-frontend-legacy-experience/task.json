@@ -15,12 +15,69 @@
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "9c39fb518ab7ac0bfc84c2d04c9860529a6e3737",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/32",
   "subtasks": [],
   "children": [],
   "parent": "08-02-project-hardening-followups",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "React build 898.87 kB JS (249.67 kB gzip); structure checks passed",
+        "at": "2026-08-02T11:02:27.221790+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "40 files and 514 tests passed",
+        "at": "2026-08-02T11:02:28.343571+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "81 passed and 39 scope-skipped across five viewports",
+        "at": "2026-08-02T11:02:29.601232+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "4 local fake-Provider browser tests passed",
+        "at": "2026-08-02T11:02:30.655213+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture type checks passed",
+        "at": "2026-08-02T11:02:31.741914+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 dry-run passed with local bindings",
+        "at": "2026-08-02T11:02:32.785220+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors; only expected line-ending notices",
+        "at": "2026-08-02T11:02:33.816962+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency OK",
+        "at": "2026-08-02T11:02:34.860128+00:00"
+      },
+      {
+        "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
+        "status": "passed",
+        "summary": "7 Trellis validation tests passed",
+        "at": "2026-08-02T11:02:35.883281+00:00"
+      }
+    ]
+  }
 }

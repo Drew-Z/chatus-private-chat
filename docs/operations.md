@@ -50,7 +50,7 @@ PRODUCTION_URL=https://你的生产域名 ADMIN_TOKEN=<从环境变量读取> np
 ```text
 $CHATUS_PRODUCTION_URL
 $CHATUS_PRODUCTION_URL/react-chat/admin
-$CHATUS_PRODUCTION_URL/admin.html
+$CHATUS_PRODUCTION_URL/admin.html  # 仅验证 308 -> /react-chat/admin 兼容重定向
 $CHATUS_PRODUCTION_URL/healthz
 $CHATUS_PRODUCTION_URL/release.json
 ```
@@ -99,7 +99,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 之后的普通 provider key 操作不需要重新部署：
 
-1. 在 `/admin.html` 打开“服务商池”，填写稳定的 `API Key Ref`。provider 保存 endpoint、协议和 credential；offering 只保存 `providerId` 与上游 model，不复制密钥。
+1. 在 `/react-chat/admin` 打开“服务商”，填写稳定的 `API Key Ref`。provider 保存 endpoint、协议和 credential；offering 只保存 `providerId` 与上游 model，不复制密钥。
 2. 在“后台服务商密钥”中输入新 key 并保存。输入框会立即清空，后台只显示配置来源和更新时间。
 3. 保存后可直接拉取完整模型列表并刷新线路状态。若需要验证真实生成，只能由用户批准并执行一个有实际用途的任务。
 4. 删除托管密钥只会删除 KV 中的 AES-GCM 密文；若存在同名 Worker Secret，会自动恢复使用它。
@@ -114,14 +114,14 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 2. `ADMIN_TOKEN`、`ROUTES_CONFIG`、兼容用 `WORKER_SECRETS_JSON`：在 GitHub Secrets 更新后运行 `Deploy to Cloudflare`；preflight 会在上传前拒绝缺失或结构错误的配置。生产 `ACCESS_CODES` 不再放入 GitHub，管理员在 `/react-chat/admin` 中创建或轮换并写入 KV。
 3. `ROUTE_KEYS_MASTER_KEY`：更换后旧托管密钥无法解密。先记录需要重新录入的 `apiKeyRef` 名称，再更新 GitHub Secret、通过 Actions 发布，并在后台逐条重新录入 provider key。
 4. 验证工作流、生产 smoke、模型拉取和状态刷新成功；如需验证生成能力，使用用户批准的真实任务。
-5. 轮换访问码会使对应 label 的现有登录会话失效；轮换管理员 Token 会使全部旧后台会话在下一次请求时失效。
+5. 轮换访问码会使对应 label 的现有登录会话失效；轮换管理员 Token 会使全部现有管理员会话在下一次请求时失效。
 6. 不把真实访问码、上游 Key、管理员 Token、主密钥或完整 Secret JSON 写入 issue、日志、截图和仓库文件。
 
 `wrangler deploy --secrets-file` 只新增或覆盖本次提供的值，不删除远端已有 Worker Secret。从 GitHub Secrets 或 `WORKER_SECRETS_JSON` 移除 key 后，必须先停止线路引用，再到 Cloudflare Dashboard 的 Worker Variables and Secrets 显式删除远端值，最后重新运行部署与 smoke；只删 GitHub Secret 不构成撤销。
 
 ## 旧 route 配置迁移
 
-旧式 route 的 `type`、`baseUrl`、`model`、`apiKeyRef` 仍会被投影为 `legacy:<routeId>` 的单一 `unlimited` provider，不需要紧急修改生产 Secret。旧明文 `apiKey` 只在服务端兼容保存，管理 API 和页面永不回显。执行显式迁移前，必须确认原 `apiKeyRef` 已对应后台托管密钥或同名 Worker Secret；迁移操作只保存该引用并删除旧内嵌 key，绝不会读取或复制明文。随后核对逻辑模型 fallback、成员 `defaultRoute` / `allowedRoutes` 并观察真实任务遥测。迁移期间保留可回滚的旧配置；不要通过更换 Worker 名、KV ID 或 Cloudflare Account 做配置回滚。
+旧式 route 的 `type`、`baseUrl`、`model`、`apiKeyRef` 仍会被投影为 `legacy:<routeId>` 的单一 `unlimited` provider，不需要紧急修改生产 Secret。旧明文 `apiKey` 只在服务端兼容保存，管理 API 和页面永不回显。在 `/react-chat/admin` 的服务商视图选择全部待迁移项并检查安全状态；服务端会先预检整批，任一项阻断都保持零写入。托管 Key Ref、同名 Worker Secret 或明确 BYOK 合同可迁移；只有内联 key 时，先用原 `apiKeyRef` 保存托管密钥再重试。成功后核对 route ID、fallback、defaults、成员 `defaultRoute` / `allowedRoutes`、`publicAccess` 引用与真实任务遥测。成功迁移会删除 compatibility shadow，因此不要依赖一份并存的旧配置回滚，也不要更换 Worker 名、KV ID 或 Cloudflare Account。
 
 ## 回滚
 

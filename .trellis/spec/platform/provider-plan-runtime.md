@@ -30,6 +30,7 @@ Dependencies are injected so deterministic tests never read KV, resolve a real s
 - A missing credential records `route key is not configured` and allows the next eligible candidate unless the access projection requires a user key.
 - When `requiresUserKey=true` and no credential resolves, preparation stops with `userKeyRequiredRouteId`; callers translate that stable condition for their own transport.
 - Credential exceptions are bounded through `credentialErrorMessage`; arbitrary exception details are not exposed by default.
+- Administrator legacy-route migration changes only the physical representation. It preserves each logical route ID and external references; routes without offerings receive one persisted Provider plus Offering, while already Provider-backed routes only lose stale compatibility fields. After migration, plan construction must resolve the persisted offering and must not recreate or prefer a `legacy:<routeId>` shadow.
 
 ## 4. Ownership Boundary
 
@@ -56,6 +57,7 @@ The plan runtime never retries an attempted provider and never observes visible 
 | Earlier candidate is unusable | Preserve the later candidate's filtered-plan index |
 | Automatic Skill selector requests a plan | Pass only the selected logical route; offering fallback is allowed, logical-route fallback is forbidden |
 | Bounded caller dependency ignores abort | Caller hard deadline returns its fallback and rejects any late result |
+| Persisted route has offerings after legacy migration | Build candidates only from those offerings; no compatibility shadow candidate |
 
 ## 6. Tests Required
 
@@ -64,6 +66,7 @@ The plan runtime never retries an attempted provider and never observes visible 
 - Unit-test allowed and disallowed BYOK propagation.
 - Unit-test credential exceptions, missing credentials, fallback indexes, and required-user-key termination.
 - Keep Worker and Team Agent integration tests for streaming, tool loops, fallback, leases, quotas, telemetry, and cancellation.
+- Assert a migrated route preserves its logical ID and produces the same executable route behavior through the persisted Provider + Offering; assert a Provider-backed shadow cleanup creates no duplicate Provider.
 - For Automatic Skill selection, assert offering fallback works, no configured logical fallback is contacted, and a late successful Provider result is ignored after five seconds.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 

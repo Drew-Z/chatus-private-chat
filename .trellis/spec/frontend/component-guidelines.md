@@ -2,14 +2,14 @@
 
 ## Overview
 
-The default teammate frontend uses typed React components under `client/`. The legacy chat and administration surfaces still use HTML regions plus page-controller functions under `public/`.
+The default teammate and administrator frontend uses typed React components under `client/`. Only the legacy chat rollback surface still uses HTML regions plus a page-controller under `public/`.
 
 ## Component Structure
 
 - Keep the React composition root small: session gating belongs in `App.tsx`; daily workspace, conversation navigation, message rendering, and memory controls belong in focused components.
 - Pass stable owning IDs and server projections explicitly. Async results must update the conversation or editor that initiated them, not whichever view is active later.
 - Prefer native controls and semantic dialog roles. Modal drawers must receive initial focus, contain Tab navigation, support Escape, and restore focus to the opener.
-- In legacy pages, define stable markup in `public/index.html` or `public/admin.html`, resolve nodes near the top of the paired script, and attach listeners once.
+- In the legacy chat page, define stable markup in `public/index.html`, resolve nodes near the top of `public/app.js`, and attach listeners once.
 
 Examples in `public/app.js` include the session list, model picker, settings dialog, message list, and shared application dialog.
 
@@ -29,7 +29,7 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Batch setup merges an offering into an existing logical model when appropriate or creates a new logical model, then saves through `/api/admin/config` with `expectedRevision`. It must not modify `defaults.allowedRoutes` or user `allowedRoutes` implicitly.
 - Batch setup must never read `providerSecretInput`, copy a legacy plaintext `apiKey`, or overwrite an existing provider/logical-model ID. Provider credentials are entered through the write-only secret action.
 - The signed-in model picker exposes logical routes, not physical provider offerings. Keep every selectable button discoverable through the shared `.model-option` query so Arrow, Home, End, Escape, and Tab behavior continues to work across groups.
-- Legacy routes with `type`, `baseUrl`, and `model` remain readable and require an explicit migration action before their endpoint fields are removed; migration must preserve fallback and permission references.
+- Legacy routes with `type`, `baseUrl`, and `model` remain readable and require an explicit server-owned migration action before their endpoint fields are removed. The React Provider panel submits one revision-checked batch; the Worker preflights every selected route and performs zero writes when any route is blocked. Migration must preserve fallback and permission references.
 
 ### Typed Admin Draft Preservation And Conflict Recovery
 
@@ -250,7 +250,7 @@ type AdminSetupStep = {
 - Health and smoke may inspect KV, Durable Object storage, normalized configuration, route-candidate resolution, credential availability, access membership, and permission projection. They must not call provider discovery, a completion endpoint, a live model, or any other upstream service.
 - A successful smoke stores only an internal version, fingerprint, and completion time. Configuration or access revision changes make it stale; a missing prerequisite blocks it. The browser never receives the fingerprint or completion time.
 - `AdminWorkspace` loads setup status with config and members. An incomplete instance initially opens the setup view; a ready instance initially opens members. The setup view remains available for re-checking and reuses the existing provider, logical-model, member, and permission editors rather than duplicating forms.
-- Successful provider/config/member/permission mutations refresh setup status. The React admin has no regular `/admin.html` link; `/admin.html` remains directly reachable as a rollback address and keeps an explicit link back to `/react-chat/admin`.
+- Successful provider/config/member/permission mutations refresh setup status. The React admin has no regular legacy-admin link; `/admin`, `/admin/`, and `/admin.html` are direct compatibility aliases that permanently redirect to `/react-chat/admin` and never render a second administrator shell.
 
 ### 4. Validation & Error Matrix
 
@@ -275,7 +275,7 @@ type AdminSetupStep = {
 
 - Worker tests cover unauthenticated access, default/Secret/KV config sources, missing credential/offering/member/permission, the ready transition, stale configuration/access revisions, exact keys, sensitive-string scans, and zero upstream `fetch` calls for both status and smoke.
 - Browser API tests accept only the exact finite envelope and reject unknown top-level or step keys, invalid statuses, inconsistent readiness, and malformed counts.
-- Workspace browser tests prove the six-step order, target-panel navigation, setup refresh after mutations, smoke execution, desktop and 390px containment, absence of a React `/admin.html` link, and continued direct legacy access with a return-to-React link.
+- Workspace browser tests prove the six-step order, target-panel navigation, setup refresh after mutations, smoke execution, desktop and 390px containment, and absence of legacy-admin navigation. Worker and production-smoke tests prove all three legacy administrator aliases return a same-origin `308` to `/react-chat/admin`; `/legacy/` chat remains directly accessible.
 - Run the frontend structure check, full Vitest suite, Workspace Playwright, local fake-provider Agent Playwright, typecheck, Wrangler dry-run, and diff check. Tests must never use a live provider or production deployment.
 
 ### 7. Wrong vs Correct
@@ -320,6 +320,9 @@ return jsonResponse({
 PUT  /api/admin/config       { config, expectedRevision }
 POST /api/admin/route-models { providerId } | { routeId } // saved legacy route only
 PUT  /api/admin/route-secrets/:apiKeyRef
+POST /api/admin/legacy-routes/migrate
+  { routes: Array<{ routeId, apiKeyRef? }>, expectedRevision }
+  -> AdminConfigSnapshot & { migrated, alreadyMigrated, results }
 ```
 
 ```typescript
@@ -354,7 +357,11 @@ type ModelOffering = {
 - `exclusive` is provider-wide capacity one; `bounded` uses `maxConcurrent`; `unlimited` has no lease. `queueTimeoutMs` is an integer from 0 through 10000.
 - Renaming a logical route replaces its ID in `defaults`, every user `defaultRoute`/`allowedRoutes`, and every route `fallbacks`. Deleting a route prunes those references and repairs user assignments.
 - A provider or logical-route edit mutates browser state only provisionally. On revision, validation, or network failure, restore the pre-mutation config and selected IDs while leaving the visible form draft available for correction.
-- Legacy inline endpoint routes remain readable. Explicit migration requires the referenced credential to already resolve from managed storage or a same-name Worker Secret, creates one provider plus one offering, preserves fallback/capability/permission fields, and removes inline endpoint fields and the legacy plaintext key only in the saved migrated route.
+- Legacy inline endpoint routes remain readable. The React Provider panel derives a candidate inventory from the sanitized snapshot but does not present it as persisted Provider state. It submits one to 100 unique bounded route selections plus `expectedRevision`; only the server owns migration.
+- The Worker preflights the complete batch before writing. Non-BYOK routes must resolve after removing the inline plaintext key from the credential candidate, so only managed storage, a same-name Worker Secret, or an administrator-supplied replacement `apiKeyRef` can authorize migration. Unknown, incomplete, missing, or unavailable routes block the complete batch with redacted reason codes and zero writes.
+- After asynchronous credential resolution, reload the editable config and compare the same revision again before the one KV write. This closes the ordinary preflight race optimistically but is not a KV CAS or database transaction guarantee.
+- A route without offerings creates one collision-safe Provider plus one Offering. A route that already has offerings only removes stale compatibility fields and therefore has no newly allocated Provider ID. Both cases preserve route IDs, fallback/capability/permission fields, defaults, users, and public-access references.
+- The exact success response contains the sanitized snapshot, `migrated: Array<{ routeId, providerId? }>`, `alreadyMigrated: string[]`, and a one-to-one `results` array. A migrated result has the same optional Provider ID as its aggregate record; an already-migrated result has no Provider ID. The browser rejects unknown keys, duplicate/cross-listed IDs, inconsistent status, or mismatched Provider-ID presence/value before replacing shared state.
 
 ### 4. Validation & Error Matrix
 
@@ -365,13 +372,20 @@ type ModelOffering = {
 - Offering omits `providerId`/`model`, references a missing provider, or duplicates a provider in one route -> `400 invalid_config`.
 - Renamed provider/logical-model ID already exists -> block in the editor before mutation.
 - Stale `expectedRevision` -> `409 config_conflict`; restore the local pre-mutation config and keep the user's draft visible.
+- Invalid, empty, oversized, or duplicate migration selections -> `400 invalid_legacy_route_migration`; no credential preflight or write.
+- Any requested route is unknown, incomplete, or cannot prove a non-inline credential -> `409 legacy_route_migration_blocked` with route IDs and bounded reason codes only; zero writes for every selected route.
+- Config revision changes during asynchronous credential preflight -> `409 config_conflict`; zero migration writes.
+- Migration response aggregates disagree about route, status, or optional Provider ID -> client rejects `invalid_legacy_route_migration_response` and keeps the current snapshot/dialog for recovery.
 - Every eligible provider occupied until the shared deadline -> stable `provider_busy` response; do not interrupt the active lease holder.
 
 ### 5. Good / Base / Bad Cases
 
 - Good: one saved provider supplies several logical models; importing a second provider merges offerings without copying endpoint/key data or expanding member permissions.
+- Good: a mixed batch creates Providers for two inline routes, removes stale compatibility fields from one already-pooled route without allocating another Provider, then returns three matching exact result records.
 - Base: an old route with inline endpoint fields remains callable and can be explicitly migrated later.
+- Base: one route has only an inline plaintext key, so the complete batch remains unchanged until the administrator saves the same Key Ref through the write-only secret action and retries.
 - Bad: route `alpha` is renamed to `beta` by deleting `alpha` without rewriting user and fallback references; the server rejects the draft and the browser must not retain the broken mutation.
+- Bad: migrate each route with independent writes, copy the hidden inline key through the browser, or accept a response whose `results[].providerId` differs from `migrated[]`.
 - Bad: the Worker normalizes providers into `Object.create(null)` to avoid inherited properties, then capability execution fails with `DataCloneError` when the configuration crosses Durable Object RPC.
 
 ### 6. Tests Required
@@ -383,6 +397,8 @@ type ModelOffering = {
 - Assert exclusive/bounded leases coordinate across models/users and release on success, failure, cancellation, disconnect, and expiry.
 - Assert frontend structure keeps discovery provider-scoped, batch offerings credential-free, logical-route renames reference-safe, and failed model/provider saves rollback local state.
 - Assert legacy projection/migration remains deterministic and no test contacts a live model endpoint.
+- Assert migration authorization, request bounds, stale and mid-preflight revision conflict, mixed-batch atomic failure, managed/Worker/BYOK credential paths, collision-safe IDs, provider-backed shadow cleanup, idempotence, reference preservation, and secret/header redaction.
+- Pass the serialized Worker migration response through the exported React decoder. Assert optional Provider-ID presence and value match exactly between `migrated` and `results`, then cover the real Provider panel at desktop and 390px with local fixtures.
 
 ### 7. Wrong vs Correct
 
@@ -397,6 +413,11 @@ type ModelOffering = {
 }
 ```
 
+```typescript
+// Wrong: browser-owned migration cannot inspect hidden credentials safely.
+next.providers[id] = projectLegacyProvider(route);
+```
+
 #### Correct
 
 ```json
@@ -409,6 +430,12 @@ type ModelOffering = {
     "model-b": { "label": "Model B", "offerings": [{ "providerId": "shared", "model": "upstream-b" }] }
   }
 }
+```
+
+```typescript
+// Correct: one revisioned server batch owns preflight and persistence.
+const next = await migrateAdminLegacyRoutes(routes, snapshot.revision);
+onSnapshot(next); // only after the exact response decoder succeeds
 ```
 
 ## AI Capability Editors And Tool Timeline
@@ -480,7 +507,7 @@ type ModelOffering = {
 
 ## Styling Patterns
 
-- Put React visual rules in `client/src/styles.css` and legacy/admin rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in legacy scripts.
+- Put React visual rules in `client/src/styles.css` and legacy chat rules in `public/styles.css`; CSP checks forbid `.style.*` mutations in legacy scripts.
 - Toggle semantic classes and attributes such as `hidden`, `aria-expanded`, and status classes.
 - Keep shared page styling in the single stylesheet instead of inline style attributes.
 
@@ -500,5 +527,5 @@ type ModelOffering = {
 - Replacing destructive actions without preserving undo, conflict, or confirmation behavior already present in the UI.
 - Reintroducing a native `datalist` for remote model discovery. It couples the selected value to browser filtering and makes the fetched total differ from what administrators can inspect.
 - Copying provider endpoint or credentials into logical routes when a persisted provider registry is available. Preserve the provider/logical-route boundary and use offerings for model links instead of duplicating physical configuration.
-- Pointing a typed-admin link at `/admin` when the deployed legacy document is `/admin.html`; keep the two shells' paths explicit.
+- Reintroducing a separate administrator shell or navigation link under `/admin*`; those paths are compatibility redirects and `/react-chat/admin` is the only administrator UI.
 - Hiding message actions at zero opacity or disabling their pointer events until hover. Desktop may use a low-contrast visible state, while touch layouts keep the toolbar fully visible.
