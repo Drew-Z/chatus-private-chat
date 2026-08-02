@@ -1111,6 +1111,43 @@ describe("Worker API", () => {
     expect((await apiRequest("/api/admin/session", adminCookie)).status).toBe(401);
   });
 
+  it("revokes a member session before clearing the cookie and fails closed when KV deletion fails", async () => {
+    const { cookie } = await login(`logout-member-${crypto.randomUUID()}`);
+    const sessionKey = `session:${sessionToken(cookie)}`;
+    await expect(env.CHAT_STORE.get(sessionKey)).resolves.not.toBeNull();
+
+    const failingStore = new Proxy(env.CHAT_STORE, {
+      get(target, property) {
+        if (property === "delete") {
+          return async (key: string) => {
+            if (key === sessionKey) throw new Error("synthetic_member_delete_failure");
+            return target.delete(key);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const failed = await worker.fetch(new Request("https://example.test/api/logout", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    }), { ...env, CHAT_STORE: failingStore });
+    expect(failed.status).toBe(500);
+    expect(failed.headers.get("Set-Cookie")).toBeNull();
+    await expect(env.CHAT_STORE.get(sessionKey)).resolves.not.toBeNull();
+    expect((await apiRequest("/api/session", cookie)).status).toBe(200);
+
+    const revoked = await apiRequest("/api/logout", cookie, { method: "POST" });
+    expect(revoked.status).toBe(200);
+    await expect(revoked.json()).resolves.toEqual({ ok: true });
+    expect(revoked.headers.get("Set-Cookie")).toContain("chatus_session=");
+    expect(revoked.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    await expect(env.CHAT_STORE.get(sessionKey)).resolves.toBeNull();
+    expect((await apiRequest("/api/session", cookie)).status).toBe(401);
+  });
+
   it("restores private TeamAgent identity after Durable Object eviction", async () => {
     const label = `agent-wake-${crypto.randomUUID()}`;
     const chatId = `chat-wake-${crypto.randomUUID()}`;

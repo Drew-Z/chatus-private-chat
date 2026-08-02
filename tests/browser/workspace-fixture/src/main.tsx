@@ -8,6 +8,7 @@ import { AdminOperationsContent, AdminOperationsPanel } from "../../../../client
 import { AdminWorkspace } from "../../../../client/src/components/AdminWorkspace";
 import { ConfirmDialog } from "../../../../client/src/components/ConfirmDialog";
 import { McpConnectionsDialog, type McpConnectionNotice } from "../../../../client/src/components/McpConnectionsDialog";
+import { MemberLogoutNotice } from "../../../../client/src/components/MemberLogoutNotice";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import {
@@ -406,6 +407,7 @@ function WorkspaceFixture() {
   const [input, setInput] = useState(params.get("draft") === "long" ? "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行" : "准备发送的合成消息");
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
+  const [logoutState, setLogoutState] = useState(() => readLogoutFixtureState(params.get("logout")));
   const [operationsFilter, setOperationsFilter] = useState("");
   const [adminLoggedOut, setAdminLoggedOut] = useState(false);
   const [mcpNotice, setMcpNotice] = useState<McpConnectionNotice | null>({ kind: "warning", text: "一个连接需要重新授权或管理员重审。" });
@@ -415,6 +417,8 @@ function WorkspaceFixture() {
   const online = params.get("online") !== "0";
   const routeAvailable = params.get("route") !== "0";
   const blocked = params.get("blocked") === "1";
+  const logoutPending = logoutState === "pending";
+  const workspaceBlocked = blocked || logoutPending;
   const connectionState = (params.get("connection") || "ready") as ConnectionState;
   const session = params.get("access") === "guest" ? guestSession : memberSession;
   const routeId = session.defaultRoute || "reasoning";
@@ -512,7 +516,8 @@ function WorkspaceFixture() {
         mcpConnections={session.mcpConnections}
         connectionState={connectionState}
         busy={turnBusy}
-        accountBusy={false}
+        accountBusy={logoutPending}
+        logoutPending={logoutPending}
         parentConversation={parentConversation}
         parentMissing={parentMissing}
         onOpenSidebar={() => setSidebarOpen(true)}
@@ -523,7 +528,7 @@ function WorkspaceFixture() {
           if (parentConversation) setActiveId(parentConversation.id);
         }}
         onMemberLogin={() => undefined}
-        onLogout={async () => undefined}
+        onLogout={async () => setLogoutState("pending")}
       />
       <div className="workspace-layout">
         <ConversationSidebar
@@ -535,7 +540,7 @@ function WorkspaceFixture() {
           skillMode={skillMode}
           skillIds={skillIds}
           view={sidebarView}
-          busy={turnBusy || blocked}
+          busy={turnBusy || workspaceBlocked}
           loading={false}
           onClose={() => setSidebarOpen(false)}
           onViewChange={setSidebarView}
@@ -557,6 +562,12 @@ function WorkspaceFixture() {
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
         <section className="chat-panel" aria-label="对话">
+          {logoutState === "error" && (
+            <MemberLogoutNotice
+              message="合成成员会话撤销失败，请重试。当前工作区和草稿保持不变。"
+              onRetry={() => setLogoutState("pending")}
+            />
+          )}
           <div className="conversation-chat" data-turn-phase={turnPhase}>
             <div className="message-list" aria-live="polite">
               <div className="message-column">
@@ -572,7 +583,7 @@ function WorkspaceFixture() {
                       role: message.role,
                       isLatestMessage: index === messages.length - 1,
                       online,
-                      blocked,
+                      blocked: workspaceBlocked,
                       routeAvailable,
                       messageActionsEnabled: session.capabilities.messageActions,
                       feedbackEnabled: session.capabilities.feedback,
@@ -605,7 +616,7 @@ function WorkspaceFixture() {
               onSubmit={() => setBusy(true)}
               onStop={() => setBusy(false)}
               busy={turnBusy}
-              blocked={blocked}
+              blocked={workspaceBlocked}
               online={online}
               routeAvailable={routeAvailable}
               agentReady
@@ -665,6 +676,11 @@ function readTurnPhase(value: string | null): TurnPhase | null {
     || value === "failed"
   ) return value;
   return null;
+}
+
+function readLogoutFixtureState(value: string | null): "idle" | "pending" | "error" {
+  if (value === "pending" || value === "error") return value;
+  return "idle";
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><WorkspaceFixture /></StrictMode>);

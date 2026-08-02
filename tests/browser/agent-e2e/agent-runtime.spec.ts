@@ -1,13 +1,13 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
 const accessCode = process.env.CHATUS_E2E_ACCESS_CODE;
 const providerURL = process.env.CHATUS_E2E_PROVIDER_URL;
 if (!accessCode || !providerURL) throw new Error("Agent E2E runtime variables are required");
+const memberAccessCode: string = accessCode;
+test.use({ screenshot: "off", trace: "off" });
 
 test("real Worker Agent transport preserves streaming, approval, attachments, and branches", async ({ page, request }) => {
-  await page.goto("/");
-  await page.getByLabel("访问码").fill(accessCode);
-  await page.getByRole("button", { name: "进入 Chatus" }).click();
+  await loginMember(page);
 
   const composer = page.getByRole("textbox", { name: "消息" });
   await expect(composer).toBeVisible();
@@ -85,7 +85,64 @@ test("real Worker Agent transport preserves streaming, approval, attachments, an
   expect(state.memoryContinuationRequests).toBeGreaterThan(0);
 });
 
-async function sendMessage(page: import("@playwright/test").Page, text: string): Promise<void> {
+test.describe("member logout recovery", () => {
+  test("failed logout preserves the member workspace and retry clears drafts without provider calls", async ({ page, request }) => {
+    await loginMember(page);
+    const composer = page.getByRole("textbox", { name: "消息" });
+    await composer.fill("合成退出恢复草稿");
+
+    const sessionIdentity = await readSessionIdentity(page);
+    await expect.poll(async () => (await readDraftStorageState(page, sessionIdentity.user)).draftCount).toBeGreaterThan(0);
+    const draftState = await readDraftStorageState(page, sessionIdentity.user);
+    const composerFingerprint = await readInputFingerprint(composer);
+    const providerBaseline = await providerState(request);
+    let logoutAttempts = 0;
+
+    await page.route("**/api/logout", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      logoutAttempts += 1;
+      if (logoutAttempts === 1) {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "internal_error", message: "合成成员会话撤销失败，请重试。" }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.getByRole("button", { name: "退出登录" }).click();
+    const alert = page.getByRole("alert").filter({ hasText: "合成成员会话撤销失败，请重试。" });
+    await expect(alert).toBeVisible();
+    await expect(alert.getByRole("button", { name: "重试退出" })).toBeEnabled();
+    await expect(page.locator(".workspace-shell")).toBeVisible();
+    await expect(composer).toBeVisible();
+    expect(await readInputFingerprint(composer)).toBe(composerFingerprint);
+    expect(await readSessionIdentity(page)).toEqual(sessionIdentity);
+    expect(await readDraftStorageState(page, sessionIdentity.user)).toEqual(draftState);
+    expect(await providerState(request)).toEqual(providerBaseline);
+    expect(logoutAttempts).toBe(1);
+
+    await alert.getByRole("button", { name: "重试退出" }).click();
+    await expect(page.getByLabel("访问码")).toBeVisible();
+    await expect.poll(async () => (await readDraftStorageState(page, sessionIdentity.user)).draftCount).toBe(0);
+    expect(await providerState(request)).toEqual(providerBaseline);
+    expect(logoutAttempts).toBe(2);
+  });
+});
+
+async function loginMember(page: Page): Promise<void> {
+  await page.goto("/");
+  await page.getByLabel("访问码").fill(memberAccessCode);
+  await page.getByRole("button", { name: "进入 Chatus" }).click();
+  await expect(page.getByRole("textbox", { name: "消息" })).toBeVisible();
+}
+
+async function sendMessage(page: Page, text: string): Promise<void> {
   const composer = page.getByRole("textbox", { name: "消息" });
   await composer.fill(text);
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -103,16 +160,61 @@ type ProviderState = {
   imageRequests: number;
 };
 
-async function providerState(request: import("@playwright/test").APIRequestContext): Promise<ProviderState> {
+async function providerState(request: APIRequestContext): Promise<ProviderState> {
   const response = await request.get(`${providerURL}/__state`);
   expect(response.ok()).toBe(true);
   return response.json() as Promise<ProviderState>;
 }
 
-async function readMemory(page: import("@playwright/test").Page): Promise<{ memory: string }> {
+async function readMemory(page: Page): Promise<{ memory: string }> {
   return page.evaluate(async () => {
     const response = await fetch("/api/agent/memory", { credentials: "include" });
     if (!response.ok) throw new Error(`Memory request failed with ${response.status}`);
     return response.json() as Promise<{ memory: string }>;
+  });
+}
+
+async function readSessionIdentity(page: Page): Promise<{ access: "member"; user: string }> {
+  return page.evaluate(async () => {
+    const response = await fetch("/api/session", { credentials: "include" });
+    if (!response.ok) throw new Error(`Session request failed with ${response.status}`);
+    const data = await response.json() as { access?: unknown; user?: unknown };
+    if (data.access !== "member" || typeof data.user !== "string") {
+      throw new Error("Expected an authenticated member session");
+    }
+    return { access: "member" as const, user: data.user };
+  });
+}
+
+async function readDraftStorageState(page: Page, user: string): Promise<{
+  draftCount: number;
+  draftFingerprint: string;
+  activeChatFingerprint: string;
+}> {
+  return page.evaluate(async ({ member }) => {
+    const digest = async (value: string) => {
+      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+      return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    };
+    const prefix = `chatus:react:${member}:draft:`;
+    const entries: Array<[string, string]> = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(prefix)) entries.push([key, localStorage.getItem(key) || ""]);
+    }
+    entries.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return {
+      draftCount: entries.length,
+      draftFingerprint: await digest(JSON.stringify(entries)),
+      activeChatFingerprint: await digest(localStorage.getItem(`chatus:react:${member}:active-chat`) || ""),
+    };
+  }, { member: user });
+}
+
+async function readInputFingerprint(input: Locator): Promise<string> {
+  return input.evaluate(async (element) => {
+    const value = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : "";
+    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   });
 }

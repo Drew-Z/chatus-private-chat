@@ -11,6 +11,7 @@ export function WorkspaceHeader({
   connectionState,
   busy,
   accountBusy,
+  logoutPending,
   parentConversation,
   parentMissing,
   onOpenSidebar,
@@ -28,6 +29,7 @@ export function WorkspaceHeader({
   connectionState: ConnectionState;
   busy: boolean;
   accountBusy: boolean;
+  logoutPending: boolean;
   parentConversation: Pick<AgentConversation, "id" | "title"> | null;
   parentMissing: boolean;
   onOpenSidebar: () => void;
@@ -42,6 +44,7 @@ export function WorkspaceHeader({
   const health = routeHealthLabel(route?.healthStatus);
   const connection = connectionLabel(connectionState);
   const connectedMcpCount = mcpConnections.filter((item) => item.connected).length;
+  const logoutLabel = logoutPending ? "正在退出登录" : "退出登录";
 
   return (
     <header className="workspace-header">
@@ -113,9 +116,9 @@ export function WorkspaceHeader({
             className="icon-button"
             type="button"
             onClick={() => void onLogout()}
-            disabled={busy || accountBusy}
-            title={busy ? "请先停止当前任务" : accountBusy ? "账号操作正在处理" : "退出登录"}
-            aria-label="退出登录"
+            disabled={logoutPending || busy || accountBusy}
+            title={logoutPending ? logoutLabel : busy ? "请先停止当前任务" : accountBusy ? "账号操作正在处理" : logoutLabel}
+            aria-label={logoutLabel}
           ><LogOut size={18} /></button>
         )}
       </div>

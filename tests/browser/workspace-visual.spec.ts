@@ -196,6 +196,62 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   await attachScreenshot(page, testInfo, "workspace");
 });
 
+test("member logout keeps pending and retry recovery accessible and contained", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "member logout coverage targets desktop and 390px");
+
+  const logout = page.getByRole("button", { name: "退出登录" });
+  await expect(logout).toBeEnabled();
+  await expect(logout).toHaveAttribute("title", "退出登录");
+  await logout.click();
+
+  const pendingLogout = page.getByRole("button", { name: "正在退出登录" });
+  await expect(pendingLogout).toBeDisabled();
+  await expect(pendingLogout).toHaveAttribute("title", "正在退出登录");
+  await expect(page.getByRole("button", { name: "查看线路与状态" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /MCP 连接/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+
+  await page.goto("/?logout=error");
+  const alert = page.getByRole("alert").filter({ hasText: "合成成员会话撤销失败" });
+  const retry = alert.getByRole("button", { name: "重试退出" });
+  await expect(alert).toBeVisible();
+  await expect(retry).toBeEnabled();
+  await expect(page.getByRole("button", { name: "退出登录" })).toBeEnabled();
+
+  const geometry = await page.evaluate(() => {
+    const row = document.querySelector<HTMLElement>(".member-logout-error");
+    const retryButton = row?.querySelector<HTMLElement>("button");
+    const conversation = document.querySelector<HTMLElement>(".conversation-chat");
+    if (!row || !retryButton || !conversation) throw new Error("missing member logout recovery fixture");
+    const rowRect = row.getBoundingClientRect();
+    const retryRect = retryButton.getBoundingClientRect();
+    const conversationRect = conversation.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      rowFits: row.scrollWidth <= row.clientWidth + 1,
+      rowInsideViewport: rowRect.left >= 0 && rowRect.right <= document.documentElement.clientWidth + 1,
+      retryInsideRow: retryRect.left >= rowRect.left - 1 && retryRect.right <= rowRect.right + 1,
+      rowBeforeConversation: rowRect.bottom <= conversationRect.top + 1,
+    };
+  });
+  expect(geometry).toEqual({
+    documentFits: true,
+    bodyFits: true,
+    rowFits: true,
+    rowInsideViewport: true,
+    retryInsideRow: true,
+    rowBeforeConversation: true,
+  });
+  await attachScreenshot(page, testInfo, "member-logout-error");
+
+  await retry.focus();
+  await expect(retry).toBeFocused();
+  await retry.press("Enter");
+  await expect(page.getByRole("button", { name: "正在退出登录" })).toBeDisabled();
+  await expect(page.locator(".member-logout-error")).toHaveCount(0);
+});
+
 test("file workspace stays contained and exposes exact version selection", async ({ page }, testInfo) => {
   const fileId = "11111111-1111-4111-8111-111111111111";
   const currentVersionId = "22222222-2222-4222-8222-222222222222";
