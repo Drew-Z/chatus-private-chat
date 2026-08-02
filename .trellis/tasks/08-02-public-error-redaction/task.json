@@ -1,18 +1,18 @@
 {
   "id": "public-error-redaction",
   "name": "public-error-redaction",
-  "title": "公共错误边界治理",
-  "description": "",
-  "status": "planning",
+  "title": "公共错误信息与隐私边界",
+  "description": "净化 Provider、Capability、MCP 和模型发现错误，防止上游响应体、异常消息和成员标识泄露。",
+  "status": "in_progress",
   "dev_type": null,
-  "scope": null,
+  "scope": "Agent/public error contracts, Capability/MCP/model discovery projection, passive correlation, React recovery UX",
   "package": null,
-  "priority": "P2",
+  "priority": "P0",
   "creator": "zhang",
   "assignee": "zhang",
-  "createdAt": "2026-08-03",
+  "createdAt": "2026-08-02",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/public-error-redaction",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
@@ -22,5 +22,68 @@
   "parent": "08-02-project-hardening-followups",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "React build and frontend structural checks passed; generated assets synchronized",
+        "at": "2026-08-02T14:31:56.087508+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "40 files and 517 deterministic local tests passed",
+        "at": "2026-08-02T14:31:56.782223+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "83 passed and 42 viewport-conditional skips across five viewports",
+        "at": "2026-08-02T14:31:57.461101+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "4 local fake-Provider Agent browser tests passed after waiting for stable legacy login readiness",
+        "at": "2026-08-02T14:31:58.117240+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture TypeScript checks passed",
+        "at": "2026-08-02T14:31:58.793737+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaged 19 assets and Worker bindings without deployment",
+        "at": "2026-08-02T14:31:59.467916+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors; only expected line-ending notices",
+        "at": "2026-08-02T14:32:00.153446+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task graph and workspace index consistency OK",
+        "at": "2026-08-02T14:32:00.825147+00:00"
+      },
+      {
+        "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
+        "status": "passed",
+        "summary": "All 7 Trellis validation tests passed",
+        "at": "2026-08-02T14:32:01.493430+00:00"
+      },
+      {
+        "command": "Production diff secret-boundary audit",
+        "status": "passed",
+        "summary": "Logs, browser responses, MCP OAuth audits, and passive telemetry retain only approved bounded fields; no raw Provider or MCP payloads",
+        "at": "2026-08-02T14:32:02.190835+00:00"
+      }
+    ]
+  }
 }

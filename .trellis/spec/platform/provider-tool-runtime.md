@@ -13,7 +13,7 @@ The module is a protocol adapter. Provider selection, credentials, leases, fallb
 - Provider turn: `callProviderToolTurn({ route, apiKey, history, tools, temperature, defaultMaxTokens, signal, usedUserKey, fetch? })`
 - History mutation: `appendProviderTurn(history, providerTurn)` and `appendProviderToolResults(history, results)`
 - Shared protocol helpers: `buildHeaders`, `setAuthHeader`, `routeUrl`, `clampNumber`, `formatUpstreamErrorMessage`, and `toAnthropicMessages`
-- Attempt error: `ProviderToolError(status, message, terminal)`
+- Attempt error: `ProviderToolError(status, message, terminal, outcome?: "protocol_error")`
 - Protocol/policy error: `ProviderToolRuntimeError(code, message)`
 
 The optional `fetch` dependency exists for deterministic adapter tests. Production callers omit it and use the Worker global fetch.
@@ -29,7 +29,8 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 - System messages are joined with a blank line for Anthropic. Text and validated inline data images are converted to Anthropic content blocks; invalid images fail before the provider call.
 - Provider tool names are aliases from the normalized assigned-tool list. A response naming any other tool is rejected before local or MCP execution.
 - Invalid OpenAI argument JSON is preserved as `arguments=null, argumentsValid=false` so the shared capability loop reports the existing argument validation error instead of executing it.
-- HTTP failures become `ProviderToolError`. Status 400/422 and user-key 401/403 follow `isTerminalProviderFailure`; other provider failures remain eligible for pre-output fallback.
+- HTTP failures become `ProviderToolError`. Status 400/422 and user-key 401/403 follow `isTerminalProviderFailure`; other provider failures remain eligible for pre-output fallback. The exact HTTP status stays available for outer classification, while the bounded upstream message is internal and must never become a browser response.
+- Invalid Provider JSON or response shape sets `outcome="protocol_error"`. The Capability/Worker boundary preserves that protocol class but replaces every internal message with the canonical public registry text.
 
 ## 4. Validation & Error Matrix
 
@@ -41,6 +42,7 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 | Provider requests an unknown tool alias | `ProviderToolRuntimeError("tool_not_allowed")`; no tool runs |
 | OpenAI tool arguments are malformed JSON | Return the call with `argumentsValid=false`; capability validation rejects it |
 | Provider returns non-2xx | Redact to a bounded message and throw `ProviderToolError` with exact HTTP status |
+| Provider JSON/body shape is invalid | Throw `ProviderToolError(502, ..., false, "protocol_error")`; outer projection returns `provider_protocol_error` |
 | User BYOK returns 401/403 | Mark the attempt terminal; do not fall back to another server credential |
 | Server credential returns 401/403 | Keep the attempt non-terminal so another eligible offering may be tried |
 | Anthropic inline image is malformed | Fail conversion before fetch |
@@ -57,6 +59,7 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 - Unit-test both request shapes, endpoint handling, default/custom auth headers, saved Anthropic version, temperature bounds, and max-token selection.
 - Unit-test OpenAI tool-call parsing, malformed arguments, unknown aliases, assistant/tool history append, and nested upstream error messages.
 - Unit-test Anthropic system/image conversion, mixed text/tool-use parsing, error results, and user/tool-result history append.
+- Assert 400/401/429/5xx and invalid-JSON outcomes retain distinct public classes without exposing the Provider message, response body, or endpoint.
 - Keep Worker integration tests for multi-round OpenAI and Anthropic capability execution, provider lease release, fallback, approval, and MCP execution.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 
