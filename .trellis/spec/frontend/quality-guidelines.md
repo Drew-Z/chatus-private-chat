@@ -7,7 +7,7 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 ## Forbidden Patterns
 
 - Never print, commit, export, or include access codes, API keys, conversation content, or stored memories in diagnostics.
-- Do not add inline style mutation to `app.js`, `admin.js`, or `theme.js`.
+- Do not add inline style mutation to `app.js` or `theme.js`; typed React admin styles remain in the React stylesheet.
 - Do not deploy production from a local Wrangler account; production uses GitHub Actions.
 - Do not silently overwrite newer cloud/config/memory state.
 - Do not render untrusted Markdown links or `source-url` parts without the shared protocol sanitizer.

@@ -88,7 +88,9 @@ type EncryptedRouteSecret = {
 - Runtime resolution receives `ResolvedProviderRoute`, whose provider-level credential reference is authoritative. Resolver precedence is user BYOK when allowed, `requiresUserKey` blocking server keys, legacy route/provider `apiKey` compatibility, managed encrypted key, same-name Worker binding, then missing.
 - If a managed record exists but cannot be parsed or decrypted, do not silently fall back to a same-name Worker binding.
 - Admin config projections use `hasLegacyKey` and `hasCustomHeaders` as non-sensitive markers. Ordinary config round-trips preserve the server-side legacy key or custom headers only while the corresponding marker remains explicit; deleting a marker is the only way to remove that hidden compatibility value. Marker values and any temporary migration reference are not credentials and must not be treated as secret material.
-- Legacy route migration is allowed only after the referenced `apiKeyRef` resolves to managed storage or a same-name Worker Secret. Migration stores the reference and removes the inline key without reading it into browser state or copying it into the provider registry.
+- Legacy route migration is allowed only when the credential remains valid after removing the inline `apiKey`: the referenced `apiKeyRef` resolves to managed storage or a same-name Worker Secret, or the route has an explicit valid `requiresUserKey` BYOK contract. The revision-checked API preflights every normalized route ID before one write, stores only the reference/contract, and removes the compatibility shadow without reading plaintext into browser state or copying it into the provider registry.
+- The migration success decoder accepts exactly `{ revision, migrated, alreadyMigrated, statuses }`. It rejects a nested `config`, `source`, endpoint, credential, header, or any other extra field; React obtains the new sanitized snapshot through a separate `GET /api/admin/config` after success.
+- A route with existing offerings and a stale legacy shadow is already provider-backed. Migration keeps its offerings and strips only the shadow, so neither the browser nor Worker may require the stale credential to remain resolvable.
 
 ### 4. Validation & Error Matrix
 
@@ -99,6 +101,8 @@ type EncryptedRouteSecret = {
 - Invalid stored record -> `503 invalid_record` for admin consumers.
 - Wrong master key or AAD/authentication failure -> `503 decrypt_failed` for admin consumers.
 - No managed record -> continue to the same-name Worker binding for compatibility.
+- Missing/stale config revision, invalid route IDs, missing/non-legacy routes, invalid BYOK policy, or inline-only credentials -> reject the migration without writing any route in the batch; response details contain only route IDs and allowlisted status/reason codes.
+- Migration success containing `config`, `source`, endpoint, or any unknown key -> client rejects as `invalid_legacy_route_migration_response`.
 
 ### 5. Good/Base/Bad Cases
 
@@ -117,6 +121,7 @@ type EncryptedRouteSecret = {
 - Assert admin config GET/PUT never returns legacy plaintext keys or custom header values, preserves hidden compatibility values only with `hasLegacyKey`/`hasCustomHeaders`, and removes them when the marker is explicitly deleted.
 - Assert the Worker export and `wrangler.jsonc` do not register scheduled model-health checks.
 - Assert the password input clears on save, route changes, refresh/login transitions, and failure paths.
+- Assert the Worker migration response passes the exact client decoder, rejects injected config/source/endpoint fields, and the React flow reloads the authoritative config separately.
 
 ### 7. Wrong vs Correct
 

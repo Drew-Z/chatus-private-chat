@@ -28,15 +28,15 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 本地组合 fixture 中多个旧 route 在 React Provider 视图中以“待迁移”状态可见，已迁移 Provider 不重复显示；阻断原因不含 endpoint、Key 或 header 值。
-- [ ] AC2. Worker 测试证明迁移 API 要求管理员会话与最新 revision，且全部预检成功后才原子写入；冲突、未知 route、非旧 route、Provider ID 碰撞和混合成功/失败批次均确定性处理。
-- [ ] AC3. 托管密钥、同名 Worker Secret 和 BYOK route 可迁移；仅有内联明文 Key 的 route 被 fail-closed 阻断。API、audit 和测试输出均不包含凭据或自定义 header 内容。
-- [ ] AC4. 迁移后 route ID、成员/default/public/fallback 引用、限制与能力保持不变，Provider + Offering 承接协议、endpoint、模型和安全 credential reference；第二次迁移为幂等 no-op。
-- [ ] AC5. Worker GET -> React decoder -> migration -> PUT/GET 的跨层测试证明零 compatibility shadow、零秘密泄露，运行时 provider plan 只使用持久化 Provider + Offering，聊天 fixture 行为不变。
-- [ ] AC6. `public/admin.html`、`public/admin.js`、`public/admin-report.js` 不再存在，service worker、frontend checker、deploy fingerprint、文档和测试没有失效引用；访问 `/admin.html` 返回到 `/react-chat/admin` 的永久重定向且不提供旧 UI。
-- [ ] AC7. React 新后台仍覆盖 Provider 密钥录入/轮换、模型发现、逻辑模型、能力/MCP、成员访问、公开访问、可靠性、运营与 logout；被退役的 JSON reset/CSV 控件有明确决策记录而非静默遗漏。
-- [ ] AC8. 流式自动滚动、legacy 图片键盘入口、React/legacy 直接入口和 390px 布局 Playwright 通过；admin 拆包有测量结论，未达预算则不实施。
-- [ ] AC9. `npm run check:frontend`、相关 Vitest、`npm test`、`npm run typecheck`、`npx wrangler deploy --dry-run`、Workspace Playwright、Agent fake-Provider Playwright、`git diff --check` 和 Trellis 全量一致性验证通过。
+- [x] AC1. 本地组合 fixture 中多个旧 route 在 React Provider 视图中以“待迁移”状态可见，已迁移 Provider 不重复显示；阻断原因不含 endpoint、Key 或 header 值。
+- [x] AC2. Worker 测试证明迁移 API 要求管理员会话与最新 revision，且全部预检成功后才原子写入；冲突、未知 route、非旧 route、Provider ID 碰撞和混合成功/失败批次均确定性处理。
+- [x] AC3. 托管密钥、同名 Worker Secret 和 BYOK route 可迁移；仅有内联明文 Key 的 route 被 fail-closed 阻断。API、audit 和测试输出均不包含凭据或自定义 header 内容。
+- [x] AC4. 迁移后 route ID、成员/default/public/fallback 引用、限制与能力保持不变，Provider + Offering 承接协议、endpoint、模型和安全 credential reference；第二次迁移为幂等 no-op。
+- [x] AC5. Worker GET -> React decoder -> migration -> PUT/GET 的跨层测试证明零 compatibility shadow、零秘密泄露，运行时 provider plan 只使用持久化 Provider + Offering，聊天 fixture 行为不变。
+- [x] AC6. `public/admin.html`、`public/admin.js`、`public/admin-report.js` 不再存在，service worker、frontend checker、deploy fingerprint、文档和测试没有失效引用；访问 `/admin.html` 返回到 `/react-chat/admin` 的永久重定向且不提供旧 UI。
+- [x] AC7. React 新后台仍覆盖 Provider 密钥录入/轮换、模型发现、逻辑模型、能力/MCP、成员访问、公开访问、可靠性、运营与 logout；被退役的 JSON reset/CSV 控件有明确决策记录而非静默遗漏。
+- [x] AC8. 流式自动滚动、legacy 图片键盘入口、React/legacy 直接入口和 390px 布局 Playwright 通过；admin 拆包有测量结论，未达预算则不实施。
+- [x] AC9. `npm run check:frontend`、相关 Vitest、`npm test`、`npm run typecheck`、`npx wrangler deploy --dry-run`、Workspace Playwright、Agent fake-Provider Playwright、`git diff --check` 和 Trellis 全量一致性验证通过。
 - [ ] AC10. work commit、PR CI、main exact SHA、GitHub Actions 部署、artifacts、用户确认新版后台与迁移结果均记录后任务才归档；生产配置迁移动作由已登录管理员在新版页面执行，不由 CI 或本地脚本代做。
 
 ## Out of Scope

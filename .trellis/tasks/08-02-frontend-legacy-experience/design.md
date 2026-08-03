@@ -15,7 +15,7 @@ Add `POST /api/admin/legacy-routes/migrate`:
 }
 ```
 
-The response is the normal sanitized admin config snapshot plus `migrated`, `alreadyMigrated`, and bounded per-route status metadata. It never includes endpoint values, credential values, custom header names/values, or raw exceptions.
+The response is the exact finite envelope `{ revision, migrated, alreadyMigrated, statuses }`. It never includes a config snapshot, source, endpoint values, credential references/values, custom header names/values, or raw exceptions.
 
 The Worker performs an all-or-nothing preflight against `loadEditableConfig`:
 
@@ -24,15 +24,15 @@ The Worker performs an all-or-nothing preflight against `loadEditableConfig`:
 3. Classify every requested route as legacy, already migrated, missing, or blocked.
 4. For a legacy route that does not require BYOK, resolve a credential from a copy with the inline `apiKey` removed. This allows managed storage or a same-name Worker binding but deliberately excludes the old plaintext shadow.
 5. Abort the whole batch if any requested legacy route is unsafe.
-6. Build one new Provider per route using a deterministic `<routeId>-provider` base and the existing collision-safe ID rule. Copy custom headers only inside the Worker process; never project them to the browser.
-7. Replace the route transport shadow with one Offering while preserving route-owned policy fields and every external route reference.
-8. Validate the resulting app config, write once to `ROUTES_CONFIG_KEY`, append one bounded audit event, and return the sanitized snapshot.
+6. For a legacy-only route, build one new Provider using a deterministic `<routeId>-provider` base and the existing collision-safe ID rule. Copy custom headers only inside the Worker process; never project them through the migration response.
+7. Replace a legacy-only route transport shadow with one Offering. If the route already has offerings, treat them as the runtime authority, preserve them, skip stale-shadow credential preflight, and remove only the compatibility shadow. Preserve route-owned policy fields and every external route reference in both cases.
+8. Validate the resulting app config, write once to `ROUTES_CONFIG_KEY`, append one bounded audit event, and return only the finite migration envelope.
 
 A repeat call against the current revision treats routes that already have offerings and no transport shadow as `alreadyMigrated`; it creates no Provider and performs no write.
 
 ## React Flow
 
-The Provider panel derives legacy candidates from the sanitized snapshot. A compact migration band shows candidate count and safe/blocked status obtained without exposing secrets. The administrator opens one React `ConfirmDialog`, sees the route IDs and blocking remediation, and submits one migration request. A successful response replaces the shared snapshot so Provider and Logical Model panels update together.
+The Provider panel derives legacy candidates from the sanitized snapshot. A compact migration band shows candidate count and safe/blocked status obtained without exposing secrets. Provider-backed routes with stale shadows are immediately ready because their offerings are authoritative. The administrator opens one React `ConfirmDialog`, sees the route IDs and blocking remediation, and submits one migration request. After a successful finite response, React fetches `/api/admin/config` and replaces the shared snapshot so Provider and Logical Model panels update together.
 
 The existing client-only `migrateLegacyLogicalModel` path is removed after the server flow lands; there must be a single migration authority.
 
@@ -43,6 +43,7 @@ The existing client-only `migrateLegacyLogicalModel` path is removed after the s
 - `requiresUserKey: true` is a valid credential contract without a server key.
 - Hidden custom headers may move route-to-provider only inside the server transaction and remain represented to React by `hasCustomHeaders`.
 - Error and audit metadata use route IDs and stable reason codes only.
+- All `config:routes_config` mutations acquire the reserved `$admin-config` ProviderCoordinator lease before checking revision. The lease renews during long preflight, and malformed-config reads never delete KV outside that lock.
 
 ## Static Admin Retirement
 

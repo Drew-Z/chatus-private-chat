@@ -21,6 +21,7 @@ Dependencies are injected so deterministic tests never read KV, resolve a real s
 - `routeIds` are logical route IDs already selected through the authenticated allow-list and fallback chain. Unknown, disabled, or provider-less routes produce no executable candidate.
 - Callers choose the logical fallback boundary. Normal chat may pass its authenticated fallback chain; the Automatic Skill selector must pass exactly `[selectedRouteId]` so only offerings inside the main answer's logical model are eligible.
 - Candidate expansion and ordering continue to use `provider-router.ts`. Administrator priority is authoritative; injected recent passive quality only breaks equal-priority ties for the exact logical-route/provider pair.
+- A route with non-empty `offerings` always expands from those offerings. Legacy `type`/`baseUrl`/`model` and credential/header shadows on the same route are stale compatibility data and must not replace or supplement the persisted offerings; migration may delete that shadow without changing the plan.
 - `loadQuality` reads existing real-task evidence only. Planning must never send a model request or create synthetic reliability data.
 - `accessRoutes` are the current server-derived member or guest projection. A physical candidate whose logical route is absent from that projection is discarded.
 - The optional `accepts` predicate runs before credential resolution. Image/tool-incompatible and otherwise unusable candidates must not read managed secrets or receive a user key.
@@ -56,6 +57,7 @@ The plan runtime never retries an attempted provider and never observes visible 
 | Earlier candidate is unusable | Preserve the later candidate's filtered-plan index |
 | Automatic Skill selector requests a plan | Pass only the selected logical route; offering fallback is allowed, logical-route fallback is forbidden |
 | Bounded caller dependency ignores abort | Caller hard deadline returns its fallback and rejects any late result |
+| Route has offerings plus a legacy transport shadow | Resolve only the offerings; removing the shadow leaves the candidate plan unchanged |
 
 ## 6. Tests Required
 
@@ -63,6 +65,7 @@ The plan runtime never retries an attempted provider and never observes visible 
 - Unit-test access and capability filtering before credential resolution.
 - Unit-test allowed and disallowed BYOK propagation.
 - Unit-test credential exceptions, missing credentials, fallback indexes, and required-user-key termination.
+- Unit-test provider-backed routes with stale legacy shadows before and after shadow removal, including endpoint/model/auth/header/limit/capability equivalence.
 - Keep Worker and Team Agent integration tests for streaming, tool loops, fallback, leases, quotas, telemetry, and cancellation.
 - For Automatic Skill selection, assert offering fallback works, no configured logical fallback is contacted, and a late successful Provider result is ignored after five seconds.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.

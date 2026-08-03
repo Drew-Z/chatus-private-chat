@@ -50,7 +50,7 @@ PRODUCTION_URL=https://你的生产域名 ADMIN_TOKEN=<从环境变量读取> np
 ```text
 $CHATUS_PRODUCTION_URL
 $CHATUS_PRODUCTION_URL/react-chat/admin
-$CHATUS_PRODUCTION_URL/admin.html
+$CHATUS_PRODUCTION_URL/admin.html  # 308 回滚地址
 $CHATUS_PRODUCTION_URL/healthz
 $CHATUS_PRODUCTION_URL/release.json
 ```
@@ -99,10 +99,12 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 之后的普通 provider key 操作不需要重新部署：
 
-1. 在 `/admin.html` 打开“服务商池”，填写稳定的 `API Key Ref`。provider 保存 endpoint、协议和 credential；offering 只保存 `providerId` 与上游 model，不复制密钥。
+1. 在 `/react-chat/admin` 打开 Provider，填写稳定的 `API Key Ref`。provider 保存 endpoint、协议和 credential；offering 只保存 `providerId` 与上游 model，不复制密钥。
 2. 在“后台服务商密钥”中输入新 key 并保存。输入框会立即清空，后台只显示配置来源和更新时间。
 3. 保存后可直接拉取完整模型列表并刷新线路状态。若需要验证真实生成，只能由用户批准并执行一个有实际用途的任务。
 4. 删除托管密钥只会删除 KV 中的 AES-GCM 密文；若存在同名 Worker Secret，会自动恢复使用它。
+
+仍以内联 route 表示的旧线路会在 Provider 页面显示迁移清单。管理员必须先让每条线路具备托管密钥、同名 Worker Secret 或明确 BYOK 合同，再确认批量迁移；服务端会以 `expectedRevision` 预检整个批次，任何一条阻断都会零写入。旧明文 key 不会进入浏览器、响应、日志或审计。迁移完成后检查 Provider/Offering、fallback、成员权限和公开访问引用，再由管理员在生产页面执行实际配置迁移。
 
 公开访客线路必须使用后台托管 provider key。Worker Secret 或 `WORKER_SECRETS_JSON` 可以继续作为成员/兼容来源，但访客会把它们视为不可用的服务端密钥来源。删除或轮换前先看后台状态：KV 托管项在后台删除或替换；Worker Secret 必须在 Cloudflare Dashboard 显式删除，并重新运行 Actions 部署和 smoke。
 
