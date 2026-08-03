@@ -403,6 +403,12 @@ imageInput.addEventListener("change", async () => {
   await addImageFiles(imageInput.files);
   imageInput.value = "";
 });
+imageInputLabel?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  if (imageInput.disabled) return;
+  imageInput.click();
+});
 promptInput.addEventListener("input", () => {
   autoResizePrompt();
   updateComposerMeta();
@@ -2107,9 +2113,7 @@ function updateRouteControls() {
     userApiKeyInput.type = "password";
   }
   const supportsImages = route?.supportsImages !== false;
-  imageInput.disabled = offlineMode || !supportsImages || isBusy;
-  imageInputLabel.classList.toggle("disabled", offlineMode || !supportsImages);
-  imageInputLabel.title = offlineMode ? "离线模式下不能添加图片" : supportsImages ? "添加图片" : "当前线路不支持图片";
+  updateImageInputState();
   if (composerHint) {
     composerHint.textContent = offlineMode
       ? "离线只读，网络恢复后可继续发送"
@@ -2131,6 +2135,23 @@ function updateRouteControls() {
         : "选择 Skills；当前模型不会执行工具";
     capabilityButton.setAttribute("aria-label", capabilityButton.title);
   }
+}
+
+function updateImageInputState() {
+  const supportsImages = getSelectedRoute()?.supportsImages !== false;
+  const disabled = offlineMode || !supportsImages || isBusy;
+  const label = offlineMode
+    ? "离线模式下不能添加图片"
+    : isBusy
+      ? "生成中不能添加图片"
+      : supportsImages
+        ? "添加图片"
+        : "当前线路不支持图片";
+  imageInput.disabled = disabled;
+  imageInputLabel.classList.toggle("disabled", disabled);
+  imageInputLabel.title = label;
+  imageInputLabel.setAttribute("aria-label", label);
+  imageInputLabel.setAttribute("aria-disabled", String(disabled));
 }
 
 function getSelectedRoute() {
@@ -2965,7 +2986,7 @@ function setBusy(nextBusy) {
   if (capabilityButton) capabilityButton.disabled = offlineMode || nextBusy || !skills.length;
   if (nextBusy) closeCapabilityPopover();
   userApiKeyInput.disabled = offlineMode || nextBusy;
-  imageInput.disabled = offlineMode || nextBusy || getSelectedRoute()?.supportsImages === false;
+  updateImageInputState();
   if (suggestMemoryButton) suggestMemoryButton.disabled = offlineMode || nextBusy;
 }
 function updateUsage(usage) {

@@ -5,6 +5,7 @@ import {
   discoverAdminProviderModels,
   fetchAdminConfig,
   fetchAdminRouteSecrets,
+  migrateAdminLegacyRoutes,
   putAdminConfig,
   putAdminRouteSecret,
   deleteAdminRouteSecret,
@@ -19,6 +20,7 @@ import {
   hasProviderIdConflict,
   projectAdminLogicalModels,
   projectAdminProviders,
+  projectLegacyRouteMigrationCandidates,
   validateProviderDraft,
   type ProviderDraft,
 } from "../lib/admin-provider";
@@ -29,7 +31,8 @@ type Notice = { kind: "success" | "warning" | "error"; text: string };
 type ProviderConfirmation =
   | { kind: "select"; id: string }
   | { kind: "delete-provider"; id: string; label: string }
-  | { kind: "delete-secret"; ref: string };
+  | { kind: "delete-secret"; ref: string }
+  | { kind: "migrate-legacy"; routeIds: string[] };
 
 type ProviderAdminPanelProps = {
   snapshot: AdminConfigSnapshot;
@@ -68,6 +71,12 @@ export function ProviderAdminPanel({
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const providers = useMemo(() => projectAdminProviders(snapshot.config, secrets?.items || []), [snapshot.config, secrets]);
+  const legacyCandidates = useMemo(
+    () => projectLegacyRouteMigrationCandidates(snapshot.config, secrets?.items || []),
+    [snapshot.config, secrets],
+  );
+  const readyLegacyCandidates = legacyCandidates.filter((candidate) => candidate.status === "ready");
+  const blockedLegacyCandidates = legacyCandidates.filter((candidate) => candidate.status === "blocked");
   const logicalModels = useMemo(() => projectAdminLogicalModels(snapshot.config), [snapshot.config]);
   const selectedProvider = providers.find((provider) => provider.id === selectedId) || null;
   const secretRef = draft?.apiKeyRef?.trim() || "";
@@ -287,7 +296,41 @@ export function ProviderAdminPanel({
       await deleteProvider(confirmation.id);
       return;
     }
+    if (confirmation.kind === "migrate-legacy") {
+      await migrateLegacyRoutes(confirmation.routeIds);
+      return;
+    }
     await removeSecret(confirmation.ref);
+  }
+
+  async function migrateLegacyRoutes(routeIds: string[]) {
+    if (busy || dirty || !routeIds.length) return;
+    setBusy(true);
+    onNotice(null);
+    try {
+      const result = await migrateAdminLegacyRoutes(routeIds, snapshot.revision);
+      const latest = await fetchAdminConfig();
+      onSnapshot(latest);
+      setConflict(false);
+      await refreshSecrets();
+      onSetupChanged();
+      onNotice({ kind: "success", text: `已迁移 ${result.migrated.length} 条旧线路。` });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onSessionExpired();
+      } else if (error instanceof ApiError && error.code === "config_conflict") {
+        const latest = await fetchAdminConfig();
+        onSnapshot(latest);
+        onNotice({ kind: "warning", text: "配置已更新，请检查最新迁移状态后重试。" });
+      } else if (error instanceof ApiError && error.details.legacyRouteStatuses?.length) {
+        onNotice({ kind: "error", text: migrationBlockedMessage(error.details.legacyRouteStatuses) });
+      } else {
+        onNotice({ kind: "error", text: getErrorMessage(error, "旧线路迁移失败。") });
+      }
+      throw new Error(getErrorMessage(error, "旧线路迁移失败。"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function openDiscovery() {
@@ -387,6 +430,31 @@ export function ProviderAdminPanel({
       </div>
 
       <div className="admin-pool-editor">
+        {legacyCandidates.length > 0 && (
+          <section className="admin-migration-band" aria-labelledby="legacy-route-migration-title">
+            <div>
+              <p className="eyebrow">LEGACY MIGRATION</p>
+              <h2 id="legacy-route-migration-title">{legacyCandidates.length} 条旧线路待迁移</h2>
+              <p>{readyLegacyCandidates.length} 条可安全迁移，{blockedLegacyCandidates.length} 条需要先补齐密钥配置。阻断项不会写入配置。</p>
+            </div>
+            <div className="admin-migration-inventory">
+              {legacyCandidates.map((candidate) => (
+                <span key={candidate.routeId} className={candidate.status === "ready" ? "ready" : "blocked"}>
+                  <strong>{candidate.routeId}</strong>
+                  <small>{candidate.status === "ready" ? "可迁移" : legacyMigrationReason(candidate.reason)}</small>
+                </span>
+              ))}
+            </div>
+            <button
+              className="primary-button icon-text-button"
+              type="button"
+              onClick={() => setConfirmation({ kind: "migrate-legacy", routeIds: readyLegacyCandidates.map((candidate) => candidate.routeId) })}
+              disabled={busy || dirty || readyLegacyCandidates.length === 0}
+            >
+              <WandSparkles size={15} /><span>迁移可安全线路</span>
+            </button>
+          </section>
+        )}
         {!draft ? (
           <div className="admin-pool-empty-state"><p>暂无服务商配置</p><button className="primary-button icon-text-button" type="button" onClick={() => selectProvider("__new__")}><Plus size={16} /><span>新增服务商</span></button></div>
         ) : (
@@ -447,7 +515,9 @@ export function ProviderAdminPanel({
 }
 
 function providerConfirmationKey(state: ProviderConfirmation): string {
-  return state.kind === "select" ? `${state.kind}:${state.id}` : state.kind === "delete-provider" ? `${state.kind}:${state.id}` : `${state.kind}:${state.ref}`;
+  if (state.kind === "select" || state.kind === "delete-provider") return `${state.kind}:${state.id}`;
+  if (state.kind === "delete-secret") return `${state.kind}:${state.ref}`;
+  return `${state.kind}:${state.routeIds.join(",")}`;
 }
 
 function providerConfirmationCopy(state: ProviderConfirmation) {
@@ -467,12 +537,32 @@ function providerConfirmationCopy(state: ProviderConfirmation) {
       tone: "danger" as const,
     };
   }
+  if (state.kind === "migrate-legacy") {
+    return {
+      title: `迁移 ${state.routeIds.length} 条旧线路？`,
+      description: `线路 ID：${state.routeIds.join("、")}。服务端会先验证全部凭据，再一次性写入 Provider 和 Offering。`,
+      confirmLabel: "确认迁移",
+      tone: "default" as const,
+    };
+  }
   return {
     title: `删除托管密钥 ${state.ref}？`,
     description: `目标：${state.ref}。服务商配置会保留，但使用该引用的请求将无法认证。`,
     confirmLabel: "删除托管密钥",
     tone: "danger" as const,
   };
+}
+
+function legacyMigrationReason(reason: "inline_credential_only" | "credential_unavailable" | "invalid_credential_contract" | undefined): string {
+  if (reason === "inline_credential_only") return "需先保存 Key Ref";
+  if (reason === "invalid_credential_contract") return "BYOK 策略冲突";
+  return "密钥不可用";
+}
+
+function migrationBlockedMessage(statuses: import("../lib/api").AdminLegacyRouteMigrationStatus[]): string {
+  const blocked = statuses.filter((status) => status.status === "blocked");
+  if (!blocked.length) return "迁移条件已变化，请刷新后重试。";
+  return blocked.map((status) => `${status.routeId}：${legacyMigrationReason(status.reason)}`).join("；");
 }
 
 function providerFallbackFocus(): HTMLElement | null {

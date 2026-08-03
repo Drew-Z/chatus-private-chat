@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowUp, Plus, RotateCcw, Save, Trash2, WandSparkles } from "lucide-react";
-import { ApiError, fetchAdminConfig, putAdminConfig, type AdminConfigSnapshot, type AdminModelOffering, type AdminRouteConfig } from "../lib/api";
+import { ArrowDown, ArrowUp, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
+import { ApiError, fetchAdminConfig, putAdminConfig, type AdminConfigSnapshot, type AdminModelOffering } from "../lib/api";
 import {
   applyLogicalModelDraft,
   createLogicalModelDraft,
   hasLogicalModelIdConflict,
-  migrateLegacyLogicalModel,
   projectAdminLogicalModels,
   projectAdminProviders,
   validateLogicalModelDraft,
@@ -172,18 +171,6 @@ export function LogicalModelAdminPanel({
     await deleteModel(confirmation.id);
   }
 
-  function migrateLegacy() {
-    if (!draft || selectedId === "__new__") return;
-    const migrated = migrateLegacyLogicalModel(snapshot.config, selectedId || "");
-    if (!migrated.providerId) {
-      onNotice({ kind: "warning", text: "当前逻辑模型不是可迁移的旧版线路，或缺少托管密钥引用。" });
-      return;
-    }
-    setDraft(createLogicalModelDraft(migrated.config.routes[selectedId!], selectedId!, migrated.providerId));
-    setDirty(true);
-    onNotice({ kind: "success", text: "迁移草稿已生成；保存后才会写入新的服务商池。" });
-  }
-
   function addOffering() {
     if (!draft || !providers.length) return;
     const providerId = providers.find((provider) => !draft.offerings?.some((offering) => offering.providerId === provider.id))?.id || providers[0].id;
@@ -249,7 +236,7 @@ export function LogicalModelAdminPanel({
       </div>
       <div className="admin-pool-editor">
         {!draft ? <div className="admin-pool-empty-state"><p>暂无逻辑模型配置</p><button className="primary-button icon-text-button" type="button" onClick={() => selectModel("__new__")}><Plus size={16} /><span>新增逻辑模型</span></button></div> : <>
-          <div className="admin-pool-editor-head"><div><p className="eyebrow">LOGICAL MODEL</p><h2>{selectedId === "__new__" ? "新增逻辑模型" : draft.label || draft.id}</h2><p className="admin-pool-meta">成员只看到这个名称；服务商和上游模型只在管理员侧维护。</p></div><div className="admin-pool-actions">{conflict && <button className="quiet-button icon-text-button" type="button" onClick={useServerVersion}><RotateCcw size={15} /><span>使用服务器版本</span></button>}{selectedId !== "__new__" && isLegacy(draft) && <button className="quiet-button icon-text-button" type="button" onClick={migrateLegacy} disabled={busy}><WandSparkles size={15} /><span>迁移旧线路</span></button>}{selectedModel && <button className="quiet-button danger icon-text-button" type="button" onClick={requestDeleteModel} disabled={busy}><Trash2 size={15} /><span>删除</span></button>}<button className="primary-button icon-text-button" type="button" onClick={() => void saveModel()} disabled={busy || !dirty}><Save size={15} /><span>{busy ? "保存中..." : "保存逻辑模型"}</span></button></div></div>
+          <div className="admin-pool-editor-head"><div><p className="eyebrow">LOGICAL MODEL</p><h2>{selectedId === "__new__" ? "新增逻辑模型" : draft.label || draft.id}</h2><p className="admin-pool-meta">成员只看到这个名称；服务商和上游模型只在管理员侧维护。</p></div><div className="admin-pool-actions">{conflict && <button className="quiet-button icon-text-button" type="button" onClick={useServerVersion}><RotateCcw size={15} /><span>使用服务器版本</span></button>}{selectedModel && <button className="quiet-button danger icon-text-button" type="button" onClick={requestDeleteModel} disabled={busy}><Trash2 size={15} /><span>删除</span></button>}<button className="primary-button icon-text-button" type="button" onClick={() => void saveModel()} disabled={busy || !dirty}><Save size={15} /><span>{busy ? "保存中..." : "保存逻辑模型"}</span></button></div></div>
           <form className="admin-pool-form" onSubmit={(event) => void saveModel(event)}><div className="admin-form-grid two"><label><span>逻辑模型 ID</span><input value={draft.id} onChange={(event) => updateDraft((current) => ({ ...current, id: event.target.value }))} maxLength={80} autoComplete="off" /></label><label><span>对外名称</span><input value={draft.label} onChange={(event) => updateDraft((current) => ({ ...current, label: event.target.value }))} maxLength={120} /></label><label><span>Fallback（逗号分隔）</span><input value={(draft.fallbacks || []).join(", ")} onChange={(event) => updateDraft((current) => ({ ...current, fallbacks: splitIds(event.target.value) }))} placeholder="例如 backup-model" /></label></div><fieldset className="admin-check-grid"><legend>逻辑模型能力</legend><label><input type="checkbox" checked={draft.enabled !== false} onChange={(event) => updateDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>启用</span></label><label><input type="checkbox" checked={draft.supportsImages !== false} onChange={(event) => updateDraft((current) => ({ ...current, supportsImages: event.target.checked }))} /><span>支持图片</span></label><label><input type="checkbox" checked={draft.supportsTools === true} onChange={(event) => updateDraft((current) => ({ ...current, supportsTools: event.target.checked }))} /><span>支持工具</span></label></fieldset>
             <div className="admin-offerings-head"><div><h3>服务商出口</h3><p>优先级小的先尝试；每个服务商在同一逻辑模型中只能出现一次。</p></div><button className="quiet-button icon-text-button" type="button" onClick={addOffering} disabled={busy || !providers.length}><Plus size={15} /><span>添加出口</span></button></div>
             <div className="admin-offerings-list">{(draft.offerings || []).map((offering, index) => <div className="admin-offering-row" key={`${offering.providerId}-${index}`}><div className="admin-offering-order"><button className="icon-button" type="button" onClick={() => moveOffering(index, -1)} disabled={index === 0 || busy} aria-label="上移出口" title="上移"><ArrowUp size={14} /></button><button className="icon-button" type="button" onClick={() => moveOffering(index, 1)} disabled={index === (draft.offerings || []).length - 1 || busy} aria-label="下移出口" title="下移"><ArrowDown size={14} /></button></div><label><span>服务商</span><select value={offering.providerId} onChange={(event) => updateOffering(index, (current) => ({ ...current, providerId: event.target.value }))}>{providers.map((provider) => <option value={provider.id} key={provider.id}>{provider.label} · {provider.id}</option>)}</select></label><label><span>上游模型</span><input value={offering.model} onChange={(event) => updateOffering(index, (current) => ({ ...current, model: event.target.value }))} /></label><label className="compact-field"><span>优先级</span><input type="number" value={offering.priority || 0} onChange={(event) => updateOffering(index, (current) => ({ ...current, priority: Number(event.target.value) }))} /></label><label className="offering-enabled"><span>出口状态</span><select value={offering.enabled === undefined ? "" : offering.enabled ? "true" : "false"} onChange={(event) => updateOffering(index, (current) => ({ ...current, enabled: event.target.value === "" ? undefined : event.target.value === "true" }))}><option value="">继承</option><option value="true">启用</option><option value="false">停用</option></select></label><label className="offering-enabled"><span>图片能力</span><select value={offering.supportsImages === undefined ? "" : offering.supportsImages ? "true" : "false"} onChange={(event) => updateOffering(index, (current) => ({ ...current, supportsImages: event.target.value === "" ? undefined : event.target.value === "true" }))}><option value="">继承</option><option value="true">支持</option><option value="false">不支持</option></select></label><label className="offering-enabled"><span>工具能力</span><select value={offering.supportsTools === undefined ? "" : offering.supportsTools ? "true" : "false"} onChange={(event) => updateOffering(index, (current) => ({ ...current, supportsTools: event.target.value === "" ? undefined : event.target.value === "true" }))}><option value="">继承</option><option value="true">支持</option><option value="false">不支持</option></select></label><button className="icon-button danger" type="button" onClick={() => removeOffering(index)} disabled={busy} aria-label="删除出口" title="删除出口"><Trash2 size={15} /></button></div>)}{!(draft.offerings || []).length && <p className="admin-pool-empty">还没有出口，请先添加服务商。</p>}</div>
@@ -290,10 +277,6 @@ function logicalModelConfirmationCopy(state: LogicalModelConfirmation) {
 function logicalModelFallbackFocus(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[aria-label="逻辑模型列表"] .admin-pool-list-item.active')
     || document.getElementById("logical-model-admin-add");
-}
-
-function isLegacy(route: AdminRouteConfig): boolean {
-  return (route.type === "openai-chat" || route.type === "anthropic-messages") && Boolean(route.baseUrl && route.model);
 }
 
 function splitIds(value: string): string[] {
