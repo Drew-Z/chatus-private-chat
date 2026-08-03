@@ -38,7 +38,13 @@
 - PR [#37](https://github.com/Drew-Z/chatus-private-chat/pull/37) merged by squash into exact main SHA `b508f3d0819a93c2bafc92c93b634b9d10f7ed13`.
 - PR CI run `30840081929` passed `changes`, `quality`, `agent-browser`, and `workspace-browser`. The retained artifacts are `pr-path-classification-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866397393`), `agent-playwright-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866433579`), `pr-quality-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866474577`), and `workspace-playwright-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866552599`); all expire 2026-08-17.
 - GitHub Actions deployment run `30840604819` passed against that exact main SHA, including the real deploy and production verification steps. The retained artifacts are `production-deployment-b508f3d0819a93c2bafc92c93b634b9d10f7ed13` (ID `8866683762`, expires 2026-11-01) and `deployment-paths-b508f3d0819a93c2bafc92c93b634b9d10f7ed13` (ID `8866593925`, expires 2026-09-02).
-- Production legacy-route migration remains pending explicit execution and acceptance by an authenticated administrator in `/react-chat/admin`; CI and local scripts did not perform it.
+- The authenticated administrator executed the production legacy-route migration in `/react-chat/admin`; CI and local scripts did not perform it. Final acceptance remains pending the clarified entity-ID display described below.
+
+## Pending Manual Review (2026-08-04)
+
+- The authenticated administrator completed the production legacy-route migration and confirmed that React admin, migrated Providers, and their Offerings are accessible.
+- The migrated records preserve the intended identifiers (`<routeId>` and `<routeId>-provider`), but the current labels do not clearly distinguish logical-model IDs, Provider IDs, and Offering counts.
+- AC10 remains open until a follow-up UI clarification is delivered through PR/GitHub Actions and the administrator confirms the clarified production display. This manual gate is parked and does not block work on the next independent parent-task child.
 
 ## Validation Commands
 
