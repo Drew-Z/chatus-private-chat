@@ -1,0 +1,95 @@
+{
+  "id": "background-cleanup-reliability",
+  "name": "background-cleanup-reliability",
+  "title": "后台清理与删除可靠性",
+  "description": "为访客清理、Workspace outbox、会话级联删除增加自主重试、失败保留和最终一致性证据。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "backend",
+  "package": null,
+  "priority": "P0",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-02",
+  "completedAt": null,
+  "branch": "codex/background-cleanup-reliability",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-02-project-hardening-followups",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npx vitest run tests/worker-api.test.ts tests/workspace-file.test.ts",
+        "status": "passed",
+        "summary": "2 focused files and 128 cleanup/workspace tests passed with local fakes.",
+        "at": "2026-08-03T11:15:44.274168+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "React production build and frontend structure checks passed.",
+        "at": "2026-08-03T11:15:45.024670+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "40 test files and 520 tests passed with local bindings only.",
+        "at": "2026-08-03T11:15:45.700274+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "79 Workspace Playwright cases passed with 36 matrix-conditional skips.",
+        "at": "2026-08-03T11:15:46.434219+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "2 isolated Agent browser tests passed against the local fake Provider.",
+        "at": "2026-08-03T11:15:47.156713+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Root, client, and browser TypeScript checks passed.",
+        "at": "2026-08-03T11:15:47.830563+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaging dry-run passed; no deployment performed.",
+        "at": "2026-08-03T11:15:48.534660+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors were reported.",
+        "at": "2026-08-03T11:15:49.483838+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task and workspace consistency passed.",
+        "at": "2026-08-03T11:15:50.189340+00:00"
+      },
+      {
+        "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
+        "status": "passed",
+        "summary": "All 7 Trellis validation tests passed.",
+        "at": "2026-08-03T11:15:50.854449+00:00"
+      },
+      {
+        "command": "trellis-check",
+        "status": "passed",
+        "summary": "Spec compliance, retry ownership, cross-layer deletion flow, privacy, tests, and full project gates reviewed and passed.",
+        "at": "2026-08-03T11:15:51.521272+00:00"
+      }
+    ]
+  }
+}

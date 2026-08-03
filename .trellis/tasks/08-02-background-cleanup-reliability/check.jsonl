@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/public-guest-access.md","reason":"Verify guest cleanup is durable, alarm-backed, marker-last, and redacted."}
+{"file":".trellis/spec/frontend/workspace-files.md","reason":"Verify exact-generation cleanup retries, bounded alarm drain, and purge locking."}
+{"file":".trellis/spec/platform/backup-restore.md","reason":"Verify permanent deletion retains ownership until all stores succeed and excludes ephemeral state correctly."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify the full project quality gate and local fake-only policy."}

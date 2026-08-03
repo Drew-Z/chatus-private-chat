@@ -192,11 +192,14 @@ export type WorkspacePendingOperation = {
   fileId: string;
   versionId: string;
   generation: number;
-  state: "pending" | "failed";
+  state: "pending" | "failed" | "completed";
   objectKeys: string[];
   size: number;
   checksum: string;
   attempts: number;
+  nextAttemptAt: number;
+  terminalAt: number;
+  lastError: string;
   updatedAt: number;
 };
 

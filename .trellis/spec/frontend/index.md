@@ -23,9 +23,9 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 | [Agent Streaming And Fallback](./agent-streaming.md) | AIChat streaming, route commitment, fallback and telemetry | Ready |
 | [Multimodal Image Input](./multimodal-image-input.md) | Capability-aware image drafts, strict normalization, Agent persistence, provider conversion, and privacy | Ready |
 | [Text File Attachments](./file-attachments.md) | Member-only UTF-8 file context uploads, mixed attachment drafts, deterministic provider text, and guest denial | Ready |
-| [R2 Workspace Files](./workspace-files.md) | R2 immutable versions, Root SQLite metadata, exact conversation references, reconciliation, React workspace, and purge locking | Ready |
+| [R2 Workspace Files](./workspace-files.md) | R2 immutable versions, Root SQLite metadata, exact conversation references, alarm-backed cleanup reconciliation, React workspace, and purge locking | Ready |
 | [Member And Registry Capabilities](./capability-assignment.md) | Per-member assignment plus typed Skill, tool, MCP, secret, and discovery administration contracts | Ready |
-| [Public Guest Access](./public-guest-access.md) | Restricted anonymous sessions, single public route enforcement, guest capability denial, quotas, cleanup, and workspace projection | Ready |
+| [Public Guest Access](./public-guest-access.md) | Restricted anonymous sessions, single public route enforcement, guest capability denial, quotas, durable marker/alarm cleanup, and workspace projection | Ready |
 
 ---
 

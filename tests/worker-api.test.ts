@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { getAgentByName } from "agents";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import worker, {
   getTeamAgentConversationInstanceName,
   getTeamAgentInstanceName,
   responseWithProviderLease,
+  runTeamAgentCleanupSchedule,
 } from "../src/worker";
 import wranglerConfig from "../wrangler.jsonc?raw";
 
@@ -661,6 +662,207 @@ describe("Worker API", () => {
       await expect(ttlExpiredState.listChats()).resolves.toEqual([]);
       await expect(env.CHAT_STORE.get(cleanupKey)).resolves.toBeNull();
     });
+  });
+
+  it("keeps an expired guest unauthorized and retains cleanup ownership when TeamAgent is unavailable", async () => {
+    const now = Date.now();
+    const token = `expired-unavailable-${crypto.randomUUID()}`;
+    const label = `guest-${crypto.randomUUID()}`;
+    const expiresAt = now - 1_000;
+    const markerKey = `${GUEST_CLEANUP_PREFIX}${String(expiresAt).padStart(13, "0")}:${encodeURIComponent(label)}`;
+    await env.CHAT_STORE.put(`session:${token}`, JSON.stringify({
+      id: crypto.randomUUID(),
+      label,
+      kind: "guest",
+      createdAt: now - 3_000,
+      lastSeen: now - 2_000,
+      expiresAt,
+      sourceKey: `guest-source:${"b".repeat(64)}`,
+    }));
+    const unavailableTeamAgent = new Proxy(env.TEAM_AGENT, {
+      get(target, property, receiver) {
+        if (property === "get") {
+          return () => { throw new Error("synthetic_team_agent_unavailable"); };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const customEnv = new Proxy(env, {
+      get(target, property, receiver) {
+        if (property === "TEAM_AGENT") return unavailableTeamAgent;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await worker.fetch(
+      new Request("https://example.test/api/session", {
+        headers: { Cookie: `chatus_session=${token}` },
+      }),
+      customEnv,
+    );
+
+    expect(response.status).toBe(401);
+    await expect(env.CHAT_STORE.get(`session:${token}`)).resolves.toBeNull();
+    await expect(env.CHAT_STORE.get(markerKey)).resolves.not.toBeNull();
+    const [marker] = (await env.CHAT_STORE.list({ prefix: markerKey })).keys;
+    expect(marker?.expiration).toBeUndefined();
+    expect(consoleError).toHaveBeenCalledWith(JSON.stringify({
+      level: "warn",
+      event: "guest_cleanup_deferred",
+      error: "guest_cleanup_unavailable",
+    }));
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(label);
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(markerKey);
+  });
+
+  it("retains guest cleanup ownership across TeamAgent and UserState failures, then converges after eviction", async () => {
+    const now = Date.now();
+    const label = `guest-${crypto.randomUUID()}`;
+    const chatId = `guest-cleanup-${crypto.randomUUID()}`;
+    const expiresAt = now - 1_000;
+    const markerKey = `${GUEST_CLEANUP_PREFIX}${String(expiresAt).padStart(13, "0")}:${encodeURIComponent(label)}`;
+    const root = await getRootAgent(label);
+    const conversation = await getConversationAgent(label, chatId);
+    const userState = env.USER_STATE.getByName(label);
+    await env.CHAT_STORE.put(markerKey, JSON.stringify({ label, expiresAt }));
+    await root.createConversation({
+      id: chatId,
+      title: "Guest cleanup",
+      createdAt: now - 3_000,
+      updatedAt: now - 2_000,
+      summary: "",
+      pinned: false,
+      skillIds: [],
+      messageCount: 1,
+    });
+    await conversation.importLegacyMessages([{
+      id: "guest-cleanup-message",
+      role: "user",
+      parts: [{ type: "text", text: "synthetic guest cleanup payload" }],
+    }]);
+    await userState.upsertChat({
+      id: chatId,
+      title: "Guest cleanup",
+      createdAt: now - 3_000,
+      updatedAt: now - 2_000,
+      summary: "",
+      summaryUntil: 0,
+      routeId: "",
+      messages: [],
+      serializedBytes: 20,
+    });
+    await expect(root.registerGuestCleanup(markerKey, now + 60_000)).resolves.toBe(true);
+    const [listedMarker] = (await env.CHAT_STORE.list({ prefix: markerKey })).keys;
+    expect(listedMarker?.expiration).toBeUndefined();
+    const cleanupRoot = (overrides: Partial<Pick<
+      TeamAgent,
+      "getDueGuestCleanup" | "completeWorkspaceAccountPurge"
+    >> = {}) => ({
+      getDueGuestCleanup: overrides.getDueGuestCleanup
+        || ((dueAt: number) => root.getDueGuestCleanup(dueAt)),
+      beginWorkspaceAccountPurge: (operationId: string) => root.beginWorkspaceAccountPurge(operationId),
+      completeWorkspaceAccountPurge: overrides.completeWorkspaceAccountPurge
+        || ((operationId: string, generation: number) => root.completeWorkspaceAccountPurge(operationId, generation)),
+      getAllConversationIds: () => root.getAllConversationIds(),
+      purgeRootData: () => root.purgeRootData(),
+      recordWorkspaceOperationFailure: (...args: Parameters<TeamAgent["recordWorkspaceOperationFailure"]>) => (
+        root.recordWorkspaceOperationFailure(...args)
+      ),
+      releaseWorkspaceAccountPurge: (...args: Parameters<TeamAgent["releaseWorkspaceAccountPurge"]>) => (
+        root.releaseWorkspaceAccountPurge(...args)
+      ),
+      completeGuestCleanup: (key: string) => root.completeGuestCleanup(key),
+      recordGuestCleanupFailure: (...args: Parameters<TeamAgent["recordGuestCleanupFailure"]>) => (
+        root.recordGuestCleanupFailure(...args)
+      ),
+    }) as unknown as TeamAgent;
+
+    const initialGuest = await root.getDueGuestCleanup(now + 60_000);
+    expect(initialGuest).toMatchObject({ markerKey, attempts: 0 });
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM cf_agents_schedules WHERE callback = 'runCleanupSchedule'");
+      await state.storage.deleteAlarm();
+    });
+    const failingRoot = cleanupRoot({
+      getDueGuestCleanup: async () => initialGuest,
+      completeWorkspaceAccountPurge: async () => { throw new Error("synthetic_team_agent_purge_failure"); },
+    });
+    await runTeamAgentCleanupSchedule(env, label, failingRoot);
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM cf_agents_schedules WHERE callback = 'runCleanupSchedule'");
+      await state.storage.deleteAlarm();
+    });
+    await expect(env.CHAT_STORE.get(markerKey)).resolves.not.toBeNull();
+    await expect(userState.listChats()).resolves.toHaveLength(1);
+    await expect(root.inspectCleanupReliability()).resolves.toMatchObject({
+      guest: { pending: 1, terminal: 0, maxAttempts: 1 },
+      account: { pending: 1, terminal: 0, maxAttempts: 1 },
+    });
+
+    let userStateFailureInjected = false;
+    const failingUserState = new Proxy(env.USER_STATE, {
+      get(target, property) {
+        if (property === "getByName") {
+          return (name: string) => {
+            if (name === label) {
+              return {
+                purgeUserData: async () => {
+                  userStateFailureInjected = true;
+                  throw new Error("synthetic_guest_user_state_failure");
+                },
+              };
+            }
+            return target.getByName(name);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const dueGuest = await root.getDueGuestCleanup(Date.now() + 10 * 60_000);
+    expect(dueGuest).toMatchObject({ markerKey, attempts: 1 });
+    await runTeamAgentCleanupSchedule(
+      { ...env, USER_STATE: failingUserState },
+      label,
+      {
+        ...cleanupRoot(),
+        getDueGuestCleanup: async () => dueGuest,
+      } as unknown as TeamAgent,
+    );
+    await runInDurableObject(root, async (_instance, state) => {
+      const ticket = await state.storage.get<any>("chatus:guest-cleanup-ticket:v1");
+      await state.storage.put("chatus:guest-cleanup-ticket:v1", { ...ticket, nextAttemptAt: 1 });
+      state.storage.sql.exec("UPDATE workspace_file_operations SET next_attempt_at = 1 WHERE kind = 'account_purge'");
+      state.storage.sql.exec("DELETE FROM cf_agents_schedules WHERE callback = 'runCleanupSchedule'");
+      await state.storage.deleteAlarm();
+    });
+    expect(userStateFailureInjected).toBe(true);
+    await expect(env.CHAT_STORE.get(markerKey)).resolves.not.toBeNull();
+    await expect(userState.listChats()).resolves.toHaveLength(1);
+    await expect(conversation.getConversationMessageCount()).resolves.toBe(0);
+    await expect(root.inspectCleanupReliability()).resolves.toMatchObject({
+      guest: { pending: 1, terminal: 0, maxAttempts: 2 },
+      account: { pending: 1, terminal: 0, maxAttempts: 2 },
+    });
+
+    await runInDurableObject(root, async (instance, state) => {
+      await instance.refreshCleanupSchedule(Date.now() + 60_000, true);
+      state.storage.sql.exec("UPDATE cf_agents_schedules SET time = 1 WHERE callback = 'runCleanupSchedule'");
+    });
+
+    await evictDurableObject(root);
+    const rootInstance = await getTeamAgentInstanceName(label);
+    const restored = await getAgentByName(env.TEAM_AGENT, rootInstance) as DurableObjectStub<TeamAgent>;
+    await expect(runDurableObjectAlarm(restored)).resolves.toBe(true);
+    await expect(env.CHAT_STORE.get(markerKey)).resolves.toBeNull();
+    await expect(userState.listChats()).resolves.toEqual([]);
+    await expect(env.WORKSPACE_FILES.list()).resolves.toMatchObject({ objects: [] });
+    await expect(runInDurableObject(restored, async (_instance, state) => Promise.all([
+      state.storage.get("chatus:guest-cleanup-ticket:v1"),
+      state.storage.get("chatus:agent-identity:v1"),
+    ]))).resolves.toEqual([undefined, undefined]);
   });
 
   it("rotates a guest identity into a member session without migrating guest history", async () => {
@@ -1734,6 +1936,16 @@ describe("Worker API", () => {
     await expect(root.listPendingConversationCleanups()).resolves.toEqual([
       expect.objectContaining({ chatId, attempts: 1 }),
     ]);
+    const beforeDue = await apiRequest("/api/agent/conversations", cookie);
+    expect(beforeDue.status).toBe(200);
+    await expect(root.listPendingConversationCleanups()).resolves.toHaveLength(1);
+    await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(1);
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE chatus_conversation_cleanup SET next_attempt_at = 1 WHERE chat_id = ?",
+        chatId,
+      );
+    });
 
     const listed = await apiRequest("/api/agent/conversations", cookie);
     expect(listed.status).toBe(200);
@@ -1741,6 +1953,7 @@ describe("Worker API", () => {
     await expect(root.listPendingConversationCleanups()).resolves.toEqual([]);
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(0);
     await expect(getPersistedAgentMessages(conversationAgent)).resolves.toEqual([]);
+    await expect(root.inspectCleanupReliability()).resolves.toMatchObject({ scheduledAt: 0 });
 
     const staleReconnect = await apiRequest(`/agent?chatId=${encodeURIComponent(chatId)}`, cookie);
     expect(staleReconnect.status).toBe(410);
@@ -1790,6 +2003,145 @@ describe("Worker API", () => {
 
     const rotatedBatch = await root.listPendingConversationCleanups(3);
     expect(rotatedBatch[0]?.chatId).toBe(chatIds[3]);
+  });
+
+  it("filters conversation cleanup by due time and retains exhausted work without leaking identifiers", async () => {
+    const { label } = await login(`agent-cleanup-retry-${crypto.randomUUID()}`);
+    const root = await getRootAgent(label);
+    const chatId = `cleanup-private-${crypto.randomUUID()}`;
+    const createdAt = Date.now();
+    const created = await root.createConversation({
+      id: chatId,
+      title: "Cleanup retry",
+      createdAt,
+      updatedAt: createdAt,
+      summary: "",
+      pinned: false,
+      skillIds: [],
+      messageCount: 0,
+    });
+    expect(created.ok).toBe(true);
+    await expect(root.deleteConversation(chatId, createdAt)).resolves.toMatchObject({ ok: true });
+
+    const queued = await root.listPendingConversationCleanups(3);
+    expect(queued).toEqual([expect.objectContaining({ chatId, attempts: 0 })]);
+    expect(await root.listPendingConversationCleanups(3, queued[0]!.nextAttemptAt - 1, true)).toEqual([]);
+    expect(await root.listPendingConversationCleanups(3, queued[0]!.nextAttemptAt, true)).toHaveLength(1);
+
+    const expectedDelays = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000];
+    for (const [index, delay] of expectedDelays.entries()) {
+      const failedAt = 100_000 + index * 1_000_000;
+      await root.recordConversationCleanupFailure(
+        chatId,
+        index === 0 ? "synthetic raw cleanup error" : "conversation_cleanup_failed",
+        failedAt,
+        false,
+      );
+      const [record] = await root.listPendingConversationCleanups(3);
+      expect(record).toMatchObject({
+        chatId,
+        attempts: index + 1,
+        nextAttemptAt: failedAt + delay,
+        lastError: "conversation_cleanup_failed",
+      });
+      expect(await root.listPendingConversationCleanups(3, failedAt + delay - 1, true)).toEqual([]);
+    }
+    await root.recordConversationCleanupFailure(
+      chatId,
+      "conversation_cleanup_failed",
+      9_000_000,
+      false,
+    );
+
+    expect(await root.listPendingConversationCleanups()).toEqual([]);
+    const summary = await root.inspectCleanupReliability();
+    expect(summary.conversation).toEqual({
+      pending: 1,
+      terminal: 1,
+      oldestDueAt: 0,
+      maxAttempts: 8,
+    });
+    expect(summary.scheduledAt).toBeGreaterThan(Date.now() - 60_000);
+    const evidence = JSON.stringify(summary);
+    expect(evidence).not.toContain(chatId);
+    expect(evidence).not.toContain(label);
+  });
+
+  it("retries conversation cleanup after UserState failure and Durable Object eviction", async () => {
+    const { label } = await login(`agent-cleanup-eviction-${crypto.randomUUID()}`);
+    const chatId = `cleanup-eviction-${crypto.randomUUID()}`;
+    const root = await getRootAgent(label);
+    const conversation = await getConversationAgent(label, chatId);
+    const userState = env.USER_STATE.getByName(label);
+    const createdAt = Date.now();
+    await expect(root.createConversation({
+      id: chatId,
+      title: "Eviction cleanup",
+      createdAt,
+      updatedAt: createdAt,
+      summary: "",
+      pinned: false,
+      skillIds: [],
+      messageCount: 1,
+    })).resolves.toMatchObject({ ok: true });
+    await conversation.importLegacyMessages([{
+      id: "cleanup-eviction-message",
+      role: "user",
+      parts: [{ type: "text", text: "synthetic cleanup payload" }],
+    }]);
+    await userState.upsertChat({
+      id: chatId,
+      title: "Eviction cleanup",
+      createdAt,
+      updatedAt: createdAt,
+      summary: "",
+      summaryUntil: 0,
+      routeId: "",
+      messages: [],
+      serializedBytes: 20,
+    });
+    await root.deleteConversation(chatId, createdAt);
+    await runInDurableObject(root, async (instance, state) => {
+      state.storage.sql.exec("UPDATE chatus_conversation_cleanup SET next_attempt_at = 1 WHERE chat_id = ?", chatId);
+      const failingUserState = new Proxy(env.USER_STATE, {
+        get(target, property) {
+          if (property === "getByName") {
+            return (name: string) => {
+              const stub = target.getByName(name);
+              if (name !== label) return stub;
+              return new Proxy(stub, {
+                get(stubTarget, stubProperty) {
+                  if (stubProperty === "deleteChat") {
+                    return async () => { throw new Error("synthetic_user_state_cleanup_failure"); };
+                  }
+                  const value = Reflect.get(stubTarget, stubProperty, stubTarget);
+                  return typeof value === "function" ? value.bind(stubTarget) : value;
+                },
+              });
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      await runTeamAgentCleanupSchedule({ ...env, USER_STATE: failingUserState }, label, instance);
+      state.storage.sql.exec("UPDATE chatus_conversation_cleanup SET next_attempt_at = 1 WHERE chat_id = ?", chatId);
+      state.storage.sql.exec("UPDATE cf_agents_schedules SET time = 1 WHERE callback = 'runCleanupSchedule'");
+    });
+
+    await expect(conversation.getConversationMessageCount()).resolves.toBe(0);
+    await expect(userState.listChats()).resolves.toHaveLength(1);
+    await expect(root.listPendingConversationCleanups()).resolves.toEqual([
+      expect.objectContaining({ chatId, attempts: 1 }),
+    ]);
+
+    await evictDurableObject(root);
+    const rootInstance = await getTeamAgentInstanceName(label);
+    const restored = await getAgentByName(env.TEAM_AGENT, rootInstance) as DurableObjectStub<TeamAgent>;
+    await expect(runDurableObjectAlarm(restored)).resolves.toBe(true);
+    await expect(userState.listChats()).resolves.toEqual([]);
+    await expect(restored.listPendingConversationCleanups()).resolves.toEqual([]);
+    await expect(conversation.getConversationMessageCount()).resolves.toBe(0);
   });
 
   it("applies legacy replace semantics to the authoritative Agent conversation index", async () => {

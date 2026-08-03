@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { getAgentByName } from "agents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
@@ -176,11 +176,17 @@ describe("workspace file API and R2 recovery", () => {
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'workspace_%' OR name = 'conversation_file_refs' ORDER BY name",
         ).toArray().map((row) => row.name),
         indexes: state.storage.sql.exec<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('workspace_files_active_path_key', 'workspace_file_operations_pending', 'conversation_file_refs_version') ORDER BY name",
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('workspace_files_active_path_key', 'workspace_file_operations_pending', 'workspace_file_operations_due', 'conversation_file_refs_version', 'chatus_conversation_cleanup_due') ORDER BY name",
+        ).toArray().map((row) => row.name),
+        cleanupColumns: state.storage.sql.exec<{ name: string }>(
+          "PRAGMA table_info(chatus_conversation_cleanup)",
+        ).toArray().map((row) => row.name),
+        operationColumns: state.storage.sql.exec<{ name: string }>(
+          "PRAGMA table_info(workspace_file_operations)",
         ).toArray().map((row) => row.name),
       };
     });
-    expect(schema.versions).toEqual([1, 2, 3, 4, 5]);
+    expect(schema.versions).toEqual([1, 2, 3, 4, 5, 6]);
     expect(schema.tables).toEqual([
       "conversation_file_refs",
       "workspace_file_operations",
@@ -188,10 +194,182 @@ describe("workspace file API and R2 recovery", () => {
       "workspace_files",
     ]);
     expect(schema.indexes).toEqual([
+      "chatus_conversation_cleanup_due",
       "conversation_file_refs_version",
+      "workspace_file_operations_due",
       "workspace_file_operations_pending",
       "workspace_files_active_path_key",
     ]);
+    expect(schema.cleanupColumns).toEqual(expect.arrayContaining([
+      "next_attempt_at",
+      "terminal_at",
+      "last_error",
+    ]));
+    expect(schema.operationColumns).toEqual(expect.arrayContaining([
+      "next_attempt_at",
+      "terminal_at",
+    ]));
+  });
+
+  it("makes pre-v6 cleanup rows immediately eligible without losing ownership", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    await runInDurableObject(root, async (instance, state) => {
+      state.storage.sql.exec("DROP INDEX IF EXISTS chatus_conversation_cleanup_due");
+      state.storage.sql.exec("ALTER TABLE chatus_conversation_cleanup RENAME TO chatus_conversation_cleanup_v6");
+      state.storage.sql.exec(`
+        CREATE TABLE chatus_conversation_cleanup (
+          chat_id TEXT PRIMARY KEY,
+          requested_at INTEGER NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      state.storage.sql.exec(
+        "INSERT INTO chatus_conversation_cleanup(chat_id, requested_at, attempts, last_attempt_at) VALUES (?, 10, 1, 20)",
+        "legacy-cleanup-chat",
+      );
+      state.storage.sql.exec("DROP TABLE chatus_conversation_cleanup_v6");
+
+      state.storage.sql.exec("DROP INDEX IF EXISTS workspace_file_operations_due");
+      state.storage.sql.exec("DROP INDEX IF EXISTS workspace_file_operations_pending");
+      state.storage.sql.exec("DROP INDEX IF EXISTS workspace_file_operations_file");
+      state.storage.sql.exec("ALTER TABLE workspace_file_operations RENAME TO workspace_file_operations_v6");
+      state.storage.sql.exec(`
+        CREATE TABLE workspace_file_operations (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          file_id TEXT NOT NULL DEFAULT '',
+          version_id TEXT NOT NULL DEFAULT '',
+          generation INTEGER NOT NULL,
+          state TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          object_keys_json TEXT NOT NULL DEFAULT '[]',
+          size INTEGER NOT NULL DEFAULT 0,
+          checksum TEXT NOT NULL DEFAULT '',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      state.storage.sql.exec(`
+        INSERT INTO workspace_file_operations(
+          id, kind, file_id, version_id, generation, state, fingerprint,
+          object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+        ) VALUES ('legacy-workspace-cleanup', 'upload', 'legacy-file', 'legacy-version', 1,
+          'pending', 'legacy-fingerprint', '[]', 1, '', 2, 'legacy_stable_error', 10, 20)
+      `);
+      state.storage.sql.exec("DROP TABLE workspace_file_operations_v6");
+      state.storage.sql.exec(
+        "CREATE INDEX workspace_file_operations_pending ON workspace_file_operations(state, updated_at)",
+      );
+      state.storage.sql.exec(
+        "CREATE INDEX workspace_file_operations_file ON workspace_file_operations(file_id, created_at DESC)",
+      );
+      state.storage.sql.exec("DELETE FROM _sql_schema_migrations WHERE id = 6");
+      (instance as unknown as { applySchemaMigrations(): void }).applySchemaMigrations();
+    });
+
+    await expect(root.listPendingConversationCleanups(3, 1, true)).resolves.toEqual([
+      expect.objectContaining({ chatId: "legacy-cleanup-chat", attempts: 1, nextAttemptAt: 0, terminalAt: 0 }),
+    ]);
+    await expect(root.listPendingWorkspaceOperations(3, 1, true)).resolves.toEqual([
+      expect.objectContaining({
+        operationId: "legacy-workspace-cleanup",
+        attempts: 2,
+        nextAttemptAt: 0,
+        terminalAt: 0,
+      }),
+    ]);
+  });
+
+  it("defers pending upload reconciliation and retains terminal cleanup evidence", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    const operationId = `terminal-upload-${crypto.randomUUID()}`;
+    const content = "terminal cleanup fixture";
+    const reservation = await root.reserveWorkspaceUpload({
+      operationId,
+      relativePath: "cleanup/terminal.txt",
+      size: new TextEncoder().encode(content).byteLength,
+      mediaType: "text/plain",
+      checksum: await sha256(content),
+    });
+    expect(reservation.ok).toBe(true);
+    if (!reservation.ok) throw new Error(reservation.error);
+
+    const [pending] = await root.listPendingWorkspaceOperations();
+    expect(pending).toMatchObject({ operationId, kind: "upload", attempts: 0 });
+    expect(pending!.nextAttemptAt - pending!.updatedAt).toBe(60_000);
+    expect(await root.listPendingWorkspaceOperations(3, pending!.nextAttemptAt - 1, true)).toEqual([]);
+    expect(await root.listPendingWorkspaceOperations(3, pending!.nextAttemptAt, true)).toHaveLength(1);
+
+    const expectedDelays = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000];
+    for (const [index, delay] of expectedDelays.entries()) {
+      const failedAt = 200_000 + index * 1_000_000;
+      await expect(root.recordWorkspaceOperationFailure(
+        operationId,
+        reservation.reservation.generation,
+        "workspace_reconcile_failed",
+        failedAt,
+        false,
+      )).resolves.toBe(true);
+      const [record] = await root.listPendingWorkspaceOperations();
+      expect(record).toMatchObject({
+        operationId,
+        attempts: index + 1,
+        nextAttemptAt: failedAt + delay,
+      });
+      expect(await root.listPendingWorkspaceOperations(3, failedAt + delay - 1, true)).toEqual([]);
+    }
+    await expect(root.recordWorkspaceOperationFailure(
+      operationId,
+      reservation.reservation.generation,
+      "workspace_reconcile_failed",
+      9_000_000,
+      false,
+    )).resolves.toBe(true);
+
+    expect(await root.listPendingWorkspaceOperations()).toEqual([]);
+    const summary = await root.inspectCleanupReliability();
+    expect(summary.workspace).toEqual({
+      pending: 1,
+      terminal: 1,
+      oldestDueAt: 0,
+      maxAttempts: 8,
+    });
+    expect(summary.scheduledAt).toBeGreaterThan(Date.now() - 60_000);
+    const evidence = JSON.stringify(summary);
+    expect(evidence).not.toContain(operationId);
+    expect(evidence).not.toContain(reservation.reservation.objectKey);
+    expect(evidence).not.toContain(member.label);
+  });
+
+  it("bounds a due Workspace cleanup selection to three operations", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    const operationIds: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const operationId = `bounded-cleanup-${index}-${crypto.randomUUID()}`;
+      operationIds.push(operationId);
+      await expect(root.reserveWorkspaceUpload({
+        operationId,
+        relativePath: `cleanup/bounded-${index}.txt`,
+        size: 1,
+        mediaType: "text/plain",
+        checksum: await sha256(String(index)),
+      })).resolves.toMatchObject({ ok: true });
+    }
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec("UPDATE workspace_file_operations SET next_attempt_at = 1");
+    });
+
+    await expect(root.listPendingWorkspaceOperations(10, Date.now(), true)).resolves.toHaveLength(4);
+    const batch = await root.listPendingWorkspaceOperations(3, Date.now(), true);
+    expect(batch).toHaveLength(3);
+    expect(new Set(batch.map((operation) => operation.operationId)).size).toBe(3);
+    expect(batch.every((operation) => operationIds.includes(operation.operationId))).toBe(true);
   });
 
   it("enforces text and document upload byte limits at the exact boundary", async () => {
@@ -366,11 +544,19 @@ describe("workspace file API and R2 recovery", () => {
       reserved.reservation.file.updatedAt,
       "delete-during-upload",
     )).resolves.toMatchObject({ ok: false, error: "workspace_file_conflict" });
-    const purgeDuringUpload = await apiRequest("/api/user-data", member.cookie, { method: "DELETE" });
-    expect(purgeDuringUpload.status).toBe(503);
-    await expect(purgeDuringUpload.json()).resolves.toMatchObject({ error: "user_data_purge_incomplete" });
-    expect((await apiRequest("/api/session", member.cookie)).status).toBe(200);
+    await expect(root.beginWorkspaceAccountPurge("purge-during-upload"))
+      .resolves.toEqual({ error: "workspace_purge_pending_upload" });
     await env.WORKSPACE_FILES.put(reserved.reservation.objectKey, content, { sha256: input.checksum });
+    const beforeDue = await apiRequest("/api/workspace/files", member.cookie);
+    expect(beforeDue.status).toBe(200);
+    await expect(beforeDue.json()).resolves.toMatchObject({
+      files: [expect.objectContaining({ id: reserved.reservation.fileId, state: "uploading" })],
+    });
+    await expect(root.deferWorkspaceOperation(
+      reserved.reservation.operationId,
+      reserved.reservation.generation,
+      1,
+    )).resolves.toBe(true);
 
     const repeated = await root.reserveWorkspaceUpload(input);
     expect(repeated).toMatchObject({ ok: true, reservation: { existing: true, versionId: reserved.reservation.versionId } });
@@ -393,10 +579,76 @@ describe("workspace file API and R2 recovery", () => {
     if (!deletion.ok) throw new Error(deletion.error);
     const objectKey = deletion.reservation.objectKeys[0];
     expect(await env.WORKSPACE_FILES.get(objectKey)).not.toBeNull();
+    await expect(root.deferWorkspaceOperation(
+      deletion.reservation.operationId,
+      deletion.reservation.generation,
+      1,
+    )).resolves.toBe(true);
     const reconciled = await apiRequest("/api/workspace/files", member.cookie);
     expect(reconciled.status).toBe(200);
     expect((await reconciled.json() as any).files).toEqual([]);
     expect(await env.WORKSPACE_FILES.get(objectKey)).toBeNull();
+  });
+
+  it("continues member account cleanup after a pending upload rejects the initiating request and the Root is evicted", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    const content = "account cleanup resumes without another request";
+    const reservation = await root.reserveWorkspaceUpload({
+      operationId: `account-cleanup-upload-${crypto.randomUUID()}`,
+      relativePath: "account/pending.txt",
+      size: new TextEncoder().encode(content).byteLength,
+      mediaType: "text/plain",
+      checksum: await sha256(content),
+    });
+    expect(reservation.ok).toBe(true);
+    if (!reservation.ok) throw new Error(reservation.error);
+    await env.WORKSPACE_FILES.put(reservation.reservation.objectKey, content, {
+      sha256: await sha256(content),
+    });
+
+    const rejected = await apiRequest("/api/user-data", member.cookie, { method: "DELETE" });
+    expect(rejected.status).toBe(503);
+    await expect(rejected.json()).resolves.toMatchObject({ error: "user_data_purge_incomplete" });
+    expect((await apiRequest("/api/session", member.cookie)).status).toBe(200);
+    await expect(root.hasAccountCleanupRequest()).resolves.toBe(true);
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE workspace_file_operations SET next_attempt_at = 1 WHERE id = ?",
+        reservation.reservation.operationId,
+      );
+      state.storage.sql.exec("UPDATE cf_agents_schedules SET time = 1 WHERE callback = 'runCleanupSchedule'");
+    });
+
+    await evictDurableObject(root);
+    const instance = await getTeamAgentInstanceName(member.label);
+    const restored = await getAgentByName(env.TEAM_AGENT, instance) as DurableObjectStub<TeamAgent>;
+    await expect(runDurableObjectAlarm(restored)).resolves.toBe(true);
+    await expect(env.CHAT_STORE.get(`session:${member.cookie.split("=", 2)[1]}`)).resolves.toBeNull();
+    expect((await apiRequest("/api/session", member.cookie)).status).toBe(401);
+    await expect(env.WORKSPACE_FILES.get(reservation.reservation.objectKey)).resolves.toBeNull();
+  });
+
+  it("schedules a persisted member cleanup request before a purge operation exists", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    await root.registerAccountCleanupRequest(Date.now() + 60_000);
+    await expect(root.hasWorkspaceAccountPurgeOperation()).resolves.toBe(false);
+    await expect(root.inspectCleanupReliability()).resolves.toMatchObject({
+      account: { pending: 0, terminal: 0 },
+      scheduledAt: expect.any(Number),
+    });
+    const summary = await root.inspectCleanupReliability();
+    expect(summary.scheduledAt).toBeGreaterThan(Date.now());
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec("UPDATE cf_agents_schedules SET time = 1 WHERE callback = 'runCleanupSchedule'");
+    });
+
+    await evictDurableObject(root);
+    const instance = await getTeamAgentInstanceName(member.label);
+    const restored = await getAgentByName(env.TEAM_AGENT, instance) as DurableObjectStub<TeamAgent>;
+    await expect(runDurableObjectAlarm(restored)).resolves.toBe(true);
+    expect((await apiRequest("/api/session", member.cookie)).status).toBe(401);
   });
 
   it("marks a stale pending upload with a missing R2 object as retryable", async () => {
@@ -415,7 +667,7 @@ describe("workspace file API and R2 recovery", () => {
     if (!reserved.ok) throw new Error(reserved.error);
     await runInDurableObject(root, async (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE workspace_file_operations SET updated_at = 1 WHERE id = 'missing-object-upload'",
+        "UPDATE workspace_file_operations SET updated_at = 1, next_attempt_at = 1 WHERE id = 'missing-object-upload'",
       );
     });
 
@@ -488,6 +740,33 @@ describe("workspace file API and R2 recovery", () => {
       mediaType: "text/plain",
       checksum: await sha256("z"),
     })).resolves.toMatchObject({ ok: true });
+  });
+
+  it("completes a raw workspace purge without revoking the member or rescheduling it forever", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    const purge = await root.beginWorkspaceAccountPurge(`raw-purge-${crypto.randomUUID()}`);
+    if ("error" in purge) throw new Error(purge.error);
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE workspace_file_operations SET next_attempt_at = 1 WHERE id = ?",
+        purge.operationId,
+      );
+      state.storage.sql.exec("UPDATE cf_agents_schedules SET time = 1 WHERE callback = 'runCleanupSchedule'");
+    });
+
+    await expect(runDurableObjectAlarm(root)).resolves.toBe(true);
+    expect((await apiRequest("/api/session", member.cookie)).status).toBe(200);
+    await expect(root.listPendingWorkspaceOperations()).resolves.toEqual([
+      expect.objectContaining({
+        operationId: purge.operationId,
+        kind: "account_purge",
+        state: "completed",
+      }),
+    ]);
+    const summary = await root.inspectCleanupReliability();
+    expect(summary.account).toMatchObject({ pending: 1, terminal: 0 });
+    expect(summary.scheduledAt).toBe(0);
   });
 
   it("marks failed documents unavailable without exposing storage identifiers or raw content to the fake Provider", async () => {
@@ -868,6 +1147,11 @@ describe("workspace file API and R2 recovery", () => {
       reservation.reservation.generation,
       "workspace_r2_put_failed",
     );
+    await expect(root.deferWorkspaceOperation(
+      reservation.reservation.operationId,
+      reservation.reservation.generation,
+      1,
+    )).resolves.toBe(true);
 
     const reconciled = await apiRequest("/api/workspace/files?q=failed", member.cookie);
     expect(reconciled.status).toBe(200);
