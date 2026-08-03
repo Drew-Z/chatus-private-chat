@@ -5,7 +5,7 @@
   "description": "修复 automatic Skill 在配额前调用、BYOK 质量污染、聚合写入竞态，并补充并发和超时策略。",
   "status": "planning",
   "dev_type": null,
-  "scope": null,
+  "scope": "frontend/platform",
   "package": null,
   "priority": "P0",
   "creator": "zhang",
