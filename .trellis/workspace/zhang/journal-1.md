@@ -1183,3 +1183,39 @@ Completed ordinary member logout fail-closed behavior and regression evidence; m
 ### Next Steps
 
 - None - task complete
+
+
+## Session 30: Background cleanup reliability delivery
+
+**Date**: 2026-08-03
+**Task**: Background cleanup reliability delivery
+**Branch**: `main`
+
+### Summary
+
+Implemented Root TeamAgent autonomous cleanup alarms, additive retry/backoff/terminal metadata, guest marker durability, conversation/UserState cascade deletion, Workspace/account purge locking, stable privacy-safe cleanup evidence, and local fake-only regression coverage. PR #36 passed CI, merged at exact SHA 385494da39ae826bc596fb59c0f21f3355e74c1f, and GitHub Actions deployment/Verify production passed; docs/Trellis-only deployment skip was also verified.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `48996aa` | (see git log) |
+| `ddf16d1` | (see git log) |
+| `385494d` | (see git log) |
+| `5ebb164` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
