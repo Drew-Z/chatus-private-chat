@@ -3,7 +3,7 @@
   "name": "background-cleanup-reliability",
   "title": "后台清理与删除可靠性",
   "description": "为访客清理、Workspace outbox、会话级联删除增加自主重试、失败保留和最终一致性证据。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": "backend",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-02",
-  "completedAt": null,
+  "completedAt": "2026-08-03",
   "branch": "codex/background-cleanup-reliability",
   "base_branch": "main",
   "worktree_path": null,
@@ -113,6 +113,12 @@
         "status": "passed",
         "summary": "Exact-SHA Deploy Worker and Verify production passed. production-deployment artifact expires 2026-11-01 and deployment-paths artifact expires 2026-09-02.",
         "at": "2026-08-03T11:45:01.273744+00:00"
+      },
+      {
+        "command": "GitHub Actions docs/Trellis-only deployment skip run 30810795723 @ 5ebb1643379c22d577b67b82f3305b61be1c8baa",
+        "status": "passed",
+        "summary": "Path classification marked docs/Trellis-only; deployment-skipped completed successfully and deployment job was skipped. deployment-paths artifact expires 2026-09-02.",
+        "at": "2026-08-03T11:46:25.603125+00:00"
       }
     ]
   }
