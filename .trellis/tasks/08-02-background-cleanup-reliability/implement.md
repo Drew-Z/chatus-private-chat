@@ -12,7 +12,7 @@
 - [x] Add deterministic tests for partial failure, recovery, idempotent replay, due filtering, backoff cap, terminal retention, batch limits, eviction/resume, and privacy-safe aggregates.
 - [x] Run focused Vitest while iterating, then load and execute `trellis-check`.
 - [x] Run full frontend, Vitest, Workspace browser, Agent fake-Provider browser, typecheck, Wrangler dry-run, diff, Trellis consistency, and Trellis unit-test gates.
-- [ ] Update the applicable specs with durable cleanup/alarm contracts, record validation evidence, create scoped work/spec commits, push a draft PR, and retain CI artifacts.
+- [x] Update the applicable specs with durable cleanup/alarm contracts, record validation evidence, create scoped work/spec commits, push a draft PR, merge through PR #36, and retain CI/deployment artifacts.
 
 ## Expected Files
 
