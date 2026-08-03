@@ -12,15 +12,48 @@
   "assignee": "zhang",
   "createdAt": "2026-08-02",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/frontend-legacy-experience",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "037307d0409403e302b88f73bb6f117d9f28bd7e",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": "08-02-project-hardening-followups",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend structural checks and Vite production build passed; measured bundle 895.86 KB minified and 249.09 KB gzip JS.",
+        "at": "2026-08-03T17:29:33.596126+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Vitest passed: 39 files and 527 tests.",
+        "at": "2026-08-03T17:29:33.755604+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "TypeScript typecheck passed.",
+        "at": "2026-08-03T17:29:33.935519+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 dry-run passed; no deployment occurred.",
+        "at": "2026-08-03T17:29:34.102365+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Git whitespace validation passed.",
+        "at": "2026-08-03T17:29:34.264315+00:00"
+      }
+    ]
+  }
 }
