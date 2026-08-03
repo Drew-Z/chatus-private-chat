@@ -124,7 +124,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 }
 ```
 
-它不能覆盖 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、Cloudflare 凭据或三项实例 Variables。生产部署不再要求或读取 GitHub `ACCESS_CODES`；部署配置会启用 KV 托管模式。首次发布后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建成员并生成访问码；访问码只显示一次，忘记后直接轮换。更方便的长期做法是只设置一次 `ROUTE_KEYS_MASTER_KEY`，部署后在 `/admin.html` 中按 provider 的 `apiKeyRef` 录入和轮换托管密钥。密钥输入在提交后立即清空，页面和读取 API 只返回来源、状态与更新时间，永不回显明文。
+它不能覆盖 `ACCESS_CODES`、`ADMIN_TOKEN`、`ROUTES_CONFIG`、Cloudflare 凭据或三项实例 Variables。生产部署不再要求或读取 GitHub `ACCESS_CODES`；部署配置会启用 KV 托管模式。首次发布后使用 `ADMIN_TOKEN` 登录 `/react-chat/admin`，创建成员并生成访问码；访问码只显示一次，忘记后直接轮换。更方便的长期做法是只设置一次 `ROUTE_KEYS_MASTER_KEY`，部署后在 `/react-chat/admin` 中按 provider 的 `apiKeyRef` 录入和轮换托管密钥。密钥输入在提交后立即清空，页面和读取 API 只返回来源、状态与更新时间，永不回显明文。
 
 公开访客访问仍默认关闭。启用前先让目标逻辑模型在成员账号下可用，并确认该 provider 的密钥来源是后台 KV 托管；同名 Worker Secret 或 `WORKER_SECRETS_JSON` 只能作为成员/兼容来源，不能让访客线路隐式可用。然后在 `/react-chat/admin` 的公开访问设置中选择唯一逻辑模型、设置 TTL 和额度。关闭公开访问开关即可回滚访客入口，不会撤销成员访问。
 

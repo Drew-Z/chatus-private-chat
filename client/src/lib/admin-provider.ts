@@ -19,6 +19,13 @@ export type LogicalModelDraft = AdminRouteConfig & { id: string };
 
 export type ValidationResult = { ok: true } | { ok: false; message: string };
 
+export type LegacyRouteMigrationCandidate = {
+  routeId: string;
+  label: string;
+  status: "ready" | "blocked";
+  reason?: "inline_credential_only" | "credential_unavailable" | "invalid_credential_contract";
+};
+
 export function createProviderDraft(provider: AdminProviderConfig | undefined, id: string): ProviderDraft {
   return {
     ...(provider || {}),
@@ -137,6 +144,34 @@ export function projectAdminLogicalModels(config: AdminConfig): AdminLogicalMode
       referencedBy: [...(referencedBy.get(id) || [])].sort(compareStableText),
     }))
     .sort(compareLogicalModels);
+}
+
+export function projectLegacyRouteMigrationCandidates(
+  config: AdminConfig,
+  secrets: AdminRouteSecretMetadata[] = [],
+): LegacyRouteMigrationCandidate[] {
+  const secretByRef = new Map(secrets.map((secret) => [secret.apiKeyRef, secret]));
+  return Object.entries(config.routes)
+    .filter(([, route]) => isLegacyRoute(route))
+    .map<LegacyRouteMigrationCandidate>(([routeId, route]) => {
+      if (route.offerings?.length) return { routeId, label: route.label, status: "ready" };
+      if (route.requiresUserKey === true && route.allowUserKey === false) {
+        return { routeId, label: route.label, status: "blocked", reason: "invalid_credential_contract" };
+      }
+      if (route.requiresUserKey === true) return { routeId, label: route.label, status: "ready" };
+      const apiKeyRef = route.apiKeyRef?.trim() || "";
+      const secret = apiKeyRef ? secretByRef.get(apiKeyRef) : undefined;
+      if (secret?.status === "configured" && (secret.source === "managed" || secret.source === "worker")) {
+        return { routeId, label: route.label, status: "ready" };
+      }
+      return {
+        routeId,
+        label: route.label,
+        status: "blocked",
+        reason: route.hasLegacyKey && !apiKeyRef ? "inline_credential_only" : "credential_unavailable",
+      };
+    })
+    .sort((left, right) => compareStableText(left.routeId, right.routeId));
 }
 
 export function compareProviders(left: Pick<AdminProvider, "label" | "id">, right: Pick<AdminProvider, "label" | "id">): number {
@@ -346,51 +381,6 @@ export function applyLogicalModelDraft(
     routeId: replace(config.publicAccess.routeId) || "",
   };
   return { ...config, routes, users, defaults, publicAccess };
-}
-
-export function migrateLegacyLogicalModel(config: AdminConfig, routeId: string): { config: AdminConfig; providerId?: string } {
-  const route = config.routes[routeId];
-  if (!route || !isLegacyRoute(route) || !route.apiKeyRef) return { config };
-  const providerId = uniqueConfigId(config.providers, `${routeId}-provider`);
-  const provider: AdminProviderConfig = {
-    enabled: true,
-    label: route.label,
-    type: route.type!,
-    baseUrl: route.baseUrl!,
-    apiKeyRef: route.apiKeyRef,
-    ...(route.authHeader ? { authHeader: route.authHeader } : {}),
-    ...(route.authPrefix === undefined ? {} : { authPrefix: route.authPrefix }),
-    directEndpoint: route.directEndpoint === true,
-    allowUserKey: route.allowUserKey !== false,
-    requiresUserKey: route.requiresUserKey === true,
-    supportsImages: route.supportsImages !== false,
-    supportsTools: route.supportsTools === true,
-    concurrency: "unlimited",
-    queueTimeoutMs: 0,
-    priority: 0,
-    ...(route.hasLegacyKey ? { hasLegacyKey: true } : {}),
-    ...(route.hasCustomHeaders ? { hasCustomHeaders: true, headerSourceRouteId: routeId } : {}),
-  };
-  const migrated: AdminRouteConfig = { ...route, offerings: [{ providerId, model: route.model! }] };
-  for (const field of [
-    "type",
-    "baseUrl",
-    "model",
-    "apiKeyRef",
-    "authHeader",
-    "authPrefix",
-    "directEndpoint",
-    "hasLegacyKey",
-    "hasCustomHeaders",
-  ]) delete migrated[field];
-  return {
-    config: {
-      ...config,
-      providers: { ...config.providers, [providerId]: provider },
-      routes: { ...config.routes, [routeId]: migrated },
-    },
-    providerId,
-  };
 }
 
 export function addDiscoveredModels(

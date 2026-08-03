@@ -8,6 +8,7 @@ import {
   fetchAdminSetupStatus,
   getAgentSkillSelectionMetadata,
   isAdminConfigSnapshot,
+  isAdminLegacyRouteMigrationResponse,
   isAdminAuditSnapshot,
   isAdminFeedbackSnapshot,
   isAdminMemberCredentialResponse,
@@ -35,6 +36,7 @@ import {
   isWorkspaceFile,
   isWorkspaceFileVersion,
   logout,
+  migrateAdminLegacyRoutes,
   retryWorkspaceDocumentIngest,
   setConversationWorkspaceFiles,
   submitFeedback,
@@ -397,6 +399,60 @@ describe("admin setup client contract", () => {
       status: 502,
     });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("legacy route migration client contract", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const migrationResponse = {
+    revision: "b".repeat(64),
+    migrated: ["primary"],
+    alreadyMigrated: [],
+    statuses: [{ routeId: "primary", status: "migrated" as const }],
+  };
+
+  it("decodes only the bounded secret-free migration envelope", () => {
+    expect(isAdminLegacyRouteMigrationResponse(migrationResponse)).toBe(true);
+    expect(isAdminLegacyRouteMigrationResponse({ ...migrationResponse, secret: "key" })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResponse({ ...migrationResponse, config: validAdminConfig })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResponse({ ...migrationResponse, source: "kv" })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResponse({ ...migrationResponse, endpoint: "https://private.example" })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResponse({
+      ...migrationResponse,
+      statuses: [{ routeId: "primary", status: "blocked", reason: "credential_unavailable", endpoint: "https://private.example" }],
+    })).toBe(false);
+    expect(isAdminLegacyRouteMigrationResponse({
+      ...migrationResponse,
+      statuses: [{ routeId: "primary", status: "migrated", reason: "credential_unavailable" }],
+    })).toBe(false);
+  });
+
+  it("posts route IDs and revision through the credentialed no-store boundary", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(migrationResponse), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(migrateAdminLegacyRoutes(["primary"], "a".repeat(64))).resolves.toEqual(migrationResponse);
+    expect(fetchSpy).toHaveBeenCalledWith("/api/admin/legacy-routes/migrate", expect.objectContaining({
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      body: JSON.stringify({ routeIds: ["primary"], expectedRevision: "a".repeat(64) }),
+    }));
+  });
+
+  it("preserves bounded per-route reasons on an atomic block", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      error: "legacy_route_migration_blocked",
+      message: "迁移已取消。",
+      statuses: [{ routeId: "primary", status: "blocked", reason: "inline_credential_only" }],
+    }), { status: 422, headers: { "Content-Type": "application/json" } }));
+    await expect(migrateAdminLegacyRoutes(["primary"], "a".repeat(64))).rejects.toMatchObject<ApiError>({
+      code: "legacy_route_migration_blocked",
+      status: 422,
+      details: { legacyRouteStatuses: [{ routeId: "primary", status: "blocked", reason: "inline_credential_only" }] },
+    });
   });
 });
 

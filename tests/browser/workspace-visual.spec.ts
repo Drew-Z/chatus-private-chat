@@ -867,6 +867,133 @@ test("admin setup guide keeps the six-step order and runs model-free smoke", asy
   await attachScreenshot(page, testInfo, "admin-setup-guide");
 });
 
+test("provider migration exposes bounded statuses and submits only safe routes", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "provider migration coverage targets desktop and 390px");
+  const currentConfig: AdminConfig = structuredClone(adminMemberConfig);
+  currentConfig.routes = {
+    ...currentConfig.routes,
+    legacyReady: {
+      label: "Legacy ready",
+      enabled: true,
+      type: "openai-chat",
+      baseUrl: "https://provider.example/v1",
+      model: "synthetic-legacy-ready",
+      apiKeyRef: "READY_KEY",
+      hasLegacyKey: true,
+      fallbacks: ["primary"],
+      maxTokens: 321,
+      temperature: 0.2,
+      supportsImages: false,
+      supportsTools: true,
+    },
+    legacyBlocked: {
+      label: "Legacy blocked",
+      enabled: true,
+      type: "anthropic-messages",
+      baseUrl: "https://provider.example/v1",
+      model: "synthetic-legacy-blocked",
+      hasLegacyKey: true,
+    },
+  };
+  const migratedConfig: AdminConfig = structuredClone(currentConfig);
+  const migratedRoute = { ...migratedConfig.routes.legacyReady };
+  delete migratedRoute.type;
+  delete migratedRoute.baseUrl;
+  delete migratedRoute.model;
+  delete migratedRoute.apiKeyRef;
+  delete migratedRoute.authHeader;
+  delete migratedRoute.authPrefix;
+  delete migratedRoute.directEndpoint;
+  migratedConfig.routes.legacyReady = {
+    ...migratedRoute,
+    offerings: [{ providerId: "legacyReady-provider", model: "synthetic-legacy-ready", enabled: true }],
+  };
+  migratedConfig.providers["legacyReady-provider"] = {
+    label: "Legacy ready",
+    type: "openai-chat",
+    baseUrl: "https://provider.example/v1",
+    apiKeyRef: "READY_KEY",
+    enabled: true,
+    supportsImages: false,
+    supportsTools: true,
+  };
+  let revision = "a".repeat(64);
+  let migrationPayload: { routeIds: string[]; expectedRevision: string } | null = null;
+  let postMigrationConfigRead = false;
+
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = async (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      if (migrationPayload) postMigrationConfigRead = true;
+      await json({ config: migrationPayload ? migratedConfig : currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({ members: [{ label: "bill", displayName: "Bill", configured: true, hasAccessCode: true }], accessRevision: "c".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      await json(adminSetupReady);
+      return;
+    }
+    if (url.pathname === "/api/admin/route-secrets" && request.method() === "GET") {
+      await json({
+        masterKeyReady: true,
+        items: [{ apiKeyRef: "READY_KEY", source: "managed", status: "configured", managed: true, environmentFallback: false }],
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/legacy-routes/migrate" && request.method() === "POST") {
+      migrationPayload = request.postDataJSON() as { routeIds: string[]; expectedRevision: string };
+      expect(migrationPayload).toEqual({ routeIds: ["legacyReady"], expectedRevision: "a".repeat(64) });
+      revision = "b".repeat(64);
+      await json({
+        revision,
+        migrated: ["legacyReady"],
+        alreadyMigrated: [],
+        statuses: [
+          { routeId: "legacyReady", status: "migrated" },
+        ],
+      });
+      return;
+    }
+    throw new Error(`unexpected provider migration fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  await expect(page.getByRole("button", { name: "服务商" })).toBeVisible();
+  await page.getByRole("button", { name: "服务商" }).click();
+  await expect(page.getByRole("heading", { name: "2 条旧线路待迁移" })).toBeVisible();
+  await expect(page.getByText("legacyReady", { exact: true })).toBeVisible();
+  await expect(page.getByText("需先保存 Key Ref", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "迁移可安全线路" })).toBeEnabled();
+  await page.getByRole("button", { name: "迁移可安全线路" }).click();
+  const dialog = page.getByRole("dialog", { name: "迁移 1 条旧线路？" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("legacyReady");
+  await expect(dialog).not.toContainText("legacyBlocked");
+  await dialog.getByRole("button", { name: "确认迁移" }).click();
+  await expect(page.getByText("已迁移 1 条旧线路。", { exact: true })).toBeVisible();
+  await expect(page.getByText("legacyReady-provider", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "1 条旧线路待迁移" })).toBeVisible();
+  expect(migrationPayload).toEqual({ routeIds: ["legacyReady"], expectedRevision: "a".repeat(64) });
+  expect(postMigrationConfigRead).toBe(true);
+
+  const geometry = await page.evaluate(() => ({
+    documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+  }));
+  expect(geometry.documentFits).toBe(true);
+  expect(geometry.bodyFits).toBe(true);
+  await attachScreenshot(page, testInfo, "admin-provider-migration");
+});
+
 test("admin workspace initial error is distinct from loading and retryable", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-1440", "state transition coverage needs one desktop browser pass");
   let release!: () => void;

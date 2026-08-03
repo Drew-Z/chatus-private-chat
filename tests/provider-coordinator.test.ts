@@ -77,6 +77,28 @@ describe("ProviderCoordinator", () => {
     await expect(coordinator.acquire({ requestId: "replacement", capacity: 1, waitMs: 0 })).resolves.toMatchObject({ ok: true });
   });
 
+  it("renews only the exact active lease", async () => {
+    const coordinator = env.PROVIDER_COORDINATOR.getByName(`renew-${crypto.randomUUID()}`);
+    const lease = await coordinator.acquire({ requestId: "admin-mutation", capacity: 1, waitMs: 0, leaseTtlMs: 1_000 });
+    if (!lease.ok) throw new Error("missing lease");
+
+    await expect(coordinator.renew({
+      token: lease.token,
+      requestId: "admin-mutation",
+      leaseTtlMs: 5_000,
+    })).resolves.toMatchObject({ ok: true, expiresAt: expect.any(Number) });
+    await expect(coordinator.renew({
+      token: "wrong-token",
+      requestId: "admin-mutation",
+      leaseTtlMs: 5_000,
+    })).resolves.toEqual({ ok: false, error: "provider_lease_missing" });
+    await expect(coordinator.acquire({ requestId: "blocked", capacity: 1, waitMs: 0 })).resolves.toMatchObject({
+      ok: false,
+      error: "provider_busy",
+    });
+    await coordinator.release({ token: lease.token, requestId: "admin-mutation" });
+  });
+
   it("normalizes persisted leases before restoring capacity and alarms", async () => {
     const name = `restore-${crypto.randomUUID()}`;
     const coordinator = env.PROVIDER_COORDINATOR.getByName(name);

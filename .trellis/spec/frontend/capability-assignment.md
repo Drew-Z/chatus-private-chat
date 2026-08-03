@@ -122,7 +122,7 @@ The root conversation is authoritative, logical fallback is excluded, the hard b
 ### 1. Scope / Trigger
 
 - Trigger: changing the typed React administrator surface for member policy, route, Skill, or tool assignments; member discovery; or revisioned configuration editing.
-- The typed workspace is a focused assignment editor. The legacy `/admin.html` surface remains the entry point for route/provider definitions, quotas, MCP administration, audit, and other administrator sections until those sections are migrated deliberately.
+- The typed workspace owns daily administration: route/provider definitions, quotas, MCP administration, audit, and other administrator sections. `/admin.html` is a compatibility redirect only; it does not expose a second editor.
 
 ### 2. Signatures
 
@@ -178,7 +178,7 @@ type CapabilityAssignmentDraft = {
 - The client `/api/session` decoder requires `allowBringYourOwnKey` and `hasUserSystemPrompt` as booleans because the Worker always projects both policy states.
 - Admin config projections omit provider/legacy-route `apiKey` and custom `headers`. `hasLegacyKey` and `hasCustomHeaders` are non-sensitive shadows; the server preserves hidden values only while the submitted shadow remains explicit.
 - Every save sends the snapshot `revision`. A successful save replaces the snapshot and resets the draft. A `409 config_conflict` loads the newest snapshot while retaining the local draft until the administrator chooses to use the server version or saves again.
-- The full legacy administration link is `/admin.html`; `/react-chat/admin` and its trailing-slash form are the typed member-assignment shell.
+- The daily administrator entry is `/react-chat/admin` (and its trailing-slash form). The exact `/admin.html` path is a same-origin 308 redirect retained for rollback compatibility.
 
 ### 4. Validation & Error Matrix
 
@@ -197,13 +197,13 @@ type CapabilityAssignmentDraft = {
 - Good: a conflict adds a new route while the local draft means all routes; rebasing includes the new route, while an explicit old route list stays unchanged.
 - Bad: treating `allowedRoutes: []` as deny-all shows no routes in the editor but grants every route at runtime.
 - Bad: two tabs save different revisions; the second tab keeps its unsaved choices visible instead of overwriting them with the first tab's response.
-- Bad: a typed admin link points to `/admin`; the deployed asset is `/admin.html`, so the link can resolve to a missing asset or the wrong shell.
+- Bad: a typed admin link points to `/admin` or an asset path; use `/react-chat/admin` so the route reaches the typed shell.
 
 ### 6. Tests Required
 
-- Frontend structure checks assert the typed shell, semantic route fieldset, independent route inheritance, revisioned save, conflict draft retention, `beforeunload`, secret-free rendering, `/admin.html` link, and login `finally` recovery.
+- Frontend structure checks assert the typed shell, semantic route fieldset, independent route inheritance, revisioned save, conflict draft retention, `beforeunload`, secret-free rendering, absence of a regular `/admin.html` link, and login `finally` recovery.
 - Client validator tests assert unique trimmed member labels, route reference/enabled-state validation, complete session policy booleans, and rejection of `apiKey`/`headers` in sanitized config projections.
-- Worker API tests assert member metadata contains no access codes, session policy flags match the client contract, both typed-admin paths serve the React shell, and `/admin.html` serves the legacy admin asset.
+- Worker API tests assert member metadata contains no access codes, session policy flags match the client contract, both typed-admin paths serve the React shell, and exact `/admin.html` returns the typed-admin 308 redirect.
 - Pure helper tests assert capability inheritance, route all/selected semantics, disabled/last-enabled guards, default-route repair, conflict rebasing, stable ordering, and preservation of unrelated newer configuration fields.
 
 ### 7. Wrong vs Correct
@@ -225,7 +225,7 @@ const rebased = rebaseCapabilityAssignmentDraft(latestConfig, draft);
 const next = applyCapabilityAssignmentDraft(latestConfig, memberLabel, rebased);
 ```
 
-The pure draft boundary owns inheritance, all/selected route intent, default-route repair, and revision-conflict rebasing. Login still clears submission state in `finally`, and full legacy administration remains `/admin.html`.
+The pure draft boundary owns inheritance, all/selected route intent, default-route repair, and revision-conflict rebasing. Login still clears submission state in `finally`; daily administration remains in the typed React workspace.
 
 ## Scenario: Typed Admin Member Access Lifecycle
 

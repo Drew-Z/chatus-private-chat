@@ -426,6 +426,10 @@ const AGENT_LEGACY_MIGRATION_ID = "legacy-user-state-v1";
 const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
+const ADMIN_CONFIG_MUTATION_COORDINATOR = "$admin-config";
+const ADMIN_CONFIG_MUTATION_WAIT_MS = 10_000;
+const ADMIN_CONFIG_MUTATION_LEASE_TTL_MS = 60_000;
+const ADMIN_CONFIG_MUTATION_RENEW_MS = 20_000;
 const ACCESS_CODES_KEY = "config:access_codes";
 const SETUP_SMOKE_KEY = "config:setup_smoke";
 const MCP_TOOL_DRIFT_KEY = "config:mcp_tool_drift";
@@ -1681,6 +1685,9 @@ async function handleRequest(
   if (request.method === "GET" && url.pathname === "/legacy/") {
     return fetchRewrittenAsset(request, env, url, "/legacy/");
   }
+  if (request.method === "GET" && url.pathname === "/admin.html") {
+    return Response.redirect(new URL("/react-chat/admin", url).toString(), 308);
+  }
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
     const shellPath = env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html";
     return fetchRewrittenAsset(request, env, url, shellPath);
@@ -2149,6 +2156,10 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleGetAdminConfig(env);
   }
 
+  if (url.pathname === "/api/admin/legacy-routes/migrate" && request.method === "POST") {
+    return withAdminConfigMutationLock(env, () => handleMigrateLegacyRoutes(request, env));
+  }
+
   if (url.pathname === "/api/admin/setup-status" && request.method === "GET") {
     return handleGetAdminSetupStatus(env);
   }
@@ -2175,11 +2186,11 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
 
   const memberConfigLabel = memberConfigLabelFromAdminPath(url.pathname);
   if (memberConfigLabel !== null && request.method === "DELETE") {
-    return handleRemoveAdminMemberConfig(request, env, memberConfigLabel);
+    return withAdminConfigMutationLock(env, () => handleRemoveAdminMemberConfig(request, env, memberConfigLabel));
   }
 
   if (url.pathname === "/api/admin/config" && request.method === "PUT") {
-    return handlePutAdminConfig(request, env);
+    return withAdminConfigMutationLock(env, () => handlePutAdminConfig(request, env));
   }
 
   if (url.pathname === "/api/admin/route-secrets" && request.method === "GET") {
@@ -2207,16 +2218,18 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
   }
 
   if (url.pathname === "/api/admin/users" && request.method === "POST") {
-    return handleCreateAdminUser(request, env);
+    return withAdminConfigMutationLock(env, () => handleCreateAdminUser(request, env));
   }
 
   if (url.pathname === "/api/admin/config" && request.method === "DELETE") {
-    const body = await readJson<{ expectedRevision?: unknown }>(request);
-    const conflict = await configRevisionConflict(env, body.expectedRevision);
-    if (conflict) return conflict;
-    await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
-    await appendAdminAudit(env, "config.reset");
-    return jsonResponse({ ok: true });
+    return withAdminConfigMutationLock(env, async () => {
+      const body = await readJson<{ expectedRevision?: unknown }>(request);
+      const conflict = await configRevisionConflict(env, body.expectedRevision);
+      if (conflict) return conflict;
+      await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
+      await appendAdminAudit(env, "config.reset");
+      return jsonResponse({ ok: true });
+    });
   }
 
   if (url.pathname === "/api/admin/access-codes" && request.method === "GET") {
@@ -2293,6 +2306,42 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
   }
 
   return jsonResponse({ error: "not_found" }, 404);
+}
+
+async function withAdminConfigMutationLock(env: Env, mutation: () => Promise<Response>): Promise<Response> {
+  const requestId = crypto.randomUUID();
+  const coordinator = env.PROVIDER_COORDINATOR.getByName(ADMIN_CONFIG_MUTATION_COORDINATOR);
+  let lease: Awaited<ReturnType<typeof coordinator.acquire>>;
+  try {
+    lease = await coordinator.acquire({
+      requestId,
+      capacity: 1,
+      waitMs: ADMIN_CONFIG_MUTATION_WAIT_MS,
+      leaseTtlMs: ADMIN_CONFIG_MUTATION_LEASE_TTL_MS,
+    });
+  } catch {
+    return jsonResponse({ error: "config_mutation_unavailable", message: "配置更新暂时不可用，请稍后重试。" }, 503);
+  }
+  if (!lease.ok) {
+    return jsonResponse({
+      error: "config_mutation_busy",
+      message: "另一项配置更新仍在进行，请稍后重试。",
+      retryAfter: Math.max(1, Math.ceil(lease.retryAfterMs / 1_000)),
+    }, 409);
+  }
+  const renewalTimer = setInterval(() => {
+    void coordinator.renew({
+      token: lease.token,
+      requestId,
+      leaseTtlMs: ADMIN_CONFIG_MUTATION_LEASE_TTL_MS,
+    }).catch(() => undefined);
+  }, ADMIN_CONFIG_MUTATION_RENEW_MS);
+  try {
+    return await mutation();
+  } finally {
+    clearInterval(renewalTimer);
+    await coordinator.release({ token: lease.token, requestId }).catch(() => undefined);
+  }
 }
 
 async function handleGetAdminConfig(env: Env): Promise<Response> {
@@ -2812,6 +2861,240 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   await reconcileMcpToolDriftOverlay(env, normalized);
   await appendAdminAudit(env, "config.update");
   return jsonResponse({ ok: true, config: sanitizeAdminConfig(normalized), source: "kv", revision: await configRevision(normalized) });
+}
+
+type LegacyRouteMigrationStatus = {
+  routeId: string;
+  status: "ready" | "migrated" | "already_migrated" | "blocked" | "missing" | "not_legacy";
+  reason?: "inline_credential_only" | "credential_unavailable" | "invalid_credential_contract";
+};
+
+type LegacyRouteMigrationResponse = {
+  revision: string;
+  migrated: string[];
+  alreadyMigrated: string[];
+  statuses: LegacyRouteMigrationStatus[];
+};
+
+async function handleMigrateLegacyRoutes(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ routeIds?: unknown; expectedRevision?: unknown }>(request);
+  const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision.trim() : "";
+  if (!expectedRevision) {
+    return jsonResponse({ error: "expected_config_revision_required", message: "配置版本已失效，请刷新后重试。" }, 400);
+  }
+
+  const editable = await loadEditableConfig(env);
+  const currentRevision = await configRevision(editable.config);
+  if (currentRevision !== expectedRevision) {
+    return jsonResponse({
+      error: "config_conflict",
+      message: "配置已在其他窗口更新，请刷新后重试。",
+      currentRevision,
+    }, 409);
+  }
+
+  const routeIds = normalizeLegacyMigrationRouteIds(body.routeIds);
+  if (!routeIds.ok) return jsonResponse({ error: "invalid_route_ids", message: routeIds.message }, 400);
+  if (!routeIds.ids.length) return jsonResponse({ error: "route_ids_required", message: "至少选择一条旧线路。" }, 400);
+
+  const statuses: LegacyRouteMigrationStatus[] = [];
+  const candidates: Array<{
+    routeId: string;
+    route: RouteConfig;
+    mode: "convert" | "strip_shadow";
+    credentialRef?: string;
+    byok: boolean;
+  }> = [];
+  for (const routeId of routeIds.ids) {
+    const route = editable.config.routes[routeId];
+    if (!route) {
+      statuses.push({ routeId, status: "missing" });
+      continue;
+    }
+    if (!isLegacyRouteConfig(route)) {
+      statuses.push({
+        routeId,
+        status: route.offerings?.length && !hasLegacyTransportShadow(route) ? "already_migrated" : "not_legacy",
+      });
+      continue;
+    }
+
+    if (route.offerings?.length) {
+      statuses.push({ routeId, status: "ready" });
+      candidates.push({ routeId, route, mode: "strip_shadow", byok: false });
+      continue;
+    }
+
+    if (route.requiresUserKey === true && route.allowUserKey === false) {
+      statuses.push({ routeId, status: "blocked", reason: "invalid_credential_contract" });
+      continue;
+    }
+    const byok = route.requiresUserKey === true;
+    if (!byok) {
+      const withoutInlineKey: RouteConfig = { ...route, apiKey: undefined };
+      try {
+        const credential = await resolveRouteCredential(withoutInlineKey, env, "");
+        if (credential.source !== "managed" && credential.source !== "worker") {
+          statuses.push({
+            routeId,
+            status: "blocked",
+            reason: route.apiKey && !route.apiKeyRef ? "inline_credential_only" : "credential_unavailable",
+          });
+          continue;
+        }
+      } catch (error) {
+        if (error instanceof ManagedSecretError) {
+          statuses.push({ routeId, status: "blocked", reason: "credential_unavailable" });
+          continue;
+        }
+        throw error;
+      }
+    }
+    statuses.push({ routeId, status: "ready" });
+    candidates.push({ routeId, route, mode: "convert", credentialRef: route.apiKeyRef?.trim() || undefined, byok });
+  }
+
+  if (statuses.some((status) => status.status === "blocked" || status.status === "missing" || status.status === "not_legacy")) {
+    return jsonResponse({
+      error: "legacy_route_migration_blocked",
+      message: "部分旧线路无法安全迁移；已取消全部写入。",
+      statuses,
+    }, 422);
+  }
+
+  const providers = { ...editable.config.providers };
+  const routes = { ...editable.config.routes };
+  const migrated: string[] = [];
+  const alreadyMigrated = statuses.filter((status) => status.status === "already_migrated").map((status) => status.routeId);
+  for (const candidate of candidates) {
+    const route = candidate.route;
+    let migratedRoute: RouteConfig;
+    if (candidate.mode === "strip_shadow") {
+      migratedRoute = stripLegacyTransportShadow(route);
+    } else {
+      const providerId = allocateMigratedProviderId(providers, candidate.routeId);
+      const provider: ProviderConfig = {
+        enabled: true,
+        label: route.label,
+        type: route.type!,
+        baseUrl: route.baseUrl!,
+        ...(candidate.credentialRef ? { apiKeyRef: candidate.credentialRef } : {}),
+        ...(route.authHeader ? { authHeader: route.authHeader } : {}),
+        ...(route.authPrefix === undefined ? {} : { authPrefix: route.authPrefix }),
+        directEndpoint: route.directEndpoint === true,
+        ...(route.headers ? { headers: { ...route.headers } } : {}),
+        allowUserKey: route.allowUserKey !== false,
+        requiresUserKey: candidate.byok,
+        supportsImages: route.supportsImages !== false,
+        supportsTools: route.supportsTools === true,
+        concurrency: "unlimited",
+      };
+      providers[providerId] = provider;
+      migratedRoute = stripLegacyTransportShadow({
+        ...route,
+        offerings: [{
+          providerId,
+          model: route.model!,
+          enabled: true,
+          supportsImages: route.supportsImages,
+          supportsTools: route.supportsTools,
+        }],
+      });
+    }
+    routes[candidate.routeId] = migratedRoute;
+    migrated.push(candidate.routeId);
+    const statusIndex = statuses.findIndex((status) => status.routeId === candidate.routeId);
+    statuses[statusIndex] = { routeId: candidate.routeId, status: "migrated" };
+  }
+
+  if (!migrated.length) {
+    const response: LegacyRouteMigrationResponse = {
+      revision: currentRevision,
+      migrated: [],
+      alreadyMigrated,
+      statuses,
+    };
+    return jsonResponse(response);
+  }
+
+  const nextConfig = await applyMcpOAuthConfigRevisions(normalizeAppConfig({ ...editable.config, providers, routes }));
+  const validation = validateAppConfig(nextConfig);
+  if (!validation.ok) {
+    return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
+  }
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(nextConfig));
+  await reconcileMcpToolDriftOverlay(env, nextConfig);
+  await appendAdminAudit(env, "legacy-routes.migrate", migrated.join(","));
+  const revision = await configRevision(nextConfig);
+  const response: LegacyRouteMigrationResponse = {
+    revision,
+    migrated,
+    alreadyMigrated,
+    statuses,
+  };
+  return jsonResponse(response);
+}
+
+function normalizeLegacyMigrationRouteIds(value: unknown): { ok: true; ids: string[] } | { ok: false; message: string } {
+  if (!Array.isArray(value) || value.length > 200) {
+    return { ok: false, message: "旧线路列表无效。" };
+  }
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") return { ok: false, message: "旧线路列表无效。" };
+    const id = item.trim();
+    if (!id || id.length > 160 || !CAPABILITY_ID_PATTERN.test(id)) {
+      return { ok: false, message: "旧线路 ID 无效。" };
+    }
+    if (!ids.includes(id)) ids.push(id);
+  }
+  ids.sort(compareStableText);
+  return { ok: true, ids };
+}
+
+function hasLegacyTransportShadow(route: RouteConfig): boolean {
+  return route.type !== undefined
+    || route.baseUrl !== undefined
+    || route.model !== undefined
+    || route.apiKey !== undefined
+    || route.apiKeyRef !== undefined
+    || route.authHeader !== undefined
+    || route.authPrefix !== undefined
+    || route.directEndpoint === true
+    || route.headers !== undefined;
+}
+
+function stripLegacyTransportShadow(route: RouteConfig): RouteConfig {
+  const stripped = { ...route };
+  delete stripped.type;
+  delete stripped.baseUrl;
+  delete stripped.model;
+  delete stripped.apiKey;
+  delete stripped.apiKeyRef;
+  delete stripped.authHeader;
+  delete stripped.authPrefix;
+  delete stripped.directEndpoint;
+  delete stripped.headers;
+  return stripped;
+}
+
+function compareStableText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function allocateMigratedProviderId(providers: Record<string, ProviderConfig>, routeId: string): string {
+  const normalized = routeId.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "").slice(0, 68) || "route";
+  const base = `${normalized}-provider`.slice(0, 80);
+  if (!hasOwn(providers, base)) return base;
+  const allocationLimit = Object.keys(providers).length + 2;
+  for (let index = 2; index <= allocationLimit; index += 1) {
+    const suffix = `-${index}`;
+    const candidate = `${base.slice(0, 80 - suffix.length)}${suffix}`;
+    if (!hasOwn(providers, candidate)) return candidate;
+  }
+  throw new Error("provider_id_allocation_failed");
 }
 
 function sanitizeAdminConfig(config: AppConfig): Record<string, unknown> {
@@ -6405,7 +6688,7 @@ async function loadAppConfig(env: Env): Promise<AppConfig> {
     try {
       return finalizeLoadedAppConfig(env, normalizeAppConfig(JSON.parse(stored)));
     } catch {
-      await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
+      // Preserve the malformed value so a read cannot delete a concurrent administrative repair.
     }
   }
 
@@ -6418,7 +6701,7 @@ async function loadEditableConfig(env: Env): Promise<{ config: AppConfig; source
     try {
       return { config: await finalizeLoadedAppConfig(env, normalizeAppConfig(JSON.parse(stored))), source: "kv" };
     } catch {
-      await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
+      // Preserve the malformed value so a read cannot delete a concurrent administrative repair.
     }
   }
 
@@ -6891,7 +7174,7 @@ function normalizeAppConfig(value: unknown): AppConfig {
       apiKeyRef: legacy ? normalizeOptionalText(rawRoute.apiKeyRef) : undefined,
       authHeader: legacy ? normalizeOptionalText(rawRoute.authHeader) : undefined,
       authPrefix: legacy && typeof rawRoute.authPrefix === "string" ? rawRoute.authPrefix : undefined,
-      directEndpoint: legacy && rawRoute.directEndpoint === true,
+      directEndpoint: legacy && rawRoute.directEndpoint === true ? true : undefined,
       headers: legacy ? normalizeStringRecord(rawRoute.headers) : undefined,
       maxTokens: normalizePositiveInteger(rawRoute.maxTokens),
       temperature: normalizeNumber(rawRoute.temperature),

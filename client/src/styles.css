@@ -259,6 +259,15 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .admin-pool-empty-state { min-height: 280px; display: grid; place-items: center; align-content: center; gap: 14px; padding: 36px; color: var(--muted); text-align: center; }
 .admin-pool-empty-state p { margin: 0; }
 .admin-pool-editor { min-width: 0; overflow-y: auto; }
+.admin-migration-band { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(240px, 1.2fr) auto; align-items: center; gap: 16px; padding: 16px 30px; border-bottom: 1px solid var(--line); background: #f7faf8; }
+.admin-migration-band .eyebrow { margin: 0 0 5px; }
+.admin-migration-band h2 { margin: 0; font-size: 16px; }
+.admin-migration-band p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.admin-migration-inventory { min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-migration-inventory > span { min-width: 0; display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); font-size: 10px; }
+.admin-migration-inventory > span.ready { color: var(--accent-hover); }
+.admin-migration-inventory > span.blocked { color: var(--warning); }
+.admin-migration-inventory strong, .admin-migration-inventory small { overflow-wrap: anywhere; }
 .admin-pool-editor-head, .admin-reliability-head { min-height: 112px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 30px; border-bottom: 1px solid var(--line); }
 .admin-pool-editor-head .eyebrow, .admin-reliability-head .eyebrow { margin: 0 0 6px; }
 .admin-pool-editor-head h2, .admin-reliability-head h1 { margin: 0; overflow-wrap: anywhere; font-size: 22px; }
@@ -846,6 +855,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .admin-pool-list { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; padding: 8px 10px 12px; }
   .admin-pool-list-item { width: 190px; flex: 0 0 190px; }
   .admin-pool-editor { overflow: visible; }
+  .admin-migration-band { grid-template-columns: 1fr; align-items: stretch; padding: 16px; }
+  .admin-migration-band > button { width: 100%; }
   .capability-admin-panel .admin-pool-editor { min-height: 0; flex: 1; overflow-y: auto; }
   .admin-pool-editor-head, .admin-reliability-head, .admin-operations-head { align-items: stretch; flex-direction: column; gap: 14px; padding: 18px 16px; }
   .admin-pool-actions { justify-content: stretch; }

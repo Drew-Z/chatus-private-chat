@@ -2,21 +2,35 @@
 
 ## Ordered Checklist
 
-- [ ] Add pure legacy-route classification and migration helpers with deterministic Provider ID allocation and all-or-nothing result types.
-- [ ] Add credential preflight that excludes inline route keys while accepting managed/Worker references and explicit BYOK; keep diagnostics bounded and redacted.
-- [ ] Add authenticated, revision-checked `POST /api/admin/legacy-routes/migrate`, config validation, one-write persistence and bounded audit evidence.
-- [ ] Add Worker tests for authorization, conflict, atomic failure, collision, idempotence, secret/header redaction and cross-reference preservation.
-- [ ] Add typed client API decoding and Provider-panel migration inventory/action with `ConfirmDialog`, shared snapshot refresh and conflict/session recovery.
-- [ ] Remove the client-only legacy migration draft path and add pure/client/browser tests for migrated and blocked states.
-- [ ] Verify provider-plan/chat fixtures resolve the migrated Provider + Offering with the same route ID and behavior.
-- [ ] Remove `public/admin.html`, `public/admin.js`, `public/admin-report.js`, their unit/structure assertions, service-worker cache entries and deployment fingerprint inputs.
-- [ ] Add exact `/admin.html` permanent redirect coverage and verify the old UI/assets are no longer served.
-- [ ] Update README, self-hosting and operations docs to the React admin path and safe migration recovery flow; record retirement of raw JSON reset and CSV export.
-- [ ] Fix streaming near-bottom auto-scroll and legacy image keyboard semantics; add desktop/390px/direct-entry Playwright coverage.
-- [ ] Measure admin bundle compressed transfer and startup CPU; split only if the documented budget is exceeded and the split improves it materially.
-- [ ] Run focused tests, then the full shipping gate and Trellis consistency checks.
-- [ ] Update frontend/platform specs, commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
+- [x] Add pure legacy-route classification and migration helpers with deterministic Provider ID allocation and all-or-nothing result types.
+- [x] Add credential preflight that excludes inline route keys while accepting managed/Worker references and explicit BYOK; keep diagnostics bounded and redacted.
+- [x] Add authenticated, revision-checked `POST /api/admin/legacy-routes/migrate`, config validation, one-write persistence and bounded audit evidence.
+- [x] Add Worker tests for authorization, conflict, atomic failure, collision, idempotence, secret/header redaction and cross-reference preservation.
+- [x] Add typed client API decoding and Provider-panel migration inventory/action with `ConfirmDialog`, shared snapshot refresh and conflict/session recovery.
+- [x] Remove the client-only legacy migration draft path and add pure/client/browser tests for migrated and blocked states.
+- [x] Verify provider-plan/chat fixtures resolve the migrated Provider + Offering with the same route ID and behavior.
+- [x] Remove `public/admin.html`, `public/admin.js`, `public/admin-report.js`, their unit/structure assertions, service-worker cache entries and deployment fingerprint inputs.
+- [x] Add exact `/admin.html` permanent redirect coverage and verify the old UI/assets are no longer served.
+- [x] Update README, self-hosting and operations docs to the React admin path and safe migration recovery flow; record retirement of raw JSON reset and CSV export.
+- [x] Fix streaming near-bottom auto-scroll and legacy image keyboard semantics; add desktop/390px/direct-entry Playwright coverage.
+- [x] Measure the admin bundle and record the decision. Current output is 895.86 KB minified / 249.09 KB gzip JS and 70.90 KB / 12.54 KB gzip CSS; no reviewed transfer or startup CPU threshold proves an admin split would improve this release, so no speculative split is added.
+- [x] Run focused tests, then the full shipping gate and Trellis consistency checks.
+- [x] Update frontend/platform specs for migration, provider-plan, redirect, accessibility, and delivery contracts.
+- [ ] Commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
 - [ ] Record exact main SHA deployment and user acceptance of both React admin access and production legacy-route migration before archive.
+
+## Local Validation Evidence (2026-08-04)
+
+- `npm run check:frontend`: passed; Vite bundle measured above and frontend structural contracts passed.
+- `npm test`: 39 files / 527 tests passed using local fixtures only.
+- `npm run test:browser:workspace`: 81 passed, 39 viewport-scoped skips, 0 failed.
+- `npm run test:browser:agent`: 3 passed against the local fake Provider after waiting for the legacy login initializer's final `#promptInput` focus signal before testing the image picker; streaming scroll, direct-entry keyboard coverage, and logout recovery remain covered.
+- `npm run typecheck`: Worker, React client, and browser TypeScript passed.
+- `npx wrangler deploy --dry-run`: Wrangler 4.110.0 completed locally; no deployment occurred.
+- `git diff --check`: passed.
+- `python ./.trellis/scripts/task.py validate-all`: repository consistency passed.
+- `python -m unittest discover -s .trellis/tests -p test_*.py -v`: 7 passed.
+- No live Provider/MCP request, production probe, local production deployment, production configuration read, or production configuration mutation was used.
 
 ## Validation Commands
 

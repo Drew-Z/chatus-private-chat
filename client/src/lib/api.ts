@@ -480,6 +480,19 @@ export type AdminConfigSnapshot = {
   revision: string;
 };
 
+export type AdminLegacyRouteMigrationStatus = {
+  routeId: string;
+  status: "ready" | "migrated" | "already_migrated" | "blocked" | "missing" | "not_legacy";
+  reason?: "inline_credential_only" | "credential_unavailable" | "invalid_credential_contract";
+};
+
+export type AdminLegacyRouteMigrationResponse = {
+  revision: string;
+  migrated: string[];
+  alreadyMigrated: string[];
+  statuses: AdminLegacyRouteMigrationStatus[];
+};
+
 export type AdminSetupStepStatus = "ready" | "incomplete" | "blocked" | "not_run" | "stale";
 
 export type AdminSetupStep = {
@@ -585,6 +598,7 @@ export type UserDataExport = {
 export type ApiErrorDetails = {
   currentRevision?: string;
   retryAfter?: number;
+  legacyRouteStatuses?: AdminLegacyRouteMigrationStatus[];
 };
 
 export type AgentConversation = {
@@ -730,6 +744,20 @@ export async function putAdminConfig(config: AdminConfig, expectedRevision: stri
   });
   if (!isAdminConfigSnapshot(data)) {
     throw new ApiError("invalid_admin_config_response", "配置保存结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function migrateAdminLegacyRoutes(
+  routeIds: string[],
+  expectedRevision: string,
+): Promise<AdminLegacyRouteMigrationResponse> {
+  const data = await requestJson("/api/admin/legacy-routes/migrate", {
+    method: "POST",
+    body: JSON.stringify({ routeIds, expectedRevision }),
+  });
+  if (!isAdminLegacyRouteMigrationResponse(data)) {
+    throw new ApiError("invalid_legacy_route_migration_response", "旧线路迁移结果格式无效。", 502);
   }
   return data;
 }
@@ -1355,6 +1383,45 @@ export function isAdminConfigSnapshot(value: unknown): value is AdminConfigSnaps
     && isAdminConfig(value.config)
     && (value.source === "kv" || value.source === "secret" || value.source === "default")
     && isNonEmptyString(value.revision);
+}
+
+export function isAdminLegacyRouteMigrationResponse(value: unknown): value is AdminLegacyRouteMigrationResponse {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["revision", "migrated", "alreadyMigrated", "statuses"])) {
+    return false;
+  }
+  const { revision, migrated, alreadyMigrated, statuses } = value;
+  if (!isNonEmptyString(revision)
+    || !isUniqueCapabilityIdArray(migrated, 160, 200)
+    || !isUniqueCapabilityIdArray(alreadyMigrated, 160, 200)
+    || !Array.isArray(statuses)
+    || statuses.length > 200
+    || !statuses.every(isAdminLegacyRouteMigrationStatus)) {
+    return false;
+  }
+  const validatedStatuses = statuses as AdminLegacyRouteMigrationStatus[];
+  const statusIds = validatedStatuses.map((status) => status.routeId);
+  if (new Set(statusIds).size !== statusIds.length) return false;
+  return migrated.every((routeId) => validatedStatuses.some((status) => status.routeId === routeId && status.status === "migrated"))
+    && alreadyMigrated.every((routeId) => validatedStatuses.some((status) => status.routeId === routeId && status.status === "already_migrated"));
+}
+
+function isAdminLegacyRouteMigrationStatus(value: unknown): value is AdminLegacyRouteMigrationStatus {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ["routeId", "status", "reason"])
+    || !isCapabilityId(value.routeId, 160)
+    || (value.status !== "ready"
+      && value.status !== "migrated"
+      && value.status !== "already_migrated"
+      && value.status !== "blocked"
+      && value.status !== "missing"
+      && value.status !== "not_legacy")) {
+    return false;
+  }
+  if (value.status !== "blocked") return value.reason === undefined;
+  return value.reason === "inline_credential_only"
+    || value.reason === "credential_unavailable"
+    || value.reason === "invalid_credential_contract";
 }
 
 export function isAdminSetupStatus(value: unknown): value is AdminSetupStatus {
@@ -2793,6 +2860,12 @@ function apiErrorFromResponse(response: Response, data: unknown, fallback: strin
   return new ApiError(code, getErrorMessage(data, fallback), response.status, {
     currentRevision: isRecord(data) && typeof data.currentRevision === "string" ? data.currentRevision : undefined,
     retryAfter: isRecord(data) && isNonNegativeInteger(data.retryAfter) ? data.retryAfter : undefined,
+    legacyRouteStatuses: isRecord(data)
+      && Array.isArray(data.statuses)
+      && data.statuses.length <= 200
+      && data.statuses.every(isAdminLegacyRouteMigrationStatus)
+      ? data.statuses
+      : undefined,
   });
 }
 

@@ -23,6 +23,16 @@ export type ProviderLeaseReleaseInput = {
   requestId?: string;
 };
 
+export type ProviderLeaseRenewInput = {
+  token: string;
+  requestId: string;
+  leaseTtlMs?: number;
+};
+
+export type ProviderLeaseRenewResult =
+  | { ok: true; expiresAt: number }
+  | { ok: false; error: "provider_lease_missing" };
+
 type StoredLease = {
   token: string;
   requestId: string;
@@ -103,6 +113,20 @@ export class ProviderCoordinator extends DurableObject<Record<string, unknown>> 
       await this.grantWaiters(now);
       await this.persistLeases();
       return { ok: true, released };
+    });
+  }
+
+  async renew(input: ProviderLeaseRenewInput): Promise<ProviderLeaseRenewResult> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const now = Date.now();
+      await this.pruneAndPersist(now);
+      const requestId = normalizeRequestId(input.requestId);
+      const token = typeof input.token === "string" ? input.token.trim().slice(0, 160) : "";
+      const lease = this.leases.find((candidate) => candidate.requestId === requestId && candidate.token === token);
+      if (!lease) return { ok: false, error: "provider_lease_missing" };
+      lease.expiresAt = now + clampInteger(input.leaseTtlMs, 1_000, MAX_LEASE_TTL_MS, DEFAULT_LEASE_TTL_MS);
+      await this.persistLeases();
+      return { ok: true, expiresAt: lease.expiresAt };
     });
   }
 

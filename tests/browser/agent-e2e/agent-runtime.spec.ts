@@ -72,6 +72,25 @@ test("real Worker Agent transport preserves streaming, approval, attachments, an
   await expect.poll(async () => (await providerState(request)).fileRequests).toBeGreaterThan(0);
   await expect.poll(async () => (await providerState(request)).imageRequests).toBeGreaterThan(0);
 
+  const transcript = page.locator(".message-list");
+  await expect.poll(async () => transcript.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await transcript.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await sendMessage(page, "[e2e:delayed] 验证贴底跟随");
+  const followedAssistant = page.locator(".message.assistant").last();
+  await expect(followedAssistant).toContainText("渐进第二段");
+  await expect.poll(async () => transcript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(160);
+
+  await sendMessage(page, "[e2e:delayed] 验证主动上滚");
+  const manualScrollAssistant = page.locator(".message.assistant").last();
+  await expect(manualScrollAssistant).toContainText("渐进第一段");
+  await transcript.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(async () => transcript.evaluate((element) => element.scrollTop)).toBe(0);
+  await expect(manualScrollAssistant).toContainText("渐进第二段");
+  expect(await transcript.evaluate((element) => element.scrollTop)).toBeLessThan(20);
+
   const sourceAssistant = page.locator(".message.assistant").filter({ hasText: "附件已接收" });
   await sourceAssistant.getByRole("button", { name: "创建对话分支" }).click();
   await expect(page.getByRole("button", { name: /返回父会话/ })).toBeVisible();
@@ -83,6 +102,41 @@ test("real Worker Agent transport preserves streaming, approval, attachments, an
   expect(state.recoveryRequests).toBeGreaterThan(0);
   expect(state.memoryToolRequests).toBeGreaterThan(0);
   expect(state.memoryContinuationRequests).toBeGreaterThan(0);
+});
+
+test("direct entries remain contained and the legacy image picker is keyboard operable", async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/legacy/");
+  await page.getByLabel("访问码").fill(memberAccessCode);
+  await page.getByRole("button", { name: "进入 Chatus" }).click();
+  await expect(page.locator("#chatView")).toBeVisible();
+  await expect(page.locator("#promptInput")).toBeFocused();
+
+  const imagePicker = page.getByRole("button", { name: "添加图片" });
+  await imagePicker.focus();
+  await expect(imagePicker).toBeFocused();
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await imagePicker.press("Enter");
+  const fileChooser = await fileChooserPromise;
+  expect(fileChooser.isMultiple()).toBe(true);
+  await fileChooser.setFiles([]);
+  await expectDocumentContained(page);
+
+  await page.goto("/");
+  await expect(page.getByRole("textbox", { name: "消息" })).toBeVisible();
+  await expectDocumentContained(page);
+
+  await page.goto("/react-chat/");
+  await expect(page.getByRole("textbox", { name: "消息" })).toBeVisible();
+  await expectDocumentContained(page);
+
+  await page.goto("/react-chat/admin");
+  await expect(page.getByLabel("管理员 Token")).toBeVisible();
+  await expectDocumentContained(page);
+
+  const redirect = await request.get("/admin.html", { maxRedirects: 0 });
+  expect(redirect.status()).toBe(308);
+  expect(new URL(redirect.headers().location || "", page.url()).pathname).toBe("/react-chat/admin");
 });
 
 test.describe("member logout recovery", () => {
@@ -146,6 +200,13 @@ async function sendMessage(page: Page, text: string): Promise<void> {
   const composer = page.getByRole("textbox", { name: "消息" });
   await composer.fill(text);
   await page.getByRole("button", { name: "发送", exact: true }).click();
+}
+
+async function expectDocumentContained(page: Page): Promise<void> {
+  await expect.poll(async () => page.evaluate(() => ({
+    documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+  }))).toEqual({ documentFits: true, bodyFits: true });
 }
 
 type ProviderState = {

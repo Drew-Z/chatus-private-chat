@@ -17,6 +17,7 @@ import {
   mergeDiscoveredOfferings,
   projectAdminLogicalModels,
   projectAdminProviders,
+  projectLegacyRouteMigrationCandidates,
   rebaseAdminConfigDraft,
   validateLogicalModelDraft,
   validateProviderDraft,
@@ -212,6 +213,54 @@ describe("typed provider administration helpers", () => {
       directEndpoint: true,
     });
     expect(routeRoundTrip.routes.writer.offerings).not.toBe(legacyRoute.offerings);
+  });
+
+  it("projects legacy migration readiness without exposing route transport values", () => {
+    const config = fixture();
+    config.routes.legacy = {
+      label: "Legacy model",
+      type: "openai-chat",
+      baseUrl: "https://legacy.example/v1",
+      model: "secret-upstream-model",
+      apiKeyRef: "LEGACY_KEY",
+      hasLegacyKey: true,
+    };
+    config.routes.inline = {
+      label: "Inline only",
+      type: "openai-chat",
+      baseUrl: "https://inline.example/v1",
+      model: "inline-model",
+      hasLegacyKey: true,
+    };
+    const candidates = projectLegacyRouteMigrationCandidates(config, [
+      { apiKeyRef: "LEGACY_KEY", source: "managed", status: "configured", managed: true, environmentFallback: false, revision: "rev" },
+    ]);
+    expect(candidates).toEqual([
+      { routeId: "inline", label: "Inline only", status: "blocked", reason: "inline_credential_only" },
+      { routeId: "legacy", label: "Legacy model", status: "ready" },
+    ]);
+    expect(JSON.stringify(candidates)).not.toContain("https://legacy.example");
+    expect(JSON.stringify(candidates)).not.toContain("secret-upstream-model");
+  });
+
+  it("treats provider-backed routes with legacy shadows as ready without checking the shadow credential", () => {
+    const config = fixture();
+    config.routes.mixed = {
+      label: "Provider-backed with shadow",
+      offerings: [{ providerId: "shared", model: "writer-v2", enabled: true }],
+      type: "openai-chat",
+      baseUrl: "https://stale.example/v1",
+      model: "stale-model",
+      hasLegacyKey: true,
+      requiresUserKey: true,
+      allowUserKey: false,
+    };
+
+    expect(projectLegacyRouteMigrationCandidates(config, [])).toContainEqual({
+      routeId: "mixed",
+      label: "Provider-backed with shadow",
+      status: "ready",
+    });
   });
 
   it("preserves optional offering capability overrides through draft round trips", () => {

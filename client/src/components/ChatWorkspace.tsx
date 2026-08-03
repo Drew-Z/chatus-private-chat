@@ -553,6 +553,7 @@ function ConversationChat({
   const [lastSubmittedAttachments, setLastSubmittedAttachments] = useState<DraftAttachment[]>([]);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const followTranscriptRef = useRef(true);
   const wasBusy = useRef(false);
   const submissionGeneration = useRef(0);
   const draftGeneration = useRef(0);
@@ -678,13 +679,20 @@ function ConversationChat({
   }, []);
 
   useEffect(() => {
-    const container = messageListRef.current;
-    const nearBottom = !container
-      || container.scrollHeight - container.scrollTop - container.clientHeight < 140;
-    if (!nearBottom && !chat.isRecovering) return;
+    followTranscriptRef.current = true;
+  }, [conversation.id]);
+
+  useEffect(() => {
+    if (!followTranscriptRef.current) return;
     const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
     window.requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end", behavior }));
   }, [chat.messages, chat.isRecovering]);
+
+  const trackTranscriptScroll = () => {
+    const container = messageListRef.current;
+    if (!container) return;
+    followTranscriptRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
+  };
 
   const finishAttachmentRead = (attachment: DraftAttachment) => {
     void readDraftAttachment(attachment, session.fileInput).then((updated) => {
@@ -840,7 +848,7 @@ function ConversationChat({
       {!online && <div className="offline-banner" role="status"><WifiOff size={16} /><span>当前离线。已保留草稿，恢复网络后可以继续发送。</span></div>}
       {!routeAvailable && <div className="configuration-banner" role="status">当前没有可用模型线路，请联系管理员完成配置。</div>}
       {messageActionError && <div className="workspace-error" role="alert"><span>{messageActionError}</span><button className="icon-button" type="button" onClick={() => setMessageActionError("")} title="关闭提示" aria-label="关闭提示">×</button></div>}
-      <div ref={messageListRef} className="message-list" aria-live="polite">
+      <div ref={messageListRef} className="message-list" aria-live="polite" onScroll={trackTranscriptScroll}>
         <div className="message-column">
           {chat.messages.length === 0 && (
             <div className="empty-state">
