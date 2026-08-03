@@ -16,7 +16,7 @@
 - [x] Measure the admin bundle and record the decision. Current output is 895.86 KB minified / 249.09 KB gzip JS and 70.90 KB / 12.54 KB gzip CSS; no reviewed transfer or startup CPU threshold proves an admin split would improve this release, so no speculative split is added.
 - [x] Run focused tests, then the full shipping gate and Trellis consistency checks.
 - [x] Update frontend/platform specs for migration, provider-plan, redirect, accessibility, and delivery contracts.
-- [ ] Commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
+- [x] Commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
 - [ ] Record exact main SHA deployment and user acceptance of both React admin access and production legacy-route migration before archive.
 
 ## Local Validation Evidence (2026-08-04)
@@ -31,6 +31,14 @@
 - `python ./.trellis/scripts/task.py validate-all`: repository consistency passed.
 - `python -m unittest discover -s .trellis/tests -p test_*.py -v`: 7 passed.
 - No live Provider/MCP request, production probe, local production deployment, production configuration read, or production configuration mutation was used.
+
+## PR And Deployment Evidence (2026-08-04)
+
+- Work commit `ad64dce1196c2a9378ccb63d03631ede29e911af`; PR head `93cab7f5b76896c15ff68a75de7c30d678dea8cb`.
+- PR [#37](https://github.com/Drew-Z/chatus-private-chat/pull/37) merged by squash into exact main SHA `b508f3d0819a93c2bafc92c93b634b9d10f7ed13`.
+- PR CI run `30840081929` passed `changes`, `quality`, `agent-browser`, and `workspace-browser`. The retained artifacts are `pr-path-classification-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866397393`), `agent-playwright-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866433579`), `pr-quality-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866474577`), and `workspace-playwright-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866552599`); all expire 2026-08-17.
+- GitHub Actions deployment run `30840604819` passed against that exact main SHA, including the real deploy and production verification steps. The retained artifacts are `production-deployment-b508f3d0819a93c2bafc92c93b634b9d10f7ed13` (ID `8866683762`, expires 2026-11-01) and `deployment-paths-b508f3d0819a93c2bafc92c93b634b9d10f7ed13` (ID `8866593925`, expires 2026-09-02).
+- Production legacy-route migration remains pending explicit execution and acceptance by an authenticated administrator in `/react-chat/admin`; CI and local scripts did not perform it.
 
 ## Validation Commands
 
