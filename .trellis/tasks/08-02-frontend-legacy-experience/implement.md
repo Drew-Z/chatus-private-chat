@@ -24,7 +24,7 @@
 - `npm run check:frontend`: passed; Vite bundle measured above and frontend structural contracts passed.
 - `npm test`: 39 files / 527 tests passed using local fixtures only.
 - `npm run test:browser:workspace`: 81 passed, 39 viewport-scoped skips, 0 failed.
-- `npm run test:browser:agent`: 3 passed against the local fake Provider, including streaming scroll and direct-entry keyboard coverage.
+- `npm run test:browser:agent`: 3 passed against the local fake Provider after waiting for the legacy login initializer's final `#promptInput` focus signal before testing the image picker; streaming scroll, direct-entry keyboard coverage, and logout recovery remain covered.
 - `npm run typecheck`: Worker, React client, and browser TypeScript passed.
 - `npx wrangler deploy --dry-run`: Wrangler 4.110.0 completed locally; no deployment occurred.
 - `git diff --check`: passed.

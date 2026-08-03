@@ -110,6 +110,7 @@ test("direct entries remain contained and the legacy image picker is keyboard op
   await page.getByLabel("访问码").fill(memberAccessCode);
   await page.getByRole("button", { name: "进入 Chatus" }).click();
   await expect(page.locator("#chatView")).toBeVisible();
+  await expect(page.locator("#promptInput")).toBeFocused();
 
   const imagePicker = page.getByRole("button", { name: "添加图片" });
   await imagePicker.focus();

@@ -42,6 +42,14 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - Browser geometry, focus, overflow, and touch contracts use the Playwright component fixture under `tests/browser/`. Keep that directory excluded from the Cloudflare Vitest pool with `configDefaults.exclude`, and type-check its Node/DOM boundary separately.
 - The workspace fixture may import real presentational React components with deterministic synthetic data, but it must not mount Agent hooks, authenticate, call `/api`, open `/agent`, or contact a model. Abort unexpected requests and assert the blocked-request list again in `afterEach` so interactions cannot bypass the guard.
 - Real Agent browser acceptance uses its separate `tests/browser/agent-e2e/` config and a local fake provider. Its runner must generate runtime-only credentials, use isolated Wrangler persistence and Playwright output directories, redact credentials from errors, remove temporary state, and expose only bounded non-sensitive provider counters.
+- A legacy-login browser test that asserts focus after authentication must wait for the final initialization focus signal, not only for `#chatView` to become visible. `showChat()` reveals that container before asynchronous session and memory loads finish, then focuses `#promptInput`; waiting for that focus prevents the initializer from racing with the control under test while preserving the actual focus assertion.
+
+```typescript
+await expect(page.locator("#chatView")).toBeVisible();
+await expect(page.locator("#promptInput")).toBeFocused();
+await imagePicker.focus();
+await expect(imagePicker).toBeFocused();
+```
 - Successful viewport screenshots must be written through `testInfo.outputPath(...)`, attached by path, and retained with `preserveOutput: "always"`. Keep `test-results/` ignored by Git; in-memory attachments alone are not retained by the line reporter for passing tests.
 - Before shipping run:
 
