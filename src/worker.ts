@@ -454,7 +454,6 @@ const DEFAULT_GUEST_MINUTE_LIMIT = 6;
 const DEFAULT_GUEST_SOURCE_DAILY_LIMIT = 200;
 const DEFAULT_GUEST_SOURCE_MINUTE_LIMIT = 30;
 const MAX_PUBLIC_SESSION_TTL_SECONDS = 7 * 86_400;
-const GUEST_CLEANUP_RETENTION_SECONDS = 7 * 86_400;
 const GUEST_CLEANUP_BATCH_SIZE = 10;
 const MAX_GUEST_DAILY_LIMIT = 1_000;
 const MAX_GUEST_MINUTE_LIMIT = 60;
@@ -1983,23 +1982,7 @@ async function handleApi(
 
   if (url.pathname === "/api/user-data" && request.method === "DELETE") {
     try {
-      const workspacePurge = await purgeAgentUserData(env, session.label);
-      const [revoked] = await Promise.all([
-        revokeSessionsByLabel(env, session.label),
-        getUserState(env, session.label).purgeUserData(),
-      ]);
-      await Promise.all([
-        env.CHAT_STORE.delete(memoryKey(session.label)),
-        env.CHAT_STORE.delete(chatIndexKey(session.label)),
-        feedbackAuditService(env).removeFeedbackByLabel(session.label),
-        ...Array.from({ length: METRICS_DAYS }, (_, index) =>
-          env.CHAT_STORE.delete(usageKey(session.label, utcDayString(index))),
-        ),
-      ]);
-      const root = await getTeamAgent(env, session.label);
-      if (!(await root.releaseWorkspaceAccountPurge(workspacePurge.operationId, workspacePurge.generation))) {
-        throw new Error("workspace_account_purge_release_failed");
-      }
+      const revoked = await attemptMemberAccountCleanup(env, session.label);
       return jsonResponse({ ok: true, revoked }, 200, {
         "Set-Cookie": buildSessionCookie("", 0, url.protocol === "https:"),
       });
@@ -3834,7 +3817,6 @@ async function handleDeleteAgentConversation(env: Env, session: Session, url: UR
   const result = await root.deleteConversation(id, expectedUpdatedAt);
   if (!result.ok) return agentConversationMutationError(result);
   const cleanupPending = !(await attemptAgentConversationCleanup(env, session.label, id, root));
-  await getUserState(env, session.label).deleteChat(id, 0).catch(() => undefined);
   const conversations = await root.listConversations();
   return jsonResponse({ ok: true, deleted: true, cleanupPending, conversations }, cleanupPending ? 202 : 200);
 }
@@ -3874,7 +3856,7 @@ async function handlePutAgentMemory(request: Request, env: Env, session: Session
 async function handleListWorkspaceFiles(env: Env, session: Session, url: URL): Promise<Response> {
   await ensureAgentLegacyImport(env, session.label);
   const root = await getTeamAgent(env, session.label, session);
-  await drainWorkspaceOperations(env, root);
+  await drainWorkspaceOperations(env, root, session.label);
   const result = await root.listWorkspaceFiles(
     url.searchParams.get("q") || "",
     url.searchParams.get("cursor") || "",
@@ -3886,7 +3868,7 @@ async function handleListWorkspaceFiles(env: Env, session: Session, url: URL): P
 async function handleListWorkspaceFileVersions(env: Env, session: Session, fileId: string): Promise<Response> {
   await ensureAgentLegacyImport(env, session.label);
   const root = await getTeamAgent(env, session.label, session);
-  await drainWorkspaceOperations(env, root);
+  await drainWorkspaceOperations(env, root, session.label);
   const result = await root.listWorkspaceFileVersions(fileId);
   return result
     ? jsonResponse(result)
@@ -3923,7 +3905,7 @@ async function handleWorkspaceFileUpload(
 
   await ensureAgentLegacyImport(env, session.label);
   const root = await getTeamAgent(env, session.label, session);
-  await drainWorkspaceOperations(env, root);
+  await drainWorkspaceOperations(env, root, session.label);
   const existing = fileId ? await root.listWorkspaceFileVersions(fileId) : undefined;
   if (fileId && !existing) return jsonResponse({ error: "workspace_file_not_found", message: "文件不存在" }, 404);
   const expectedUpdatedAt = fileId ? finitePositiveInteger(form.get("expectedUpdatedAt")) : 0;
@@ -5197,26 +5179,57 @@ async function syncLegacyChatToAgent(
   return "active";
 }
 
-async function drainAgentConversationCleanup(env: Env, label: string): Promise<void> {
-  const root = await getTeamAgent(env, label);
-  const pending = await root.listPendingConversationCleanups(3).catch(() => []);
-  await Promise.all(pending.map((record) => attemptAgentConversationCleanup(env, label, record.chatId, root)));
+type CleanupRoot = DurableObjectStub<TeamAgent> | TeamAgent;
+
+async function drainAgentConversationCleanup(
+  env: Env,
+  label: string,
+  root: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
+  now = Date.now(),
+  scheduleFailures = true,
+): Promise<void> {
+  const agentRoot = await root;
+  let pending;
+  try {
+    pending = await agentRoot.listPendingConversationCleanups(3, now, true);
+  } catch (error) {
+    if (!scheduleFailures) throw error;
+    await agentRoot.refreshCleanupSchedule(now + 5_000, scheduleFailures).catch(() => undefined);
+    return;
+  }
+  await Promise.all(pending.map((record) => attemptAgentConversationCleanup(
+    env,
+    label,
+    record.chatId,
+    agentRoot,
+    now,
+    scheduleFailures,
+  )));
+  if (scheduleFailures) await agentRoot.refreshCleanupSchedule(now, true).catch(() => undefined);
 }
 
 async function attemptAgentConversationCleanup(
   env: Env,
   label: string,
   chatId: string,
-  root: DurableObjectStub<TeamAgent> | Promise<DurableObjectStub<TeamAgent>> = getTeamAgent(env, label),
+  root: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
+  now = Date.now(),
+  scheduleFailures = true,
 ): Promise<boolean> {
   const agentRoot = await root;
   try {
     const conversation = await getTeamAgentConversation(env, label, chatId);
     await conversation.clearConversation();
+    await getUserState(env, label).deleteChat(chatId, 0);
     await agentRoot.completeConversationCleanup(chatId);
     return true;
   } catch {
-    await agentRoot.recordConversationCleanupFailure(chatId).catch(() => undefined);
+    await agentRoot.recordConversationCleanupFailure(
+      chatId,
+      "conversation_cleanup_failed",
+      now,
+      scheduleFailures,
+    ).catch(() => undefined);
     return false;
   }
 }
@@ -5286,40 +5299,121 @@ function dataUrlMediaType(value: string): string {
 async function purgeAgentUserData(
   env: Env,
   label: string,
+  rootInput: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
+  now = Date.now(),
+  scheduleFailures = true,
 ): Promise<{ operationId: string; generation: number }> {
-  const root = await getTeamAgent(env, label);
+  const root = await rootInput;
   const purge = await root.beginWorkspaceAccountPurge(crypto.randomUUID());
   if ("error" in purge) throw new Error(purge.error);
-  if (!purge.completed) {
-    try {
+  try {
+    if (!purge.completed) {
       await deleteWorkspaceObjects(env.WORKSPACE_FILES, purge.objectKeys);
-    } catch (error) {
+      if (!(await root.completeWorkspaceAccountPurge(purge.operationId, purge.generation))) {
+        throw new Error("workspace_account_purge_finalize_failed");
+      }
+    }
+    const conversationIds = await root.getAllConversationIds();
+    await Promise.all(conversationIds.map(async (chatId) => {
+      const conversation = await getTeamAgentConversation(env, label, chatId);
+      await conversation.clearConversation();
+    }));
+    await root.purgeRootData();
+    return { operationId: purge.operationId, generation: purge.generation };
+  } catch (error) {
+    await root.recordWorkspaceOperationFailure(
+      purge.operationId,
+      purge.generation,
+      "workspace_account_purge_failed",
+      now,
+      scheduleFailures,
+    ).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function attemptMemberAccountCleanup(
+  env: Env,
+  label: string,
+  rootInput: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
+  now = Date.now(),
+  scheduleFailures = true,
+  registerRequest = true,
+): Promise<number> {
+  const root = await rootInput;
+  let purge: { operationId: string; generation: number } | undefined;
+  try {
+    if (registerRequest) await root.registerAccountCleanupRequest(now);
+    purge = await purgeAgentUserData(env, label, root, now, scheduleFailures);
+    const [revoked] = await Promise.all([
+      revokeSessionsByLabel(env, label),
+      getUserState(env, label).purgeUserData(),
+    ]);
+    await Promise.all([
+      env.CHAT_STORE.delete(memoryKey(label)),
+      env.CHAT_STORE.delete(chatIndexKey(label)),
+      feedbackAuditService(env).removeFeedbackByLabel(label),
+      ...Array.from({ length: METRICS_DAYS }, (_, index) =>
+        env.CHAT_STORE.delete(usageKey(label, utcDayString(index))),
+      ),
+    ]);
+    if (!(await root.releaseWorkspaceAccountPurge(purge.operationId, purge.generation))) {
+      throw new Error("workspace_account_purge_release_failed");
+    }
+    return revoked;
+  } catch (error) {
+    if (purge) {
       await root.recordWorkspaceOperationFailure(
         purge.operationId,
         purge.generation,
-        "workspace_account_purge_failed",
+        "account_cleanup_failed",
+        now,
+        scheduleFailures,
       ).catch(() => undefined);
-      throw error;
     }
-    if (!(await root.completeWorkspaceAccountPurge(purge.operationId, purge.generation))) {
-      throw new Error("workspace_account_purge_finalize_failed");
-    }
+    throw error;
   }
-  const conversationIds = await root.getAllConversationIds();
-  await Promise.all(conversationIds.map(async (chatId) => {
-    const conversation = await getTeamAgentConversation(env, label, chatId);
-    await conversation.clearConversation();
-  }));
-  await root.purgeRootData();
-  return { operationId: purge.operationId, generation: purge.generation };
 }
 
 async function drainWorkspaceOperations(
   env: Env,
-  root: DurableObjectStub<TeamAgent>,
+  root: CleanupRoot,
+  label: string,
+  now = Date.now(),
+  scheduleFailures = true,
 ): Promise<void> {
-  const operations = await root.listPendingWorkspaceOperations(3).catch(() => []);
+  let attemptedAccountCleanup = false;
+  let operations;
+  try {
+    operations = await root.listPendingWorkspaceOperations(3, now, true);
+  } catch (error) {
+    if (!scheduleFailures) throw error;
+    await root.refreshCleanupSchedule(now + 5_000, scheduleFailures).catch(() => undefined);
+    return;
+  }
   for (const operation of operations) {
+    if (operation.kind === "account_purge") {
+      if (await root.hasAccountCleanupRequest()) {
+        attemptedAccountCleanup = true;
+        await attemptMemberAccountCleanup(env, label, root, now, scheduleFailures, false).catch(() => undefined);
+      } else {
+        try {
+          await deleteWorkspaceObjects(env.WORKSPACE_FILES, operation.objectKeys);
+          if (!(await root.completeWorkspaceAccountPurge(operation.operationId, operation.generation))) {
+            throw new Error("workspace_account_purge_finalize_failed");
+          }
+        } catch {
+          await root.recordWorkspaceOperationFailure(
+            operation.operationId,
+            operation.generation,
+            "workspace_account_purge_failed",
+            now,
+            scheduleFailures,
+          ).catch(() => undefined);
+        }
+      }
+      continue;
+    }
     try {
       if (operation.kind === "upload") {
         if (operation.state === "failed") {
@@ -5328,14 +5422,22 @@ async function drainWorkspaceOperations(
           continue;
         }
         const objectKey = operation.objectKeys[0];
-        if (!objectKey) continue;
+        if (!objectKey) throw new Error("workspace_object_key_missing");
         const object = await env.WORKSPACE_FILES.get(objectKey);
         if (!object) {
-          if (Date.now() - operation.updatedAt >= WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS) {
+          if (now - operation.updatedAt >= WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS) {
             await root.recordWorkspaceOperationFailure(
               operation.operationId,
               operation.generation,
               "workspace_object_unavailable",
+              now,
+              scheduleFailures,
+            );
+          } else {
+            await root.deferWorkspaceOperation(
+              operation.operationId,
+              operation.generation,
+              operation.updatedAt + WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS,
             );
           }
           continue;
@@ -5347,6 +5449,8 @@ async function drainWorkspaceOperations(
             operation.operationId,
             operation.generation,
             "workspace_object_checksum_mismatch",
+            now,
+            scheduleFailures,
           );
           continue;
         }
@@ -5356,18 +5460,41 @@ async function drainWorkspaceOperations(
       }
 
       await deleteWorkspaceObjects(env.WORKSPACE_FILES, operation.objectKeys);
-      const completed = operation.kind === "delete_file"
-        ? await root.completeWorkspaceFileDelete(operation.operationId, operation.generation)
-        : await root.completeWorkspaceAccountPurge(operation.operationId, operation.generation);
+      const completed = await root.completeWorkspaceFileDelete(operation.operationId, operation.generation);
       if (!completed) throw new Error("workspace_operation_finalize_failed");
     } catch {
       await root.recordWorkspaceOperationFailure(
         operation.operationId,
         operation.generation,
         "workspace_reconcile_failed",
+        now,
+        scheduleFailures,
       ).catch(() => undefined);
     }
   }
+  if (
+    !attemptedAccountCleanup
+    && await root.hasAccountCleanupRequest()
+    && !(await root.hasWorkspaceAccountPurgeOperation())
+  ) {
+    await attemptMemberAccountCleanup(env, label, root, now, scheduleFailures, false).catch(() => undefined);
+  }
+  if (scheduleFailures) await root.refreshCleanupSchedule(now, true).catch(() => undefined);
+}
+
+export async function runTeamAgentCleanupSchedule(
+  env: Env,
+  label: string,
+  root: TeamAgent,
+): Promise<void> {
+  const now = Date.now();
+  const guest = await root.getDueGuestCleanup(now);
+  if (guest) {
+    await cleanupGuestData(env, label, guest.markerKey, root, now, false);
+    return;
+  }
+  await drainWorkspaceOperations(env, root, label, now, false);
+  await drainAgentConversationCleanup(env, label, root, now, false);
 }
 
 async function deleteWorkspaceObjects(bucket: R2Bucket, objectKeys: string[]): Promise<void> {
@@ -8177,30 +8304,76 @@ function normalizeStoredSession(value: unknown): Session | null {
   return { id, label, kind: "member", createdAt, lastSeen, expiresAt };
 }
 
-async function cleanupGuestData(env: Env, label: string): Promise<void> {
-  await Promise.allSettled([
-    getUserState(env, label).purgeUserData(),
-    purgeAgentUserData(env, label),
-  ]);
+async function cleanupGuestData(
+  env: Env,
+  label: string,
+  markerKey: string,
+  rootInput: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
+  now = Date.now(),
+  scheduleFailures = true,
+): Promise<boolean> {
+  const root = await rootInput;
+  let purge: { operationId: string; generation: number } | undefined;
+  try {
+    purge = await purgeAgentUserData(env, label, root, now, scheduleFailures);
+    await getUserState(env, label).purgeUserData();
+    if (!(await root.releaseWorkspaceAccountPurge(purge.operationId, purge.generation, true))) {
+      throw new Error("workspace_account_purge_release_failed");
+    }
+    await env.CHAT_STORE.delete(markerKey);
+    if (!(await root.completeGuestCleanup(markerKey))) throw new Error("guest_cleanup_ticket_complete_failed");
+    return true;
+  } catch {
+    if (purge) {
+      await root.recordWorkspaceOperationFailure(
+        purge.operationId,
+        purge.generation,
+        "guest_account_cleanup_failed",
+        now,
+        scheduleFailures,
+      ).catch(() => undefined);
+    }
+    await root.recordGuestCleanupFailure(
+      markerKey,
+      "guest_cleanup_failed",
+      now,
+      scheduleFailures,
+    ).catch(() => undefined);
+    return false;
+  }
 }
 
 async function cleanupGuestSessionData(env: Env, session: GuestSession): Promise<void> {
-  await Promise.allSettled([
-    cleanupGuestData(env, session.label),
-    env.CHAT_STORE.delete(guestCleanupKey(session)),
-  ]);
+  const markerKey = guestCleanupKey(session);
+  try {
+    await env.CHAT_STORE.put(
+      markerKey,
+      JSON.stringify({ label: session.label, expiresAt: session.expiresAt }),
+    );
+    const root = await getTeamAgent(env, session.label, session);
+    if (!(await root.registerGuestCleanup(markerKey, session.expiresAt))) {
+      throw new Error("guest_cleanup_schedule_failed");
+    }
+    await cleanupGuestData(env, session.label, markerKey, root);
+  } catch {
+    console.error(JSON.stringify({
+      level: "warn",
+      event: "guest_cleanup_deferred",
+      error: "guest_cleanup_unavailable",
+    }));
+  }
 }
 
 async function scheduleGuestCleanup(env: Env, session: GuestSession): Promise<void> {
-  const ttl = Math.max(
-    60,
-    Math.ceil((session.expiresAt - Date.now()) / 1_000) + GUEST_CLEANUP_RETENTION_SECONDS,
-  );
+  const markerKey = guestCleanupKey(session);
   await env.CHAT_STORE.put(
-    guestCleanupKey(session),
+    markerKey,
     JSON.stringify({ label: session.label, expiresAt: session.expiresAt }),
-    { expirationTtl: ttl },
   );
+  const root = await getTeamAgent(env, session.label, session);
+  if (!(await root.registerGuestCleanup(markerKey, session.expiresAt))) {
+    throw new Error("guest_cleanup_schedule_failed");
+  }
 }
 
 async function scheduleGuestCleanupDrain(
@@ -8208,12 +8381,12 @@ async function scheduleGuestCleanupDrain(
   ctx: ExecutionContext | undefined,
   requestId: string,
 ): Promise<void> {
-  const cleanup = drainExpiredGuestCleanups(env).catch((error) => {
+  const cleanup = drainExpiredGuestCleanups(env).catch(() => {
     console.error(JSON.stringify({
       level: "warn",
       event: "guest_cleanup_failed",
       requestId,
-      error: error instanceof Error ? error.name : "UnknownError",
+      error: "guest_cleanup_failed",
     }));
   });
   if (ctx) {
@@ -8227,11 +8400,14 @@ async function drainExpiredGuestCleanups(env: Env, now = Date.now()): Promise<vo
   const page = await env.CHAT_STORE.list({ prefix: GUEST_CLEANUP_PREFIX, limit: GUEST_CLEANUP_BATCH_SIZE });
   for (const key of page.keys) {
     const expiresAt = guestCleanupExpiresAt(key.name);
-    if (expiresAt !== null && expiresAt > now) break;
+    if (expiresAt === null) continue;
+    if (expiresAt > now) break;
     const raw = await env.CHAT_STORE.get(key.name);
     const label = guestCleanupLabel(raw);
-    if (label) await cleanupGuestData(env, label);
-    await env.CHAT_STORE.delete(key.name);
+    if (!label) continue;
+    const root = await getTeamAgent(env, label);
+    if (!(await root.registerGuestCleanup(key.name, expiresAt))) continue;
+    await cleanupGuestData(env, label, key.name, root, now);
   }
 }
 

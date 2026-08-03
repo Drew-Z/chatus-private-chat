@@ -39,6 +39,7 @@ conversation_file_refs(conversation_id, file_id, version_id, created_at)
 workspace_file_operations(
   id, kind, file_id, version_id, generation, state, fingerprint,
   object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+  next_attempt_at, terminal_at
 )
 ```
 
@@ -57,6 +58,9 @@ completeDocumentIngest(message: DocumentIngestMessage, artifact: DocumentIngestA
 recordDocumentIngestFailure(message: DocumentIngestMessage, error: string, transient: boolean): Promise<boolean>
 recordDocumentIngestDlq(message: DocumentIngestMessage, error: string): Promise<boolean>
 retryDocumentIngest(fileId: string, versionId: string): Promise<DocumentIngestRetryResult>
+runCleanupSchedule(): Promise<void>
+refreshCleanupSchedule(now?: number, replaceExisting?: boolean): Promise<void>
+getCleanupSummary(): Promise<AgentCleanupSummary>
 ```
 
 Queue bindings and messages:
@@ -105,6 +109,15 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 - Queued, extracting, failed, and deleted versions produce bounded per-file unavailable status. A malformed/tampered artifact fails before any Provider call. Raw binary bytes, parser errors, Queue owner IDs, object keys, file IDs, and version IDs are not sent to the Provider.
 - User-data export omits workspace references and checksums rather than embedding R2 bytes or storage identifiers.
 
+### Durable Cleanup Retry
+
+- `delete_file` and `account_purge` operation rows are durable retry owners. Ordinary requests may opportunistically drain them, but the Root `TeamAgent` persistent one-shot alarm owns convergence after request traffic stops or the initiating session is revoked.
+- Additive fields are `next_attempt_at` (earliest eligible time), `attempts`, allowlisted `last_error`, and `terminal_at`. Legacy rows default to immediately due. Automatic retries use a 5-second exponential base, a 5-minute cap, and 8 failed attempts; exhausted rows remain terminal and inspectable for explicit idempotent replay.
+- Request and alarm paths call the same due-aware drain. A not-due row is skipped. R2 deletion is idempotent, and metadata finalization continues to require the exact operation ID and generation, so eviction after an external side effect cannot delete or finalize a newer generation.
+- Each alarm pass is bounded by the existing small outbox limits. The Root recomputes the earliest non-terminal due time, replaces only the `runCleanupSchedule` callback, and leaves unrelated Agents SDK schedules untouched.
+- A list/read/top-level alarm failure is not an empty successful queue. Persisted ownership remains, the Root schedules a bounded retry while its identity exists, and operational evidence contains only cleanup family/state counts, oldest due time, maximum attempts, scheduled time, and stable error codes.
+- An `account_purge` row and Root identity remain until Workspace objects/metadata, conversation Agents, Root state, UserState, sessions, feedback indexes, legacy KV data, and usage keys all succeed. Partial success never releases the lock or converts the operation into completed user deletion.
+
 ### Account Purge Lock
 
 - `beginWorkspaceAccountPurge()` always inserts or returns one persisted `account_purge` operation, including when the workspace has zero object keys. There is no lock-free fast path.
@@ -128,6 +141,11 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 | R2 put fails | Mark operation/version/file failed; allow a new immutable retry |
 | R2 put succeeds but finalize is interrupted | Return pending and reconcile from size plus SHA-256 evidence |
 | R2 delete fails | Keep tombstone/outbox retryable; never show the file as active |
+| Delete/finalize operation is not yet due | Skip it without incrementing attempts or touching R2/SQLite metadata |
+| R2 delete succeeds but exact-generation finalize fails | Retain the same operation/generation and replay idempotently after backoff |
+| Cleanup reaches 8 failed attempts | Set `terminal_at`, retain the row/lock and stable error code, and stop automatic scheduling for that row |
+| Root is evicted after a side effect | Rehydrate the same durable row and resume from its due time without cross-generation mutation |
+| Cleanup inspection or logs are produced | Expose aggregate timing/count/state only; omit labels, IDs, operation IDs, object keys, content, secrets, and raw exceptions |
 | Download size/checksum metadata differs | `503 workspace_object_unavailable` / `workspace_object_invalid`; do not stream bytes |
 | Queue binding/name contract is missing or Queue send fails | Retry/fail closed; mark the exact generation failed so manual retry is available |
 | Duplicate delivery arrives during an active processing lease | Retry after the bounded remainder; do not parse in parallel |
@@ -144,17 +162,20 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 - Good: a member uploads PDF version A, it reaches `ready`, then uploads version B and pins A; the fake Provider receives only A's verified extracted text under the updated display path.
 - Good: a Worker terminates after `extracting`; duplicate delivery waits for the lease, reclaims the same generation, and completes without parallel parsing.
 - Good: account deletion snapshots every object key, rejects an upload attempted after the snapshot, deletes objects and all user stores, then releases the persisted lock.
+- Good: an account request fails after R2 deletion and its session is revoked; the Root alarm replays the exact operation, completes remaining stores, then releases the lock and Root identity.
 - Base: an empty workspace still creates a purge lock before other account stores are deleted and releases it only after the complete deletion path succeeds.
 - Base: a queued or failed PDF remains listable/downloadable and produces only its explicit unavailable status until a ready generation exists.
 - Bad: persist only `fileId`, resolve `current_version_id` during send, or overwrite the old R2 key during retry.
 - Bad: treat `extracting` as a terminal duplicate ack, read the original when extraction metadata is invalid, or return `{ ok: true, message: { ownerId } }` from manual retry.
 - Bad: return `completed: true` without persisting an empty-workspace purge lock, or delete the lock immediately after clearing workspace tables while the remaining account purge is still running.
+- Bad: treat a failed alarm list/read as no pending work, bypass `next_attempt_at` from a request path, or persist a raw exception in `last_error`.
 
 ## 6. Tests Required
 
 - Unit-test safe path normalization plus traversal, drive, empty-segment, control-character, case, and Unicode conflicts.
 - Prove schema migration 1 -> 2 is idempotent and creates all workspace tables and indexes without changing the Durable Object Wrangler migration tag.
 - Prove upload/retry operation fingerprints, optimistic timestamps, transaction compare-and-swap behavior, tombstone authority, missing-object timeout, and SHA-256 reconciliation.
+- Prove additive cleanup migration accepts legacy rows and makes them immediately due; due filtering, 5-second exponential backoff, 5-minute cap, 8-attempt terminal retention, and direct idempotent recovery are deterministic.
 - Prove two immutable versions exist, a conversation pins the old exact version, rename/current-version changes do not drift it, and a local fake Provider sees only that old text.
 - Prove object keys and raw PDF/Office bytes are absent from APIs, exports, client state, Provider payloads, and diagnostics.
 - Table-test normal Queue extraction for all five formats and permanent rejection for macro/script, ActiveX/OLE, embedded/nested archives, external/escaping relationships, compression bombs, encryption, corrupt packages, and PDF active names before Provider execution.
@@ -163,6 +184,8 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 - Prove the fake Provider receives only verified ready extracted text for 10 exact versions, consumes one user-message quota unit, and receives zero calls for tampered artifacts.
 - Prove conversation deletion, file deletion, and account deletion clean their respective references, versions, operations, and R2 objects.
 - Prove both an empty workspace and an object-bearing workspace persist the account purge lock; mutations after snapshot, after workspace finalize, and after root purge remain blocked until explicit release.
+- Prove bounded alarm batches resume after simulated Durable Object eviction and continue after the initiating request/session is gone. Inject R2 and finalize failures separately and assert the exact operation/generation lock survives.
+- Assert cleanup summaries/logs contain aggregate fields and stable codes only, with no member label, conversation/file/operation ID, object key, content, secret, or raw exception text.
 - Client decoder tests reject unknown/malformed file projections and delete/pending envelopes.
 - Workspace Playwright covers list/search, directory upload, rename focus restoration, pin, delete/pending, download, retry, exact version selection, search-empty recovery, and the 1920/1440/780/480/390 viewport matrix.
 - Agent acceptance uses only the local fake Provider. Never use a live model, remote R2 bucket, synthetic production probe, or local production deploy.

@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/public-guest-access.md","reason":"Guest marker ownership, Root alarm scheduling, and privacy-safe cleanup contracts."}
+{"file":".trellis/spec/frontend/workspace-files.md","reason":"Workspace operation generations, due-aware retry, terminal retention, and account purge lock."}
+{"file":".trellis/spec/platform/backup-restore.md","reason":"Cross-store deletion ordering, durable purge retry, and recovery exclusions."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required local validation and browser/fake-provider quality gates."}

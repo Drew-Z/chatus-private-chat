@@ -122,6 +122,34 @@ export type AgentConversationCleanupRecord = {
   requestedAt: number;
   attempts: number;
   lastAttemptAt: number;
+  nextAttemptAt: number;
+  terminalAt: number;
+  lastError: string;
+};
+
+export type AgentCleanupSummary = {
+  conversation: AgentCleanupSummaryGroup;
+  workspace: AgentCleanupSummaryGroup;
+  account: AgentCleanupSummaryGroup;
+  guest: AgentCleanupSummaryGroup;
+  scheduledAt: number;
+};
+
+export type AgentCleanupSummaryGroup = {
+  pending: number;
+  terminal: number;
+  oldestDueAt: number;
+  maxAttempts: number;
+};
+
+export type AgentGuestCleanupTicket = {
+  version: 1;
+  markerKey: string;
+  expiresAt: number;
+  attempts: number;
+  nextAttemptAt: number;
+  terminalAt: number;
+  lastError: string;
 };
 
 export type AgentConversationActivity = {

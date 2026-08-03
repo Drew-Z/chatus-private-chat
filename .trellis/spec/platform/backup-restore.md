@@ -53,7 +53,7 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
 
 - Stable instance identity: Cloudflare account, Worker name, KV namespace, Durable Object bindings/classes, and applied migration history.
 - `CHAT_STORE` configuration and security state: `config:routes_config`, `config:access_codes`, `route-secret:*`, `mcp-secret:*`, administrator audit state, feedback, and any other non-expiring operational records.
-- Root `TeamAgent` state: conversation index, durable memory, migration markers, cleanup queue, branch reservations, and capability trust.
+- Root `TeamAgent` state: conversation index, durable memory, migration markers, cleanup queue (including due time, attempts, stable error and terminal metadata), guest cleanup tickets/schedules, branch reservations, and capability trust.
 - Workspace-file state: the `WORKSPACE_FILES` R2 bucket plus root `TeamAgent` file, immutable-version, exact-reference, and operation/outbox tables. A future backup manifest must inventory object keys indirectly, sizes, SHA-256 checksums, version/generation ownership, and include/exclude decisions without exposing keys to users.
 - Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
@@ -71,7 +71,7 @@ These remain in the recovery inventory until a separate migration-retirement aud
 
 - `session:*` and `admin:*` sessions are not restored; users and administrators authenticate again.
 - `provider-leases:v1` and its alarm are not restored; provider capacity starts empty and is rebuilt by new requests.
-- Guest cleanup/turn leases, minute bursts, login-failure windows, and passive route-reliability telemetry may expire or rebuild.
+- Guest turn leases, minute bursts, login-failure windows, and passive route-reliability telemetry may expire or rebuild. Guest cleanup KV markers and Root cleanup tickets are durable deletion ownership and must not be treated as expiring/rebuildable state until their purge completes.
 - OAuth PKCE state and member discovery candidates are short-lived/rebuildable and are not restored. Future manifests must list `mcp_oauth_states` and `mcp_oauth_discovery_candidates` as explicit exclusions; members restart authorization or discovery after recovery.
 
 Every excluded prefix/table/key must appear in the future archive manifest. Absence must be deliberate rather than inferred after recovery fails.
@@ -92,6 +92,12 @@ A future instance backup/restore implementation is ready only when all of these 
 Do not promise numeric RPO/RTO until an executable capture schedule and measured restore drill can support those values.
 
 The ciphertext inventory above is a design contract for a future manifest, not a backup implementation. No current API, CLI, archive envelope, or restore path may claim to export or restore OAuth MCP tokens.
+
+### Autonomous Purge Retry
+
+`account_purge` is both the member-wide Workspace write lock and the durable owner for the complete cross-store deletion. The initiating request may return an error or revoke the member session; the Root `TeamAgent` alarm must continue from the persisted operation until every owned backend succeeds. Root identity and the purge row are released only after Workspace R2/metadata, conversation Agents, Root state, UserState, sessions, feedback/audit indexes, legacy KV records, and usage keys have completed.
+
+Cleanup rows and guest tickets persist `next_attempt_at`, failed-attempt count, an allowlisted stable error code, and `terminal_at`. Automatic retries use a 5-second exponential base, a 5-minute cap, and eight failed attempts. Terminal work remains inspectable and explicitly replayable; partial success never becomes a silently completed delete. Aggregate inspection/logs may expose cleanup family/state, counts, due/attempt timestamps, terminal state, scheduled alarm, and stable error code only. They must omit member labels, chat/file/operation IDs, object keys, content, secrets, tokens, and raw exceptions.
 
 ### Permanent User-Data Deletion
 
@@ -130,6 +136,10 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 | Workspace mutation races a persisted account purge | Reject with `workspace_account_purge_in_progress`; write no SQLite row or R2 object |
 | Workspace has no objects | Still persist the purge lock; do not use a lock-free completed fast path |
 | R2 objects are gone but another user-data delete fails | Retain the completed purge row and retry remaining exact deletes before release |
+| Initiating request fails or member session is revoked | Keep the persisted purge lock/Root identity and let the Root alarm retry autonomously |
+| Cleanup row is not due or has reached terminal state | Skip it or stop automatic scheduling respectively; retain the row for explicit idempotent replay |
+| Alarm/list/read fails | Treat the queue as unknown, preserve ownership, emit only a stable aggregate error, and schedule a bounded retry |
+| Root identity is released before the last user-data store succeeds | Forbidden; retain identity and lock until final release succeeds |
 | Permanent deletion sees a missing exact KV/identity key | Treat deletion as successful and continue |
 | Permanent deletion encounters pre-delete local/legacy data later | Retained tombstones reject stale merge/upload; only explicit `restore` may cross the deletion timeline |
 
@@ -137,9 +147,11 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 
 - Good: permanent deletion removes user-owned KV/DO data and Agent identities, preserves anti-resurrection tombstones and instance configuration, and succeeds again on retry.
 - Good: a future restore validates an encrypted versioned manifest, uses the same logical object mapping, excludes documented ephemeral state, reconciles counts/checksums, and passes a restore drill before writes reopen.
+- Good: an account purge resumes after the request and session disappear, retries only the exact operation/generation, and releases the Root identity last.
 - Base: a user downloads a bounded export, sees truncation warnings when present, and explicitly restores selected old chats without treating the file as an instance archive.
 - Bad: an operator changes Worker/KV/account identity and assumes an imported user JSON restored provider configuration, credentials, sessions, or Durable Object state.
 - Bad: a user-data endpoint lists and deletes broad prefixes, removes shared provider/access configuration, or deletes `chats_purged_at` and allows stale devices to resurrect data.
+- Bad: delete a guest marker or purge lock after one backend succeeds, or classify an alarm read failure as an empty queue.
 
 ## 6. Tests Required
 
@@ -147,6 +159,8 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 - Prove permanent deletion revokes sessions and removes Agent conversations/memory, legacy KV chat/memory, branch launches, and root/conversation identity records.
 - Prove permanent deletion snapshots and deletes every member-owned R2 version before clearing its metadata, leaves no file operation/outbox row after success, and remains idempotent after partial R2 failure.
 - Prove empty and non-empty workspace purges persist the same account lock, block uploads after the object snapshot and root purge, and release only after the complete user-data path succeeds.
+- Inject each purge backend failure and prove the marker/operation/lock/Root identity remains, the same alarm retry converges after request/session loss, and the final release is idempotent.
+- Prove additive legacy cleanup metadata migration, due filtering, exponential backoff/cap, terminal retention, bounded alarm batches, eviction recovery, and privacy-safe aggregate evidence.
 - Prove the anti-resurrection timestamp rejects stale uploads while an explicit user-selected `restore` can recover old backup content.
 - Prove provider/access configuration and encrypted secret records are not deleted with one member's data.
 - Keep tests local and deterministic; do not call a live model or print access codes, credentials, conversations, or memories.

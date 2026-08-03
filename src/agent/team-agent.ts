@@ -19,6 +19,8 @@ import {
   type AgentExportMessagesResult,
   type AgentExportPart,
   type AgentConversationCleanupRecord,
+  type AgentCleanupSummary,
+  type AgentGuestCleanupTicket,
   type AgentConversationActivity,
   type AgentConversationBranchInput,
   type AgentConversationBranchCopyInput,
@@ -101,6 +103,7 @@ import {
   prepareTeamAgentTurn,
   fileInputPolicy,
   imageInputPolicy,
+  runTeamAgentCleanupSchedule,
   type Env,
 } from "../worker";
 
@@ -111,6 +114,26 @@ const MAX_CONVERSATION_TITLE_CHARS = 80;
 const MAX_SELECTED_SKILLS = 3;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const AGENT_IDENTITY_STORAGE_KEY = "chatus:agent-identity:v1";
+const GUEST_CLEANUP_TICKET_STORAGE_KEY = "chatus:guest-cleanup-ticket:v1";
+const ACCOUNT_CLEANUP_REQUEST_STORAGE_KEY = "chatus:account-cleanup-request:v1";
+const CLEANUP_SCHEDULE_CALLBACK = "runCleanupSchedule";
+const CLEANUP_RETRY_BASE_MS = 5_000;
+const CLEANUP_RETRY_MAX_MS = 5 * 60_000;
+const CLEANUP_MAX_ATTEMPTS = 8;
+const WORKSPACE_PENDING_UPLOAD_RECONCILE_MS = 60_000;
+const CLEANUP_ERROR_CODES = new Set([
+  "conversation_cleanup_failed",
+  "workspace_operation_failed",
+  "workspace_r2_put_failed",
+  "workspace_r2_delete_failed",
+  "workspace_account_purge_failed",
+  "account_cleanup_failed",
+  "workspace_object_unavailable",
+  "workspace_object_checksum_mismatch",
+  "workspace_reconcile_failed",
+  "guest_account_cleanup_failed",
+  "guest_cleanup_failed",
+]);
 
 type TeamAgentIdentity = {
   version: 1;
@@ -150,7 +173,19 @@ type ConversationCleanupRow = {
   requested_at: number;
   attempts: number;
   last_attempt_at: number;
+  next_attempt_at: number;
+  terminal_at: number;
+  last_error: string;
 };
+
+type CleanupSummaryRow = {
+  pending: number;
+  terminal: number | null;
+  oldest_due_at: number | null;
+  max_attempts: number | null;
+};
+
+type AccountCleanupRequest = { version: 1; requestedAt: number };
 
 type ConversationBranchRow = {
   request_id: string;
@@ -220,6 +255,8 @@ type WorkspaceFileOperationRow = {
   checksum: string;
   attempts: number;
   last_error: string;
+  next_attempt_at: number;
+  terminal_at: number;
   created_at: number;
   updated_at: number;
 };
@@ -463,6 +500,34 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         this.sql`DROP TABLE capability_tool_trust`;
         this.sql`ALTER TABLE capability_tool_trust_v5 RENAME TO capability_tool_trust`;
         this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (5, ${Date.now()})`;
+      }
+      if (version < 6) {
+        const conversationCleanupColumns = this.sql<{ name: string }>`PRAGMA table_info(chatus_conversation_cleanup)`;
+        if (!conversationCleanupColumns.some((column) => column.name === "next_attempt_at")) {
+          this.sql`ALTER TABLE chatus_conversation_cleanup ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`;
+        }
+        if (!conversationCleanupColumns.some((column) => column.name === "terminal_at")) {
+          this.sql`ALTER TABLE chatus_conversation_cleanup ADD COLUMN terminal_at INTEGER NOT NULL DEFAULT 0`;
+        }
+        if (!conversationCleanupColumns.some((column) => column.name === "last_error")) {
+          this.sql`ALTER TABLE chatus_conversation_cleanup ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`;
+        }
+        const workspaceOperationColumns = this.sql<{ name: string }>`PRAGMA table_info(workspace_file_operations)`;
+        if (!workspaceOperationColumns.some((column) => column.name === "next_attempt_at")) {
+          this.sql`ALTER TABLE workspace_file_operations ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0`;
+        }
+        if (!workspaceOperationColumns.some((column) => column.name === "terminal_at")) {
+          this.sql`ALTER TABLE workspace_file_operations ADD COLUMN terminal_at INTEGER NOT NULL DEFAULT 0`;
+        }
+        this.sql`
+          CREATE INDEX IF NOT EXISTS chatus_conversation_cleanup_due
+          ON chatus_conversation_cleanup(terminal_at, next_attempt_at, requested_at)
+        `;
+        this.sql`
+          CREATE INDEX IF NOT EXISTS workspace_file_operations_due
+          ON workspace_file_operations(terminal_at, next_attempt_at, updated_at)
+        `;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (6, ${Date.now()})`;
       }
     });
   }
@@ -750,34 +815,58 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       this.sql`DELETE FROM conversation_file_refs WHERE conversation_id = ${id}`;
       this.queueConversationCleanupRecord(id, deletedAt);
     });
+    await this.refreshCleanupSchedule();
     return { ok: true, conversation: { ...this.conversationSummary(current), updatedAt: deletedAt, workspaceFiles: [] }, deleted: true };
   }
 
-  async listPendingConversationCleanups(limitValue = 3): Promise<AgentConversationCleanupRecord[]> {
+  async listPendingConversationCleanups(
+    limitValue = 3,
+    nowValue = Date.now(),
+    dueOnlyValue = false,
+  ): Promise<AgentConversationCleanupRecord[]> {
     this.requireRootScope();
     const limit = Math.max(1, Math.min(10, Math.floor(limitValue) || 3));
+    const now = finiteNonNegativeInteger(nowValue) || Date.now();
     return this.sql<ConversationCleanupRow>`
-      SELECT chat_id, requested_at, attempts, last_attempt_at
+      SELECT chat_id, requested_at, attempts, last_attempt_at, next_attempt_at, terminal_at, last_error
       FROM chatus_conversation_cleanup
-      ORDER BY last_attempt_at ASC, requested_at ASC
+      WHERE terminal_at = 0 AND (${dueOnlyValue ? 1 : 0} = 0 OR next_attempt_at <= ${now})
+      ORDER BY CASE WHEN attempts = 0 THEN 0 ELSE 1 END ASC, next_attempt_at ASC, requested_at ASC
       LIMIT ${limit}
     `.map((row) => ({
       chatId: row.chat_id,
       requestedAt: row.requested_at,
       attempts: row.attempts,
       lastAttemptAt: row.last_attempt_at,
+      nextAttemptAt: row.next_attempt_at,
+      terminalAt: row.terminal_at,
+      lastError: row.last_error,
     }));
   }
 
-  async recordConversationCleanupFailure(idValue: string): Promise<void> {
+  async recordConversationCleanupFailure(
+    idValue: string,
+    errorValue = "conversation_cleanup_failed",
+    nowValue = Date.now(),
+    scheduleValue = true,
+  ): Promise<void> {
     this.requireRootScope();
     const id = normalizeConversationId(idValue);
     if (!id) return;
+    const row = this.getConversationCleanupRow(id);
+    if (!row || row.terminal_at !== 0) return;
+    const now = finiteNonNegativeInteger(nowValue) || Date.now();
+    const attempts = row.attempts + 1;
+    const terminalAt = attempts >= CLEANUP_MAX_ATTEMPTS ? now : 0;
+    const nextAttemptAt = terminalAt ? 0 : now + cleanupRetryDelayMs(attempts);
+    const error = normalizeCleanupErrorCode(errorValue, "conversation_cleanup_failed");
     this.sql`
       UPDATE chatus_conversation_cleanup
-      SET attempts = attempts + 1, last_attempt_at = ${Date.now()}
-      WHERE chat_id = ${id}
+      SET attempts = ${attempts}, last_attempt_at = ${now}, next_attempt_at = ${nextAttemptAt},
+        terminal_at = ${terminalAt}, last_error = ${error}
+      WHERE chat_id = ${id} AND terminal_at = 0
     `;
+    if (scheduleValue) await this.refreshCleanupSchedule();
   }
 
   async completeConversationCleanup(idValue: string): Promise<void> {
@@ -1015,10 +1104,11 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       this.sql`
         INSERT INTO workspace_file_operations(
           id, kind, file_id, version_id, generation, state, fingerprint,
-          object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+          object_keys_json, size, checksum, attempts, last_error, next_attempt_at, terminal_at, created_at, updated_at
         ) VALUES (
           ${operationId}, 'upload', ${fileId}, ${versionId}, ${generation}, 'pending', ${fingerprint},
-          ${JSON.stringify([objectKey])}, ${size}, ${checksum}, 0, '', ${now}, ${now}
+          ${JSON.stringify([objectKey])}, ${size}, ${checksum}, 0, '',
+          ${now + WORKSPACE_PENDING_UPLOAD_RECONCILE_MS}, 0, ${now}, ${now}
         )
       `;
     });
@@ -1028,6 +1118,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       const current = this.getWorkspaceFileRow(fileId);
       return { ok: false, error: "workspace_file_conflict", ...(current ? { current: this.workspaceFileProjection(current) } : {}) };
     }
+    await this.refreshCleanupSchedule();
     file = this.getWorkspaceFileRow(fileId);
     const operation = this.getWorkspaceOperationRow(operationId);
     const reservation = operation ? this.workspaceUploadReservation(operation, false) : undefined;
@@ -1234,19 +1325,30 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     operationIdValue: string,
     generationValue: number,
     errorValue = "workspace_operation_failed",
+    nowValue = Date.now(),
+    scheduleValue = true,
   ): Promise<boolean> {
     this.requireRootScope();
     const operationId = normalizeWorkspaceOperationId(operationIdValue);
     const generation = finitePositiveInteger(generationValue);
     const operation = operationId ? this.getWorkspaceOperationRow(operationId) : undefined;
-    if (!operation || operation.generation !== generation || operation.state === "completed") return false;
-    const error = boundedString(errorValue, 80) || "workspace_operation_failed";
-    const now = Date.now();
+    if (
+      !operation
+      || operation.generation !== generation
+      || operation.terminal_at !== 0
+      || (operation.state === "completed" && operation.kind !== "account_purge")
+    ) return false;
+    const error = normalizeCleanupErrorCode(errorValue, "workspace_operation_failed");
+    const now = finiteNonNegativeInteger(nowValue) || Date.now();
+    const attempts = operation.attempts + 1;
+    const terminalAt = attempts >= CLEANUP_MAX_ATTEMPTS ? now : 0;
+    const nextAttemptAt = terminalAt ? 0 : now + cleanupRetryDelayMs(attempts);
     this.ctx.storage.transactionSync(() => {
       this.sql`
         UPDATE workspace_file_operations
-        SET state = 'failed', attempts = attempts + 1, last_error = ${error}, updated_at = ${now}
-        WHERE id = ${operationId} AND generation = ${generation}
+        SET state = 'failed', attempts = ${attempts}, last_error = ${error},
+          next_attempt_at = ${nextAttemptAt}, terminal_at = ${terminalAt}, updated_at = ${now}
+        WHERE id = ${operationId} AND generation = ${generation} AND terminal_at = 0
       `;
       if (operation.kind === "upload") {
         this.sql`
@@ -1259,7 +1361,26 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         `;
       }
     });
+    if (scheduleValue) await this.refreshCleanupSchedule();
     return true;
+  }
+
+  async deferWorkspaceOperation(
+    operationIdValue: string,
+    generationValue: number,
+    nextAttemptAtValue: number,
+  ): Promise<boolean> {
+    this.requireRootScope();
+    const operationId = normalizeWorkspaceOperationId(operationIdValue);
+    const generation = finitePositiveInteger(generationValue);
+    const nextAttemptAt = finitePositiveInteger(nextAttemptAtValue);
+    if (!operationId || !generation || !nextAttemptAt) return false;
+    this.sql`
+      UPDATE workspace_file_operations
+      SET next_attempt_at = ${nextAttemptAt}
+      WHERE id = ${operationId} AND generation = ${generation} AND terminal_at = 0
+    `;
+    return this.lastSqlChangeCount() === 1;
   }
 
   async abandonWorkspaceUpload(operationIdValue: string, generationValue: number): Promise<void> {
@@ -1414,10 +1535,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         this.sql`
           INSERT INTO workspace_file_operations(
             id, kind, file_id, version_id, generation, state, fingerprint,
-            object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+            object_keys_json, size, checksum, attempts, last_error, next_attempt_at, terminal_at, created_at, updated_at
           ) VALUES (
             ${operationId}, 'delete_file', ${current.id}, '', ${generation}, 'pending', ${fingerprint},
-            ${JSON.stringify(objectKeys)}, 0, '', 0, '', ${now}, ${now}
+            ${JSON.stringify(objectKeys)}, 0, '', 0, '', ${now + CLEANUP_RETRY_BASE_MS}, 0, ${now}, ${now}
           )
         `;
       } else {
@@ -1431,6 +1552,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       const latest = this.getWorkspaceFileRow(current.id);
       return { ok: false, error: "workspace_file_conflict", ...(latest ? { current: this.workspaceFileProjection(latest) } : {}) };
     }
+    if (objectKeys.length) await this.refreshCleanupSchedule();
     const operation = this.getWorkspaceOperationRow(operationId);
     return {
       ok: true,
@@ -1489,20 +1611,27 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     return true;
   }
 
-  async listPendingWorkspaceOperations(limitValue = 3): Promise<WorkspacePendingOperation[]> {
+  async listPendingWorkspaceOperations(
+    limitValue = 3,
+    nowValue = Date.now(),
+    dueOnlyValue = false,
+  ): Promise<WorkspacePendingOperation[]> {
     this.requireRootScope();
     const limit = Math.max(1, Math.min(10, Math.floor(limitValue) || 3));
+    const now = finiteNonNegativeInteger(nowValue) || Date.now();
     return this.sql<WorkspaceFileOperationRow>`
       SELECT id, kind, file_id, version_id, generation, state, fingerprint,
-        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+        object_keys_json, size, checksum, attempts, last_error, next_attempt_at, terminal_at, created_at, updated_at
       FROM workspace_file_operations
-      WHERE state = 'pending' OR state = 'failed'
-      ORDER BY updated_at ASC, created_at ASC
+      WHERE terminal_at = 0
+        AND (${dueOnlyValue ? 1 : 0} = 0 OR next_attempt_at <= ${now})
+        AND (state = 'pending' OR state = 'failed' OR (kind = 'account_purge' AND state = 'completed'))
+      ORDER BY CASE WHEN attempts = 0 THEN 0 ELSE 1 END ASC, next_attempt_at ASC, created_at ASC
       LIMIT ${limit}
     `.flatMap((row) => {
       if (
         (row.kind !== "upload" && row.kind !== "delete_file" && row.kind !== "account_purge")
-        || (row.state !== "pending" && row.state !== "failed")
+        || (row.state !== "pending" && row.state !== "failed" && !(row.kind === "account_purge" && row.state === "completed"))
       ) return [];
       return [{
         operationId: row.id,
@@ -1515,6 +1644,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         size: Math.max(0, row.size),
         checksum: normalizeWorkspaceChecksum(row.checksum),
         attempts: Math.max(0, row.attempts),
+        nextAttemptAt: Math.max(0, row.next_attempt_at),
+        terminalAt: Math.max(0, row.terminal_at),
+        lastError: row.last_error,
         updatedAt: row.updated_at,
       }];
     });
@@ -1614,7 +1746,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     }
     const existing = this.sql<WorkspaceFileOperationRow>`
       SELECT id, kind, file_id, version_id, generation, state, fingerprint,
-        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+        object_keys_json, size, checksum, attempts, last_error, next_attempt_at, terminal_at, created_at, updated_at
       FROM workspace_file_operations WHERE kind = 'account_purge' LIMIT 1
     `[0];
     if (existing) {
@@ -1654,13 +1786,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       this.sql`
         INSERT INTO workspace_file_operations(
           id, kind, file_id, version_id, generation, state, fingerprint,
-          object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+          object_keys_json, size, checksum, attempts, last_error, next_attempt_at, terminal_at, created_at, updated_at
         ) VALUES (
           ${operationId}, 'account_purge', '', '', ${generation}, 'pending', ${fingerprint},
-          ${JSON.stringify(objectKeys)}, 0, '', 0, '', ${now}, ${now}
+          ${JSON.stringify(objectKeys)}, 0, '', 0, '', ${now + CLEANUP_RETRY_BASE_MS}, 0, ${now}, ${now}
         )
       `;
     });
+    await this.refreshCleanupSchedule();
     return { operationId, generation, objectKeys, existing: false, completed: false };
   }
 
@@ -1689,7 +1822,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       this.sql`DELETE FROM workspace_file_operations WHERE kind <> 'account_purge'`;
       this.sql`
         UPDATE workspace_file_operations
-        SET state = 'completed', last_error = '', updated_at = ${now}
+        SET state = 'completed', last_error = '', next_attempt_at = ${now}, terminal_at = 0, updated_at = ${now}
         WHERE id = ${operationId} AND kind = 'account_purge' AND generation = ${generation}
       `;
     });
@@ -1715,11 +1848,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       this.sql`DELETE FROM chatus_migrations`;
       this.sql`DELETE FROM capability_tool_trust`;
     });
-    await this.ctx.storage.delete(AGENT_IDENTITY_STORAGE_KEY);
     return { conversationIds };
   }
 
-  async releaseWorkspaceAccountPurge(operationIdValue: string, generationValue: number): Promise<boolean> {
+  async releaseWorkspaceAccountPurge(
+    operationIdValue: string,
+    generationValue: number,
+    preserveIdentityValue = false,
+  ): Promise<boolean> {
     this.requireRootScope();
     const operationId = normalizeWorkspaceOperationId(operationIdValue);
     const generation = finitePositiveInteger(generationValue);
@@ -1731,7 +1867,222 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         AND generation = ${generation}
         AND state = 'completed'
     `;
-    return this.lastSqlChangeCount() === 1;
+    const released = this.lastSqlChangeCount() === 1;
+    if (!released) return false;
+    if (preserveIdentityValue) return true;
+    await this.cancelCleanupSchedules();
+    await this.ctx.storage.delete([
+      ACCOUNT_CLEANUP_REQUEST_STORAGE_KEY,
+      AGENT_IDENTITY_STORAGE_KEY,
+    ]);
+    return true;
+  }
+
+  async registerAccountCleanupRequest(nowValue = Date.now()): Promise<void> {
+    this.requireRootScope();
+    const requestedAt = finiteNonNegativeInteger(nowValue) || Date.now();
+    await this.ctx.storage.put(ACCOUNT_CLEANUP_REQUEST_STORAGE_KEY, {
+      version: 1,
+      requestedAt,
+    } satisfies AccountCleanupRequest);
+    await this.refreshCleanupSchedule();
+  }
+
+  async hasAccountCleanupRequest(): Promise<boolean> {
+    this.requireRootScope();
+    return normalizeAccountCleanupRequest(
+      await this.ctx.storage.get<unknown>(ACCOUNT_CLEANUP_REQUEST_STORAGE_KEY),
+    ) !== undefined;
+  }
+
+  async hasWorkspaceAccountPurgeOperation(): Promise<boolean> {
+    this.requireRootScope();
+    return this.hasWorkspaceAccountPurgeLock();
+  }
+
+  async registerGuestCleanup(markerKeyValue: string, expiresAtValue: number): Promise<boolean> {
+    this.requireRootScope();
+    const markerKey = boundedString(markerKeyValue, 500) || "";
+    const expiresAt = finitePositiveInteger(expiresAtValue);
+    const expectedSuffix = `:${encodeURIComponent(this.userLabel)}`;
+    if (!markerKey.startsWith("guest-cleanup:") || !markerKey.endsWith(expectedSuffix) || !expiresAt) return false;
+    const existing = normalizeGuestCleanupTicket(
+      await this.ctx.storage.get<unknown>(GUEST_CLEANUP_TICKET_STORAGE_KEY),
+    );
+    const ticket: AgentGuestCleanupTicket = existing && existing.markerKey === markerKey
+      ? { ...existing, expiresAt: Math.min(existing.expiresAt, expiresAt) }
+      : {
+          version: 1,
+          markerKey,
+          expiresAt,
+          attempts: 0,
+          nextAttemptAt: expiresAt,
+          terminalAt: 0,
+          lastError: "",
+        };
+    await this.ctx.storage.put(GUEST_CLEANUP_TICKET_STORAGE_KEY, ticket);
+    await this.refreshCleanupSchedule();
+    return true;
+  }
+
+  async getDueGuestCleanup(nowValue = Date.now()): Promise<AgentGuestCleanupTicket | undefined> {
+    this.requireRootScope();
+    const now = finiteNonNegativeInteger(nowValue) || Date.now();
+    const ticket = normalizeGuestCleanupTicket(
+      await this.ctx.storage.get<unknown>(GUEST_CLEANUP_TICKET_STORAGE_KEY),
+    );
+    return ticket && ticket.terminalAt === 0 && ticket.nextAttemptAt <= now ? ticket : undefined;
+  }
+
+  async recordGuestCleanupFailure(
+    markerKeyValue: string,
+    errorValue = "guest_cleanup_failed",
+    nowValue = Date.now(),
+    scheduleValue = true,
+  ): Promise<boolean> {
+    this.requireRootScope();
+    const ticket = normalizeGuestCleanupTicket(
+      await this.ctx.storage.get<unknown>(GUEST_CLEANUP_TICKET_STORAGE_KEY),
+    );
+    const markerKey = boundedString(markerKeyValue, 500) || "";
+    if (!ticket || ticket.markerKey !== markerKey || ticket.terminalAt !== 0) return false;
+    const now = finiteNonNegativeInteger(nowValue) || Date.now();
+    const attempts = ticket.attempts + 1;
+    const terminalAt = attempts >= CLEANUP_MAX_ATTEMPTS ? now : 0;
+    const nextAttemptAt = terminalAt ? 0 : now + cleanupRetryDelayMs(attempts);
+    await this.ctx.storage.put(GUEST_CLEANUP_TICKET_STORAGE_KEY, {
+      ...ticket,
+      attempts,
+      nextAttemptAt,
+      terminalAt,
+      lastError: normalizeCleanupErrorCode(errorValue, "guest_cleanup_failed"),
+    } satisfies AgentGuestCleanupTicket);
+    if (scheduleValue) await this.refreshCleanupSchedule();
+    return true;
+  }
+
+  async completeGuestCleanup(markerKeyValue: string): Promise<boolean> {
+    this.requireRootScope();
+    const markerKey = boundedString(markerKeyValue, 500) || "";
+    const ticket = normalizeGuestCleanupTicket(
+      await this.ctx.storage.get<unknown>(GUEST_CLEANUP_TICKET_STORAGE_KEY),
+    );
+    if (!ticket || ticket.markerKey !== markerKey || this.hasWorkspaceAccountPurgeLock()) return false;
+    await this.cancelCleanupSchedules();
+    await this.ctx.storage.delete([
+      GUEST_CLEANUP_TICKET_STORAGE_KEY,
+      AGENT_IDENTITY_STORAGE_KEY,
+    ]);
+    return true;
+  }
+
+  async inspectCleanupReliability(): Promise<AgentCleanupSummary> {
+    this.requireRootScope();
+    const conversation = cleanupSummaryGroup(this.sql<CleanupSummaryRow>`
+      SELECT COUNT(*) AS pending,
+        SUM(CASE WHEN terminal_at <> 0 THEN 1 ELSE 0 END) AS terminal,
+        MIN(CASE WHEN terminal_at = 0 THEN next_attempt_at ELSE NULL END) AS oldest_due_at,
+        MAX(attempts) AS max_attempts
+      FROM chatus_conversation_cleanup
+    `[0]);
+    const workspace = cleanupSummaryGroup(this.sql<CleanupSummaryRow>`
+      SELECT COUNT(*) AS pending,
+        SUM(CASE WHEN terminal_at <> 0 THEN 1 ELSE 0 END) AS terminal,
+        MIN(CASE WHEN terminal_at = 0 THEN next_attempt_at ELSE NULL END) AS oldest_due_at,
+        MAX(attempts) AS max_attempts
+      FROM workspace_file_operations WHERE kind <> 'account_purge' AND state <> 'completed'
+    `[0]);
+    const account = cleanupSummaryGroup(this.sql<CleanupSummaryRow>`
+      SELECT COUNT(*) AS pending,
+        SUM(CASE WHEN terminal_at <> 0 THEN 1 ELSE 0 END) AS terminal,
+        MIN(CASE WHEN terminal_at = 0 THEN next_attempt_at ELSE NULL END) AS oldest_due_at,
+        MAX(attempts) AS max_attempts
+      FROM workspace_file_operations WHERE kind = 'account_purge'
+    `[0]);
+    const ticket = normalizeGuestCleanupTicket(
+      await this.ctx.storage.get<unknown>(GUEST_CLEANUP_TICKET_STORAGE_KEY),
+    );
+    const schedules = await this.listSchedules();
+    const scheduledAt = schedules
+      .filter((schedule) => schedule.callback === CLEANUP_SCHEDULE_CALLBACK)
+      .reduce((minimum, schedule) => Math.min(minimum, schedule.time * 1_000), Number.POSITIVE_INFINITY);
+    return {
+      conversation,
+      workspace,
+      account,
+      guest: ticket
+        ? {
+            pending: 1,
+            terminal: ticket.terminalAt ? 1 : 0,
+            oldestDueAt: ticket.terminalAt ? 0 : ticket.nextAttemptAt,
+            maxAttempts: ticket.attempts,
+          }
+        : emptyCleanupSummaryGroup(),
+      scheduledAt: Number.isFinite(scheduledAt) ? scheduledAt : 0,
+    };
+  }
+
+  async runCleanupSchedule(): Promise<void> {
+    this.requireRootScope();
+    let retryAt = Date.now();
+    try {
+      await runTeamAgentCleanupSchedule(this.env, this.userLabel, this);
+    } catch {
+      retryAt += CLEANUP_RETRY_BASE_MS;
+      console.error(JSON.stringify({
+        level: "warn",
+        event: "team_agent_cleanup_schedule_failed",
+        error: "cleanup_schedule_failed",
+      }));
+    }
+    await this.refreshCleanupSchedule(retryAt, false);
+  }
+
+  async refreshCleanupSchedule(nowValue = Date.now(), replaceExisting = true): Promise<void> {
+    this.requireRootScope();
+    const now = finiteNonNegativeInteger(nowValue) || Date.now();
+    if (replaceExisting) await this.cancelCleanupSchedules();
+    const dueValues: number[] = [];
+    const conversationDue = this.sql<{ due: number | null }>`
+      SELECT MIN(next_attempt_at) AS due FROM chatus_conversation_cleanup WHERE terminal_at = 0
+    `[0]?.due;
+    if (conversationDue !== null && conversationDue !== undefined) dueValues.push(conversationDue);
+    const accountRequest = normalizeAccountCleanupRequest(
+      await this.ctx.storage.get<unknown>(ACCOUNT_CLEANUP_REQUEST_STORAGE_KEY),
+    );
+    const accountPurgeLocked = this.hasWorkspaceAccountPurgeLock();
+    const pendingUploadDue = this.sql<{ due: number | null }>`
+      SELECT MIN(next_attempt_at) AS due FROM workspace_file_operations
+      WHERE kind = 'upload' AND state = 'pending' AND terminal_at = 0
+    `[0]?.due;
+    const workspaceDue = this.sql<{ due: number | null }>`
+      SELECT MIN(next_attempt_at) AS due FROM workspace_file_operations
+      WHERE terminal_at = 0
+        AND (
+          state = 'pending' OR state = 'failed'
+          OR (${accountRequest ? 1 : 0} = 1 AND kind = 'account_purge' AND state = 'completed')
+        )
+    `[0]?.due;
+    if (workspaceDue !== null && workspaceDue !== undefined) dueValues.push(workspaceDue);
+    if (accountRequest && !accountPurgeLocked) {
+      dueValues.push(pendingUploadDue ?? accountRequest.requestedAt);
+    }
+    const ticket = normalizeGuestCleanupTicket(
+      await this.ctx.storage.get<unknown>(GUEST_CLEANUP_TICKET_STORAGE_KEY),
+    );
+    if (ticket && ticket.terminalAt === 0) dueValues.push(ticket.nextAttemptAt);
+    if (!dueValues.length) return;
+    const dueAt = Math.max(now + 1, Math.min(...dueValues));
+    await this.schedule(new Date(dueAt), CLEANUP_SCHEDULE_CALLBACK, undefined, { idempotent: false });
+  }
+
+  private async cancelCleanupSchedules(): Promise<void> {
+    const schedules = await this.listSchedules();
+    await Promise.all(
+      schedules
+        .filter((schedule) => schedule.callback === CLEANUP_SCHEDULE_CALLBACK)
+        .map((schedule) => this.cancelSchedule(schedule.id)),
+    );
   }
 
   async getMemory(): Promise<AgentMemoryRecord> {
@@ -2317,7 +2668,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private getWorkspaceOperationRow(operationId: string): WorkspaceFileOperationRow | undefined {
     return this.sql<WorkspaceFileOperationRow>`
       SELECT id, kind, file_id, version_id, generation, state, fingerprint,
-        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+        object_keys_json, size, checksum, attempts, last_error, next_attempt_at, terminal_at, created_at, updated_at
       FROM workspace_file_operations WHERE id = ${operationId} LIMIT 1
     `[0];
   }
@@ -2325,7 +2676,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private getWorkspaceDeleteOperation(fileId: string): WorkspaceFileOperationRow | undefined {
     return this.sql<WorkspaceFileOperationRow>`
       SELECT id, kind, file_id, version_id, generation, state, fingerprint,
-        object_keys_json, size, checksum, attempts, last_error, created_at, updated_at
+        object_keys_json, size, checksum, attempts, last_error, next_attempt_at, terminal_at, created_at, updated_at
       FROM workspace_file_operations
       WHERE kind = 'delete_file' AND file_id = ${fileId}
       ORDER BY created_at DESC LIMIT 1
@@ -2583,10 +2934,19 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   private queueConversationCleanupRecord(id: string, requestedAt: number): void {
     this.sql`
-      INSERT INTO chatus_conversation_cleanup(chat_id, requested_at, attempts, last_attempt_at)
-      VALUES (${id}, ${requestedAt}, 0, 0)
+      INSERT INTO chatus_conversation_cleanup(
+        chat_id, requested_at, attempts, last_attempt_at, next_attempt_at, terminal_at, last_error
+      )
+      VALUES (${id}, ${requestedAt}, 0, 0, ${requestedAt + CLEANUP_RETRY_BASE_MS}, 0, '')
       ON CONFLICT(chat_id) DO UPDATE SET requested_at = MIN(requested_at, excluded.requested_at)
     `;
+  }
+
+  private getConversationCleanupRow(id: string): ConversationCleanupRow | undefined {
+    return this.sql<ConversationCleanupRow>`
+      SELECT chat_id, requested_at, attempts, last_attempt_at, next_attempt_at, terminal_at, last_error
+      FROM chatus_conversation_cleanup WHERE chat_id = ${id} LIMIT 1
+    `[0];
   }
 
   private clearPersistedChatState(): void {
@@ -3269,6 +3629,57 @@ function normalizeDocumentIngestArtifact(value: unknown): DocumentIngestArtifact
 
 function finiteNonNegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function cleanupRetryDelayMs(attemptsValue: number): number {
+  const attempts = Math.max(1, Math.min(CLEANUP_MAX_ATTEMPTS, Math.floor(attemptsValue) || 1));
+  return Math.min(CLEANUP_RETRY_MAX_MS, CLEANUP_RETRY_BASE_MS * (2 ** (attempts - 1)));
+}
+
+function normalizeCleanupErrorCode(value: unknown, fallback: string): string {
+  const error = boundedString(value, 80) || "";
+  return CLEANUP_ERROR_CODES.has(error) ? error : fallback;
+}
+
+function normalizeGuestCleanupTicket(value: unknown): AgentGuestCleanupTicket | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const ticket = value as Partial<AgentGuestCleanupTicket>;
+  const markerKey = boundedString(ticket.markerKey, 500) || "";
+  const expiresAt = finitePositiveInteger(ticket.expiresAt);
+  const attempts = finiteNonNegativeInteger(ticket.attempts);
+  const nextAttemptAt = finiteNonNegativeInteger(ticket.nextAttemptAt);
+  const terminalAt = finiteNonNegativeInteger(ticket.terminalAt);
+  const lastError = boundedString(ticket.lastError, 80) || "";
+  if (
+    ticket.version !== 1
+    || !markerKey.startsWith("guest-cleanup:")
+    || !expiresAt
+    || attempts === undefined
+    || nextAttemptAt === undefined
+    || terminalAt === undefined
+  ) return undefined;
+  return { version: 1, markerKey, expiresAt, attempts, nextAttemptAt, terminalAt, lastError };
+}
+
+function normalizeAccountCleanupRequest(value: unknown): AccountCleanupRequest | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const request = value as Partial<AccountCleanupRequest>;
+  const requestedAt = finiteNonNegativeInteger(request.requestedAt);
+  return request.version === 1 && requestedAt !== undefined ? { version: 1, requestedAt } : undefined;
+}
+
+function emptyCleanupSummaryGroup(): AgentCleanupSummary["conversation"] {
+  return { pending: 0, terminal: 0, oldestDueAt: 0, maxAttempts: 0 };
+}
+
+function cleanupSummaryGroup(row: CleanupSummaryRow | undefined): AgentCleanupSummary["conversation"] {
+  if (!row) return emptyCleanupSummaryGroup();
+  return {
+    pending: Math.max(0, row.pending || 0),
+    terminal: Math.max(0, row.terminal || 0),
+    oldestDueAt: Math.max(0, row.oldest_due_at || 0),
+    maxAttempts: Math.max(0, row.max_attempts || 0),
+  };
 }
 
 function escapeWorkspaceLike(value: string): string {
