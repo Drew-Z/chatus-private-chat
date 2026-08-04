@@ -107,6 +107,36 @@
         "status": "passed",
         "summary": "All 7 Trellis validation tests passed",
         "at": "2026-08-04T10:09:31.672242+00:00"
+      },
+      {
+        "command": "gh run view 30900182157",
+        "status": "passed",
+        "summary": "PR quality completed successfully for exact head 93fee92100998ae86cb7eddd174447f555abe4d7; changes, quality, Workspace Playwright, and local fake-Provider Agent jobs passed",
+        "at": "2026-08-04T10:36:33.168079+00:00"
+      },
+      {
+        "command": "gh api repos/Drew-Z/chatus-private-chat/actions/runs/30900182157/artifacts",
+        "status": "passed",
+        "summary": "Four unexpired PR artifacts retained through 2026-08-18: path classification 8888726764, Agent Playwright 8888763796, quality manifest 8888807657, Workspace Playwright 8888925900",
+        "at": "2026-08-04T10:36:33.791980+00:00"
+      },
+      {
+        "command": "gh pr view 33",
+        "status": "passed",
+        "summary": "PR 33 squash-merged into main as exact SHA b37e4574162496e60a4e2a2d2332b1fdb34d2acf",
+        "at": "2026-08-04T10:36:34.409211+00:00"
+      },
+      {
+        "command": "gh run view 30900906173",
+        "status": "passed",
+        "summary": "Deploy to Cloudflare succeeded for exact main SHA b37e4574162496e60a4e2a2d2332b1fdb34d2acf; stale-revision guards, deploy, production verification, and manifest retention passed",
+        "at": "2026-08-04T10:36:35.057175+00:00"
+      },
+      {
+        "command": "gh api repos/Drew-Z/chatus-private-chat/actions/runs/30900906173/artifacts",
+        "status": "passed",
+        "summary": "Deployment path artifact 8889018311 retained through 2026-09-03 and production deployment manifest 8889113950 retained through 2026-11-02",
+        "at": "2026-08-04T10:36:35.684879+00:00"
       }
     ]
   }

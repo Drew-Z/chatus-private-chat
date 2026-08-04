@@ -11,7 +11,7 @@
 - [x] Extend the React error presentation with an accessible copyable request reference while preserving offline, retry-branch, reconnect, and draft recovery behavior.
 - [x] Add local fake Provider/MCP and browser regression coverage for all bypass and leakage paths.
 - [x] Run `trellis-check`, the full shipping gate, affected Playwright suites, Trellis consistency, and secret-marker scans.
-- [ ] Update frontend/platform specs, commit, push, open a stacked PR, retain CI artifacts, and retarget to `main` after the base PR merges.
+- [x] Update frontend/platform specs, commit, push, open a stacked PR, retain CI artifacts, and retarget to `main` after the base PR merges.
 - [ ] Record main SHA, GitHub Actions deployment, and production/user acceptance before archive.
 
 ## Validation Commands
@@ -37,6 +37,16 @@ python -m unittest discover -s .trellis/tests -p test_*.py -v
 - Workspace Playwright: 83 passed / 42 viewport-conditional skips. Local fake Provider Agent Playwright: 3 passed.
 - `npm run check:frontend`, `npm run typecheck`, `npx wrangler deploy --dry-run`, `git diff --check main...HEAD`, Trellis repository consistency, and all 7 Trellis unit tests passed.
 - No live Provider/MCP request, production probe, production data read/mutation, or local production deployment was used.
+
+## PR And Delivery Evidence (2026-08-04)
+
+- Work commit: `31028f36aa14ad159c2680fd695ed45810f2684d`.
+- PR #33 was retargeted to `main`, validated at exact head `93fee92100998ae86cb7eddd174447f555abe4d7`, and squash-merged as exact main SHA `b37e4574162496e60a4e2a2d2332b1fdb34d2acf`.
+- PR quality run `30900182157` passed `changes`, `quality`, `agent-browser`, and `workspace-browser` for the exact PR head.
+- PR artifacts remain available through 2026-08-18: path classification `8888726764`, Agent Playwright `8888763796`, quality manifest `8888807657`, and Workspace Playwright `8888925900`.
+- GitHub Actions deployment run `30900906173` passed for the exact main SHA, including stale-revision guards, frontend check, full Vitest, typecheck, whitespace check, Wrangler validation, `Deploy Worker`, `Verify production`, and deployment manifest retention.
+- Deployment artifacts: path classification `8889018311` (through 2026-09-03) and production deployment manifest `8889113950` (through 2026-11-02).
+- Production/user acceptance remains open; AC10 and the final delivery checklist item stay unchecked until authenticated user verification is recorded.
 
 ## Risky Files And Rollback Points
 
