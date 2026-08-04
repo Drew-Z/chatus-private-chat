@@ -5,7 +5,7 @@
   "description": "为 CI/deploy 增加超时、结构化 workflow 验证、精确 Trellis record 分类和 stale-main 防护。",
   "status": "planning",
   "dev_type": null,
-  "scope": null,
+  "scope": "GitHub workflow structure, path classification, job timeouts, exact-main guard, action runtimes, and delivery artifacts",
   "package": null,
   "priority": "P1",
   "creator": "zhang",
