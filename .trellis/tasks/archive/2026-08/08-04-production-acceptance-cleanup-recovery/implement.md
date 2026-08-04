@@ -14,7 +14,7 @@
 - [x] Treat a retry `401` after the same deletion observed `503` as persisted-cleanup recovery while preserving strict initial-`401` failure, then rerun all gates and production acceptance.
 - [x] Align the acceptance `503` retry window with the Root Agent's eight persisted cleanup attempts, then rerun focused/full gates and production acceptance.
 - [x] Add bounded old-session revocation polling with delayed idempotent re-delete for KV list visibility, then rerun focused/full gates and production acceptance.
-- [ ] Commit, push a code PR, pass CI, merge, deploy through GitHub Actions, run exact-SHA production acceptance, record evidence, and archive.
+- [x] Commit, push a code PR, pass CI, merge, deploy through GitHub Actions, run exact-SHA production acceptance, record evidence, and archive.
 
 ## Focused Validation
 

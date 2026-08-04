@@ -3,7 +3,7 @@
   "name": "production-acceptance-cleanup-recovery",
   "title": "生产验收清理恢复",
   "description": "修复生产验收在成员数据清理返回 503 后跳过访问码恢复的问题，并清理历史 codex-accept 临时成员。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": "platform",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-04",
-  "completedAt": null,
+  "completedAt": "2026-08-04",
   "branch": "codex/production-session-revocation-verification",
   "base_branch": "main",
   "worktree_path": null,
@@ -89,6 +89,18 @@
         "status": "passed",
         "summary": "repository consistency validation passed",
         "at": "2026-08-04T07:47:20.539301+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 30889888446",
+        "status": "passed",
+        "summary": "success at main SHA c284894315f5cebb606e553304429097dfd06ca7",
+        "at": "2026-08-04T08:09:16.616574+00:00"
+      },
+      {
+        "command": "Production member acceptance run 30890452505",
+        "status": "passed",
+        "summary": "success at main SHA c284894315f5cebb606e553304429097dfd06ca7; cleanup and release checks passed",
+        "at": "2026-08-04T08:09:17.297545+00:00"
       }
     ]
   }

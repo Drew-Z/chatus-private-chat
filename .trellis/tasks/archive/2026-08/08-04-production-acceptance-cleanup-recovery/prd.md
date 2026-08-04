@@ -30,7 +30,7 @@ Make authenticated production acceptance recover safely from transient member-pu
 - [x] AC3. Tests prove only exact `codex-accept-<24 hex>-a|b` labels are identified as stale; similarly prefixed legitimate labels are preserved.
 - [x] AC4. Structural tests prove stale cleanup runs before the baseline snapshot, revision-checked access restoration remains present, member cleanup is sequential, and the workflow stays exact-SHA/main-only with retained manifests.
 - [x] AC5. `node --check scripts/acceptance-production.mjs`, focused tests, `npm run check:frontend`, `npm test`, `npm run test:browser:workspace`, local fake Provider `npm run test:browser:agent`, `npm run typecheck`, `npx wrangler deploy --dry-run`, `git diff --check`, and Trellis repository validation pass.
-- [ ] AC6. A GitHub Actions deployment and `Production member acceptance` run succeed at the same exact merged `main` SHA; the successful run proves temporary labels are absent, admin logout completed, and post-cleanup SHA verification passed.
+- [x] AC6. A GitHub Actions deployment and `Production member acceptance` run succeed at the same exact merged `main` SHA; the successful run proves temporary labels are absent, admin logout completed, and post-cleanup SHA verification passed.
 
 ## Out Of Scope
 
