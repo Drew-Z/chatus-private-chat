@@ -408,8 +408,7 @@ describe("repository deployment contract", () => {
       deployWorkflow.indexOf("Prepare deployment configuration and Worker secrets"),
     );
     expect(deployWorkflow).toContain("--config .wrangler.deploy.jsonc --secrets-file .prod.secrets.json");
-    expect(deployWorkflow).toContain("git ls-remote origin refs/heads/main");
-    expect(deployWorkflow.match(/git ls-remote origin refs\/heads\/main/g)).toHaveLength(2);
+    expect(deployWorkflow.match(/node scripts\/assert-main-tip\.mjs/g)).toHaveLength(2);
     expect(deployWorkflow.indexOf("Refuse a stale main revision before deploy")).toBeGreaterThan(
       deployWorkflow.indexOf("Prepare release metadata"),
     );
@@ -448,7 +447,7 @@ describe("repository deployment contract", () => {
     expect(acceptanceProductionSource).not.toContain("Promise.all(members.map(async (member)");
     expect(acceptanceWorkflow).toContain("if: github.ref == 'refs/heads/main'");
     expect(acceptanceWorkflow).toContain("production-acceptance-${{ github.sha }}");
-    expect(acceptanceWorkflow).toContain("uses: actions/upload-artifact@v4");
+    expect(acceptanceWorkflow).toContain("uses: actions/upload-artifact@v7");
     expect(acceptanceWorkflow).toContain("retention-days: 90");
   });
 

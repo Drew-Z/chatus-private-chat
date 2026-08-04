@@ -2,15 +2,15 @@
 
 ## Ordered Checklist
 
-- [ ] Add the declared `yaml` development dependency and replace permissive workflow string checks with parsed, duplicate-key-rejecting structural helpers.
-- [ ] Add exact job/step/dependency/condition/timeout assertions for PR CI, main deploy, and production acceptance.
-- [ ] Narrow docs/Trellis-only classification to approved record/document extensions and add deterministic boundary, normalization, empty, mixed, executable, and unknown-path tests.
-- [ ] Mark workflow/classifier/governance-test changes as shared browser impact so both conditional Playwright jobs run when the gate itself changes.
-- [ ] Add a deterministic `assert-main-tip` helper and replace both inline deploy guards while preserving pre-mutation and immediate-pre-deploy ordering.
-- [ ] Add explicit timeout budgets to every CI/deploy job and preserve the existing production acceptance budget.
-- [ ] Upgrade official workflow actions to the approved Node 24 majors and add a structural no-downgrade allowlist assertion.
-- [ ] Harden path-classification artifact uploads and structurally validate all artifact names, paths, missing-file behavior, `always()` conditions, and retention periods.
-- [ ] Run `trellis-check`, affected delivery tests, the full shipping gate, both Playwright suites, Trellis consistency, and secret/artifact boundary review.
+- [x] Add the declared `yaml` development dependency and replace permissive workflow string checks with parsed, duplicate-key-rejecting structural helpers.
+- [x] Add exact job/step/dependency/condition/timeout assertions for PR CI, main deploy, and production acceptance.
+- [x] Narrow docs/Trellis-only classification to approved record/document extensions and add deterministic boundary, normalization, empty, mixed, executable, and unknown-path tests.
+- [x] Mark workflow/classifier/governance-test changes as shared browser impact so both conditional Playwright jobs run when the gate itself changes.
+- [x] Add a deterministic `assert-main-tip` helper and replace both inline deploy guards while preserving pre-mutation and immediate-pre-deploy ordering.
+- [x] Add explicit timeout budgets to every CI/deploy job and preserve the existing production acceptance budget.
+- [x] Upgrade official workflow actions to the approved Node 24 majors and add a structural no-downgrade allowlist assertion.
+- [x] Harden path-classification artifact uploads and structurally validate all artifact names, paths, missing-file behavior, `always()` conditions, and retention periods.
+- [x] Run `trellis-check`, affected delivery tests, the full shipping gate, both Playwright suites, Trellis consistency, and secret/artifact boundary review.
 - [ ] Update the delivery-governance spec, commit, push, open a PR, retain exact-head CI artifacts, record exact main deployment evidence, prove docs/Trellis-only skip, and archive.
 
 ## Validation Commands
@@ -46,3 +46,13 @@ python -m unittest discover -s .trellis/tests -p test_*.py -v
 - PR CI contains no production smoke/acceptance and all browser/provider tests remain local-fixture-only.
 - Artifacts are exact-SHA, bounded, non-sensitive, retained for the documented duration, and fail when expected files are absent.
 - Official action refs are approved Node 24 majors and the package remains on the 0.x line.
+
+## Local Validation Evidence (2026-08-04)
+
+- Affected delivery suites: `tests/delivery-governance.test.ts` and `tests/deployment-config.test.ts`, 87 tests passed.
+- Full Vitest: 40 files / 581 tests passed.
+- Workspace Playwright: 83 passed / 42 viewport-conditional skips. Local fake-Provider Agent Playwright: 3 passed.
+- `npm run check:frontend`, `npm run typecheck`, `npx wrangler deploy --dry-run`, `git diff --check`, Trellis repository consistency, and all 7 Trellis unit tests passed.
+- Official action definitions were fetched directly from GitHub and confirmed Node 24 for checkout v7, setup-node v7, and upload-artifact v7.
+- No live Provider/MCP request, production probe, production data read/mutation, or local production deployment was used.
+- PR exact-head CI, main deployment, docs/Trellis-only skip, artifacts, and absence of the targeted Node 20 annotation remain pending AC9.

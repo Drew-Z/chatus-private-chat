@@ -3,7 +3,7 @@
   "name": "ci-delivery-hardening",
   "title": "CI 与交付治理强化",
   "description": "为 CI/deploy 增加超时、结构化 workflow 验证、精确 Trellis record 分类和 stale-main 防护。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": "GitHub workflow structure, path classification, job timeouts, exact-main guard, action runtimes, and delivery artifacts",
   "package": null,
@@ -12,15 +12,84 @@
   "assignee": "zhang",
   "createdAt": "2026-08-02",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/ci-delivery-hardening",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "47db7cc121aa749a6bdb94b4e8ce43077f6b061b",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/45",
   "subtasks": [],
   "children": [],
   "parent": "08-02-project-hardening-followups",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npx vitest run tests/delivery-governance.test.ts tests/deployment-config.test.ts",
+        "status": "passed",
+        "summary": "87 affected delivery-governance and deployment-configuration tests passed",
+        "at": "2026-08-04T12:00:40.757912+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "React build and frontend structural checks passed",
+        "at": "2026-08-04T12:00:41.551660+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "40 files and 581 deterministic local tests passed",
+        "at": "2026-08-04T12:00:42.143894+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "83 Workspace Playwright tests passed with 42 viewport-conditional skips",
+        "at": "2026-08-04T12:00:42.735556+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 local fake-Provider Agent Playwright tests passed",
+        "at": "2026-08-04T12:00:43.348829+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture TypeScript checks passed",
+        "at": "2026-08-04T12:00:43.950336+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaged 19 assets and all declared bindings without deployment",
+        "at": "2026-08-04T12:00:44.562803+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Current task diff has no whitespace errors; only expected line-ending notices",
+        "at": "2026-08-04T12:00:45.208904+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task graph and workspace consistency passed",
+        "at": "2026-08-04T12:00:45.794709+00:00"
+      },
+      {
+        "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
+        "status": "passed",
+        "summary": "All 7 Trellis validation and archive-gate tests passed",
+        "at": "2026-08-04T12:00:46.431402+00:00"
+      },
+      {
+        "command": "trellis-check",
+        "status": "passed",
+        "summary": "Spec compliance, cross-file action/runtime consistency, test coverage, dependency, and artifact privacy review passed",
+        "at": "2026-08-04T12:00:47.055542+00:00"
+      }
+    ]
+  }
 }
