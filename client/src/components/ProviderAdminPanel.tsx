@@ -421,7 +421,7 @@ export function ProviderAdminPanel({
         <div className="admin-pool-list" role="listbox" aria-label="服务商列表">
           {providers.map((provider) => (
             <button className={`admin-pool-list-item ${provider.id === selectedId ? "active" : ""}`} type="button" key={provider.id} onClick={() => selectProvider(provider.id)} aria-selected={provider.id === selectedId}>
-              <span><strong>{provider.label}</strong><small>{provider.id}</small></span>
+              <span><strong>{provider.label}</strong><small>服务商 ID：{provider.id}</small></span>
               <em className={`status-dot ${provider.credentialStatus}`}>{provider.credentialStatus === "configured" ? "已配置" : provider.credentialStatus === "missing" ? "缺密钥" : provider.credentialStatus === "unavailable" ? "不可用" : "需用户密钥"}</em>
             </button>
           ))}
@@ -488,7 +488,10 @@ export function ProviderAdminPanel({
               <div className="admin-secret-actions"><input type="password" value={secretValue} onChange={(event) => setSecretValue(event.target.value)} placeholder={secretCanEdit ? "只写入，不会回显" : "先保存服务商和 API Key Ref"} autoComplete="new-password" disabled={!secretCanEdit || busy} /><button className="quiet-button icon-text-button" type="button" onClick={() => void saveSecret()} disabled={!secretCanEdit || !secretValue.trim() || busy}><KeyRound size={15} /><span>保存密钥</span></button>{selectedSecret?.managed && <button className="quiet-button danger icon-text-button" type="button" onClick={requestRemoveSecret} disabled={!secretCanEdit || busy}><Trash2 size={15} /><span>删除托管密钥</span></button>}</div>
             </section>
 
-            <section className="admin-reference-box"><h3>已被逻辑模型引用</h3><div className="admin-reference-list">{selectedProvider?.referencedBy.length ? selectedProvider.referencedBy.map((routeId) => <span key={routeId}>{routeId}</span>) : <span className="muted">尚未引用</span>}</div></section>
+            <section className="admin-reference-box"><h3>已被逻辑模型引用</h3><div className="admin-reference-list">{selectedProvider?.referencedBy.length ? selectedProvider.referencedBy.map((routeId) => {
+              const logicalModel = logicalModels.find((model) => model.id === routeId);
+              return <span key={routeId}>{logicalModel ? `${logicalModel.label}（模型 ID：${routeId}）` : `模型 ID：${routeId}`}</span>;
+            }) : <span className="muted">尚未引用</span>}</div></section>
           </>
         )}
       </div>

@@ -980,8 +980,23 @@ test("provider migration exposes bounded statuses and submits only safe routes",
   await expect(dialog).not.toContainText("legacyBlocked");
   await dialog.getByRole("button", { name: "确认迁移" }).click();
   await expect(page.getByText("已迁移 1 条旧线路。", { exact: true })).toBeVisible();
-  await expect(page.getByText("legacyReady-provider", { exact: true })).toBeVisible();
+  await expect(page.getByText("服务商 ID：legacyReady-provider", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "1 条旧线路待迁移" })).toBeVisible();
+  const migratedProviderItem = page.getByRole("listbox", { name: "服务商列表" }).getByRole("button").filter({ hasText: "服务商 ID：legacyReady-provider" });
+  await migratedProviderItem.focus();
+  await expect(migratedProviderItem).toBeFocused();
+  await migratedProviderItem.press("Enter");
+  await expect(page.getByText("Legacy ready（模型 ID：legacyReady）", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "逻辑模型" }).click();
+  await expect(page.getByText("模型 ID：legacyReady · 1 个服务商出口", { exact: true })).toBeVisible();
+  const migratedLogicalModelItem = page.getByRole("listbox", { name: "逻辑模型列表" }).getByRole("button").filter({ hasText: "模型 ID：legacyReady · 1 个服务商出口" });
+  await migratedLogicalModelItem.focus();
+  await expect(migratedLogicalModelItem).toBeFocused();
+  await migratedLogicalModelItem.press("Enter");
+  await expect(page.locator('option[value="legacyReady-provider"]')).toHaveText("Legacy ready（服务商 ID：legacyReady-provider）");
+  const offeringProviderIdentity = page.locator(".admin-offering-identity", { hasText: "服务商 ID：legacyReady-provider" });
+  await expect(offeringProviderIdentity).toBeVisible();
+  await offeringProviderIdentity.scrollIntoViewIfNeeded();
   expect(migrationPayload).toEqual({ routeIds: ["legacyReady"], expectedRevision: "a".repeat(64) });
   expect(postMigrationConfigRead).toBe(true);
 

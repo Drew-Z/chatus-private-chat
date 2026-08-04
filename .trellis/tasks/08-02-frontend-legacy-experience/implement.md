@@ -17,6 +17,7 @@
 - [x] Run focused tests, then the full shipping gate and Trellis consistency checks.
 - [x] Update frontend/platform specs for migration, provider-plan, redirect, accessibility, and delivery contracts.
 - [x] Commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
+- [ ] Clarify logical-model, Provider, and Offering identity labels after migration; cover the production-reported display with Playwright and deliver through PR/GitHub Actions.
 - [ ] Record exact main SHA deployment and user acceptance of both React admin access and production legacy-route migration before archive.
 
 ## Local Validation Evidence (2026-08-04)
