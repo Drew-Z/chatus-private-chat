@@ -26,15 +26,15 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. deterministic TeamAgent 测试证明配额耗尽的 automatic member 产生零次 selector/main Provider 请求，且返回既有稳定 rate-limit 分类。
-- [ ] AC2. automatic selector 与主回答合计只消费一个消息单位；automatic continuation 不消费新单位；manual turn 的成功、失败和 continuation 基线不回归。
-- [ ] AC3. admission 前取消不计费；selector 中取消会中止 selector、释放 lease、产生零次 main Provider 请求，并且不触发 fallback。
-- [ ] AC4. 参数化测试覆盖 BYOK success、401、403、429、5xx、timeout、protocol 和 network，证明共享 route 与 exact route/provider 记录均不变；同批 selector 测试证明独立 telemetry 仍记录脱敏 attempt。
-- [ ] AC5. 两个受控并发 chat 样本和两个受控并发 selector 样本写入同一 Provider/route 后，attempts、successes、fallback、stream samples 与 bounded invariants 精确保留两份输入；DO 重启后结果仍可读取。
-- [ ] AC6. Agent AI SDK 与 legacy SSE 均以 fake Provider 证明：达到 60 秒边界仍无可见输出时取消上游并允许 pre-output fallback；父取消不 fallback；首个可见输出后 deadline 不再终止流；晚到结果不能覆盖已返回状态。
-- [ ] AC7. route planner 和管理员 reliability API 继续读取原有 KV 投影；有效旧 v2/provider 与 v1/selector 聚合可作为首次 seed，畸形数据仍 fail closed，telemetry 故障不影响聊天。
-- [ ] AC8. spec 明确记录成员并发保持不限、Provider lease 为当前容量权威，且本任务没有新增成员并发配置、租约或静默上限。
-- [ ] AC9. `npm run check:frontend`、`npm test`、`npm run test:browser:workspace`、本地 fake Provider `npm run test:browser:agent`、`npm run typecheck`、`npx wrangler deploy --dry-run`、`git diff --check` 和 Trellis 全量一致性验证通过。
+- [x] AC1. deterministic TeamAgent 测试证明配额耗尽的 automatic member 产生零次 selector/main Provider 请求，且返回既有稳定 rate-limit 分类。
+- [x] AC2. automatic selector 与主回答合计只消费一个消息单位；automatic continuation 不消费新单位；manual turn 的成功、失败和 continuation 基线不回归。
+- [x] AC3. admission 前取消不计费；selector 中取消会中止 selector、释放 lease、产生零次 main Provider 请求，并且不触发 fallback。
+- [x] AC4. 参数化测试覆盖 BYOK success、401、403、429、5xx、timeout、protocol 和 network，证明共享 route 与 exact route/provider 记录均不变；同批 selector 测试证明独立 telemetry 仍记录脱敏 attempt。
+- [x] AC5. 两个受控并发 chat 样本和两个受控并发 selector 样本写入同一 Provider/route 后，attempts、successes、fallback、stream samples 与 bounded invariants 精确保留两份输入；DO 重启后结果仍可读取。
+- [x] AC6. Agent AI SDK 与 legacy SSE 均以 fake Provider 证明：达到 60 秒边界仍无可见输出时取消上游并允许 pre-output fallback；父取消不 fallback；首个可见输出后 deadline 不再终止流；晚到结果不能覆盖已返回状态。
+- [x] AC7. route planner 和管理员 reliability API 继续读取原有 KV 投影；有效旧 v2/provider 与 v1/selector 聚合可作为首次 seed，畸形数据仍 fail closed，telemetry 故障不影响聊天。
+- [x] AC8. spec 明确记录成员并发保持不限、Provider lease 为当前容量权威，且本任务没有新增成员并发配置、租约或静默上限。
+- [x] AC9. `npm run check:frontend`、`npm test`、`npm run test:browser:workspace`、本地 fake Provider `npm run test:browser:agent`、`npm run typecheck`、`npx wrangler deploy --dry-run`、`git diff --check` 和 Trellis 全量一致性验证通过。
 
 ## Out of Scope
 

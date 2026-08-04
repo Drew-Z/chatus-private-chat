@@ -5,19 +5,30 @@ import {
   isRecentRouteReliability,
   loadProviderRouteReliability,
   loadRouteReliability,
+  loadSkillSelectionTelemetry,
   recordRouteReliability,
+  type ProviderRouteReliabilityRecord,
   type RouteReliabilityRecord,
 } from "../src/services/route-reliability";
 
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
 const PROVIDER_ROUTE_RELIABILITY_PREFIX = "route-provider-reliability:";
+const SKILL_SELECTION_TELEMETRY_PREFIX = "route-provider-skill-selection:";
 
 function reliabilityKey(routeId: string): string {
   return `${ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}`;
 }
 
+function providerReliabilityKey(routeId: string, providerId: string): string {
+  return `${PROVIDER_ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
+}
+
 async function clearRouteReliability(): Promise<void> {
-  for (const prefix of [ROUTE_RELIABILITY_PREFIX, PROVIDER_ROUTE_RELIABILITY_PREFIX]) {
+  for (const prefix of [
+    ROUTE_RELIABILITY_PREFIX,
+    PROVIDER_ROUTE_RELIABILITY_PREFIX,
+    SKILL_SELECTION_TELEMETRY_PREFIX,
+  ]) {
     let cursor: string | undefined;
     do {
       const page = await env.CHAT_STORE.list({ prefix, cursor, limit: 100 });
@@ -37,6 +48,27 @@ function validRecord(routeId: string, overrides: Partial<RouteReliabilityRecord>
     observedAt: "2026-07-17T00:00:00.000Z",
     latencyMs: 120,
     fallback: false,
+    ...overrides,
+  };
+}
+
+function validProviderRecord(
+  routeId: string,
+  providerId: string,
+  overrides: Partial<ProviderRouteReliabilityRecord> = {},
+): ProviderRouteReliabilityRecord {
+  return {
+    version: 2,
+    source: "real_task",
+    routeId,
+    providerId,
+    attempts: 3,
+    successes: 2,
+    averageLatencyMs: 120,
+    lastOutcome: "success",
+    observedAt: "2026-07-17T00:00:00.000Z",
+    lastFallback: false,
+    fallbackCount: 0,
     ...overrides,
   };
 }
@@ -98,6 +130,7 @@ describe("route reliability service", () => {
       ok: false,
       fallback: false,
       startedAt: Date.now() - 25,
+      usedUserKey: false,
       status,
     });
 
@@ -109,29 +142,66 @@ describe("route reliability service", () => {
     });
   });
 
-  it("does not let a BYOK authentication failure overwrite shared route reliability", async () => {
-    const routeId = "member-byok";
+  it.each([
+    { case: "success", ok: true },
+    { case: "authentication 401", ok: false, status: 401 },
+    { case: "authentication 403", ok: false, status: 403 },
+    { case: "rate limit", ok: false, status: 429 },
+    { case: "server failure", ok: false, status: 503 },
+    { case: "timeout", ok: false, errorName: "TimeoutError", errorMessage: "upstream timed out" },
+    { case: "protocol failure", ok: false, status: 502, outcome: "protocol_error" as const },
+    { case: "network failure", ok: false, errorName: "TypeError", errorMessage: "fetch failed" },
+  ])("does not let BYOK $case change shared logical or exact quality", async (sample) => {
+    const routeId = `member-byok-${crypto.randomUUID()}`;
+    const providerId = "member-provider";
     const existing = validRecord(routeId);
+    const existingProvider = validProviderRecord(routeId, providerId);
     await env.CHAT_STORE.put(reliabilityKey(routeId), JSON.stringify(existing));
+    await env.CHAT_STORE.put(providerReliabilityKey(routeId, providerId), JSON.stringify(existingProvider));
+    const error = sample.errorName
+      ? Object.assign(new Error(sample.errorMessage), { name: sample.errorName })
+      : undefined;
 
     await recordRouteReliability(env, {
       routeId,
-      ok: false,
+      providerId,
+      ok: sample.ok,
       fallback: false,
       startedAt: Date.now(),
-      status: 401,
-      usedUserKey: true,
-    });
-    await recordRouteReliability(env, {
-      routeId,
-      ok: false,
-      fallback: false,
-      startedAt: Date.now(),
-      status: 403,
+      status: sample.status,
+      error,
+      outcome: sample.outcome,
       usedUserKey: true,
     });
 
     await expect(env.CHAT_STORE.get(reliabilityKey(routeId), "json")).resolves.toEqual(existing);
+    await expect(env.CHAT_STORE.get(providerReliabilityKey(routeId, providerId), "json"))
+      .resolves.toEqual(existingProvider);
+  });
+
+  it("keeps BYOK selector attempts in isolated skill-selection telemetry", async () => {
+    const routeId = `selector-byok-${crypto.randomUUID()}`;
+    const providerId = "selector-provider";
+    await recordRouteReliability(env, {
+      operation: "skill_selection",
+      routeId,
+      providerId,
+      ok: false,
+      fallback: true,
+      startedAt: Date.now() - 20,
+      status: 429,
+      usedUserKey: true,
+    });
+
+    await expect(loadRouteReliability(env, routeId)).resolves.toBeNull();
+    await expect(loadProviderRouteReliability(env, routeId, providerId)).resolves.toBeNull();
+    await expect(loadSkillSelectionTelemetry(env, routeId, providerId)).resolves.toMatchObject({
+      operation: "skill_selection",
+      attempts: 1,
+      successes: 0,
+      lastOutcome: "upstream_rate_limit",
+      lastFallback: true,
+    });
   });
 
   it("distinguishes timeout, protocol, and network failures", async () => {
@@ -142,6 +212,7 @@ describe("route reliability service", () => {
       ok: false,
       fallback: false,
       startedAt: Date.now(),
+      usedUserKey: false,
       error: timeout,
     });
     await recordRouteReliability(env, {
@@ -149,6 +220,7 @@ describe("route reliability service", () => {
       ok: false,
       fallback: true,
       startedAt: Date.now(),
+      usedUserKey: false,
       status: 502,
       error: new Error("provider returned an invalid response shape"),
     });
@@ -157,6 +229,7 @@ describe("route reliability service", () => {
       ok: false,
       fallback: false,
       startedAt: Date.now(),
+      usedUserKey: false,
       error: new TypeError("fetch failed"),
     });
 
@@ -176,6 +249,7 @@ describe("route reliability service", () => {
       ok: true,
       fallback: false,
       startedAt: Date.now() - 100,
+      usedUserKey: false,
     });
     await recordRouteReliability(env, {
       routeId: "reasoning",
@@ -183,6 +257,7 @@ describe("route reliability service", () => {
       ok: false,
       fallback: true,
       startedAt: Date.now() - 300,
+      usedUserKey: false,
       status: 503,
     });
     await recordRouteReliability(env, {
@@ -191,6 +266,7 @@ describe("route reliability service", () => {
       ok: true,
       fallback: false,
       startedAt: Date.now() - 50,
+      usedUserKey: false,
     });
 
     await expect(loadProviderRouteReliability(env, "reasoning", "provider-a")).resolves.toMatchObject({
@@ -218,6 +294,7 @@ describe("route reliability service", () => {
       ok: true,
       fallback: false,
       startedAt: Date.now() - 300,
+      usedUserKey: false,
       firstVisibleLatencyMs: 200,
       streamShape: "progressive",
     });
@@ -227,6 +304,7 @@ describe("route reliability service", () => {
       ok: true,
       fallback: false,
       startedAt: Date.now() - 200,
+      usedUserKey: false,
       firstVisibleLatencyMs: 100,
       streamShape: "single_chunk",
     });
@@ -236,6 +314,7 @@ describe("route reliability service", () => {
       ok: true,
       fallback: false,
       startedAt: Date.now() - 75,
+      usedUserKey: false,
     });
     await recordRouteReliability(env, {
       routeId,
@@ -243,6 +322,7 @@ describe("route reliability service", () => {
       ok: false,
       fallback: false,
       startedAt: Date.now() - 50,
+      usedUserKey: false,
       status: 503,
       firstVisibleLatencyMs: 10,
       streamShape: "progressive",
@@ -336,6 +416,7 @@ describe("route reliability service", () => {
       ok: true,
       fallback: false,
       startedAt: Date.now() - 300,
+      usedUserKey: false,
       firstVisibleLatencyMs: 200,
       streamShape: "progressive",
     });
@@ -356,6 +437,7 @@ describe("route reliability service", () => {
       ok: false,
       fallback: false,
       startedAt: Date.now() - 300,
+      usedUserKey: false,
       status: 503,
     });
 

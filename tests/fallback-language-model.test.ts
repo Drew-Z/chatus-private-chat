@@ -13,6 +13,7 @@ function model(args: {
   stream?: LanguageModelV3StreamPart[];
   streamSource?: ReadableStream<LanguageModelV3StreamPart>;
   onStream?: () => void;
+  onStreamOptions?: (options: LanguageModelV3CallOptions) => void;
   streamError?: unknown;
   generate?: LanguageModelV3GenerateResult;
   generateError?: unknown;
@@ -27,8 +28,9 @@ function model(args: {
       if (!args.generate) throw new Error("missing generate fixture");
       return args.generate;
     },
-    async doStream() {
+    async doStream(options) {
       if (args.streamError) throw args.streamError;
+      args.onStreamOptions?.(options);
       args.onStream?.();
       return { stream: args.streamSource || streamOf(args.stream || []) };
     },
@@ -180,6 +182,129 @@ describe("fallback language model", () => {
     expect(parts).toContainEqual(expect.objectContaining({ type: "error" }));
     expect(backupSpy).not.toHaveBeenCalled();
     expect(failure).toEqual([expect.objectContaining({ routeId: "primary", visibleOutputStarted: true })]);
+  });
+
+  it("aborts a provider with no visible output at sixty seconds and falls back", async () => {
+    vi.useFakeTimers();
+    try {
+      let upstreamSignal: AbortSignal | undefined;
+      const cancel = vi.fn();
+      const release = vi.fn();
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const stalled = new ReadableStream<LanguageModelV3StreamPart>({ cancel });
+      const backup = model({ stream: successfulStream("deadline fallback") });
+      const backupSpy = vi.spyOn(backup, "doStream");
+      const failures: ProviderAttemptEvent[] = [];
+      const router = createFallbackLanguageModel([
+        {
+          routeId: "primary",
+          providerId: "primary-provider",
+          usedUserKey: false,
+          model: model({
+            streamSource: stalled,
+            onStream: markStarted,
+            onStreamOptions: (options) => { upstreamSignal = options.abortSignal; },
+          }),
+          acquireLease: async () => ({ release }),
+        },
+        {
+          routeId: "backup",
+          providerId: "backup-provider",
+          usedUserKey: false,
+          model: backup,
+        },
+      ], { onFailure: (event) => failures.push(event) });
+
+      const resultPromise = router.doStream(CALL_OPTIONS);
+      await started;
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await resultPromise;
+      const parts = await readStream(result.stream);
+
+      expect(parts).toContainEqual(expect.objectContaining({ type: "text-delta", delta: "deadline fallback" }));
+      expect(upstreamSignal?.aborted).toBe(true);
+      expect((upstreamSignal?.reason as Error)?.name).toBe("TimeoutError");
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(backupSpy).toHaveBeenCalledOnce();
+      expect(failures).toEqual([
+        expect.objectContaining({ routeId: "primary", visibleOutputStarted: false }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not fall back when the parent request cancels before visible output", async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    const release = vi.fn();
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const primary = model({
+      streamSource: new ReadableStream<LanguageModelV3StreamPart>(),
+      onStream: markStarted,
+      onStreamOptions: (options) => { upstreamSignal = options.abortSignal; },
+    });
+    const backup = model({ stream: successfulStream("must not run") });
+    const backupSpy = vi.spyOn(backup, "doStream");
+    const controller = new AbortController();
+    const router = createFallbackLanguageModel([
+      {
+        routeId: "primary",
+        providerId: "primary-provider",
+        usedUserKey: false,
+        model: primary,
+        acquireLease: async () => ({ release }),
+      },
+      { routeId: "backup", providerId: "backup-provider", usedUserKey: false, model: backup },
+    ]);
+
+    const resultPromise = router.doStream({ ...CALL_OPTIONS, abortSignal: controller.signal });
+    await started;
+    controller.abort(new DOMException("cancelled by user", "AbortError"));
+
+    await expect(resultPromise).rejects.toMatchObject({ name: "AbortError" });
+    expect(upstreamSignal?.aborted).toBe(true);
+    expect(backupSpy).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("clears the first-visible deadline after commitment without ending a long stream", async () => {
+    vi.useFakeTimers();
+    try {
+      let controller!: ReadableStreamDefaultController<LanguageModelV3StreamPart>;
+      let upstreamSignal: AbortSignal | undefined;
+      const source = new ReadableStream<LanguageModelV3StreamPart>({
+        start(value) { controller = value; },
+      });
+      const router = createFallbackLanguageModel([{
+        routeId: "long-stream",
+        providerId: "long-provider",
+        usedUserKey: false,
+        model: model({
+          streamSource: source,
+          onStreamOptions: (options) => { upstreamSignal = options.abortSignal; },
+        }),
+      }]);
+
+      const resultPromise = router.doStream(CALL_OPTIONS);
+      controller.enqueue({ type: "text-delta", id: "text-1", delta: "first" });
+      const result = await resultPromise;
+      const reader = result.stream.getReader();
+      await expect(reader.read()).resolves.toMatchObject({ value: { type: "text-delta", delta: "first" } });
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(upstreamSignal?.aborted).toBe(false);
+      controller.enqueue({ type: "text-delta", id: "text-1", delta: " later" });
+      controller.enqueue(finishPart());
+      controller.close();
+      await expect(readReader(reader)).resolves.toContainEqual(
+        expect.objectContaining({ type: "text-delta", delta: " later" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries generation on retryable failures but stops on terminal client failures", async () => {

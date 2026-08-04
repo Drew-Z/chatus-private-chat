@@ -12,6 +12,11 @@ import {
   uniqueProviderLeaseCandidates,
   type ProviderLease,
 } from "./provider-lease";
+import {
+  createProviderFirstVisibleDeadline,
+  raceWithAbort,
+  type ProviderFirstVisibleDeadline,
+} from "./provider-first-visible-deadline";
 
 export type FallbackModelCandidate = {
   routeId: string;
@@ -92,9 +97,17 @@ export function createFallbackLanguageModel(
         const startedAt = Date.now();
         const fallback = isFallbackAttempt(candidates, candidate, attemptIndex);
         let handedOff = false;
+        const deadline = createProviderFirstVisibleDeadline(options.abortSignal);
         try {
-          const result = await candidate.model.doStream({ ...options, ...candidate.settings });
-          const primed = await primeProviderStream(result.stream);
+          const result = await raceWithAbort(
+            candidate.model.doStream({
+              ...options,
+              ...candidate.settings,
+              abortSignal: deadline.signal,
+            }),
+            deadline.signal,
+          );
+          const primed = await primeProviderStream(result.stream, deadline);
           if (!primed.ok) {
             lastError = primed.error;
             await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, primed.error));
@@ -116,6 +129,7 @@ export function createFallbackLanguageModel(
               reader: primed.reader,
               callbacks,
               lease,
+              deadline,
             }),
           };
         } catch (error) {
@@ -124,7 +138,10 @@ export function createFallbackLanguageModel(
           await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, error));
           if (!canFallback(error, candidate.usedUserKey, options) || !remaining.length) throw error;
         } finally {
-          if (!handedOff) await releaseLease(lease);
+          if (!handedOff) {
+            deadline.dispose();
+            await releaseLease(lease);
+          }
         }
         attemptIndex += 1;
       }
@@ -133,7 +150,10 @@ export function createFallbackLanguageModel(
   };
 }
 
-async function primeProviderStream(stream: ReadableStream<LanguageModelV3StreamPart>): Promise<
+async function primeProviderStream(
+  stream: ReadableStream<LanguageModelV3StreamPart>,
+  deadline: ProviderFirstVisibleDeadline,
+): Promise<
   | {
       ok: true;
       buffered: LanguageModelV3StreamPart[];
@@ -146,7 +166,7 @@ async function primeProviderStream(stream: ReadableStream<LanguageModelV3StreamP
   const buffered: LanguageModelV3StreamPart[] = [];
   try {
     while (true) {
-      const next = await reader.read();
+      const next = await raceWithAbort(reader.read(), deadline.signal);
       if (next.done) {
         await reader.cancel().catch(() => undefined);
         return { ok: false, error: providerProtocolError("Provider stream ended before visible output.") };
@@ -162,6 +182,7 @@ async function primeProviderStream(stream: ReadableStream<LanguageModelV3StreamP
       }
       buffered.push(part);
       if (isVisibleStreamPart(part)) {
+        deadline.commit();
         return {
           ok: true,
           buffered,
@@ -185,6 +206,7 @@ function monitorCommittedStream(args: {
   reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart>;
   callbacks: FallbackLanguageModelCallbacks;
   lease: ProviderCandidateLease;
+  deadline: ProviderFirstVisibleDeadline;
 }): ReadableStream<LanguageModelV3StreamPart> {
   let bufferIndex = 0;
   let settled = false;
@@ -202,6 +224,7 @@ function monitorCommittedStream(args: {
       undefined,
       streamEvidence(args.startedAt, firstTextDeltaAt, visibleTextDeltaCount),
     ));
+    args.deadline.dispose();
     await releaseLease(args.lease);
   };
   const settleFailure = async (error: unknown) => {
@@ -214,11 +237,13 @@ function monitorCommittedStream(args: {
       true,
       error,
     ));
+    args.deadline.dispose();
     await releaseLease(args.lease);
   };
   const settleCancelled = async () => {
     if (settled) return;
     settled = true;
+    args.deadline.dispose();
     await releaseLease(args.lease);
   };
 

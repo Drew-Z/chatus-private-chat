@@ -10,6 +10,11 @@ import {
   setAuthHeader,
   toAnthropicMessages,
 } from "./provider-tool-runtime";
+import {
+  createProviderFirstVisibleDeadline,
+  raceWithAbort,
+  type ProviderFirstVisibleDeadline,
+} from "./provider-first-visible-deadline";
 
 export const MAX_PROVIDER_STREAM_PREFLIGHT_BYTES = 256 * 1024;
 
@@ -49,25 +54,35 @@ export class UpstreamRequestError extends Error {
 }
 
 export async function callProviderStream(args: ProviderStreamArgs): Promise<ProviderStreamAttempt> {
-  const response = args.route.type === "anthropic-messages"
-    ? await callAnthropicMessages(args)
-    : await callOpenAiChat(args);
+  const deadline = createProviderFirstVisibleDeadline(args.signal);
+  try {
+    const response = await raceWithAbort(
+      args.route.type === "anthropic-messages"
+        ? callAnthropicMessages({ ...args, signal: deadline.signal })
+        : callOpenAiChat({ ...args, signal: deadline.signal }),
+      deadline.signal,
+    );
 
-  if (response.ok && response.body) {
-    const normalizedBody = args.route.type === "anthropic-messages"
-      ? transformAnthropicStream(response.body)
-      : response.body;
-    const prepared = await prepareValidatedOpenAiSseStream(normalizedBody);
-    return { ok: true, body: prepared.body, cancelUpstream: prepared.cancel };
+    if (response.ok && response.body) {
+      const normalizedBody = args.route.type === "anthropic-messages"
+        ? transformAnthropicStream(response.body)
+        : response.body;
+      const prepared = await prepareValidatedOpenAiSseStream(normalizedBody, deadline);
+      return { ok: true, body: prepared.body, cancelUpstream: prepared.cancel };
+    }
+
+    const message = await response.text().catch(() => "");
+    deadline.dispose();
+    return {
+      ok: false,
+      status: response.status,
+      message: formatUpstreamErrorMessage(message),
+      terminal: isTerminalProviderFailure(response.status, args.usedUserKey),
+    };
+  } catch (error) {
+    deadline.dispose();
+    throw error;
   }
-
-  const message = await response.text().catch(() => "");
-  return {
-    ok: false,
-    status: response.status,
-    message: formatUpstreamErrorMessage(message),
-    terminal: isTerminalProviderFailure(response.status, args.usedUserKey),
-  };
 }
 
 async function callOpenAiChat(args: ProviderStreamArgs): Promise<Response> {
@@ -158,6 +173,7 @@ class OpenAiSseValidator {
 
 async function prepareValidatedOpenAiSseStream(
   source: ReadableStream<Uint8Array>,
+  deadline: ProviderFirstVisibleDeadline,
 ): Promise<{
   body: ReadableStream<Uint8Array>;
   cancel: (reason?: unknown) => Promise<void>;
@@ -171,11 +187,12 @@ async function prepareValidatedOpenAiSseStream(
     if (cancelled) return;
     cancelled = true;
     await reader.cancel(reason).catch(() => undefined);
+    deadline.dispose();
   };
 
   try {
     while (!validator.hasVisibleContent) {
-      const next = await reader.read();
+      const next = await raceWithAbort(reader.read(), deadline.signal);
       if (next.done) {
         validator.finish();
         break;
@@ -192,6 +209,7 @@ async function prepareValidatedOpenAiSseStream(
     await cancel();
     throw error;
   }
+  deadline.commit();
 
   let prefixIndex = 0;
   const body = new ReadableStream<Uint8Array>({
@@ -210,6 +228,7 @@ async function prepareValidatedOpenAiSseStream(
         const next = await reader.read();
         if (next.done) {
           validator.finish();
+          deadline.dispose();
           controller.close();
           return;
         }

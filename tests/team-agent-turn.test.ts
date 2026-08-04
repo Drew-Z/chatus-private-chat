@@ -419,6 +419,270 @@ describe("prepared TeamAgent turn", () => {
     expect(next).toMatchObject({ ok: false, error: "rate_limited", status: 429 });
   });
 
+  it("rejects exhausted automatic turns before selector or main Provider work", async () => {
+    const label = `agent-auto-quota-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://selector-quota.example/v1",
+          model: "selector-model",
+          apiKey: "selector-test-key",
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+      users: { [label]: { allowedSkills: ["analysis"] } },
+      skills: {
+        analysis: {
+          enabled: true,
+          label: "Analysis",
+          description: "Inspect evidence",
+          instructions: "Analyze evidence.",
+        },
+      },
+      tools: {},
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      openAiCompletionResponse('{"skillIds":["analysis"]}'),
+    );
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+
+    const admitted = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Consume the only message unit" }],
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(admitted.ok).toBe(true);
+    if (admitted.ok) await Promise.allSettled([admitted.closeTools(), admitted.releaseTurn()]);
+
+    const rejected = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Do not start selection" }],
+      skillMode: "automatic",
+      skillIds: [],
+    });
+
+    expect(rejected).toMatchObject({ ok: false, error: "rate_limited", status: 429 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not charge a turn that is cancelled before automatic admission", async () => {
+    const label = `agent-auto-pre-abort-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://selector-pre-abort.example/v1",
+          model: "selector-model",
+          apiKey: "selector-test-key",
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+      users: { [label]: { allowedSkills: ["analysis"] } },
+      skills: {
+        analysis: {
+          enabled: true,
+          label: "Analysis",
+          description: "Inspect evidence",
+          instructions: "Analyze evidence.",
+        },
+      },
+      tools: {},
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      openAiCompletionResponse('{"skillIds":["analysis"]}'),
+    );
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+    const controller = new AbortController();
+    controller.abort(new DOMException("cancelled by user", "AbortError"));
+
+    const cancelled = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Do not charge this turn" }],
+      skillMode: "automatic",
+      skillIds: [],
+      abortSignal: controller.signal,
+    });
+    expect(cancelled).toMatchObject({ ok: false, error: "request_cancelled", status: 499 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const next = await prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "This turn should still be admitted" }],
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(next.ok).toBe(true);
+    if (next.ok) await Promise.allSettled([next.closeTools(), next.releaseTurn()]);
+  });
+
+  it("cancels automatic selection, releases its Provider lease, and does not prepare a main model", async () => {
+    const label = `agent-auto-parent-abort-${crypto.randomUUID()}`;
+    const providerId = `selector-cancel-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Selector",
+          type: "openai-chat",
+          baseUrl: "https://selector-parent-abort.example/v1",
+          apiKey: "selector-test-key",
+          concurrency: "exclusive",
+        },
+      },
+      routes: {
+        primary: {
+          label: "Primary",
+          offerings: [{ providerId, model: "selector-model" }],
+        },
+      },
+      defaults: { defaultRoute: "primary", allowedRoutes: ["primary"] },
+      users: { [label]: { allowedSkills: ["analysis"] } },
+      skills: {
+        analysis: {
+          enabled: true,
+          label: "Analysis",
+          description: "Inspect evidence",
+          instructions: "Analyze evidence.",
+        },
+      },
+      tools: {},
+    }));
+    let markSelectorStarted!: () => void;
+    const selectorStarted = new Promise<void>((resolve) => {
+      markSelectorStarted = resolve;
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      markSelectorStarted();
+      return await new Promise<Response>((_resolve, reject) => {
+        const rejectAbort = () => reject(init?.signal?.reason instanceof Error
+          ? init.signal.reason
+          : new DOMException("cancelled by user", "AbortError"));
+        if (init?.signal?.aborted) rejectAbort();
+        else init?.signal?.addEventListener("abort", rejectAbort, { once: true });
+      });
+    });
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+    const controller = new AbortController();
+
+    const preparing = prepareTeamAgentTurn(env, session, {
+      messages: [{ role: "user", content: "Cancel during selection" }],
+      skillMode: "automatic",
+      skillIds: [],
+      abortSignal: controller.signal,
+    });
+    await selectorStarted;
+    controller.abort(new DOMException("cancelled by user", "AbortError"));
+    const cancelled = await preparing;
+
+    expect(cancelled).toMatchObject({ ok: false, error: "request_cancelled", status: 499 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const coordinator = env.PROVIDER_COORDINATOR.getByName(providerId);
+    const replacement = await coordinator.acquire({
+      requestId: `replacement-${crypto.randomUUID()}`,
+      capacity: 1,
+      waitMs: 1_000,
+    });
+    expect(replacement.ok).toBe(true);
+    if (replacement.ok) await coordinator.release({ token: replacement.token });
+  });
+
+  it("keeps automatic continuations quota-free after selector work", async () => {
+    const label = `agent-auto-continuation-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://selector-continuation.example/v1",
+          model: "selector-model",
+          apiKey: "selector-test-key",
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+      users: { [label]: { allowedSkills: ["analysis"] } },
+      skills: {
+        analysis: {
+          enabled: true,
+          label: "Analysis",
+          description: "Inspect evidence",
+          instructions: "Analyze evidence.",
+        },
+      },
+      tools: {},
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      openAiCompletionResponse('{"skillIds":["analysis"]}'),
+    );
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+    const input = {
+      messages: [{ role: "user" as const, content: "Continue with automatic selection" }],
+      skillMode: "automatic" as const,
+      skillIds: [] as string[],
+    };
+
+    const initial = await prepareTeamAgentTurn(env, session, input);
+    expect(initial.ok).toBe(true);
+    if (initial.ok) await Promise.allSettled([initial.closeTools(), initial.releaseTurn()]);
+
+    const continuation = await prepareTeamAgentTurn(env, session, { ...input, continuation: true });
+    expect(continuation.ok).toBe(true);
+    if (continuation.ok) await Promise.allSettled([continuation.closeTools(), continuation.releaseTurn()]);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    const nextTurn = await prepareTeamAgentTurn(env, session, {
+      messages: input.messages,
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(nextTurn).toMatchObject({ ok: false, error: "rate_limited", status: 429 });
+  });
+
   it("falls back from malformed automatic selection to the revalidated last success", async () => {
     const label = `agent-auto-skill-fallback-${crypto.randomUUID()}`;
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
