@@ -1,6 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { configDefaults, defineConfig } from "vitest/config";
-import { TEST_COVERAGE_THRESHOLDS, WORKERS_TEST_FILES } from "./vitest.constants";
+import { TEST_COVERAGE_THRESHOLDS } from "./vitest.constants";
 
 const sharedExclude = [...configDefaults.exclude, "tests/browser/**"];
 
@@ -16,36 +16,20 @@ export default defineConfig({
       reportOnFailure: true,
       thresholds: TEST_COVERAGE_THRESHOLDS,
     },
-    projects: [
-      {
-        test: {
-          name: "node",
-          include: ["tests/**/*.test.ts"],
-          exclude: [...sharedExclude, ...WORKERS_TEST_FILES],
-        },
-      },
-      {
-        plugins: [
-          cloudflareTest({
-            wrangler: { configPath: "./wrangler.jsonc" },
-            miniflare: {
-              bindings: {
-                ADMIN_TOKEN: "test-admin-token",
-                TEST_ROUTE_KEY: "test-route-key",
-                ROUTE_KEYS_MASTER_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-              },
-            },
-          }),
-        ],
-        test: {
-          name: "workers",
-          include: [...WORKERS_TEST_FILES],
-          exclude: sharedExclude,
-          // Miniflare opens an internal port per worker. Keep this project
-          // serial so Windows never selects an undici-forbidden random port.
-          maxWorkers: 1,
-        },
-      },
-    ],
+    // The measured Node/Workers split missed its final performance gate.
+    // Keep the full Miniflare suite serial for Windows port stability.
+    maxWorkers: 1,
   },
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: "./wrangler.jsonc" },
+      miniflare: {
+        bindings: {
+          ADMIN_TOKEN: "test-admin-token",
+          TEST_ROUTE_KEY: "test-route-key",
+          ROUTE_KEYS_MASTER_KEY: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        },
+      },
+    }),
+  ],
 });

@@ -3,8 +3,8 @@
 ## Ordered Checklist
 
 - [x] Add compatible Istanbul coverage dependency and root coverage configuration with text, JSON summary, HTML output, and explicit four-metric thresholds derived from the measured baseline.
-- [x] Split Vitest into named Node and Workers project configs; keep the eight direct and one transitive Cloudflare-dependent files plus `maxWorkers: 1` in Workers while allowing the remaining files to run in parallel under Node.
-- [x] Add configuration-governance tests proving project ownership is disjoint and complete, Workers serialization is retained, and coverage cannot regress to V8 or implicit thresholds.
+- [x] Evaluate named Node/Workers projects with the eight direct and one transitive Cloudflare-dependent files in Workers; after the final benchmark missed the approved bound, restore the full serial Workers pool.
+- [x] Add configuration-governance tests for the experiment, then update the final contract to lock one `cloudflareTest` pool, `maxWorkers: 1`, Istanbul, and explicit thresholds.
 - [x] Keep local `npm test` uninstrumented, add `npm run test:coverage`, and make PR CI use one coverage-enabled complete Vitest run without duplicating the suite.
 - [x] Add deterministic quota-admission coverage that locks the approved member `unlimited` concurrency behavior and proves guest lease acquisition is not used for members.
 - [x] Add the shared Workspace tracked-usage contract and compute all five fields from Root TeamAgent SQLite metadata in the same listing boundary.
@@ -19,7 +19,7 @@
 
 ```text
 npx vitest run tests/delivery-governance.test.ts tests/quota-admission.test.ts tests/provider-stream-runtime.test.ts tests/fallback-language-model.test.ts
-npx vitest run --project workers tests/document-ingest-state.test.ts tests/workspace-file.test.ts tests/worker-api.test.ts
+npx vitest run tests/document-ingest-state.test.ts tests/workspace-file.test.ts tests/worker-api.test.ts
 npm run check:frontend
 npm test
 npm test
@@ -37,7 +37,7 @@ The three `npm test` runs are timed independently on the same machine. Record ra
 
 ## Risky Files And Rollback Points
 
-- `vitest.config.ts` and the two project configs: an overlapping pattern can double-run tests; a gap can silently remove coverage. The governance test must enumerate the repository's actual test files.
+- `vitest.config.ts`: the final configuration must retain one `cloudflareTest` pool and `maxWorkers: 1`; restoring the rejected project split without a new approved benchmark is a regression.
 - `package.json` / lockfile: `@vitest/coverage-istanbul` must stay compatible with Vitest 4 and the package must remain on the 0.x line.
 - `.github/workflows/ci.yml`: retain all non-Vitest gates, job timeouts, browser path classification, exact-head artifacts, and local-only Provider behavior; change only the single Vitest command needed for coverage.
 - `src/agent/team-agent.ts`: aggregate only numeric metadata inside the owning DO; do not list R2 or change quota admission, deletion, purge, or ingest state transitions.
@@ -47,7 +47,7 @@ The three `npm test` runs are timed independently on the same machine. Record ra
 
 ## Review Gates
 
-- All 40 baseline test files and at least 581 baseline tests run once, together with every new regression; the Node and Workers sets are mutually exclusive and collectively exhaustive.
+- All 40 baseline test files and at least 581 baseline tests run once through the serial Workers pool, together with every new regression.
 - The measured post-change median improves at least 15%, or the split is absent from the final work commit.
 - Coverage uses Istanbul, has explicit global floors for all four metrics, and fails closed when a metric is below its floor.
 - Members remain unlimited and Provider first-visible behavior remains 60 seconds; neither decision introduces a new public error or telemetry claim.

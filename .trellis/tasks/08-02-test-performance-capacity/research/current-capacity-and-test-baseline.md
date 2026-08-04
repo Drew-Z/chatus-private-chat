@@ -18,7 +18,7 @@ Recorded: 2026-08-04
 - Retention threshold: at least 15% faster, so the three-run post-change median must be no more than `107.723 * 0.85 = 91.56455`, rounded down to 91.564 seconds for the acceptance bound.
 - Every sample completed the same 40 files / 581 tests. The first slow sample remains part of the median and was not discarded.
 
-Post-change uninstrumented samples were recorded after the final nine-file Workers ownership correction and cancellation-race fix. Every sample completed 40 files / 587 tests:
+An initial split benchmark was recorded after the nine-file Workers ownership correction and cancellation-race fix. Every sample completed 40 files / 587 tests:
 
 | Sample | External elapsed |
 | --- | ---: |
@@ -27,7 +27,18 @@ Post-change uninstrumented samples were recorded after the final nine-file Worke
 | 3 | 71.398 s |
 | Median | 72.270 s |
 
-Sorted values are `71.398`, `72.270`, and `72.406`, so the middle value is 72.270 seconds. This is 32.91% lower than the 107.723-second pre-change median and is below the 91.564-second acceptance bound. These final samples include the governance test's independent `vitest list` collection for both projects. Decision: retain the Node/Workers project split; no sample was discarded.
+Sorted values are `71.398`, `72.270`, and `72.406`, so the middle value is 72.270 seconds. This initial evidence was below the bound, but it was superseded by the required final pre-PR recheck below.
+
+The final split benchmark retained the first slow run and restarted no samples. Every sample again completed 40 files / 587 tests:
+
+| Sample | External elapsed |
+| --- | ---: |
+| 1 | 96.900 s |
+| 2 | 92.203 s |
+| 3 | 88.938 s |
+| Median | 92.203 s |
+
+Sorted values are `88.938`, `92.203`, and `96.900`, so the middle value is 92.203 seconds. This is 14.41% lower than the 107.723-second pre-change median but exceeds the approved 91.564-second bound. The first sample's Vitest-reported duration was 95.14 seconds; 96.900 seconds is the shell wall time used consistently with the other samples. Decision: remove the Node/Workers split and restore the complete suite to the serial Workers pool. No sample was discarded.
 
 ## Workers-Owned Tests
 
@@ -42,7 +53,7 @@ Repository import inspection found these eight files directly using `cloudflare:
 7. `tests/worker-api.test.ts`
 8. `tests/workspace-file.test.ts`
 
-`tests/image-input.test.ts` has no direct `cloudflare:*` import but imports `src/worker.ts` and `src/agent/team-agent.ts`, so a Node project run fails while resolving the transitive `cloudflare:workers` dependency. It is the ninth Workers-owned file. The other 31 test files have no known Cloudflare runtime dependency and are candidates for the Node project. Final governance tests derive the full file inventory from disk, verify the direct set and this explicit transitive exception, and run the complete project split so this recorded list cannot hide drift.
+`tests/image-input.test.ts` has no direct `cloudflare:*` import but imports `src/worker.ts` and `src/agent/team-agent.ts`, so a Node project run fails while resolving the transitive `cloudflare:workers` dependency. It was the ninth Workers-owned file during the experiment. The other 31 test files had no known Cloudflare runtime dependency. These ownership findings remain useful for a future experiment, but the final configuration runs all 40 files through one Workers pool.
 
 ## Official Compatibility Evidence
 
@@ -59,14 +70,14 @@ The first complete instrumented run exposed two project-split/cancellation races
 
 | Metric | Covered / Total | Measured | Enforced floor |
 | --- | ---: | ---: | ---: |
-| Statements | 8402 / 13817 | 60.80% | 60% |
-| Branches | 7853 / 13635 | 57.59% | 57% |
+| Statements | 8399 / 13817 | 60.78% | 60% |
+| Branches | 7851 / 13635 | 57.57% | 57% |
 | Functions | 1601 / 2870 | 55.78% | 55% |
-| Lines | 7687 / 11783 | 65.23% | 65% |
+| Lines | 7685 / 11783 | 65.22% | 65% |
 
-The floors are explicit positive integers in `vitest.constants.ts`. The root Vitest configuration applies them once to the combined Istanbul report for both projects.
+The floors are explicit positive integers in `vitest.constants.ts`. The root Vitest configuration applies them once to the complete serial Workers suite.
 
-A negative enforcement check temporarily raised the statements floor from 60% to 61%. The otherwise-passing complete instrumented suite exited with status 1 because the measured 60.80% was below that floor. The configured 60% floor was then restored, and the final `npm run test:coverage` run passed with the tabled metrics.
+A negative enforcement check temporarily raised the statements floor from 60% to 61%. The otherwise-passing complete instrumented suite exited with status 1 because the measured baseline was below that floor. The configured 60% floor was then restored, and the final serial-Workers `npm run test:coverage` run passed with the tabled metrics.
 
 ## Member Concurrency Evidence
 

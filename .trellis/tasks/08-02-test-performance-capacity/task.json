@@ -2,7 +2,7 @@
   "id": "test-performance-capacity",
   "name": "test-performance-capacity",
   "title": "测试性能与容量可观测性",
-  "description": "建立 Istanbul 覆盖率预算与 Vitest 分池，锁定成员 unlimited 和 60 秒首可见输出合同，并投影 Workspace 元数据跟踪占用。",
+  "description": "建立 Istanbul 覆盖率预算，评估 Vitest 分池并按性能门槛决策，锁定成员 unlimited 和 60 秒首可见输出合同，并投影 Workspace 元数据跟踪占用。",
   "status": "in_progress",
   "dev_type": null,
   "scope": "frontend/platform",
@@ -28,61 +28,61 @@
         "command": "npm run check:frontend",
         "status": "passed",
         "summary": "Vite build and frontend structure checks passed",
-        "at": "2026-08-04T17:18:13.383388+00:00"
+        "at": "2026-08-04T18:39:41.429317+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "40 files and 587 tests passed; final three-run median 72.270s",
-        "at": "2026-08-04T17:18:13.543037+00:00"
+        "summary": "40 files and 587 tests passed through the final serial Workers pool",
+        "at": "2026-08-04T18:39:59.369387+00:00"
       },
       {
         "command": "npm run test:coverage",
         "status": "passed",
-        "summary": "40 files and 587 tests passed; Istanbul 60.80 statements, 57.59 branches, 55.78 functions, 65.23 lines",
-        "at": "2026-08-04T17:18:13.700753+00:00"
+        "summary": "40 files and 587 tests passed; Istanbul 60.78 statements, 57.57 branches, 55.78 functions, 65.22 lines",
+        "at": "2026-08-04T18:39:59.962701+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
-        "summary": "84 passed and 46 conditionally skipped across five viewports; retained screenshots inspected",
-        "at": "2026-08-04T17:18:13.862006+00:00"
+        "summary": "84 passed and 46 conditionally skipped across the 1920, 1440, 780, 480, and 390 viewports",
+        "at": "2026-08-04T18:40:00.582874+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
-        "summary": "3 tests passed with the local fake Provider",
-        "at": "2026-08-04T17:18:14.023690+00:00"
+        "summary": "3 tests passed with the isolated local fake Provider",
+        "at": "2026-08-04T18:40:01.185649+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
         "summary": "Worker, React, and browser TypeScript checks passed",
-        "at": "2026-08-04T17:18:14.180634+00:00"
+        "at": "2026-08-04T18:40:01.800492+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
         "summary": "Worker bundle dry-run passed without deployment",
-        "at": "2026-08-04T17:18:14.347390+00:00"
+        "at": "2026-08-04T18:40:02.412629+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
         "summary": "No whitespace errors",
-        "at": "2026-08-04T17:18:14.500728+00:00"
+        "at": "2026-08-04T18:40:03.012350+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
         "summary": "Repository consistency OK",
-        "at": "2026-08-04T17:18:14.655037+00:00"
+        "at": "2026-08-04T18:40:03.600072+00:00"
       },
       {
         "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
         "status": "passed",
         "summary": "7 Trellis validation tests passed",
-        "at": "2026-08-04T17:18:14.844387+00:00"
+        "at": "2026-08-04T18:40:04.198092+00:00"
       }
     ]
   }
