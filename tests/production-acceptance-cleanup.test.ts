@@ -17,13 +17,23 @@ describe("production acceptance member cleanup", () => {
     expect(wait).toHaveBeenCalledWith(5_000);
   });
 
-  it("accepts 401 only for cleanup of an already-revoked session", async () => {
+  it("accepts an initial 401 only for cleanup of an already-revoked session", async () => {
     const run = vi.fn(async () => 401);
 
     await expect(retryTemporaryMemberDeletion(run, { allowUnauthorized: true })).resolves.toBeUndefined();
     await expect(retryTemporaryMemberDeletion(run)).rejects.toThrow(
       "temporary member deletion failed: HTTP 401",
     );
+  });
+
+  it("accepts 401 after a 503 because the persisted deletion may have revoked the session", async () => {
+    const statuses = [503, 401];
+    const run = vi.fn(async () => statuses.shift() ?? 500);
+    const wait = vi.fn(async () => undefined);
+
+    await expect(retryTemporaryMemberDeletion(run, { wait })).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledOnce();
   });
 
   it("fails immediately for non-503 statuses and bounds exhausted retries", async () => {

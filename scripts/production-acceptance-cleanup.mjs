@@ -13,12 +13,14 @@ export async function retryTemporaryMemberDeletion(
     delayMs = 5_000,
   } = {},
 ) {
+  let deletionMayHaveRevokedSession = false;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const status = await run();
-    if (status === 200 || (allowUnauthorized && status === 401)) return;
+    if (status === 200 || (status === 401 && (allowUnauthorized || deletionMayHaveRevokedSession))) return;
     if (status !== 503 || attempt === attempts) {
       throw new Error(`temporary member deletion failed: HTTP ${status}`);
     }
+    deletionMayHaveRevokedSession = true;
     await wait(delayMs);
   }
 }

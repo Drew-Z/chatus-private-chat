@@ -11,6 +11,7 @@
 - [x] Run focused syntax/tests, then `trellis-check` across the platform delivery scope.
 - [x] Run the complete local project gate using only local fake Provider fixtures.
 - [x] Run `trellis-update-spec` and record the reusable retry, stale-label recovery, and all-steps cleanup contract.
+- [x] Treat a retry `401` after the same deletion observed `503` as persisted-cleanup recovery while preserving strict initial-`401` failure, then rerun all gates and production acceptance.
 - [ ] Commit, push a code PR, pass CI, merge, deploy through GitHub Actions, run exact-SHA production acceptance, record evidence, and archive.
 
 ## Focused Validation
