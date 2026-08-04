@@ -15,7 +15,7 @@
   "branch": "codex/production-acceptance-cleanup-recovery",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "9df3a3fc490665a0beda8d10524c210d42e4b326",
   "pr_url": null,
   "subtasks": [],
   "children": [],
