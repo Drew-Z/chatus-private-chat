@@ -3,7 +3,7 @@
   "name": "ci-delivery-hardening",
   "title": "CI 与交付治理强化",
   "description": "为 CI/deploy 增加超时、结构化 workflow 验证、精确 Trellis record 分类和 stale-main 防护。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": "GitHub workflow structure, path classification, job timeouts, exact-main guard, action runtimes, and delivery artifacts",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-02",
-  "completedAt": null,
+  "completedAt": "2026-08-04",
   "branch": "codex/ci-delivery-hardening",
   "base_branch": "main",
   "worktree_path": null,
@@ -113,6 +113,12 @@
         "status": "passed",
         "summary": "PR #45 exact-head run passed changes, quality, Workspace Playwright, and local fake-Provider Agent jobs for head 518644eeef26828aab9b2f847737eed04ec6ac11",
         "at": "2026-08-04T12:51:00.814263+00:00"
+      },
+      {
+        "command": "gh run view 30911068336",
+        "status": "passed",
+        "summary": "Trellis-only evidence commit 8d0d7d38a7a156f1fd0f02afa48881842bd3e437 completed changes and deployment-skipped while the real deploy job was skipped",
+        "at": "2026-08-04T12:53:40.138585+00:00"
       }
     ]
   }

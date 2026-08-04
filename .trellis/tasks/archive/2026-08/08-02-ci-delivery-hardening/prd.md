@@ -37,7 +37,7 @@
 - [x] AC6. 每个治理 artifact 的 exact-SHA 名称、路径、missing-file 策略、`always()` 策略和保留期都有结构化断言；manifest 仍只包含批准的非敏感字段。
 - [x] AC7. 三份 workflow 只使用批准的 Node 24 GitHub action majors，GitHub CI 不再产生本任务针对的 Node 20 action runtime warning。
 - [x] AC8. `npm run check:frontend`、全量 Vitest、typecheck、Wrangler dry-run、Workspace Playwright、fake-Provider Agent Playwright、`git diff --check`、Trellis 全量一致性与 Trellis 单测全部通过。
-- [ ] AC9. PR CI 在 exact head SHA 上按影响路径通过并保留 artifacts；合并后的 exact main SHA 由 GitHub Actions 部署和验证，Trellis/docs-only 记录提交继续明确跳过部署。
+- [x] AC9. PR CI 在 exact head SHA 上按影响路径通过并保留 artifacts；合并后的 exact main SHA 由 GitHub Actions 部署和验证，Trellis/docs-only 记录提交继续明确跳过部署。
 
 ## Out Of Scope
 
