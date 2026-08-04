@@ -1,4 +1,9 @@
 import crypto from "node:crypto";
+import {
+  isProductionAcceptanceLabel,
+  retryTemporaryMemberDeletion,
+  runProductionAcceptanceCleanup,
+} from "./production-acceptance-cleanup.mjs";
 
 const productionUrl = process.env.PRODUCTION_URL?.trim() || process.argv[2] || "";
 const adminToken = process.env.ADMIN_TOKEN?.trim() || "";
@@ -8,6 +13,8 @@ const requestTimeoutMs = 15_000;
 // Keep attempts below the per-source eight-failure throttle while covering that window.
 const loginAttempts = 5;
 const loginRetryDelayMs = 15_000;
+const memberCleanupAttempts = 4;
+const memberCleanupRetryDelayMs = 5_000;
 
 if (!productionUrl) {
   throw new Error("PRODUCTION_URL is required");
@@ -106,6 +113,15 @@ async function putAccessCodes(cookie, accessCodes, expectedRevision) {
   const payload = await json(response, "write access-code configuration");
   assert(typeof payload.revision === "string" && payload.revision, "write access-code configuration: revision missing");
   return payload;
+}
+
+async function deleteAccessCodes(cookie, expectedRevision, operation) {
+  const response = await request("/api/admin/access-codes", {
+    cookie,
+    method: "DELETE",
+    body: { expectedRevision },
+  });
+  await expectStatus(response, 200, operation);
 }
 
 function parseAccessCodes(accessCodes) {
@@ -315,9 +331,25 @@ async function assertDeletedConversation(member) {
   await expectStatus(recreate, 410, "deleted conversation recreate");
 }
 
+async function deleteTemporaryMemberData(member, { allowUnauthorized = false } = {}) {
+  let finalResponse;
+  await retryTemporaryMemberDeletion(
+    async () => {
+      finalResponse = await request("/api/user-data", { cookie: member.cookie, method: "DELETE" });
+      return finalResponse.status;
+    },
+    {
+      allowUnauthorized,
+      wait: sleep,
+      attempts: memberCleanupAttempts,
+      delayMs: memberCleanupRetryDelayMs,
+    },
+  );
+  return finalResponse;
+}
+
 async function purgeMember(member) {
-  const response = await request("/api/user-data", { cookie: member.cookie, method: "DELETE" });
-  await expectStatus(response, 200, "member data deletion");
+  const response = await deleteTemporaryMemberData(member);
   assert((response.headers.get("set-cookie") || "").includes("Max-Age=0"), "member data deletion: session cookie not cleared");
   const oldSession = await request("/api/session", { cookie: member.cookie });
   await expectStatus(oldSession, 401, "revoked member session");
@@ -325,8 +357,36 @@ async function purgeMember(member) {
   await loginMember(member);
   assert((await listConversations(member)).length === 0, "member data deletion: conversations remain");
   assert((await getMemory(member)).memory === "", "member data deletion: memory remains");
-  const secondPurge = await request("/api/user-data", { cookie: member.cookie, method: "DELETE" });
-  await expectStatus(secondPurge, 200, "member data deletion retry");
+  await deleteTemporaryMemberData(member);
+}
+
+async function removeStaleTemporaryAccessEntries(adminCookie) {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const current = await getAccessCodes(adminCookie);
+    const currentEntries = parseAccessCodes(current.accessCodes);
+    const kept = currentEntries.filter((entry) => !isProductionAcceptanceLabel(entry.label));
+    if (kept.length === currentEntries.length) return current;
+
+    try {
+      const cleaned = kept.map((entry) => `${entry.label}:${entry.code}`).join(",");
+      if (cleaned) {
+        await putAccessCodes(adminCookie, cleaned, current.revision);
+      } else {
+        await deleteAccessCodes(adminCookie, current.revision, "remove stale access-code override");
+      }
+      const verified = await getAccessCodes(adminCookie);
+      assert(
+        parseAccessCodes(verified.accessCodes).every((entry) => !isProductionAcceptanceLabel(entry.label)),
+        "remove stale access-code entries: temporary label remains",
+      );
+      return verified;
+    } catch (error) {
+      const conflict = String(error?.message || "").includes("409");
+      if (!conflict || attempt === 4) throw error;
+      await sleep(1_000);
+    }
+  }
+  throw new Error("remove stale access-code entries failed");
 }
 
 async function cleanupTemporaryMembers(adminCookie, original, members, augmentedAccessCodes) {
@@ -346,12 +406,7 @@ async function cleanupTemporaryMembers(adminCookie, original, members, augmented
     const cleaned = kept.map((entry) => `${entry.label}:${entry.code}`).join(",");
     try {
       if (exactTemporaryValue && original.source !== "kv") {
-        const response = await request("/api/admin/access-codes", {
-          cookie: adminCookie,
-          method: "DELETE",
-          body: { expectedRevision: current.revision },
-        });
-        await expectStatus(response, 200, "restore access-code bootstrap source");
+        await deleteAccessCodes(adminCookie, current.revision, "restore access-code bootstrap source");
       } else {
         const restoreValue = exactTemporaryValue ? original.accessCodes.trim() : cleaned;
         assert(restoreValue, "restore access-code configuration: no remaining access code");
@@ -379,7 +434,7 @@ async function cleanupTemporaryMembers(adminCookie, original, members, augmented
 
 await verifyReleaseRevision("pre-acceptance release verification");
 const adminCookie = await adminLogin();
-const originalAccess = await getAccessCodes(adminCookie);
+const originalAccess = await removeStaleTemporaryAccessEntries(adminCookie);
 const members = [makeMember("a"), makeMember("b")];
 const augmentedAccessCodes = buildTemporaryAccessCodes(originalAccess, members);
 let primaryError;
@@ -432,15 +487,19 @@ try {
   primaryError = error;
 } finally {
   try {
-    await Promise.all(members.map(async (member) => {
-      if (!member.cookie) return;
-      const response = await request("/api/user-data", { cookie: member.cookie, method: "DELETE" });
-      if (response.status !== 200 && response.status !== 401) throw new Error(`member cleanup: unexpected HTTP ${response.status}`);
-    }));
-    await cleanupTemporaryMembers(adminCookie, originalAccess, members, augmentedAccessCodes);
-    const logout = await request("/api/admin/logout", { cookie: adminCookie, method: "POST" });
-    await expectStatus(logout, 200, "admin logout");
-    await verifyReleaseRevision("post-cleanup release verification");
+    await runProductionAcceptanceCleanup({
+      members,
+      purgeMember: async (member) => {
+        if (!member.cookie) return;
+        await deleteTemporaryMemberData(member, { allowUnauthorized: true });
+      },
+      restoreAccess: () => cleanupTemporaryMembers(adminCookie, originalAccess, members, augmentedAccessCodes),
+      logoutAdmin: async () => {
+        const logout = await request("/api/admin/logout", { cookie: adminCookie, method: "POST" });
+        await expectStatus(logout, 200, "admin logout");
+      },
+      verifyRelease: () => verifyReleaseRevision("post-cleanup release verification"),
+    });
     console.log("Temporary members and access-code configuration restored");
   } catch (cleanupError) {
     const message = cleanupError instanceof Error ? cleanupError.message : "unknown cleanup error";

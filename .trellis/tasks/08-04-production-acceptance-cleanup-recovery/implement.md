@@ -2,15 +2,15 @@
 
 ## Ordered Checklist
 
-- [ ] Run `trellis-before-dev`; load platform production-acceptance, deployment, delivery-governance, and frontend quality contracts.
-- [ ] Add pure cleanup helpers for strict acceptance-label recognition, bounded `503` deletion retries, and all-steps cleanup orchestration.
-- [ ] Add deterministic unit tests for retry classes, cleanup ordering/continuation, bounded errors, and strict stale-label matching.
-- [ ] Add revision-checked stale access-entry cleanup before the production acceptance baseline snapshot.
-- [ ] Replace the `Promise.all` cleanup boundary with the shared sequential all-steps orchestrator while preserving current-run exact restoration and conflict behavior.
-- [ ] Extend workflow/source structural tests for stale-cleanup ordering, sequential cleanup, main-only exact-SHA checks, and retained manifest behavior.
-- [ ] Run focused syntax/tests, then `trellis-check` across the platform delivery scope.
-- [ ] Run the complete local project gate using only local fake Provider fixtures.
-- [ ] Run `trellis-update-spec` and record the reusable retry, stale-label recovery, and all-steps cleanup contract.
+- [x] Run `trellis-before-dev`; load platform production-acceptance, deployment, delivery-governance, and frontend quality contracts.
+- [x] Add pure cleanup helpers for strict acceptance-label recognition, bounded `503` deletion retries, and all-steps cleanup orchestration.
+- [x] Add deterministic unit tests for retry classes, cleanup ordering/continuation, bounded errors, and strict stale-label matching.
+- [x] Add revision-checked stale access-entry cleanup before the production acceptance baseline snapshot.
+- [x] Replace the `Promise.all` cleanup boundary with the shared sequential all-steps orchestrator while preserving current-run exact restoration and conflict behavior.
+- [x] Extend workflow/source structural tests for stale-cleanup ordering, sequential cleanup, main-only exact-SHA checks, and retained manifest behavior.
+- [x] Run focused syntax/tests, then `trellis-check` across the platform delivery scope.
+- [x] Run the complete local project gate using only local fake Provider fixtures.
+- [x] Run `trellis-update-spec` and record the reusable retry, stale-label recovery, and all-steps cleanup contract.
 - [ ] Commit, push a code PR, pass CI, merge, deploy through GitHub Actions, run exact-SHA production acceptance, record evidence, and archive.
 
 ## Focused Validation

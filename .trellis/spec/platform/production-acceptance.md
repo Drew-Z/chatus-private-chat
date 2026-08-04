@@ -11,6 +11,7 @@ Use this contract when authentication, session projection, Agent identity, conve
 - Manual GitHub workflow: `.github/workflows/production-acceptance.yml`
 - Production workflow ref: `refs/heads/main` only
 - Production concurrency group: `chatus-production-mutation` with `cancel-in-progress: false`, shared with deployment
+- Cleanup helpers: `isProductionAcceptanceLabel(label)`, `retryTemporaryMemberDeletion(run, options)`, and `runProductionAcceptanceCleanup(operations)` in `scripts/production-acceptance-cleanup.mjs`
 
 The script may use `http://localhost` or `http://127.0.0.1` for local verification. Every non-local target must use HTTPS.
 
@@ -24,6 +25,9 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Verify member login, `/api/session`, opaque per-member Agent identities, conversation and memory isolation, `409` stale writes, cookie-authenticated `/agent` WebSockets, tombstones, and `DELETE /api/user-data`.
 - Do not send a chat turn, completion request, route probe, or any other model request.
 - Always purge temporary member data and remove both access-code entries in `finally`.
+- Every acceptance `DELETE /api/user-data` uses four attempts with a five-second delay between HTTP `503` responses. HTTP `200` succeeds; cleanup-only deletion also accepts `401` when the session was already revoked. Other statuses fail immediately.
+- Before recording the original access configuration, revision-safely remove only labels matching `^codex-accept-[0-9a-f]{24}-(a|b)$`. Preserve all other entries, delete the override instead of writing an empty list, retry `409` conflicts at most four times, then reload and prove no exact temporary label remains.
+- Final cleanup attempts each member purge sequentially, access restoration, administrator logout, and post-cleanup release verification even when any earlier operation fails. Aggregate failures only as fixed operation names after every step runs; never include callback errors, member labels, credentials, or response bodies.
 - When `GITHUB_SHA` or `EXPECTED_RELEASE_SHA` is present, verify `/release.json` before mutating temporary members and again after cleanup. A mismatch fails the run instead of reporting acceptance for a different deployed revision.
 - When no concurrent edit occurred, restore the exact original access-code text and its `kv`, `secret`, or `managed` source. If a concurrent edit occurred, remove only the temporary labels, preserve other entries, and fail the run for operator review.
 - Logs may contain milestone names and HTTP status codes only. Never print tokens, access codes, cookies, raw access-code payloads, memory, or conversation content.
@@ -42,15 +46,21 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 | Stale conversation or memory write does not return `409` | Fail and enter cleanup |
 | WebSocket does not emit `cf_agent_identity` | Fail on timeout and enter cleanup |
 | Access codes change concurrently during cleanup | Remove temporary labels, preserve remaining entries, then fail for review |
+| Member deletion returns `503` and later `200` | Wait five seconds between attempts and continue after the successful bounded retry |
+| Cleanup-only member deletion returns `401` | Treat the already-revoked session as clean and continue remaining cleanup steps |
+| Member deletion exhausts `503` retries or returns another status | Record the fixed `member purge` failure and still attempt all remaining cleanup operations |
+| Historical exact acceptance labels exist before the run | Remove them revision-safely before the baseline snapshot and prove them absent after mutation |
+| Stale-label cleanup leaves no non-temporary entries | Delete the access-code override with `expectedRevision`; do not write an empty list |
 | Cleanup cannot prove temporary labels are gone | Fail the workflow; do not report acceptance success |
 | Release SHA changes before or after acceptance cleanup | Fail the workflow; do not report acceptance success for the original SHA |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: the exact deployed `main` SHA passes anonymous smoke, two temporary members pass every authenticated check, data is purged, the original access-code value/source is restored, admin logout succeeds, and the release SHA still matches after cleanup.
+- Good recovery: a member purge returns `503`, succeeds on a bounded retry, and the runner still restores access, logs out the administrator, verifies the release SHA, and reports no stale temporary labels.
 - Good: public access is enabled only after a manual guest check proves a constrained anonymous session and disabled again to prove rollback of the guest entry.
 - Base: local Wrangler verification passes with dummy credentials and a local KV/DO state before the workflow is shipped.
-- Bad: a shell script writes random access codes directly to KV, loses the original source, logs generated credentials, or exits on the first assertion without a cleanup path.
+- Bad: a shell script writes random access codes directly to KV, loses the original source, logs generated credentials, runs member purges concurrently, or lets one cleanup exception skip later restoration/logout/release checks.
 - Bad: treating the member acceptance workflow as public-guest acceptance, or using a hidden completion prompt to prove guest availability.
 
 ## 6. Tests Required
@@ -58,6 +68,8 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Run the acceptance script against local Wrangler with dummy `ADMIN_TOKEN`, both a legacy access-code fixture and an empty managed bootstrap fixture; assert every milestone completes and the original source is restored afterward.
 - Parse the workflow YAML and assert the job is restricted to `refs/heads/main`, shares the production mutation concurrency group with deployment, and does not cancel in-progress cleanup.
 - Statically assert the acceptance script checks release SHA before mutation and after cleanup, checks admin logout status, uses a 60-second-class propagation window with fewer than eight attempts, and runs temporary-member login/purge sequentially.
+- Unit-test `503 -> wait -> 200`, cleanup-only `401`, immediate non-`503` failure, exhausted retries, and a failed member purge that cannot skip later purge/restoration/logout/release operations. Assert the aggregate error contains fixed operation names only.
+- Unit-test the exact lowercase 24-hex `a|b` label pattern and similarly prefixed legitimate labels. Statically assert stale cleanup precedes the baseline snapshot, both PUT and DELETE mutations carry the current revision, empty cleanup deletes the override, and the workflow retains its main-only exact-SHA artifact.
 - Run `node --check scripts/acceptance-production.mjs`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 - After deployment through GitHub Actions, manually run `Production member acceptance` and retain only the run URL/result, never generated credentials or response bodies.
@@ -70,10 +82,11 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 ```js
 await putTemporaryCodes();
 await runChecks();
+await Promise.all(members.map(purgeMember));
 await restoreCodes();
 ```
 
-An assertion or network failure skips restoration, and labels generated inside `putTemporaryCodes` may be unavailable if the write commits but its response is lost.
+An assertion or network failure skips restoration, and one rejected member purge prevents access restoration, administrator logout, and release verification.
 
 ### Correct
 
@@ -83,9 +96,14 @@ try {
   await putTemporaryCodes(members, expectedRevision);
   await runChecks(members);
 } finally {
-  await purgeMemberData(members);
-  await removeTemporaryCodes(members);
+  await runProductionAcceptanceCleanup({
+    members,
+    purgeMember,
+    restoreAccess: removeTemporaryCodes,
+    logoutAdmin,
+    verifyRelease,
+  });
 }
 ```
 
-Generate cleanup identifiers before mutation, guard configuration writes with revisions, and make cleanup part of the success condition.
+Generate cleanup identifiers before mutation, guard configuration writes with revisions, and use a sequential all-steps cleanup boundary whose final error is limited to fixed operation names.
