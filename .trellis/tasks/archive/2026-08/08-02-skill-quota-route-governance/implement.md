@@ -16,7 +16,7 @@
 - [x] Run focused Vitest suites until green, then load and execute `trellis-check` for the full affected frontend/platform scope.
 - [x] Run the full project gate and both browser suites using only local fake Provider fixtures.
 - [x] Run `trellis-update-spec`; update Automatic Skill quota ownership, full BYOK isolation, atomic aggregate authority, first-visible deadline, and explicit member concurrency decision.
-- [ ] Prepare task-scoped work/spec commits, PR, CI, merge, GitHub Actions deployment and exact-SHA production acceptance; record artifacts before archive.
+- [x] Prepare task-scoped work/spec commits, PR, CI, merge, GitHub Actions deployment and exact-SHA production acceptance; record artifacts before archive.
 
 ## Focused Validation
 

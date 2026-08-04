@@ -3,7 +3,7 @@
   "name": "skill-quota-route-governance",
   "title": "Automatic Skill 配额与 Provider 路由治理",
   "description": "修复 automatic Skill 在配额前调用、BYOK 质量污染、聚合写入竞态，并补充并发和超时策略。",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": "frontend/platform",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-02",
-  "completedAt": null,
+  "completedAt": "2026-08-04",
   "branch": "codex/skill-quota-route-governance",
   "base_branch": "main",
   "worktree_path": null,
@@ -71,6 +71,30 @@
         "status": "passed",
         "summary": "Final validation passed; repository task graph and workspace consistency OK",
         "at": "2026-08-04T04:15:30.562260+00:00"
+      },
+      {
+        "command": "Pull request quality run 30877329475",
+        "status": "passed",
+        "summary": "PR 38 quality and fake Provider Agent browser checks passed",
+        "at": "2026-08-04T08:15:16.212730+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 30877510037",
+        "status": "passed",
+        "summary": "success at merged SHA 1c1ae0b69a4e7e1f03a42f4e3319a02753e79a35",
+        "at": "2026-08-04T08:15:16.794229+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 30889888446",
+        "status": "passed",
+        "summary": "success at main SHA c284894315f5cebb606e553304429097dfd06ca7 containing PR 38",
+        "at": "2026-08-04T08:15:17.420318+00:00"
+      },
+      {
+        "command": "Production member acceptance run 30890452505",
+        "status": "passed",
+        "summary": "success at main SHA c284894315f5cebb606e553304429097dfd06ca7 containing PR 38",
+        "at": "2026-08-04T08:15:18.036142+00:00"
       }
     ]
   }
