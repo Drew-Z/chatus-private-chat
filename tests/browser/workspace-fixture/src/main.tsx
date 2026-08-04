@@ -6,6 +6,7 @@ import { MessageComposer } from "../../../../client/src/components/MessageCompos
 import { MessageView, type MessageAction } from "../../../../client/src/components/MessageView";
 import { AdminOperationsContent, AdminOperationsPanel } from "../../../../client/src/components/AdminOperationsPanel";
 import { AdminWorkspace } from "../../../../client/src/components/AdminWorkspace";
+import { AgentErrorBanner } from "../../../../client/src/components/AgentErrorBanner";
 import { ConfirmDialog } from "../../../../client/src/components/ConfirmDialog";
 import { McpConnectionsDialog, type McpConnectionNotice } from "../../../../client/src/components/McpConnectionsDialog";
 import { MemberLogoutNotice } from "../../../../client/src/components/MemberLogoutNotice";
@@ -18,6 +19,7 @@ import {
   type TurnPhase,
 } from "../../../../client/src/lib/state";
 import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
+import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
 import {
   addDraftAttachmentFiles,
   readDraftAttachment,
@@ -234,6 +236,7 @@ const reliabilityProviders: AdminReliabilityProvider[] = [{
     averageLatencyMs: 820,
     lastOutcome: "success",
     observedAt: new Date(now).toISOString(),
+    requestId: "turn_reliability-123",
     lastFallback: false,
     fallbackCount: 1,
     streamSamples: 5,
@@ -454,6 +457,28 @@ function WorkspaceFixture() {
     return (
       <main data-visual-fixture="true" style={{ minHeight: "100dvh", overflow: "hidden", background: "var(--surface)" }}>
         <ReliabilityTable providers={reliabilityProviders} />
+      </main>
+    );
+  }
+
+  if (params.get("view") === "agent-error") {
+    const requestId = params.get("request") === "0" ? undefined : "turn_request-123";
+    const presentation = resolveAgentError(JSON.stringify({
+      error: "provider_busy",
+      message: "当前模型的可用线路都在忙，请稍后重试或切换模型。",
+      ...(requestId ? { requestId } : {}),
+    }), online);
+    return (
+      <main data-visual-fixture="true" style={{ minHeight: "100dvh", display: "flex", alignItems: "flex-end", background: "var(--surface)" }}>
+        <section className="conversation-chat" aria-label="合成失败状态">
+          <AgentErrorBanner
+            presentation={presentation}
+            retryAvailability={online ? "enabled" : "disabled"}
+            retryBusy={false}
+            onRetry={() => undefined}
+            onReconnect={() => undefined}
+          />
+        </section>
       </main>
     );
   }

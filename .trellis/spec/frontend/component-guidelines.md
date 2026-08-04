@@ -475,6 +475,9 @@ type LegacyRouteMigrationResponse = {
 - The edit form is an accessible native form with an auto-focused textarea, Cancel, and branch-and-send submit. Its async result belongs to the source message and the workspace owns the actionable error banner.
 - Edit Cancel and successful edit completion restore focus to the originating edit action. Failed turns expose a focused retry action that creates a resend branch from the latest user message; a full reload remains a separate reconnect fallback.
 - Keep action busy state local to the owning message so two message rows cannot block or mutate one another. Disable the row while its branch request is in flight, then activate the server-returned conversation.
+- Resolve Agent failures through the strict shared envelope parser and local canonical message registry. The failed-turn banner may show the normalized request reference and copy its full value, but it must never render serialized `message`, raw SDK errors, Provider/MCP text, or private diagnostics. Offline state keeps its local draft-recovery message while retaining a valid request reference for support correlation.
+- Request-reference copy failure leaves the primary error visible. The copy control uses a Lucide icon with `title` and `aria-label`, provides bounded success feedback, and the banner wraps its summary/actions without horizontal overflow at 390px.
+- The administrator reliability table displays a compact request reference from the latest passive real-task record and copies the exact full value. Missing or invalid references render as unavailable; the browser decoder rejects them rather than coercing arbitrary text.
 - Unit-test every phase plus representative role/route/offline/account-lock/approval combinations. Browser fixtures at desktop and 390px must prove visible controls stay discoverable, transiently unavailable controls are disabled rather than removed, approval follows connectivity, and the page does not overflow.
 - Streaming transcript scroll follows new output only while the reader is near the bottom; manual upward scrolling is preserved.
 - The internal long-term-memory tool is rendered as a named memory update rather than an opaque provider tool. Before approval, show the complete proposed replacement in a bounded, wrapping, scrollable region beside explicit Approve and Reject controls. Do not expose the revision token as user-facing content, and do not imply that the memory changed until tool execution completes.
@@ -483,6 +486,7 @@ type LegacyRouteMigrationResponse = {
 
 - Assert the role/state matrix for copy, edit, resend, regenerate, feedback, branch, and conditional Continue, including no-route, offline, active-run, and failed-turn states.
 - Assert desktop and 390px action bars are visible, keyboard focusable, and free of horizontal overflow; assert the edit form restores focus to its originating control after cancel or completion.
+- Assert Agent error banners render only canonical local text, copy a valid full request reference, preserve retry/reconnect behavior, and remain contained at desktop and touch widths. Assert the reliability table applies the same exact decoder and copy behavior.
 - Assert memory proposals always request approval, stale revisions cannot write, guests do not receive the proposal tool, and the exact proposed memory remains readable without overflow at desktop and 390px widths.
 
 ## React Workspace Shell

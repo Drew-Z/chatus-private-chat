@@ -164,21 +164,27 @@ This contract applies to expected `TeamAgent.onChatMessage()` preflight failures
 
 ```typescript
 type AgentErrorEnvelope = {
-  error: string;
-  message: string;
+  error: AgentErrorCode;
+  message: string;       // exact canonical message for error
+  requestId?: string;    // normalized AIChat turn reference
 };
 
-serializeAgentErrorEnvelope(error: string): string
+normalizeAgentRequestId(value: unknown): string | undefined
+serializeAgentErrorEnvelope(error: string, requestId?: string): string
 parseAgentErrorEnvelope(value: string): AgentErrorEnvelope | undefined
-projectAgentStreamError(error: unknown): string
+projectAgentStreamError(error: unknown): AgentErrorCode
 ```
 
 ### 3. Contracts
 
 - `src/contracts/agent-error.ts` is the single owner of the SSE error envelope, canonical member-facing messages, parser, and provider-error projection used by the Worker and typed client.
-- The serialized envelope contains exactly `error` and canonical `message`. It never includes a logical route/provider ID, credential reference, upstream response body, request body, raw exception message, or arbitrary extra field.
+- The serialized envelope contains exactly `error`, canonical `message`, and optional `requestId`. It never includes a logical route/provider ID, credential reference, upstream response body, request body, raw exception message, or arbitrary extra field.
+- The known-code registry is authoritative. Unknown or syntactically valid but unregistered codes normalize to `agent_error`; `conversation_not_found`, `workspace_context_unavailable`, and `agent_runtime_error` are registered actionable codes.
+- `TeamAgent.onChatMessage()` normalizes `OnChatMessageOptions.requestId` as an 8-128 character URL-safe turn reference and falls back to a server UUID. It reuses that value in the SSE envelope, response header, structured failure log, and passive Provider reliability for that turn. It never substitutes the WebSocket handshake ID or persists the turn reference in messages, Agent state, prompts, or tool input.
+- Workspace loading, turn preparation rejection/throw, continuation conversion, synchronous stream construction, asynchronous streaming, and root-index persistence failures use one phase-tagged failure boundary. Tool/capacity cleanup and stream-failure accounting remain idempotent.
 - The server classifies internal exceptions by bounded structural evidence such as `name`, `code`, `statusCode`/`status`, and a bounded `cause` chain. Raw upstream text may help select a class but is never serialized.
 - The client maps the machine-readable `error` code back through the canonical dictionary. It does not render the envelope `message` or a raw non-envelope SDK error directly; unknown or expanded payloads become the generic safe failure message.
+- The parser rejects unknown fields, unknown codes, invalid request IDs, and non-canonical messages. For compatibility it may restore an omitted canonical `message`; every server serializer still emits the message.
 - `user_api_key_required` must tell the current member to switch models or contact the administrator until a member BYOK editor exists. It must not direct the member to a settings control that is not implemented.
 - Offline state remains authoritative over transport detail: a failure observed while `navigator.onLine` is false reports the preserved local draft and waits for network recovery.
 
@@ -191,7 +197,7 @@ projectAgentStreamError(error: unknown): string
 - HTTP `401`/`403` -> `upstream_authentication_failed`; HTTP `429` -> `upstream_rate_limited`.
 - HTTP `400`/`404`/`409`/`422` -> `upstream_request_rejected`; HTTP `5xx` -> `upstream_unavailable`.
 - Unknown provider failure -> `upstream_error`; invalid machine code -> `agent_error`.
-- Missing canonical `message` -> parser restores it from the code; unknown fields, malformed JSON, or invalid codes -> reject the envelope and show the generic safe message.
+- Missing canonical `message` -> parser restores it from the code; unknown fields, malformed JSON, invalid request ID, non-canonical message, or invalid code -> reject the envelope and show the generic safe message.
 
 ### 5. Good / Base / Bad Cases
 
@@ -201,9 +207,10 @@ projectAgentStreamError(error: unknown): string
 
 ### 6. Tests Required
 
-- Unit-test every provider class above, nested causes, invalid codes, message-less envelopes, expanded envelopes, and generic fallback behavior.
+- Unit-test every provider class above, nested causes, invalid codes, valid/invalid request IDs, non-canonical messages, message-less envelopes, expanded envelopes, and generic fallback behavior.
 - Assert structured client mappings for identity, unavailable routes, BYOK requirement, quota/concurrency, busy, timeout, rate-limit, authentication, protocol, and unavailable failures.
 - Assert secret-like provider text and extra `providerId` fields never appear in the rendered fallback message.
+- Assert one turn uses the same normalized request reference in SSE, `X-Request-ID`, structured logs, and passive route reliability, and that synchronous failure emits one phase-specific log entry.
 - Keep the failed-turn retry branch and offline-first draft recovery behavior covered independently from error wording.
 
 ### 7. Wrong vs Correct

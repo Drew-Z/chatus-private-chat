@@ -48,8 +48,11 @@ import {
   type TeamAgentState,
 } from "../contracts/agent";
 import {
+  createAgentErrorEnvelope,
+  normalizeAgentRequestId,
   projectAgentStreamError,
   serializeAgentErrorEnvelope,
+  type AgentErrorCode,
 } from "../contracts/agent-error";
 import type { ChatMessage } from "../contracts/chat";
 import {
@@ -166,7 +169,18 @@ type ConversationRow = {
 
 type PendingConversationActivity = {
   routeId?: string;
+  requestId: string;
 };
+
+type AgentFailurePhase =
+  | "identity"
+  | "attachments"
+  | "workspace_context"
+  | "prepare"
+  | "continuation"
+  | "stream_create"
+  | "provider_stream"
+  | "persistence";
 
 type ConversationCleanupRow = {
   chat_id: string;
@@ -300,7 +314,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private accessKind: Session["kind"] = "member";
   private sessionExpiresAt = Number.MAX_SAFE_INTEGER;
   private sourceKey = "";
-  private pendingActivity?: PendingConversationActivity;
+  private pendingActivities = new Map<string, PendingConversationActivity>();
   private pendingAttachmentValidationErrors = new Map<string, AttachmentValidationErrorCode>();
 
   async onStart(props?: TeamAgentProps): Promise<void> {
@@ -2359,8 +2373,16 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     onFinish: StreamTextOnFinishCallback<ToolSet>,
     options?: OnChatMessageOptions,
   ): Promise<Response> {
+    const sdkRequestId = normalizeAgentRequestId(options?.requestId);
+    const requestId = sdkRequestId || crypto.randomUUID();
+    const fail = (
+      error: string,
+      status: number,
+      phase: AgentFailurePhase,
+      routeId?: string,
+    ) => agentFailureResponse(error, status, requestId, phase, routeId);
     if (!this.userLabel || this.scope !== "conversation" || !this.chatId || !this.rootInstance) {
-      return chatErrorResponse("agent_identity_unavailable", 401);
+      return fail("agent_identity_unavailable", 401, "identity");
     }
 
     const attachmentRejection = this.takePendingAttachmentValidationError();
@@ -2371,9 +2393,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         [],
         { _deleteStaleRows: true },
       );
-      return chatErrorResponse(
+      return fail(
         attachmentRejection.error,
         attachmentValidationStatus(attachmentRejection.error),
+        "attachments",
       );
     }
 
@@ -2407,7 +2430,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       root = await this.getRootAgent();
       const conversations = await root.listConversations();
       const storedConversation = conversations.find((conversation) => conversation.id === this.chatId);
-      if (!storedConversation) return chatErrorResponse("conversation_not_found", 404);
+      if (!storedConversation) return fail("conversation_not_found", 404, "workspace_context");
       conversationSettings = storedConversation;
       if (this.accessKind === "member") {
         const [loadedMemory, workspaceFiles] = await Promise.all([
@@ -2419,26 +2442,34 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         workspaceContext = await this.loadWorkspaceContext(workspaceFiles);
       }
     } catch {
-      return chatErrorResponse("workspace_context_unavailable", 503);
+      return fail("workspace_context_unavailable", 503, "workspace_context");
     }
-    const prepared = await prepareTeamAgentTurn(this.env, session, {
-      messages: toLegacyMessages(this.messages),
-      continuation: options?.continuation === true,
-      routeId: conversationSettings.routeId || boundedString(body.routeId, 80),
-      skillMode: conversationSettings.skillMode,
-      skillIds: conversationSettings.skillIds,
-      userApiKey: boundedString(body.userApiKey, 8_192),
-      sessionSummary: boundedString(body.sessionSummary, 1_200),
-      temperature: finiteNumber(body.temperature),
-      longTermMemory,
-      workspaceContext,
-      abortSignal: options?.abortSignal,
-    });
+    let prepared: Awaited<ReturnType<typeof prepareTeamAgentTurn>>;
+    try {
+      prepared = await prepareTeamAgentTurn(this.env, session, {
+        messages: toLegacyMessages(this.messages),
+        continuation: options?.continuation === true,
+        routeId: conversationSettings.routeId || boundedString(body.routeId, 80),
+        skillMode: conversationSettings.skillMode,
+        skillIds: conversationSettings.skillIds,
+        userApiKey: boundedString(body.userApiKey, 8_192),
+        sessionSummary: boundedString(body.sessionSummary, 1_200),
+        temperature: finiteNumber(body.temperature),
+        longTermMemory,
+        workspaceContext,
+        requestId,
+        abortSignal: options?.abortSignal,
+      });
+    } catch {
+      return fail("agent_runtime_error", 503, "prepare");
+    }
 
     if (!prepared.ok) {
-      return chatErrorResponse(prepared.error, prepared.status);
+      return fail(prepared.error, prepared.status, "prepare", prepared.routeId);
     }
-    this.pendingActivity = { routeId: prepared.routeId };
+    if (sdkRequestId) {
+      this.pendingActivities.set(sdkRequestId, { routeId: prepared.routeId, requestId });
+    }
     if (prepared.skillSnapshotIds) {
       await root.recordAutomaticSkillSelection(this.chatId, prepared.skillSnapshotIds).catch(() => false);
     }
@@ -2477,7 +2508,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         ];
       } catch {
         await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
-        return chatErrorResponse("agent_context_invalid", 409);
+        return fail("agent_context_invalid", 409, "continuation", prepared.routeId);
       }
     }
 
@@ -2486,6 +2517,15 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       if (finalized) return;
       finalized = true;
       await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
+    };
+    let streamFailureLogged = false;
+    const projectStreamFailure = (error: unknown): AgentErrorCode => {
+      const code = projectAgentStreamError(error);
+      if (!streamFailureLogged) {
+        streamFailureLogged = true;
+        logAgentTurnFailure({ requestId, phase: "provider_stream", error: code, routeId: prepared.routeId });
+      }
+      return code;
     };
 
     try {
@@ -2502,9 +2542,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           await onFinish(event);
         },
         onAbort: finalize,
-        onError: async () => {
+        onError: async ({ error }) => {
           await finalize();
           await prepared.recordStreamFailure();
+          projectStreamFailure(error);
         },
       });
 
@@ -2519,19 +2560,24 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         headers: {
           "Cache-Control": "no-store",
           "X-RateLimit-Remaining": String(prepared.remaining),
+          "X-Request-ID": requestId,
         },
-        onError: (error) => serializeAgentErrorEnvelope(projectAgentStreamError(error)),
+        onError: (error) => serializeAgentErrorEnvelope(projectStreamFailure(error), requestId),
       });
     } catch (error) {
       await finalize();
-      throw error;
+      await prepared.recordStreamFailure();
+      const projected = projectAgentStreamError(error);
+      const code = projected === "upstream_error" ? "agent_runtime_error" : projected;
+      return fail(code, 503, "stream_create", prepared.routeId);
     }
   }
 
-  protected async onChatResponse(_result: ChatResponseResult): Promise<void> {
+  protected async onChatResponse(result: ChatResponseResult): Promise<void> {
     if (this.scope !== "conversation" || !this.chatId || !this.rootInstance) return;
-    const activity = this.pendingActivity;
-    this.pendingActivity = undefined;
+    const sdkRequestId = normalizeAgentRequestId(result.requestId);
+    const activity = sdkRequestId ? this.pendingActivities.get(sdkRequestId) : undefined;
+    if (sdkRequestId) this.pendingActivities.delete(sdkRequestId);
     try {
       const root = await this.getRootAgent();
       await root.recordConversationActivity({
@@ -2541,6 +2587,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         routeId: activity?.routeId,
       });
     } catch {
+      if (activity) {
+        logAgentTurnFailure({
+          requestId: activity.requestId,
+          phase: "persistence",
+          error: "agent_runtime_error",
+          routeId: activity.routeId,
+        });
+      }
       // The transcript is authoritative; the root index can be repaired on the next request.
     }
   }
@@ -2961,7 +3015,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.sql`DELETE FROM capability_tool_trust`;
     this.sql`DELETE FROM chatus_conversation_branch_launches`;
     this.messages = [];
-    this.pendingActivity = undefined;
+    this.pendingActivities.clear();
   }
 
   private requireRootScope(): void {
@@ -3771,14 +3825,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function chatErrorResponse(error: string, status: number): Response {
-  const errorText = serializeAgentErrorEnvelope(error);
+function agentFailureResponse(
+  error: string,
+  status: number,
+  requestId: string,
+  phase: AgentFailurePhase,
+  routeId?: string,
+): Response {
+  const envelope = createAgentErrorEnvelope(error, requestId);
+  logAgentTurnFailure({ requestId, phase, error: envelope.error, routeId });
+  return chatErrorResponse(envelope.error, status, requestId);
+}
+
+function chatErrorResponse(error: string, status: number, requestId?: string): Response {
+  const errorText = serializeAgentErrorEnvelope(error, requestId);
   const body = `data: ${JSON.stringify({ type: "error", errorText })}\n\ndata: [DONE]\n\n`;
   return new Response(body, {
     status,
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store",
+      ...(requestId ? { "X-Request-ID": requestId } : {}),
     },
   });
+}
+
+function logAgentTurnFailure(input: {
+  requestId: string;
+  phase: AgentFailurePhase;
+  error: AgentErrorCode;
+  routeId?: string;
+}): void {
+  console.error(JSON.stringify({
+    level: "error",
+    event: "agent_turn_failed",
+    requestId: input.requestId,
+    phase: input.phase,
+    error: input.error,
+    ...(input.routeId ? { routeId: input.routeId } : {}),
+  }));
 }

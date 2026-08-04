@@ -945,20 +945,39 @@ describe("workspace file API and R2 recovery", () => {
     const replacement = "x".repeat(resolved!.extractedBytes);
     await env.WORKSPACE_FILES.put(resolved!.extractedObjectKey, replacement, { sha256: await sha256(replacement) });
     const providerFetch = vi.spyOn(globalThis, "fetch");
+    const failureLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const agent = await getConversationAgent(member.label, conversation.id);
     await agent.importLegacyMessages([{
       id: "workspace-tampered-artifact-message",
       role: "user",
       parts: [{ type: "text", text: "Use the selected file." }],
     }]);
+    const requestId = "turn_workspace-123";
     const result = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, {});
-      return { status: response.status, body: await response.text() };
+      const response = await instance.onChatMessage(async () => undefined, { requestId });
+      return {
+        status: response.status,
+        requestId: response.headers.get("X-Request-ID"),
+        body: await response.text(),
+      };
     });
     expect(result.status).toBe(503);
+    expect(result.requestId).toBe(requestId);
     expect(result.body).toContain("workspace_context_unavailable");
+    expect(result.body).toContain(requestId);
     expect(result.body).not.toContain(resolved!.objectKey);
     expect(result.body).not.toContain(resolved!.extractedObjectKey);
+    const log = failureLog.mock.calls
+      .map(([value]) => typeof value === "string" ? JSON.parse(value) as Record<string, unknown> : null)
+      .find((value) => value?.event === "agent_turn_failed");
+    expect(log).toMatchObject({
+      event: "agent_turn_failed",
+      requestId,
+      phase: "workspace_context",
+      error: "workspace_context_unavailable",
+    });
+    expect(JSON.stringify(log)).not.toContain(resolved!.objectKey);
+    expect(JSON.stringify(log)).not.toContain(resolved!.extractedObjectKey);
     expect(providerFetch).not.toHaveBeenCalled();
   });
 
