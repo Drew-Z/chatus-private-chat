@@ -1219,3 +1219,36 @@ Implemented Root TeamAgent autonomous cleanup alarms, additive retry/backoff/ter
 ### Next Steps
 
 - None - task complete
+
+
+## Session 31: Production session revocation verification
+
+**Date**: 2026-08-04
+**Task**: Production session revocation verification
+**Branch**: `main`
+
+### Summary
+
+Shipped bounded old-session revocation verification, passed local and PR gates, deployed exact main SHA through GitHub Actions, and passed production member acceptance.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c284894` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
