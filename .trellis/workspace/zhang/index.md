@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 32
+- **Total Sessions**: 33
 - **Last Active**: 2026-08-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1288 | Active |
+| `journal-1.md` | ~1323 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 33 | 2026-08-04 | Public error redaction delivery and acceptance | `31028f36aa14ad159c2680fd695ed45810f2684d`, `b37e4574162496e60a4e2a2d2332b1fdb34d2acf`, `3182829eb7547aed9d1a33588fe41a2d56314c96` | `main` |
 | 32 | 2026-08-04 | Automatic Skill governance production evidence | 1c1ae0, `c284894` | `main` |
 | 31 | 2026-08-04 | Production session revocation verification | `c284894` | `main` |
 | 30 | 2026-08-03 | Background cleanup reliability delivery | `48996aa`, `ddf16d1`, `385494d`, `5ebb164` | `main` |

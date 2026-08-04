@@ -1286,3 +1286,38 @@ Recorded PR, deployment, and exact-SHA production acceptance evidence for Automa
 ### Next Steps
 
 - None - task complete
+
+
+## Session 33: Public error redaction delivery and acceptance
+
+**Date**: 2026-08-04
+**Task**: Public error redaction delivery and acceptance
+**Branch**: `main`
+
+### Summary
+
+Merged PR 33, verified exact-SHA GitHub Actions CI and Cloudflare deployment artifacts, recorded authenticated user acceptance, and archived the completed public error redaction task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `31028f36aa14ad159c2680fd695ed45810f2684d` | (see git log) |
+| `b37e4574162496e60a4e2a2d2332b1fdb34d2acf` | (see git log) |
+| `3182829eb7547aed9d1a33588fe41a2d56314c96` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
