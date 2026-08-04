@@ -3,6 +3,7 @@ import {
   isProductionAcceptanceLabel,
   retryTemporaryMemberDeletion,
   runProductionAcceptanceCleanup,
+  waitForTemporaryMemberSessionRevocation,
 } from "../scripts/production-acceptance-cleanup.mjs";
 
 describe("production acceptance member cleanup", () => {
@@ -63,6 +64,56 @@ describe("production acceptance member cleanup", () => {
     );
     expect(unavailable).toHaveBeenCalledTimes(8);
     expect(wait).toHaveBeenCalledTimes(7);
+  });
+});
+
+describe("production acceptance session revocation", () => {
+  it("retries deletion while a recently-created session is still visible", async () => {
+    const statuses = [200, 401];
+    const checkStatus = vi.fn(async () => statuses.shift() ?? 500);
+    const retryDeletion = vi.fn(async () => undefined);
+    const wait = vi.fn(async () => undefined);
+
+    await expect(waitForTemporaryMemberSessionRevocation(checkStatus, {
+      retryDeletion,
+      wait,
+    })).resolves.toBeUndefined();
+    expect(checkStatus).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledWith(15_000);
+    expect(retryDeletion).toHaveBeenCalledOnce();
+  });
+
+  it("accepts an already-revoked session without another deletion", async () => {
+    const retryDeletion = vi.fn(async () => undefined);
+
+    await expect(waitForTemporaryMemberSessionRevocation(async () => 401, {
+      retryDeletion,
+    })).resolves.toBeUndefined();
+    expect(retryDeletion).not.toHaveBeenCalled();
+  });
+
+  it("fails on unexpected status, exhausted visibility, or deletion retry failure", async () => {
+    const wait = vi.fn(async () => undefined);
+
+    await expect(waitForTemporaryMemberSessionRevocation(async () => 503, {
+      retryDeletion: async () => undefined,
+      wait,
+    })).rejects.toThrow("temporary member session revocation failed: HTTP 503");
+
+    const stillVisible = vi.fn(async () => 200);
+    const retryDeletion = vi.fn(async () => undefined);
+    await expect(waitForTemporaryMemberSessionRevocation(stillVisible, {
+      retryDeletion,
+      wait,
+      attempts: 3,
+    })).rejects.toThrow("temporary member session revocation failed: HTTP 200");
+    expect(stillVisible).toHaveBeenCalledTimes(3);
+    expect(retryDeletion).toHaveBeenCalledTimes(2);
+
+    await expect(waitForTemporaryMemberSessionRevocation(async () => 200, {
+      retryDeletion: async () => { throw new Error("private deletion detail"); },
+      wait,
+    })).rejects.toThrow("temporary member session revocation failed: deletion retry");
   });
 });
 

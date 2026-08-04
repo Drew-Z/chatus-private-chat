@@ -25,6 +25,30 @@ export async function retryTemporaryMemberDeletion(
   }
 }
 
+export async function waitForTemporaryMemberSessionRevocation(
+  checkStatus,
+  {
+    retryDeletion,
+    wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+    attempts = 5,
+    delayMs = 15_000,
+  },
+) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const status = await checkStatus();
+    if (status === 401) return;
+    if (status !== 200 || attempt === attempts) {
+      throw new Error(`temporary member session revocation failed: HTTP ${status}`);
+    }
+    await wait(delayMs);
+    try {
+      await retryDeletion();
+    } catch {
+      throw new Error("temporary member session revocation failed: deletion retry");
+    }
+  }
+}
+
 export async function runProductionAcceptanceCleanup({
   members,
   purgeMember,
