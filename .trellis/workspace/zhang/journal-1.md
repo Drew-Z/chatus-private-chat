@@ -1252,3 +1252,37 @@ Shipped bounded old-session revocation verification, passed local and PR gates, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 32: Automatic Skill governance production evidence
+
+**Date**: 2026-08-04
+**Task**: Automatic Skill governance production evidence
+**Branch**: `main`
+
+### Summary
+
+Recorded PR, deployment, and exact-SHA production acceptance evidence for Automatic Skill quota and Provider routing governance, then archived the completed task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1c1ae0` | (see git log) |
+| `c284894` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
