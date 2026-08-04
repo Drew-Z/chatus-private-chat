@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-08-02",
   "completedAt": null,
-  "branch": "codex/frontend-legacy-experience",
+  "branch": "codex/frontend-entity-id-clarity",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "ad64dce1196c2a9378ccb63d03631ede29e911af",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/37",
+  "commit": "baa08536a67d71ded163c0440024dde5208792fb",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/44",
   "subtasks": [],
   "children": [],
   "parent": "08-02-project-hardening-followups",
@@ -27,32 +27,62 @@
       {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Frontend structural checks and Vite production build passed; measured bundle 895.86 KB minified and 249.09 KB gzip JS.",
-        "at": "2026-08-03T17:29:33.596126+00:00"
+        "summary": "Vite build and frontend structural checks passed; identity labels rendered in the typed admin",
+        "at": "2026-08-04T08:38:44.098731+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "Vitest passed: 39 files and 527 tests.",
-        "at": "2026-08-03T17:29:33.755604+00:00"
+        "summary": "40 files and 559 local fixture tests passed",
+        "at": "2026-08-04T08:38:44.714852+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "81 passed and 39 viewport-conditional skips across 120 workspace cases",
+        "at": "2026-08-04T08:38:45.309802+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 local fake Provider Agent browser tests passed",
+        "at": "2026-08-04T08:38:45.906283+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
-        "summary": "TypeScript typecheck passed.",
-        "at": "2026-08-03T17:29:33.935519+00:00"
+        "summary": "Worker, React client, and browser TypeScript checks passed",
+        "at": "2026-08-04T08:38:46.512377+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
-        "summary": "Wrangler 4.110.0 dry-run passed; no deployment occurred.",
-        "at": "2026-08-03T17:29:34.102365+00:00"
+        "summary": "Wrangler dry-run completed without deployment",
+        "at": "2026-08-04T08:38:47.105068+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
-        "summary": "Git whitespace validation passed.",
-        "at": "2026-08-03T17:29:34.264315+00:00"
+        "summary": "working tree diff has no whitespace errors",
+        "at": "2026-08-04T08:38:47.699047+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "repository task graph and workspace consistency passed",
+        "at": "2026-08-04T08:38:48.318226+00:00"
+      },
+      {
+        "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
+        "status": "passed",
+        "summary": "7 Trellis validation tests passed",
+        "at": "2026-08-04T08:38:48.909348+00:00"
+      },
+      {
+        "command": "npx playwright test --config tests/browser/playwright.config.ts --grep provider-migration",
+        "status": "passed",
+        "summary": "desktop and touch migration identity checks passed; three unrelated viewports skipped by test scope",
+        "at": "2026-08-04T08:38:49.503705+00:00"
       }
     ]
   }

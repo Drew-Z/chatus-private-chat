@@ -316,8 +316,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .admin-reference-list span { padding: 4px 8px; border: 1px solid var(--line); border-radius: 5px; color: #46524c; background: var(--surface); font-size: 11px; }
 .admin-reference-list .muted { border: 0; padding: 0; }
 .admin-offerings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-top: 28px; }
+.admin-offerings-head > .icon-text-button { flex: 0 0 auto; white-space: nowrap; }
 .admin-offerings-list { display: grid; gap: 10px; margin-top: 12px; }
 .admin-offering-row { display: grid; grid-template-columns: 72px minmax(145px, .75fr) minmax(160px, 1.2fr) 90px minmax(92px, auto) minmax(92px, auto) minmax(92px, auto) 36px; align-items: end; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #fbfcfb; }
+.admin-offering-identity { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 10px; font-weight: 500; line-height: 1.4; }
 .admin-offering-order { display: flex; align-items: center; gap: 0; padding-bottom: 2px; }
 .admin-offering-row .compact-field input { min-width: 0; }
 .admin-offering-row > .icon-button { align-self: end; }
