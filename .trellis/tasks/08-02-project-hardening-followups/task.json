@@ -25,7 +25,8 @@
     "08-02-skill-quota-route-governance",
     "08-02-frontend-legacy-experience",
     "08-02-ci-delivery-hardening",
-    "08-02-test-performance-capacity"
+    "08-02-test-performance-capacity",
+    "08-04-production-acceptance-cleanup-recovery"
   ],
   "parent": null,
   "relatedFiles": [],
