@@ -13,7 +13,7 @@ const requestTimeoutMs = 15_000;
 // Keep attempts below the per-source eight-failure throttle while covering that window.
 const loginAttempts = 5;
 const loginRetryDelayMs = 15_000;
-const memberCleanupAttempts = 4;
+const memberCleanupAttempts = 8;
 const memberCleanupRetryDelayMs = 5_000;
 
 if (!productionUrl) {

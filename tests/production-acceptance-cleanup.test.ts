@@ -47,11 +47,22 @@ describe("production acceptance member cleanup", () => {
     expect(wait).not.toHaveBeenCalled();
 
     const unavailable = vi.fn(async () => 503);
-    await expect(retryTemporaryMemberDeletion(unavailable, { wait })).rejects.toThrow(
+    await expect(retryTemporaryMemberDeletion(unavailable, { wait, attempts: 4 })).rejects.toThrow(
       "temporary member deletion failed: HTTP 503",
     );
     expect(unavailable).toHaveBeenCalledTimes(4);
     expect(wait).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps the default retry window aligned with persisted cleanup attempts", async () => {
+    const unavailable = vi.fn(async () => 503);
+    const wait = vi.fn(async () => undefined);
+
+    await expect(retryTemporaryMemberDeletion(unavailable, { wait })).rejects.toThrow(
+      "temporary member deletion failed: HTTP 503",
+    );
+    expect(unavailable).toHaveBeenCalledTimes(8);
+    expect(wait).toHaveBeenCalledTimes(7);
   });
 });
 
