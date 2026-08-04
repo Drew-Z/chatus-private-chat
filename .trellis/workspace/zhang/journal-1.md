@@ -1355,3 +1355,36 @@ Hardened workflow YAML governance, job timeouts, Node 24 actions, exact-main dep
 ### Next Steps
 
 - None - task complete
+
+
+## Session 35: Complete test performance and capacity observability
+
+**Date**: 2026-08-05
+**Task**: Complete test performance and capacity observability
+**Branch**: `main`
+
+### Summary
+
+Completed the serial Workers/Istanbul coverage decision, member concurrency and streaming contracts, Workspace metadata-tracked occupancy, exact-head PR CI, exact-main deployment, production acceptance, evidence recording, and Trellis archive.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0d06d1074175ae93b2ed15df6144570e4d76ee90` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

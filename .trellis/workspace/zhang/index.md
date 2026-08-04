@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 34
-- **Last Active**: 2026-08-04
+- **Total Sessions**: 35
+- **Last Active**: 2026-08-05
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1357 | Active |
+| `journal-1.md` | ~1390 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 35 | 2026-08-05 | Complete test performance and capacity observability | `0d06d1074175ae93b2ed15df6144570e4d76ee90` | `main` |
 | 34 | 2026-08-04 | Complete CI delivery hardening | `47db7cc121aa749a6bdb94b4e8ce43077f6b061b`, `59b877d95b671b93d096b092714e596f55f859e0` | `main` |
 | 33 | 2026-08-04 | Public error redaction delivery and acceptance | `31028f36aa14ad159c2680fd695ed45810f2684d`, `b37e4574162496e60a4e2a2d2332b1fdb34d2acf`, `3182829eb7547aed9d1a33588fe41a2d56314c96` | `main` |
 | 32 | 2026-08-04 | Automatic Skill governance production evidence | 1c1ae0, `c284894` | `main` |
