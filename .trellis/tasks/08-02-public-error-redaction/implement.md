@@ -29,6 +29,15 @@ python ./.trellis/scripts/task.py validate-all
 python -m unittest discover -s .trellis/tests -p test_*.py -v
 ```
 
+## Rebase Validation Evidence (2026-08-04)
+
+- Rebased the five task commits onto exact base `4d3811776ced8644a971e4bbc3074cf59c112098`; the functional work commit is now `31028f36aa14ad159c2680fd695ed45810f2684d`.
+- The route-reliability conflict preserves current `ProviderCoordinator` atomic aggregation, full BYOK shared-quality isolation, and separate selector telemetry while carrying the normalized answer-turn request ID through the chat sample and KV projection.
+- Affected Vitest: 8 files / 251 tests passed. Full Vitest: 40 files / 562 tests passed.
+- Workspace Playwright: 83 passed / 42 viewport-conditional skips. Local fake Provider Agent Playwright: 3 passed.
+- `npm run check:frontend`, `npm run typecheck`, `npx wrangler deploy --dry-run`, `git diff --check main...HEAD`, Trellis repository consistency, and all 7 Trellis unit tests passed.
+- No live Provider/MCP request, production probe, production data read/mutation, or local production deployment was used.
+
 ## Risky Files And Rollback Points
 
 - `src/contracts/agent-error.ts`: shared Worker/client contract; exact parser and canonical messages must change together.
