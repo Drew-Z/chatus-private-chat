@@ -12,10 +12,10 @@
   "assignee": "zhang",
   "createdAt": "2026-08-04",
   "completedAt": null,
-  "branch": "codex/production-acceptance-retry-window",
+  "branch": "codex/production-session-revocation-verification",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "7e0aadf71d335abc8adab2e180fe6fa875b80845",
+  "commit": "0dffa223306986f81240fea9991ce923225f83b2",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/42",
   "subtasks": [],
   "children": [],
@@ -39,50 +39,56 @@
       {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Frontend build and structural checks passed",
-        "at": "2026-08-04T07:03:39.950115+00:00"
+        "summary": "frontend build and structural checks passed",
+        "at": "2026-08-04T07:47:14.679546+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "40 files and 556 tests passed",
-        "at": "2026-08-04T07:03:41.424124+00:00"
+        "summary": "40 test files and 559 tests passed",
+        "at": "2026-08-04T07:47:15.296707+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
-        "summary": "81 workspace browser tests passed; 39 viewport-specific tests skipped by suite policy",
-        "at": "2026-08-04T07:03:42.755853+00:00"
+        "summary": "81 passed and 39 skipped across 120 workspace cases",
+        "at": "2026-08-04T07:47:16.034706+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
-        "summary": "3 local fake Provider Agent browser tests passed",
-        "at": "2026-08-04T07:03:44.068403+00:00"
+        "summary": "3 fake Provider Agent browser tests passed",
+        "at": "2026-08-04T07:47:16.852363+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
-        "summary": "Worker, client, and browser TypeScript checks passed",
-        "at": "2026-08-04T07:03:45.368122+00:00"
+        "summary": "worker, client, and browser TypeScript checks passed",
+        "at": "2026-08-04T07:47:17.643546+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
-        "summary": "Wrangler dry-run packaging passed without production deployment",
-        "at": "2026-08-04T07:03:46.649062+00:00"
+        "summary": "Wrangler dry-run completed",
+        "at": "2026-08-04T07:47:18.324222+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
-        "summary": "Working tree diff has no whitespace errors",
-        "at": "2026-08-04T07:03:47.920977+00:00"
+        "summary": "working tree diff has no whitespace errors",
+        "at": "2026-08-04T07:47:18.910149+00:00"
+      },
+      {
+        "command": "node --check scripts/acceptance-production.mjs; node --check scripts/production-acceptance-cleanup.mjs; npx vitest run tests/production-acceptance-cleanup.test.ts tests/deployment-config.test.ts",
+        "status": "passed",
+        "summary": "focused syntax and 53 tests passed",
+        "at": "2026-08-04T07:47:19.647514+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
-        "summary": "Repository consistency validation passed",
-        "at": "2026-08-04T07:03:49.286933+00:00"
+        "summary": "repository consistency validation passed",
+        "at": "2026-08-04T07:47:20.539301+00:00"
       }
     ]
   }
