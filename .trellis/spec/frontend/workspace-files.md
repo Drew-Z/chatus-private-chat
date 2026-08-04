@@ -71,6 +71,18 @@ type DocumentIngestMessage = { ownerId: string; fileId: string; versionId: strin
 type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "deleted";
 ```
 
+Workspace list responses include:
+
+```typescript
+type WorkspaceTrackedUsage = {
+  quotaBytes: number;
+  extractedBytes: number;
+  pendingCleanupBytes: number;
+  trackedBytes: number;
+  limitBytes: number;
+};
+```
+
 ## 3. Contracts
 
 ### Storage And Versioning
@@ -89,6 +101,10 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 - Paths use `/`, are normalized to NFC, and are at most 1,024 characters with segments at most 255 characters. Reject absolute paths, drive prefixes, backslashes, empty segments, `.`/`..`, control characters, and case-folded/NFC conflicts.
 - Text files are at most 1 MiB; PDF/Office files are at most 10 MiB. One upload selection contains at most 50 files, retained member versions total at most 250 MiB, and one conversation pins at most 10 exact versions. List requests return at most 50 rows and use an opaque cursor ordered by `pinned DESC, updated_at DESC, id DESC`.
 - Public file projections add only bounded ingest status/generation/attempt/error and retry availability. They never expose Queue owner IDs or R2 keys. Client decoders reject unknown keys, invalid finite states, a current version whose `fileId` differs from its file, or `ingestRetryAvailable` that does not exactly match a failed current ingest.
+- `GET /api/workspace/files` computes one `usage` snapshot inside the owning root `TeamAgent`: `quotaBytes` is source `size` for every version whose state is not `deleting`; `extractedBytes` is `extracted_bytes` for those same versions; `pendingCleanupBytes` is source plus extracted bytes for `deleting` versions; `trackedBytes` is the exact sum of those three fields; and `limitBytes` is the existing 250 MiB member source-file limit.
+- Failed or retryable non-deleting versions remain in `quotaBytes` because upload admission uses the same SQL state rule. A deleting version remains in `pendingCleanupBytes` until metadata finalization removes it, even when an individual R2 delete already succeeded.
+- Usage is metadata-tracked occupancy, not R2 bucket actual usage. It cannot prove referenced objects exist or discover orphan/old-generation R2 objects, and it must not add object keys, checksums, paths, Queue owner IDs, or operation data to the usage object.
+- The browser decoder requires exactly the five usage keys, non-negative safe integers, a positive safe `limitBytes`, safe addition, and exact `trackedBytes` arithmetic. The React quota progress uses only `quotaBytes / limitBytes`; parsed and pending-cleanup bytes are outside the upload quota percentage.
 
 ### Async Document Ingest
 
@@ -156,6 +172,7 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 | Pending upload exists when account purge starts | `workspace_purge_pending_upload`; preserve the authenticated session for retry |
 | Workspace mutation races an active account purge | `409 workspace_account_purge_in_progress`; create no metadata or object |
 | Any permanent-delete sub-operation fails | Return `503 user_data_purge_incomplete`; retain the purge lock and retry idempotently |
+| Usage contains an unknown key, unsafe integer, negative byte count, or arithmetic mismatch | Client rejects `invalid_workspace_response`; do not render partial or guessed occupancy |
 
 ## 5. Good / Base / Bad Cases
 
@@ -165,6 +182,9 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 - Good: an account request fails after R2 deletion and its session is revoked; the Root alarm replays the exact operation, completes remaining stores, then releases the lock and Root identity.
 - Base: an empty workspace still creates a purge lock before other account stores are deleted and releases it only after the complete deletion path succeeds.
 - Base: a queued or failed PDF remains listable/downloadable and produces only its explicit unavailable status until a ready generation exists.
+- Base: an empty workspace returns all four tracked byte fields as zero and preserves the 250 MiB `limitBytes` contract.
+- Good: a failed non-deleting upload and its known parsed artifact remain tracked, while a tombstoned version moves both source and parsed bytes into `pendingCleanupBytes` until finalize.
+- Bad: call the values “R2 usage”, scan/list the bucket during a member request, or use `trackedBytes` as the upload quota percentage.
 - Bad: persist only `fileId`, resolve `current_version_id` during send, or overwrite the old R2 key during retry.
 - Bad: treat `extracting` as a terminal duplicate ack, read the original when extraction metadata is invalid, or return `{ ok: true, message: { ownerId } }` from manual retry.
 - Bad: return `completed: true` without persisting an empty-workspace purge lock, or delete the lock immediately after clearing workspace tables while the remaining account purge is still running.
@@ -187,6 +207,8 @@ type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "dele
 - Prove bounded alarm batches resume after simulated Durable Object eviction and continue after the initiating request/session is gone. Inject R2 and finalize failures separately and assert the exact operation/generation lock survives.
 - Assert cleanup summaries/logs contain aggregate fields and stable codes only, with no member label, conversation/file/operation ID, object key, content, secret, or raw exception text.
 - Client decoder tests reject unknown/malformed file projections and delete/pending envelopes.
+- Aggregate empty, active, failed/retry, parsed, deleting, and exact 250 MiB metadata states; assert all five usage fields and `trackedBytes` arithmetic through the root RPC and real HTTP list response.
+- Client decoder tests reject unknown usage keys, negative/fractional/unsafe bytes, unsafe addition, and mismatched sums. Workspace Playwright proves quota/parsed/pending labels, metadata-only copy, explicit refresh recovery, and no overflow in the five-view matrix.
 - Workspace Playwright covers list/search, directory upload, rename focus restoration, pin, delete/pending, download, retry, exact version selection, search-empty recovery, and the 1920/1440/780/480/390 viewport matrix.
 - Agent acceptance uses only the local fake Provider. Never use a live model, remote R2 bucket, synthetic production probe, or local production deploy.
 - Run the full project gate from `quality-guidelines.md`.
@@ -216,6 +238,27 @@ await root.releaseWorkspaceAccountPurge(purge.operationId, purge.generation);
 ```
 
 Keep the persisted purge operation authoritative across the full cross-store deletion window, and repeat its check inside each workspace reservation transaction.
+
+### Metadata-Tracked Usage
+
+Wrong:
+
+```typescript
+const actualBytes = await env.WORKSPACE_FILES.list();
+return { usage: { r2Bytes: sum(actualBytes) } };
+```
+
+Correct:
+
+```typescript
+const usage = await root.listWorkspaceFiles(query, cursor, limit);
+return {
+  ...usage,
+  maxFileBytes: MAX_WORKSPACE_FILE_BYTES,
+};
+```
+
+The owning root derives exact contract fields from its SQLite metadata snapshot; the public boundary adds no storage identifiers and makes no bucket-actual claim.
 
 ### Document Ingest
 

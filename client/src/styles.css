@@ -564,6 +564,16 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .conversation-row form input { min-height: 34px; }
 
 .file-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.file-workspace-usage { min-width: 0; display: grid; gap: 8px; padding: 2px 14px 11px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.file-workspace-quota { min-width: 0; display: grid; gap: 5px; }
+.file-workspace-quota > span { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.file-workspace-quota strong { color: var(--ink); font-size: 12px; }
+.file-workspace-quota progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.file-workspace-usage dl { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 10px; margin: 0; }
+.file-workspace-usage dl > div { min-width: 0; display: flex; justify-content: space-between; gap: 5px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.file-workspace-usage dt, .file-workspace-usage dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.file-workspace-usage dd { color: var(--ink); font-weight: 700; text-align: right; }
+.file-workspace-usage small { font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .file-workspace-actions { min-height: 40px; display: flex; align-items: center; gap: 4px; padding: 0 14px 8px; }
 .file-workspace-actions .icon-button { width: 34px; height: 34px; flex-basis: 34px; color: var(--accent-hover); background: var(--surface); border: 1px solid var(--line); }
 .file-workspace-actions > span { margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }

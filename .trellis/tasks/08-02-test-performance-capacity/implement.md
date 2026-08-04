@@ -2,24 +2,24 @@
 
 ## Ordered Checklist
 
-- [ ] Add compatible Istanbul coverage dependency and root coverage configuration with text, JSON summary, HTML output, and explicit four-metric thresholds derived from the measured baseline.
-- [ ] Split Vitest into named Node and Workers project configs; keep the eight Cloudflare-dependent files and `maxWorkers: 1` in Workers while allowing the remaining files to run in parallel under Node.
-- [ ] Add configuration-governance tests proving project ownership is disjoint and complete, Workers serialization is retained, and coverage cannot regress to V8 or implicit thresholds.
-- [ ] Keep local `npm test` uninstrumented, add `npm run test:coverage`, and make PR CI use one coverage-enabled complete Vitest run without duplicating the suite.
-- [ ] Add deterministic quota-admission coverage that locks the approved member `unlimited` concurrency behavior and proves guest lease acquisition is not used for members.
-- [ ] Add the shared Workspace tracked-usage contract and compute all five fields from Root TeamAgent SQLite metadata in the same listing boundary.
-- [ ] Project additive Workspace `usage` through the member API without object keys, checksums, internal operation data, or bucket-actual claims.
-- [ ] Render an accessible React usage summary for quota bytes, extracted bytes, and non-zero pending cleanup bytes while preserving all existing file workspace states and actions.
-- [ ] Add state, API, component/config, and Workspace Playwright coverage for exact usage arithmetic, labels, responsive layout, error recovery, and privacy boundaries.
-- [ ] Run three post-change uninstrumented `npm test` samples; retain the project split only if all 581 tests pass and the median is at most 91.564 seconds.
-- [ ] Run `trellis-check`, focused capacity/Workspace/Provider suites, coverage enforcement, the full shipping gate, Workspace Playwright, Trellis consistency, and secret-boundary review.
+- [x] Add compatible Istanbul coverage dependency and root coverage configuration with text, JSON summary, HTML output, and explicit four-metric thresholds derived from the measured baseline.
+- [x] Evaluate named Node/Workers projects with the eight direct and one transitive Cloudflare-dependent files in Workers; after the final benchmark missed the approved bound, restore the full serial Workers pool.
+- [x] Add configuration-governance tests for the experiment, then update the final contract to lock one `cloudflareTest` pool, `maxWorkers: 1`, Istanbul, and explicit thresholds.
+- [x] Keep local `npm test` uninstrumented, add `npm run test:coverage`, and make PR CI use one coverage-enabled complete Vitest run without duplicating the suite.
+- [x] Add deterministic quota-admission coverage that locks the approved member `unlimited` concurrency behavior and proves guest lease acquisition is not used for members.
+- [x] Add the shared Workspace tracked-usage contract and compute all five fields from Root TeamAgent SQLite metadata in the same listing boundary.
+- [x] Project additive Workspace `usage` through the member API without object keys, checksums, internal operation data, or bucket-actual claims.
+- [x] Render an accessible React usage summary for quota bytes, extracted bytes, and non-zero pending cleanup bytes while preserving all existing file workspace states and actions.
+- [x] Add state, API, component/config, and Workspace Playwright coverage for exact usage arithmetic, labels, responsive layout, error recovery, and privacy boundaries.
+- [x] Run three post-change uninstrumented `npm test` samples; retain the project split only if all 40 baseline files, at least 581 baseline tests, and every new regression pass with a median at most 91.564 seconds.
+- [x] Run `trellis-check`, focused capacity/Workspace/Provider suites, coverage enforcement, the full shipping gate, Workspace Playwright, Trellis consistency, and secret-boundary review.
 - [ ] Update the relevant frontend specs, commit, push, open a PR, retain exact-head CI evidence, verify exact-main GitHub Actions deployment, record evidence, and archive the child task.
 
 ## Validation Commands
 
 ```text
-npx vitest run tests/vitest-governance.test.ts tests/quota-admission.test.ts tests/provider-stream-runtime.test.ts tests/fallback-language-model.test.ts
-npx vitest run --project workers tests/document-ingest-state.test.ts tests/workspace-file.test.ts tests/worker-api.test.ts
+npx vitest run tests/delivery-governance.test.ts tests/quota-admission.test.ts tests/provider-stream-runtime.test.ts tests/fallback-language-model.test.ts
+npx vitest run tests/document-ingest-state.test.ts tests/workspace-file.test.ts tests/worker-api.test.ts
 npm run check:frontend
 npm test
 npm test
@@ -37,7 +37,7 @@ The three `npm test` runs are timed independently on the same machine. Record ra
 
 ## Risky Files And Rollback Points
 
-- `vitest.config.ts` and the two project configs: an overlapping pattern can double-run tests; a gap can silently remove coverage. The governance test must enumerate the repository's actual test files.
+- `vitest.config.ts`: the final configuration must retain one `cloudflareTest` pool and `maxWorkers: 1`; restoring the rejected project split without a new approved benchmark is a regression.
 - `package.json` / lockfile: `@vitest/coverage-istanbul` must stay compatible with Vitest 4 and the package must remain on the 0.x line.
 - `.github/workflows/ci.yml`: retain all non-Vitest gates, job timeouts, browser path classification, exact-head artifacts, and local-only Provider behavior; change only the single Vitest command needed for coverage.
 - `src/agent/team-agent.ts`: aggregate only numeric metadata inside the owning DO; do not list R2 or change quota admission, deletion, purge, or ingest state transitions.
@@ -47,7 +47,7 @@ The three `npm test` runs are timed independently on the same machine. Record ra
 
 ## Review Gates
 
-- Exactly 40 test files and 581 tests run once; the Node and Workers sets are mutually exclusive and collectively exhaustive.
+- All 40 baseline test files and at least 581 baseline tests run once through the serial Workers pool, together with every new regression.
 - The measured post-change median improves at least 15%, or the split is absent from the final work commit.
 - Coverage uses Istanbul, has explicit global floors for all four metrics, and fails closed when a metric is below its floor.
 - Members remain unlimited and Provider first-visible behavior remains 60 seconds; neither decision introduces a new public error or telemetry claim.

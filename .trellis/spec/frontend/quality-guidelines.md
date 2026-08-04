@@ -65,6 +65,81 @@ git diff --check
 
 - Run `npm run check:frontend` before `npm test`, not concurrently. The Vite build replaces generated files under `public/react-chat/` while Worker asset tests read that directory; parallel execution can create transient legacy-shell or missing-fingerprinted-asset failures.
 
+## Scenario: Serial Workers Vitest And Istanbul Coverage
+
+### 1. Scope / Trigger
+
+Use this contract when changing `vitest.config.ts`, Cloudflare test runtime ownership, coverage dependencies or floors, or the PR Vitest command/artifact.
+
+### 2. Signatures
+
+```text
+npm test                         # uninstrumented local feedback and benchmark
+npm run test:coverage            # one complete Istanbul-instrumented run
+npm test -- --coverage           # PR quality Vitest command
+```
+
+```typescript
+TEST_COVERAGE_THRESHOLDS = { statements: 60, branches: 57, functions: 55, lines: 65 }
+```
+
+### 3. Contracts
+
+- The complete Vitest suite runs through one `cloudflareTest` Workers pool with `maxWorkers: 1`. This preserves transitive Cloudflare runtime imports and avoids Windows random-port instability.
+- A measured Node/Workers project split may be proposed only behind a task-specific three-run performance gate. The August 2026 split was rolled back after its final 96.900 / 92.203 / 88.938 second external-wall-time samples produced a 92.203-second median above the approved 91.564-second bound.
+- Coverage uses `@vitest/coverage-istanbul`, never V8. One complete run covers `src/**/*.ts` and `client/src/**/*.{ts,tsx}`, emits text, JSON summary, and local HTML, and enforces the four positive integer global floors above.
+- Local `npm test` stays uninstrumented so performance evidence is comparable. PR quality replaces that one command with `npm test -- --coverage`; it must not run a second complete Vitest suite for coverage.
+- CI retains only `coverage/coverage-summary.json` for 14 days. The source-level HTML tree remains local and ignored; delivery artifacts must not upload the complete coverage directory.
+- Re-benchmark any future runtime/project split with three serial uninstrumented full runs. Retain it only when every run preserves the complete file/test baseline and the median satisfies the task's pre-approved bound; otherwise restore the single serial Workers pool.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| The suite loses `cloudflareTest` or `maxWorkers: 1` | Governance test fails |
+| A proposed split misses its approved performance bound | Restore the single serial Workers pool and persist every sample |
+| Coverage provider changes to V8 or a floor is missing/non-positive | Governance test or instrumented run fails |
+| Any measured metric is below its integer floor | `test:coverage` exits non-zero |
+| PR runs both uninstrumented and instrumented full Vitest | Workflow governance test fails |
+| CI tries to upload the HTML coverage tree | Workflow artifact governance test fails |
+
+### 5. Good / Base / Bad Cases
+
+- Good: every unit/integration test runs once in the serial Workers pool, while one Istanbul run enforces the combined floor.
+- Base: `npm test` runs the same full suite without instrumentation and supplies a comparable local performance sample.
+- Bad: keep a faster-looking split after the final pre-PR sample set misses its pre-approved median bound.
+- Bad: upload `coverage/` as a PR artifact; the HTML report retains source-level views outside the bounded JSON delivery contract.
+
+### 6. Tests Required
+
+- Structurally assert one `cloudflareTest` plugin, no project split, and `maxWorkers: 1`.
+- Parse the workflow structurally and assert the single coverage-enabled Vitest command plus the exact bounded summary artifact path and retention.
+- Run one complete Istanbul suite and a temporary higher-threshold negative check; record the measured four metrics and fixed floors.
+- Record three serial uninstrumented samples after runtime/project changes; do not discard a slow sample without restarting and documenting the entire benchmark.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```typescript
+projects: [nodeProject, workersProject]
+// Final benchmark median exceeded the approved bound, but keep the split.
+```
+
+This keeps an optimization after its explicit rollback condition fired.
+
+#### Correct
+
+```typescript
+test: {
+  exclude: sharedExclude,
+  maxWorkers: 1,
+  coverage: { provider: "istanbul", thresholds: TEST_COVERAGE_THRESHOLDS },
+}
+```
+
+Restore the stable runtime after a failed performance experiment while keeping independently valuable coverage enforcement.
+
 ## Code Review Checklist
 
 - Does every queried ID exist in the paired HTML and remain unique?

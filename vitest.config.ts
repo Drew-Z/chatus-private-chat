@@ -1,12 +1,23 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { configDefaults, defineConfig } from "vitest/config";
+import { TEST_COVERAGE_THRESHOLDS } from "./vitest.constants";
+
+const sharedExclude = [...configDefaults.exclude, "tests/browser/**"];
 
 export default defineConfig({
   test: {
-    exclude: [...configDefaults.exclude, "tests/browser/**"],
-    // Cloudflare's worker pool opens an internal Miniflare port per worker.
-    // Keep the pool serial so npm test does not intermittently hit an undici
-    // forbidden random port on Windows.
+    exclude: sharedExclude,
+    coverage: {
+      provider: "istanbul",
+      include: ["src/**/*.ts", "client/src/**/*.{ts,tsx}"],
+      exclude: ["src/worker-configuration.d.ts", "client/src/vite-env.d.ts"],
+      reporter: ["text", "json-summary", "html"],
+      reportsDirectory: "coverage",
+      reportOnFailure: true,
+      thresholds: TEST_COVERAGE_THRESHOLDS,
+    },
+    // The measured Node/Workers split missed its final performance gate.
+    // Keep the full Miniflare suite serial for Windows port stability.
     maxWorkers: 1,
   },
   plugins: [

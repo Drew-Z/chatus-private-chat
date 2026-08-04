@@ -7,6 +7,7 @@ import {
   normalizeWorkspacePath,
   MAX_TEXT_DOCUMENT_BYTES,
   MAX_WORKSPACE_FILE_BYTES,
+  MAX_WORKSPACE_MEMBER_BYTES,
 } from "../src/contracts/workspace-file";
 import {
   getTeamAgentConversationInstanceName,
@@ -155,6 +156,124 @@ describe("workspace file API and R2 recovery", () => {
   });
 
   afterEach(() => vi.restoreAllMocks());
+
+  it("projects exact metadata-tracked usage across active, parsed, deleting, and retry states", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    await expect(root.listWorkspaceFiles()).resolves.toMatchObject({
+      usage: {
+        quotaBytes: 0,
+        extractedBytes: 0,
+        pendingCleanupBytes: 0,
+        trackedBytes: 0,
+        limitBytes: MAX_WORKSPACE_MEMBER_BYTES,
+      },
+    });
+
+    const reserve = async (name: string, size: number) => {
+      const result = await root.reserveWorkspaceUpload({
+        operationId: `usage-${name}`,
+        relativePath: `usage/${name}.txt`,
+        size,
+        mediaType: "text/plain",
+        checksum: await sha256(name),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error);
+      await expect(root.completeWorkspaceUpload(
+        result.reservation.operationId,
+        result.reservation.generation,
+      )).resolves.toMatchObject({ ok: true });
+      return result.reservation;
+    };
+    const active = await reserve("active", 100);
+    const retrying = await reserve("retrying", 40);
+    const deleting = await reserve("deleting", 30);
+
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE workspace_file_versions SET extracted_bytes = 20, ingest_status = 'ready' WHERE id = ?",
+        active.versionId,
+      );
+      state.storage.sql.exec(
+        "UPDATE workspace_file_versions SET extracted_bytes = 9, ingest_status = 'failed' WHERE id = ?",
+        retrying.versionId,
+      );
+      state.storage.sql.exec(
+        "UPDATE workspace_file_versions SET state = 'deleting', extracted_bytes = 7 WHERE id = ?",
+        deleting.versionId,
+      );
+      state.storage.sql.exec(
+        "UPDATE workspace_files SET state = 'deleting' WHERE id = ?",
+        deleting.fileId,
+      );
+    });
+
+    const usage = (await root.listWorkspaceFiles()).usage;
+    expect(usage).toEqual({
+      quotaBytes: 140,
+      extractedBytes: 29,
+      pendingCleanupBytes: 37,
+      trackedBytes: 206,
+      limitBytes: MAX_WORKSPACE_MEMBER_BYTES,
+    });
+    expect(Object.keys(usage)).toEqual([
+      "quotaBytes",
+      "extractedBytes",
+      "pendingCleanupBytes",
+      "trackedBytes",
+      "limitBytes",
+    ]);
+
+    await expect(root.retryDocumentIngest(retrying.fileId, retrying.versionId)).resolves.toMatchObject({ ok: true });
+    await expect(root.listWorkspaceFiles()).resolves.toMatchObject({
+      usage: {
+        quotaBytes: 140,
+        extractedBytes: 20,
+        pendingCleanupBytes: 37,
+        trackedBytes: 197,
+        limitBytes: MAX_WORKSPACE_MEMBER_BYTES,
+      },
+    });
+  });
+
+  it("reports the exact 250 MiB boundary used by upload admission", async () => {
+    const member = await login();
+    const root = await getRootAgent(member.label);
+    const reservation = await root.reserveWorkspaceUpload({
+      operationId: "usage-boundary",
+      relativePath: "usage/boundary.txt",
+      size: 1,
+      mediaType: "text/plain",
+      checksum: await sha256("boundary"),
+    });
+    expect(reservation.ok).toBe(true);
+    if (!reservation.ok) throw new Error(reservation.error);
+    await runInDurableObject(root, async (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE workspace_file_versions SET size = ? WHERE id = ?",
+        MAX_WORKSPACE_MEMBER_BYTES,
+        reservation.reservation.versionId,
+      );
+    });
+
+    await expect(root.listWorkspaceFiles()).resolves.toMatchObject({
+      usage: {
+        quotaBytes: MAX_WORKSPACE_MEMBER_BYTES,
+        extractedBytes: 0,
+        pendingCleanupBytes: 0,
+        trackedBytes: MAX_WORKSPACE_MEMBER_BYTES,
+        limitBytes: MAX_WORKSPACE_MEMBER_BYTES,
+      },
+    });
+    await expect(root.reserveWorkspaceUpload({
+      operationId: "usage-boundary-over",
+      relativePath: "usage/over.txt",
+      size: 1,
+      mediaType: "text/plain",
+      checksum: await sha256("over"),
+    })).resolves.toEqual({ ok: false, error: "workspace_member_quota_exceeded" });
+  });
 
   it("upgrades a version-one root schema idempotently", async () => {
     const member = await login();
@@ -1115,9 +1234,24 @@ describe("workspace file API and R2 recovery", () => {
 
     const searched = await apiRequest("/api/workspace/files?q=renamed", member.cookie);
     expect(searched.status).toBe(200);
-    await expect(searched.json()).resolves.toMatchObject({
+    const searchedPayload = await searched.json() as any;
+    expect(searchedPayload).toMatchObject({
       files: [expect.objectContaining({ id: alpha.payload.file.id, pinned: true })],
+      usage: {
+        quotaBytes: 14,
+        extractedBytes: 14,
+        pendingCleanupBytes: 0,
+        trackedBytes: 28,
+        limitBytes: MAX_WORKSPACE_MEMBER_BYTES,
+      },
     });
+    expect(Object.keys(searchedPayload.usage)).toEqual([
+      "quotaBytes",
+      "extractedBytes",
+      "pendingCleanupBytes",
+      "trackedBytes",
+      "limitBytes",
+    ]);
 
     const firstPage = await apiRequest("/api/workspace/files?limit=1", member.cookie).then((response) => response.json()) as any;
     expect(firstPage.files).toHaveLength(1);

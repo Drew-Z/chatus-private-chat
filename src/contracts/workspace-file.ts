@@ -85,9 +85,18 @@ export type WorkspaceConversationFileRef = {
   checksum: string;
 };
 
+export type WorkspaceTrackedUsage = {
+  quotaBytes: number;
+  extractedBytes: number;
+  pendingCleanupBytes: number;
+  trackedBytes: number;
+  limitBytes: number;
+};
+
 export type WorkspaceFileListResult = {
   files: WorkspaceFileProjection[];
   nextCursor?: string;
+  usage: WorkspaceTrackedUsage;
 };
 
 export type WorkspaceFileVersionListResult = {

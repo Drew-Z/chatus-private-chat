@@ -413,6 +413,8 @@ route-provider-skill-selection:<routeId>:<providerId> # KV projection and migrat
 - `ProviderCoordinator`, addressed by `providerId`, is the single writer for bounded chat and selector aggregates. Durable Object storage is authoritative; existing KV records seed only the first missing DO record and remain read-compatible projections for the route planner and admin API. A KV mirror failure never rolls back the DO aggregate or changes chat behavior.
 - Provider aggregate records retain at most 1,000 samples and satisfy `progressiveSamples <= streamSamples <= successes <= attempts`. Administrator priority remains authoritative; recent passive quality breaks equal-priority ties only, and active probes are forbidden.
 - A shared 60-second boundary starts immediately before each streaming Provider request and covers construction plus pre-visible reads. Text/reasoning/tool/source/file/approval parts commit Agent fallback; legacy SSE commits on non-empty text. Commitment clears the deadline timer but preserves parent cancellation and never ends an otherwise valid long stream.
+- After commitment, downstream cancellation is authoritative over any internal `reader.read()` prefetch already in flight. A cancel request cancels the upstream reader and settles cancellation exactly once; a resulting EOF/rejection must not be reclassified as a missing-finish protocol failure, record failure telemetry, or start fallback.
+- There is no post-visible idle/no-byte deadline. A Provider that emits one visible part and then stalls can retain request, admission, and Provider lease resources until client/request cancellation. Changing this requires an explicit partial-response UX, stream-error projection, and coordinated cleanup contract.
 - `firstVisibleLatencyMs` still measures only the first non-empty text/reasoning delta. Telemetry forwards stream parts unchanged and never records prompts, completions, tool payloads, raw chunks, Provider bodies, credentials, or member identifiers.
 
 ### 4. Validation & Error Matrix
@@ -429,17 +431,22 @@ route-provider-skill-selection:<routeId>:<providerId> # KV projection and migrat
 | No visible output for 60 seconds | Abort upstream and allow only existing pre-output fallback |
 | Parent cancellation before visible output | Abort without fallback |
 | Visible output then stream exceeds 60 seconds | Continue; the first-visible timer is cleared |
+| Downstream cancel races a committed reader prefetch | Cancel/settle once; no protocol failure, failure telemetry, or fallback |
+| Visible output then permanent idle | Continue until downstream/request cancellation; retain as an explicit capacity risk |
 
 ### 5. Good/Base/Bad Cases
 
 - Good: one Automatic user message is admitted before selector I/O, uses one of several Provider offerings, streams an answer, and consumes exactly one quota unit.
 - Good: two concurrent chat samples reach one ProviderCoordinator, both survive eviction, and a stale KV projection cannot replace the DO aggregate.
 - Base: a valid legacy KV aggregate seeds an empty DO record once, after which all mutations use DO state while readers keep the same KV key.
+- Good: a member cancels immediately after visible output while the adapter is prefetching; cancellation wins and no false Provider failure is recorded.
 - Bad: read-modify-write aggregate counters directly in KV, let any BYOK outcome influence shared ordering, leave a first-visible timer active after commitment, or silently reject parallel member conversations.
+- Bad: interpret EOF caused by `reader.cancel()` as “stream ended without finish” and penalize the Provider after the member already cancelled.
 
 ### 6. Tests Required
 
 - Unit-test pre-output fallback, post-output route locking, terminal failure classes, parent cancellation, the 60-second first-visible boundary, and telemetry callback isolation with fake Providers only.
+- Regression-test committed-stream cancellation while an internal read is pending. Assert upstream cancel and cancellation settlement are each idempotent, visible output remains delivered, failure telemetry stays zero, and fallback is never attempted.
 - Team Agent tests prove exhausted Automatic quota creates zero selector/main calls, one admission covers selector plus answer, continuations are free, pre-admission cancellation is free, and selector cancellation releases the lease with zero main calls.
 - Parameterize every BYOK success/failure class and assert both shared logical and exact route/provider records remain byte-for-byte unchanged while selector telemetry still records a redacted attempt.
 - Concurrently write two chat and two selector samples to one Provider/route, evict the Durable Object, and assert exact attempts, successes, fallback, latency/shape invariants, and DO authority over a changed KV projection.
@@ -469,6 +476,25 @@ await env.PROVIDER_COORDINATOR.getByName(providerId)
 ```
 
 Admission precedes auxiliary Provider work and is reused by the answer; one provider-scoped Durable Object serializes every aggregate mutation while KV remains a compatibility projection.
+
+For a committed cancellation race:
+
+#### Wrong
+
+```typescript
+const next = await reader.read();
+if (next.done) await settleFailure(providerProtocolError("missing finish"));
+```
+
+#### Correct
+
+```typescript
+const next = await reader.read();
+if (next.done && cancellationRequested) return settleCancelled();
+if (next.done) return settleFailure(providerProtocolError("missing finish"));
+```
+
+Check cancellation intent again after the pending read settles; cancellation is a consumer lifecycle event, not Provider reliability evidence.
 
 ## Scenario: Durable Message Branches And Safe Truncation Metadata
 

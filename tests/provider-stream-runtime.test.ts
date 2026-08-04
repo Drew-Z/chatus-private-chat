@@ -265,9 +265,14 @@ describe("provider stream runtime", () => {
       messages: [{ role: "user", content: "Hello" }],
       temperature: 0.5,
       defaultMaxTokens: 4096,
-      fetch: async () => new Response(streamFromChunks([
-        openAiEvent("visible"),
-      ], (reason) => { explicitCancel = reason; })),
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(openAiEvent("visible"));
+        },
+        cancel(reason) {
+          explicitCancel = reason;
+        },
+      })),
     });
     expect(cancellable.ok).toBe(true);
     if (!cancellable.ok) throw new Error("expected cancellable stream attempt");

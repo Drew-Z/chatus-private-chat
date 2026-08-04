@@ -8,6 +8,8 @@ import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.ym
 import checkFrontendSourceRaw from "../scripts/check-frontend.mjs?raw";
 import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
 import packageSourceRaw from "../package.json?raw";
+import vitestConfigSourceRaw from "../vitest.config.ts?raw";
+import { TEST_COVERAGE_THRESHOLDS } from "../vitest.constants";
 import { classifyChangedPaths } from "../scripts/classify-ci-paths.mjs";
 import { assertMainTip, parseRemoteMain } from "../scripts/assert-main-tip.mjs";
 import { createDeliveryManifest } from "../scripts/write-delivery-manifest.mjs";
@@ -22,6 +24,7 @@ const acceptanceWorkflow = normalizeText(acceptanceWorkflowRaw);
 const checkFrontendSource = normalizeText(checkFrontendSourceRaw);
 const agentRunnerSource = normalizeText(agentRunnerSourceRaw);
 const packageSource = normalizeText(packageSourceRaw);
+const vitestConfigSource = normalizeText(vitestConfigSourceRaw);
 
 type WorkflowStep = {
   name?: string;
@@ -53,6 +56,41 @@ type Workflow = {
 const parsedCiWorkflow = parseWorkflow(ciWorkflow, "ci.yml");
 const parsedDeployWorkflow = parseWorkflow(deployWorkflow, "deploy.yml");
 const parsedAcceptanceWorkflow = parseWorkflow(acceptanceWorkflow, "production-acceptance.yml");
+
+describe("Vitest runtime and coverage governance", () => {
+  it("keeps the full Cloudflare suite in one serial Workers pool", () => {
+    expect(vitestConfigSource.match(/cloudflareTest\(\{/gu)).toHaveLength(1);
+    expect(vitestConfigSource).toContain("exclude: sharedExclude");
+    expect(vitestConfigSource).toContain("maxWorkers: 1");
+    expect(vitestConfigSource).not.toContain("projects:");
+    expect(vitestConfigSource).not.toContain('name: "node"');
+  });
+
+  it("uses one explicit Istanbul coverage budget", () => {
+    const packageJson = JSON.parse(packageSource) as {
+      scripts?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    expect(packageJson.scripts?.test).toBe("vitest run");
+    expect(packageJson.scripts?.["test:coverage"]).toBe("vitest run --coverage");
+    expect(packageJson.devDependencies?.["@vitest/coverage-istanbul"]).toBe("^4.1.10");
+    expect(vitestConfigSource).toContain('provider: "istanbul"');
+    expect(vitestConfigSource).not.toContain('provider: "v8"');
+    expect(vitestConfigSource).toContain('reporter: ["text", "json-summary", "html"]');
+    expect(vitestConfigSource).toContain('reportsDirectory: "coverage"');
+    expect(vitestConfigSource).toContain("thresholds: TEST_COVERAGE_THRESHOLDS");
+    expect(Object.keys(TEST_COVERAGE_THRESHOLDS).sort()).toEqual([
+      "branches",
+      "functions",
+      "lines",
+      "statements",
+    ]);
+    for (const threshold of Object.values(TEST_COVERAGE_THRESHOLDS)) {
+      expect(Number.isInteger(threshold)).toBe(true);
+      expect(threshold).toBeGreaterThan(0);
+    }
+  });
+});
 
 describe("delivery path classification", () => {
   it("runs both browser suites for workspace-facing paths", () => {
@@ -196,7 +234,7 @@ describe("pull-request delivery workflow", () => {
     expect(quality.needs).toBe("changes");
     expectCommandsInOrder(quality, [
       "npm run check:frontend",
-      "npm test",
+      "npm test -- --coverage",
       "npm run typecheck",
       "npx wrangler deploy --dry-run",
       "git diff --check",
@@ -308,6 +346,12 @@ describe("workflow structural governance", () => {
     expectArtifact(parsedCiWorkflow, "quality", "Retain quality manifest", {
       name: "pr-quality-${{ github.sha }}",
       path: "artifacts/quality/manifest.json",
+      retentionDays: 14,
+      always: true,
+    });
+    expectArtifact(parsedCiWorkflow, "quality", "Retain coverage summary", {
+      name: "pr-coverage-${{ github.sha }}",
+      path: "coverage/coverage-summary.json",
       retentionDays: 14,
       always: true,
     });

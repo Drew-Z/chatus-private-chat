@@ -35,6 +35,7 @@ import {
   isSessionProjection,
   isWorkspaceFile,
   isWorkspaceFileVersion,
+  listWorkspaceFiles,
   logout,
   migrateAdminLegacyRoutes,
   retryWorkspaceDocumentIngest,
@@ -495,6 +496,57 @@ describe("workspace file client contract", () => {
     messageCount: 0,
     workspaceFiles: [],
   };
+  const usage = {
+    quotaBytes: 5,
+    extractedBytes: 2,
+    pendingCleanupBytes: 3,
+    trackedBytes: 10,
+    limitBytes: 250 * 1024 * 1024,
+  };
+
+  it("accepts only exact metadata-tracked usage arithmetic", async () => {
+    const validPage = { files: [file], maxFileBytes: 10 * 1024 * 1024, usage };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify(validPage), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    await expect(listWorkspaceFiles()).resolves.toEqual(validPage);
+
+    const invalidUsage = [
+      { ...usage, objectKey: "private" },
+      { ...usage, quotaBytes: -1, trackedBytes: 4 },
+      { ...usage, extractedBytes: 1.5, trackedBytes: 9.5 },
+      { ...usage, trackedBytes: 11 },
+      {
+        quotaBytes: Number.MAX_SAFE_INTEGER,
+        extractedBytes: 1,
+        pendingCleanupBytes: 0,
+        trackedBytes: Number.MAX_SAFE_INTEGER,
+        limitBytes: 250 * 1024 * 1024,
+      },
+    ];
+    for (const invalid of invalidUsage) {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+        files: [file],
+        maxFileBytes: 10 * 1024 * 1024,
+        usage: invalid,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      await expect(listWorkspaceFiles()).rejects.toMatchObject<ApiError>({
+        code: "invalid_workspace_response",
+        status: 502,
+      });
+    }
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      ...validPage,
+      objectKey: "private",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(listWorkspaceFiles()).rejects.toMatchObject<ApiError>({
+      code: "invalid_workspace_response",
+      status: 502,
+    });
+  });
 
   it("accepts every documented workspace mutation envelope", async () => {
     const responses = [

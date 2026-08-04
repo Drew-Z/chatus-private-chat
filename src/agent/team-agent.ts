@@ -256,6 +256,12 @@ type WorkspaceFileVersionRow = {
   updated_at: number;
 };
 
+type WorkspaceTrackedUsageRow = {
+  quota_bytes: number;
+  extracted_bytes: number;
+  pending_cleanup_bytes: number;
+};
+
 type WorkspaceFileOperationRow = {
   id: string;
   kind: string;
@@ -910,6 +916,16 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       generation, created_at, updated_at, deleted_at
     `;
     const order = "ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?";
+    const usageRow = this.ctx.storage.sql.exec<WorkspaceTrackedUsageRow>(`
+      SELECT
+        COALESCE(SUM(CASE WHEN state <> 'deleting' THEN size ELSE 0 END), 0) AS quota_bytes,
+        COALESCE(SUM(CASE WHEN state <> 'deleting' THEN extracted_bytes ELSE 0 END), 0) AS extracted_bytes,
+        COALESCE(SUM(CASE WHEN state = 'deleting' THEN size + extracted_bytes ELSE 0 END), 0) AS pending_cleanup_bytes
+      FROM workspace_file_versions
+    `).one();
+    const quotaBytes = usageRow.quota_bytes;
+    const extractedBytes = usageRow.extracted_bytes;
+    const pendingCleanupBytes = usageRow.pending_cleanup_bytes;
     let rows: WorkspaceFileRow[];
     if (query && cursor) {
       rows = this.ctx.storage.sql.exec<WorkspaceFileRow>(`
@@ -945,6 +961,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       ...(rows.length > limit && last
         ? { nextCursor: encodeWorkspaceCursor({ pinned: last.pinned, updatedAt: last.updated_at, id: last.id }) }
         : {}),
+      usage: {
+        quotaBytes,
+        extractedBytes,
+        pendingCleanupBytes,
+        trackedBytes: quotaBytes + extractedBytes + pendingCleanupBytes,
+        limitBytes: MAX_WORKSPACE_MEMBER_BYTES,
+      },
     };
   }
 

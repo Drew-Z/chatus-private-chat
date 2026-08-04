@@ -210,6 +210,7 @@ function monitorCommittedStream(args: {
 }): ReadableStream<LanguageModelV3StreamPart> {
   let bufferIndex = 0;
   let settled = false;
+  let cancellationRequested = false;
   let firstTextDeltaAt = args.firstTextDeltaAt;
   let visibleTextDeltaCount = 0;
 
@@ -254,6 +255,10 @@ function monitorCommittedStream(args: {
           ? { done: false as const, value: args.buffered[bufferIndex++] }
           : await args.reader.read();
         if (next.done) {
+          if (cancellationRequested) {
+            await settleCancelled();
+            return;
+          }
           await settleFailure(providerProtocolError("Provider stream ended without a finish event."));
           controller.close();
           return;
@@ -266,11 +271,16 @@ function monitorCommittedStream(args: {
         }
         controller.enqueue(next.value);
       } catch (error) {
+        if (cancellationRequested) {
+          await settleCancelled();
+          return;
+        }
         await settleFailure(error);
         controller.error(error);
       }
     },
     async cancel(reason) {
+      cancellationRequested = true;
       await args.reader.cancel(reason).catch(() => undefined);
       await settleCancelled();
     },
