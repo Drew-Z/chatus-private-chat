@@ -25,7 +25,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Verify member login, `/api/session`, opaque per-member Agent identities, conversation and memory isolation, `409` stale writes, cookie-authenticated `/agent` WebSockets, tombstones, and `DELETE /api/user-data`.
 - Do not send a chat turn, completion request, route probe, or any other model request.
 - Always purge temporary member data and remove both access-code entries in `finally`.
-- Every acceptance `DELETE /api/user-data` uses four attempts with a five-second delay between HTTP `503` responses. HTTP `200` succeeds; cleanup-only deletion also accepts `401` when the session was already revoked. Other statuses fail immediately.
+- Every acceptance `DELETE /api/user-data` uses four attempts with a five-second delay between HTTP `503` responses. HTTP `200` succeeds. An initial `401` succeeds only for cleanup-only deletion; a `401` after the same invocation already observed `503` also succeeds because cleanup is persisted before the Worker may revoke the cookie and fail a later stage. An initial strict `401` and other statuses fail immediately.
 - Before recording the original access configuration, revision-safely remove only labels matching `^codex-accept-[0-9a-f]{24}-(a|b)$`. Preserve all other entries, delete the override instead of writing an empty list, retry `409` conflicts at most four times, then reload and prove no exact temporary label remains.
 - Final cleanup attempts each member purge sequentially, access restoration, administrator logout, and post-cleanup release verification even when any earlier operation fails. Aggregate failures only as fixed operation names after every step runs; never include callback errors, member labels, credentials, or response bodies.
 - When `GITHUB_SHA` or `EXPECTED_RELEASE_SHA` is present, verify `/release.json` before mutating temporary members and again after cleanup. A mismatch fails the run instead of reporting acceptance for a different deployed revision.
@@ -47,7 +47,9 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 | WebSocket does not emit `cf_agent_identity` | Fail on timeout and enter cleanup |
 | Access codes change concurrently during cleanup | Remove temporary labels, preserve remaining entries, then fail for review |
 | Member deletion returns `503` and later `200` | Wait five seconds between attempts and continue after the successful bounded retry |
+| Member deletion returns `503` and the same cookie then returns `401` | Treat the persisted deletion as having revoked the session and continue; later acceptance assertions or autonomous cleanup retain data-cleanup responsibility |
 | Cleanup-only member deletion returns `401` | Treat the already-revoked session as clean and continue remaining cleanup steps |
+| Strict member deletion returns `401` before any `503` | Fail immediately; do not hide an unrelated authorization or cross-member revocation defect |
 | Member deletion exhausts `503` retries or returns another status | Record the fixed `member purge` failure and still attempt all remaining cleanup operations |
 | Historical exact acceptance labels exist before the run | Remove them revision-safely before the baseline snapshot and prove them absent after mutation |
 | Stale-label cleanup leaves no non-temporary entries | Delete the access-code override with `expectedRevision`; do not write an empty list |
@@ -68,7 +70,7 @@ The script may use `http://localhost` or `http://127.0.0.1` for local verificati
 - Run the acceptance script against local Wrangler with dummy `ADMIN_TOKEN`, both a legacy access-code fixture and an empty managed bootstrap fixture; assert every milestone completes and the original source is restored afterward.
 - Parse the workflow YAML and assert the job is restricted to `refs/heads/main`, shares the production mutation concurrency group with deployment, and does not cancel in-progress cleanup.
 - Statically assert the acceptance script checks release SHA before mutation and after cleanup, checks admin logout status, uses a 60-second-class propagation window with fewer than eight attempts, and runs temporary-member login/purge sequentially.
-- Unit-test `503 -> wait -> 200`, cleanup-only `401`, immediate non-`503` failure, exhausted retries, and a failed member purge that cannot skip later purge/restoration/logout/release operations. Assert the aggregate error contains fixed operation names only.
+- Unit-test `503 -> wait -> 200`, `503 -> wait -> 401`, cleanup-only initial `401`, strict initial `401`, immediate non-`503` failure, exhausted retries, and a failed member purge that cannot skip later purge/restoration/logout/release operations. Assert the aggregate error contains fixed operation names only.
 - Unit-test the exact lowercase 24-hex `a|b` label pattern and similarly prefixed legitimate labels. Statically assert stale cleanup precedes the baseline snapshot, both PUT and DELETE mutations carry the current revision, empty cleanup deletes the override, and the workflow retains its main-only exact-SHA artifact.
 - Run `node --check scripts/acceptance-production.mjs`.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.

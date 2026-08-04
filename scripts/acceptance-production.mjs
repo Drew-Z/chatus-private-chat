@@ -350,7 +350,9 @@ async function deleteTemporaryMemberData(member, { allowUnauthorized = false } =
 
 async function purgeMember(member) {
   const response = await deleteTemporaryMemberData(member);
-  assert((response.headers.get("set-cookie") || "").includes("Max-Age=0"), "member data deletion: session cookie not cleared");
+  if (response.status === 200) {
+    assert((response.headers.get("set-cookie") || "").includes("Max-Age=0"), "member data deletion: session cookie not cleared");
+  }
   const oldSession = await request("/api/session", { cookie: member.cookie });
   await expectStatus(oldSession, 401, "revoked member session");
 

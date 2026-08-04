@@ -14,7 +14,7 @@ Make authenticated production acceptance recover safely from transient member-pu
 
 ## Requirements
 
-- R1. `DELETE /api/user-data` in acceptance must retry HTTP `503` with a bounded delay and attempt count. HTTP `200` remains success; cleanup-only calls may also accept `401` for an already-revoked session. Other statuses fail immediately.
+- R1. `DELETE /api/user-data` in acceptance must retry HTTP `503` with a bounded delay and attempt count. HTTP `200` remains success. A `401` succeeds only for cleanup-only calls or after the same invocation already received `503`, because the persisted deletion may have revoked the cookie before a later cleanup stage failed. An initial strict `401` and other statuses fail immediately.
 - R2. The `finally` path must attempt every member cleanup sequentially, then access-code restoration, administrator logout, and post-cleanup release verification even when an earlier cleanup step fails. It reports a bounded operation-name summary only after all steps have run.
 - R3. Before recording the baseline access configuration or adding new temporary members, the runner must revision-safely remove entries whose labels exactly match the generated acceptance-label pattern. It must preserve every non-matching entry and delete the override rather than write an empty access list when no entries remain.
 - R4. Cleanup conflict handling remains fail-closed: retry revision conflicts, preserve concurrent non-temporary edits, and fail if temporary labels cannot be proven absent.
@@ -24,7 +24,7 @@ Make authenticated production acceptance recover safely from transient member-pu
 
 ## Acceptance Criteria
 
-- [x] AC1. Unit tests prove a `503` member purge is retried after the injected wait, `200` succeeds, cleanup-only `401` succeeds, and other statuses or exhausted retries fail.
+- [x] AC1. Unit tests prove a `503` member purge is retried after the injected wait, `200` and post-`503` `401` succeed, cleanup-only initial `401` succeeds, strict initial `401` fails, and other statuses or exhausted retries fail.
 - [x] AC2. Unit tests prove member purge failure does not skip later member purge, access restoration, administrator logout, or release verification; the final error contains only bounded operation names.
 - [x] AC3. Tests prove only exact `codex-accept-<24 hex>-a|b` labels are identified as stale; similarly prefixed legitimate labels are preserved.
 - [x] AC4. Structural tests prove stale cleanup runs before the baseline snapshot, revision-checked access restoration remains present, member cleanup is sequential, and the workflow stays exact-SHA/main-only with retained manifests.
