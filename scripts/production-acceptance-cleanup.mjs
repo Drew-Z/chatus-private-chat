@@ -9,7 +9,7 @@ export async function retryTemporaryMemberDeletion(
   {
     allowUnauthorized = false,
     wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
-    attempts = 4,
+    attempts = 8,
     delayMs = 5_000,
   } = {},
 ) {

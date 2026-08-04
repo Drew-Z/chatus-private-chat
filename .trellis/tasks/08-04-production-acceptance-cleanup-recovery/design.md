@@ -10,7 +10,7 @@
 
 `retryTemporaryMemberDeletion(run, { allowUnauthorized, wait, attempts })` calls an injected status-producing operation sequentially. Status `200` succeeds. An initial `401` succeeds only in cleanup mode; a `401` also succeeds after the same invocation already observed `503`, because the Worker persists cleanup and can revoke the cookie before a later stage returns `503`. Status `503` waits and retries while attempts remain. Every other status, an initial strict `401`, and an exhausted `503` produce a stable error containing the operation class and HTTP status, never a body or identifier.
 
-The production script uses a five-second delay and four attempts. This covers the Root Agent's five-second cleanup retry base without approaching the workflow timeout or login-failure throttle.
+The production script uses a five-second delay and eight attempts. This covers the Root Agent's eight-attempt persisted cleanup window without approaching the workflow timeout or login-failure throttle.
 
 ## Cleanup Orchestration
 
