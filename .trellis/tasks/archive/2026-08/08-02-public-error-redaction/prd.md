@@ -36,7 +36,7 @@ Make every model, Agent, Capability, MCP, and model-discovery failure actionable
 - [x] AC7. React shows an accessible failed-turn banner with the canonical message and a copyable request reference when present; retry still creates one resend branch and does not expose private diagnostics.
 - [x] AC8. Local fake Provider/MCP regression coverage includes preparation/runtime throw, 401, 429, 5xx, network/protocol failure, post-output failure, and MCP failure without any external request.
 - [x] AC9. Frontend checks, full Vitest, typecheck, Wrangler dry-run, affected Playwright suites, `git diff --check`, and Trellis consistency all pass before the work commit and PR.
-- [ ] AC10. Work commit, PR CI artifacts, main exact SHA, GitHub Actions deployment, and production/user acceptance are recorded before archive.
+- [x] AC10. Work commit, PR CI artifacts, main exact SHA, GitHub Actions deployment, and production/user acceptance are recorded before archive.
 
 ## Out Of Scope
 

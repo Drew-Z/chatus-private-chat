@@ -12,7 +12,7 @@
 - [x] Add local fake Provider/MCP and browser regression coverage for all bypass and leakage paths.
 - [x] Run `trellis-check`, the full shipping gate, affected Playwright suites, Trellis consistency, and secret-marker scans.
 - [x] Update frontend/platform specs, commit, push, open a stacked PR, retain CI artifacts, and retarget to `main` after the base PR merges.
-- [ ] Record main SHA, GitHub Actions deployment, and production/user acceptance before archive.
+- [x] Record main SHA, GitHub Actions deployment, and production/user acceptance before archive.
 
 ## Validation Commands
 
@@ -46,7 +46,7 @@ python -m unittest discover -s .trellis/tests -p test_*.py -v
 - PR artifacts remain available through 2026-08-18: path classification `8888726764`, Agent Playwright `8888763796`, quality manifest `8888807657`, and Workspace Playwright `8888925900`.
 - GitHub Actions deployment run `30900906173` passed for the exact main SHA, including stale-revision guards, frontend check, full Vitest, typecheck, whitespace check, Wrangler validation, `Deploy Worker`, `Verify production`, and deployment manifest retention.
 - Deployment artifacts: path classification `8889018311` (through 2026-09-03) and production deployment manifest `8889113950` (through 2026-11-02).
-- Production/user acceptance remains open; AC10 and the final delivery checklist item stay unchecked until authenticated user verification is recorded.
+- Authenticated user production acceptance passed on 2026-08-04 with screenshot evidence of a successful normal chat turn; no conversation content was copied into Trellis.
 
 ## Risky Files And Rollback Points
 
