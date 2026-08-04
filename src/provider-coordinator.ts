@@ -1,4 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
+import {
+  normalizeProviderReliabilitySample,
+  normalizeProviderRouteReliability,
+  normalizeSkillSelectionTelemetry,
+  providerRouteReliabilityKey,
+  reduceProviderRouteReliability,
+  reduceSkillSelectionTelemetry,
+  skillSelectionTelemetryKey,
+  type ProviderReliabilitySample,
+  type ProviderRouteReliabilityRecord,
+  type SkillSelectionTelemetryRecord,
+} from "./services/route-reliability";
 
 const LEASES_STORAGE_KEY = "provider-leases:v1";
 const DEFAULT_LEASE_TTL_MS = 15 * 60 * 1_000;
@@ -6,6 +18,19 @@ const MAX_LEASE_TTL_MS = 60 * 60 * 1_000;
 const MAX_WAIT_MS = 10_000;
 const MAX_CAPACITY = 100;
 const MAX_WAITERS = 200;
+const RELIABILITY_CHAT_PREFIX = "reliability:chat:";
+const RELIABILITY_SELECTOR_PREFIX = "reliability:skill_selection:";
+
+type ProviderCoordinatorEnv = {
+  CHAT_STORE: KVNamespace;
+};
+
+export type ProviderReliabilityOperation = "chat" | "skill_selection";
+
+export type ProviderReliabilitySampleInput = {
+  operation: ProviderReliabilityOperation;
+  sample: ProviderReliabilitySample;
+};
 
 export type ProviderLeaseAcquireInput = {
   requestId: string;
@@ -49,16 +74,40 @@ type PendingWaiter = {
   timer: ReturnType<typeof setTimeout>;
 };
 
-export class ProviderCoordinator extends DurableObject<Record<string, unknown>> {
+export class ProviderCoordinator extends DurableObject<ProviderCoordinatorEnv> {
   private leases: StoredLease[] = [];
   private readonly waiters: PendingWaiter[] = [];
 
-  constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
+  constructor(ctx: DurableObjectState, env: ProviderCoordinatorEnv) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.leases = normalizeStoredLeases(await ctx.storage.get(LEASES_STORAGE_KEY), Date.now());
       // Rewrite recovered state so malformed records cannot survive a restart.
       await this.persistLeases();
+    });
+  }
+
+  async recordReliabilitySample(
+    input: ProviderReliabilitySampleInput,
+  ): Promise<ProviderRouteReliabilityRecord | SkillSelectionTelemetryRecord> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const sample = normalizeProviderReliabilitySample(input.sample);
+      if (!sample || (input.operation !== "chat" && input.operation !== "skill_selection")) {
+        throw new Error("invalid_reliability_sample");
+      }
+      const storageKey = reliabilityStorageKey(input.operation, sample.routeId);
+      const current = await this.readReliabilityRecord(
+        input.operation,
+        sample.routeId,
+        sample.providerId,
+        storageKey,
+      );
+      const next = input.operation === "chat"
+        ? reduceProviderRouteReliability(current as ProviderRouteReliabilityRecord | null, sample)
+        : reduceSkillSelectionTelemetry(current as SkillSelectionTelemetryRecord | null, sample);
+      await this.ctx.storage.put(storageKey, next);
+      await this.writeProjection(input.operation, sample.routeId, sample.providerId, next);
+      return next;
     });
   }
 
@@ -228,6 +277,63 @@ export class ProviderCoordinator extends DurableObject<Record<string, unknown>> 
     }
     await this.ctx.storage.setAlarm(Math.min(...this.leases.map((lease) => lease.expiresAt)));
   }
+
+  private async readReliabilityRecord(
+    operation: ProviderReliabilityOperation,
+    routeId: string,
+    providerId: string,
+    storageKey: string,
+  ): Promise<ProviderRouteReliabilityRecord | SkillSelectionTelemetryRecord | null> {
+    const stored = await this.ctx.storage.get(storageKey);
+    if (stored) {
+      return operation === "chat"
+        ? normalizeProviderRouteReliability(stored, routeId, providerId)
+        : normalizeSkillSelectionTelemetry(stored, routeId, providerId);
+    }
+    const kv = this.env.CHAT_STORE;
+    try {
+      const raw = await kv.get(operation === "chat"
+        ? providerRouteReliabilityKey(routeId, providerId)
+        : skillSelectionTelemetryKey(routeId, providerId));
+      if (!raw) return null;
+      const parsed: unknown = JSON.parse(raw);
+      return operation === "chat"
+        ? normalizeProviderRouteReliability(parsed, routeId, providerId)
+        : normalizeSkillSelectionTelemetry(parsed, routeId, providerId);
+    } catch {
+      return null;
+    }
+  }
+
+  private async writeProjection(
+    operation: ProviderReliabilityOperation,
+    routeId: string,
+    providerId: string,
+    value: ProviderRouteReliabilityRecord | SkillSelectionTelemetryRecord,
+  ): Promise<void> {
+    const kv = this.env.CHAT_STORE;
+    try {
+      await kv.put(
+        operation === "chat"
+          ? providerRouteReliabilityKey(routeId, providerId)
+          : skillSelectionTelemetryKey(routeId, providerId),
+        JSON.stringify(value),
+      );
+    } catch {
+      console.warn(JSON.stringify({
+        level: "warn",
+        event: "provider_reliability_projection_write_failed",
+        operation,
+        routeId,
+        providerId,
+      }));
+    }
+  }
+}
+
+function reliabilityStorageKey(operation: ProviderReliabilityOperation, routeId: string): string {
+  const prefix = operation === "chat" ? RELIABILITY_CHAT_PREFIX : RELIABILITY_SELECTOR_PREFIX;
+  return `${prefix}${encodeURIComponent(routeId)}`;
 }
 
 function normalizeStoredLeases(value: unknown, now: number): StoredLease[] {

@@ -3,7 +3,7 @@
   "name": "skill-quota-route-governance",
   "title": "Automatic Skill 配额与 Provider 路由治理",
   "description": "修复 automatic Skill 在配额前调用、BYOK 质量污染、聚合写入竞态，并补充并发和超时策略。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": "frontend/platform",
   "package": null,
@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-08-02",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/skill-quota-route-governance",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
@@ -22,5 +22,56 @@
   "parent": "08-02-project-hardening-followups",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Final validation passed; Vite production client build and frontend structural checks",
+        "at": "2026-08-04T04:15:26.015087+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Final validation passed; 39 files and 549 deterministic local tests",
+        "at": "2026-08-04T04:15:26.702801+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Final validation passed; 81 passed and 39 viewport-conditional skips across 120 workspace cases",
+        "at": "2026-08-04T04:15:27.330300+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Final validation passed; 3 local fake-Provider Agent browser tests",
+        "at": "2026-08-04T04:15:28.048265+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Final validation passed; Worker, React client, and browser TypeScript checks",
+        "at": "2026-08-04T04:15:28.695099+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Final validation passed; Wrangler 4.110.0 built 6506.48 KiB and gzip 1318.28 KiB without deployment",
+        "at": "2026-08-04T04:15:29.353359+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Final validation passed; no whitespace errors",
+        "at": "2026-08-04T04:15:29.949819+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Final validation passed; repository task graph and workspace consistency OK",
+        "at": "2026-08-04T04:15:30.562260+00:00"
+      }
+    ]
+  }
 }

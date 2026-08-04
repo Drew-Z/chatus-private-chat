@@ -1,5 +1,6 @@
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import type { ProviderReliabilitySample } from "../src/services/route-reliability";
 
 describe("ProviderCoordinator", () => {
   it("enforces one exclusive lease across every model using the provider", async () => {
@@ -151,7 +152,213 @@ describe("ProviderCoordinator", () => {
       ],
     });
   });
+
+  it("serializes concurrent chat quality samples and keeps DO storage authoritative after eviction", async () => {
+    const providerId = `chat-quality-${crypto.randomUUID()}`;
+    const routeId = `reasoning-${crypto.randomUUID()}`;
+    const coordinator = env.PROVIDER_COORDINATOR.getByName(providerId);
+    const first = reliabilitySample(routeId, providerId, {
+      ok: true,
+      outcome: "success",
+      fallback: false,
+      firstVisibleLatencyMs: 120,
+      streamShape: "progressive",
+    });
+    const second = reliabilitySample(routeId, providerId, {
+      ok: false,
+      outcome: "upstream_server",
+      fallback: true,
+    });
+
+    await Promise.all([
+      coordinator.recordReliabilitySample({ operation: "chat", sample: first }),
+      coordinator.recordReliabilitySample({ operation: "chat", sample: second }),
+    ]);
+
+    const storageKey = `reliability:chat:${encodeURIComponent(routeId)}`;
+    await expect(runInDurableObject(coordinator, async (_instance, state) => (
+      state.storage.get(storageKey)
+    ))).resolves.toMatchObject({
+      attempts: 2,
+      successes: 1,
+      fallbackCount: 1,
+      streamSamples: 1,
+      progressiveSamples: 1,
+    });
+
+    const projectionKey = `route-provider-reliability:${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
+    await env.CHAT_STORE.put(projectionKey, JSON.stringify({
+      version: 2,
+      source: "real_task",
+      routeId,
+      providerId,
+      attempts: 900,
+      successes: 900,
+      averageLatencyMs: 1,
+      lastOutcome: "success",
+      observedAt: new Date().toISOString(),
+    }));
+    await evictDurableObject(coordinator);
+
+    const restored = env.PROVIDER_COORDINATOR.getByName(providerId);
+    const third = await restored.recordReliabilitySample({
+      operation: "chat",
+      sample: reliabilitySample(routeId, providerId, {
+        ok: true,
+        outcome: "success",
+        fallback: false,
+        firstVisibleLatencyMs: 80,
+        streamShape: "single_chunk",
+      }),
+    });
+    expect(third).toMatchObject({
+      attempts: 3,
+      successes: 2,
+      fallbackCount: 1,
+      streamSamples: 2,
+      progressiveSamples: 1,
+    });
+    await expect(env.CHAT_STORE.get(projectionKey, "json")).resolves.toMatchObject({
+      attempts: 3,
+      successes: 2,
+    });
+  });
+
+  it("serializes concurrent selector samples and keeps selector storage authoritative after eviction", async () => {
+    const providerId = `selector-quality-${crypto.randomUUID()}`;
+    const routeId = `reasoning-${crypto.randomUUID()}`;
+    const coordinator = env.PROVIDER_COORDINATOR.getByName(providerId);
+
+    await Promise.all([
+      coordinator.recordReliabilitySample({
+        operation: "skill_selection",
+        sample: reliabilitySample(routeId, providerId, {
+          ok: true,
+          outcome: "success",
+          fallback: false,
+        }),
+      }),
+      coordinator.recordReliabilitySample({
+        operation: "skill_selection",
+        sample: reliabilitySample(routeId, providerId, {
+          ok: false,
+          outcome: "protocol_error",
+          fallback: true,
+        }),
+      }),
+    ]);
+
+    const storageKey = `reliability:skill_selection:${encodeURIComponent(routeId)}`;
+    await expect(runInDurableObject(coordinator, async (_instance, state) => (
+      state.storage.get(storageKey)
+    ))).resolves.toMatchObject({
+      operation: "skill_selection",
+      attempts: 2,
+      successes: 1,
+      fallbackCount: 1,
+    });
+
+    const projectionKey = `route-provider-skill-selection:${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
+    await env.CHAT_STORE.put(projectionKey, JSON.stringify({
+      version: 1,
+      source: "real_task",
+      operation: "skill_selection",
+      routeId,
+      providerId,
+      attempts: 700,
+      successes: 700,
+      averageLatencyMs: 1,
+      lastOutcome: "success",
+      observedAt: new Date().toISOString(),
+      lastFallback: false,
+      fallbackCount: 0,
+    }));
+    await evictDurableObject(coordinator);
+
+    const restored = env.PROVIDER_COORDINATOR.getByName(providerId);
+    const third = await restored.recordReliabilitySample({
+      operation: "skill_selection",
+      sample: reliabilitySample(routeId, providerId, {
+        ok: true,
+        outcome: "success",
+        fallback: false,
+      }),
+    });
+    expect(third).toMatchObject({ attempts: 3, successes: 2, fallbackCount: 1 });
+    await expect(env.CHAT_STORE.get(projectionKey, "json")).resolves.toMatchObject({
+      attempts: 3,
+      successes: 2,
+    });
+  });
+
+  it("uses existing chat v2 and selector v1 KV projections as one-time seeds", async () => {
+    const providerId = `legacy-seed-${crypto.randomUUID()}`;
+    const chatRouteId = `chat-seed-${crypto.randomUUID()}`;
+    const selectorRouteId = `selector-seed-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(
+      `route-provider-reliability:${encodeURIComponent(chatRouteId)}:${encodeURIComponent(providerId)}`,
+      JSON.stringify({
+        version: 2,
+        source: "real_task",
+        routeId: chatRouteId,
+        providerId,
+        attempts: 4,
+        successes: 3,
+        averageLatencyMs: 150,
+        lastOutcome: "upstream_server",
+        observedAt: new Date().toISOString(),
+        lastFallback: true,
+        fallbackCount: 1,
+      }),
+    );
+    await env.CHAT_STORE.put(
+      `route-provider-skill-selection:${encodeURIComponent(selectorRouteId)}:${encodeURIComponent(providerId)}`,
+      JSON.stringify({
+        version: 1,
+        source: "real_task",
+        operation: "skill_selection",
+        routeId: selectorRouteId,
+        providerId,
+        attempts: 5,
+        successes: 2,
+        averageLatencyMs: 200,
+        lastOutcome: "protocol_error",
+        observedAt: new Date().toISOString(),
+        lastFallback: false,
+        fallbackCount: 1,
+      }),
+    );
+    const coordinator = env.PROVIDER_COORDINATOR.getByName(providerId);
+
+    await expect(coordinator.recordReliabilitySample({
+      operation: "chat",
+      sample: reliabilitySample(chatRouteId, providerId),
+    })).resolves.toMatchObject({ attempts: 5, successes: 4, fallbackCount: 1 });
+    await expect(coordinator.recordReliabilitySample({
+      operation: "skill_selection",
+      sample: reliabilitySample(selectorRouteId, providerId),
+    })).resolves.toMatchObject({ attempts: 6, successes: 3, fallbackCount: 1 });
+  });
 });
+
+function reliabilitySample(
+  routeId: string,
+  providerId: string,
+  overrides: Partial<ProviderReliabilitySample> = {},
+): ProviderReliabilitySample {
+  return {
+    version: 2,
+    source: "real_task",
+    routeId,
+    providerId,
+    ok: true,
+    outcome: "success",
+    observedAt: new Date().toISOString(),
+    latencyMs: 100,
+    fallback: false,
+    ...overrides,
+  };
+}
 
 async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

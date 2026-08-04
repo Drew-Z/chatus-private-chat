@@ -76,12 +76,13 @@ describe("provider stream runtime", () => {
     let capturedUrl = "";
     let capturedHeaders = new Headers();
     let capturedBody: Record<string, unknown> = {};
+    let capturedSignal: AbortSignal | null = null;
     const signal = new AbortController().signal;
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       capturedUrl = String(input);
       capturedHeaders = new Headers(init?.headers);
       capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      expect(init?.signal).toBe(signal);
+      capturedSignal = init?.signal as AbortSignal;
       return new Response(source, { headers: { "Content-Type": "text/event-stream" } });
     });
     let settled = false;
@@ -113,6 +114,8 @@ describe("provider stream runtime", () => {
     upstream?.close();
     await expect(new Response(attempt.body).text()).resolves.toContain("visible");
     expect(capturedUrl).toBe("https://provider.example/v1/chat/completions");
+    expect(capturedSignal).not.toBe(signal);
+    expect(capturedSignal?.aborted).toBe(false);
     expect(capturedHeaders.get("Authorization")).toBe("Bearer fixture-key");
     expect(capturedBody).toMatchObject({
       model: "fixture-model",
@@ -272,4 +275,141 @@ describe("provider stream runtime", () => {
     expect(explicitCancel).toBe("stop");
     expect(cancelled).toBeUndefined();
   });
+
+  it("aborts fetch construction that produces no response before the sixty-second deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let capturedSignal: AbortSignal | undefined;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const attempt = callProviderStream({
+        route: route("openai-chat"),
+        apiKey: "fixture-key",
+        usedUserKey: false,
+        messages: [{ role: "user", content: "Hello" }],
+        temperature: 0.5,
+        defaultMaxTokens: 4096,
+        fetch: async (_input, init) => {
+          capturedSignal = init?.signal as AbortSignal;
+          markStarted();
+          return await new Promise<Response>(() => undefined);
+        },
+      });
+
+      await started;
+      const rejection = expect(attempt).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await rejection;
+      expect(capturedSignal?.aborted).toBe(true);
+      expect((capturedSignal?.reason as Error)?.name).toBe("TimeoutError");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a pre-visible SSE reader at the sixty-second deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn();
+      const source = new ReadableStream<Uint8Array>({ cancel });
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const attempt = callProviderStream({
+        route: route("openai-chat"),
+        apiKey: "fixture-key",
+        usedUserKey: false,
+        messages: [{ role: "user", content: "Hello" }],
+        temperature: 0.5,
+        defaultMaxTokens: 4096,
+        fetch: async () => {
+          markStarted();
+          return new Response(source);
+        },
+      });
+
+      await started;
+      const rejection = expect(attempt).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await rejection;
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves parent cancellation before visible output", async () => {
+    const cancel = vi.fn();
+    const source = new ReadableStream<Uint8Array>({ cancel });
+    const controller = new AbortController();
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const attempt = callProviderStream({
+      route: route("openai-chat"),
+      apiKey: "fixture-key",
+      usedUserKey: false,
+      messages: [{ role: "user", content: "Hello" }],
+      temperature: 0.5,
+      defaultMaxTokens: 4096,
+      signal: controller.signal,
+      fetch: async () => {
+        markStarted();
+        return new Response(source);
+      },
+    });
+
+    await started;
+    controller.abort(new DOMException("cancelled by user", "AbortError"));
+
+    await expect(attempt).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("does not abort a committed legacy stream after the first-visible deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let upstream!: ReadableStreamDefaultController<Uint8Array>;
+      let capturedSignal: AbortSignal | undefined;
+      const source = new ReadableStream<Uint8Array>({
+        start(controller) { upstream = controller; },
+      });
+      const attemptPromise = callProviderStream({
+        route: route("openai-chat"),
+        apiKey: "fixture-key",
+        usedUserKey: false,
+        messages: [{ role: "user", content: "Hello" }],
+        temperature: 0.5,
+        defaultMaxTokens: 4096,
+        fetch: async (_input, init) => {
+          capturedSignal = init?.signal as AbortSignal;
+          return new Response(source);
+        },
+      });
+      upstream.enqueue(openAiEvent("first"));
+      const attempt = await attemptPromise;
+      expect(attempt.ok).toBe(true);
+      if (!attempt.ok) throw new Error("expected successful stream attempt");
+      const reader = attempt.body.getReader();
+      await expect(reader.read()).resolves.toMatchObject({ done: false });
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(capturedSignal?.aborted).toBe(false);
+      upstream.enqueue(openAiEvent("later"));
+      upstream.enqueue(encoder.encode("data: [DONE]\n\n"));
+      upstream.close();
+      await expect(readByteStream(reader)).resolves.toContain("later");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
+async function readByteStream(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let output = "";
+  while (true) {
+    const next = await reader.read();
+    if (next.done) return output + decoder.decode();
+    output += decoder.decode(next.value, { stream: true });
+  }
+}

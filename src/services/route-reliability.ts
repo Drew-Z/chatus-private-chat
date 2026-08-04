@@ -1,4 +1,5 @@
 import type { ProviderStreamShape } from "../contracts/provider";
+import type { ProviderCoordinator } from "../provider-coordinator";
 
 const ROUTE_RELIABILITY_PREFIX = "route-reliability:";
 const PROVIDER_ROUTE_RELIABILITY_PREFIX = "route-provider-reliability:";
@@ -6,8 +7,12 @@ const SKILL_SELECTION_TELEMETRY_PREFIX = "route-provider-skill-selection:";
 const ROUTE_RELIABILITY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_PROVIDER_QUALITY_SAMPLES = 1_000;
 
-type RouteReliabilityEnv = {
+type RouteReliabilityStoreEnv = {
   CHAT_STORE: KVNamespace;
+};
+
+type RouteReliabilityWriteEnv = RouteReliabilityStoreEnv & {
+  PROVIDER_COORDINATOR: DurableObjectNamespace<ProviderCoordinator>;
 };
 
 export type RouteReliabilityOutcome =
@@ -34,8 +39,7 @@ export type RouteReliabilityRecord = {
   streamShape?: ProviderStreamShape;
 };
 
-export type RouteReliabilityWrite = {
-  operation?: "chat" | "skill_selection";
+type CommonReliabilityWrite = {
   routeId: string;
   providerId?: string;
   ok: boolean;
@@ -44,10 +48,21 @@ export type RouteReliabilityWrite = {
   status?: number;
   error?: unknown;
   outcome?: RouteReliabilityOutcome;
-  usedUserKey?: boolean;
   firstVisibleLatencyMs?: number;
   streamShape?: ProviderStreamShape;
 };
+
+export type ChatReliabilityWrite = CommonReliabilityWrite & {
+  operation?: "chat";
+  usedUserKey: boolean;
+};
+
+export type SkillSelectionReliabilityWrite = CommonReliabilityWrite & {
+  operation: "skill_selection";
+  usedUserKey?: boolean;
+};
+
+export type RouteReliabilityWrite = ChatReliabilityWrite | SkillSelectionReliabilityWrite;
 
 export type SkillSelectionTelemetryRecord = {
   version: 1;
@@ -84,15 +99,30 @@ export type ProviderRouteReliabilityRecord = {
   lastStreamShape?: ProviderStreamShape;
 };
 
+export type ProviderReliabilitySample = {
+  version: 2;
+  source: "real_task";
+  routeId: string;
+  providerId: string;
+  ok: boolean;
+  outcome: RouteReliabilityOutcome;
+  observedAt: string;
+  latencyMs: number;
+  fallback: boolean;
+  httpStatusClass?: "4xx" | "5xx";
+  firstVisibleLatencyMs?: number;
+  streamShape?: ProviderStreamShape;
+};
+
 export async function recordRouteReliability(
-  env: RouteReliabilityEnv,
+  env: RouteReliabilityWriteEnv,
   args: RouteReliabilityWrite,
 ): Promise<void> {
   if (args.operation === "skill_selection") {
     await recordSkillSelectionTelemetry(env, args);
     return;
   }
-  if (args.usedUserKey && (args.status === 401 || args.status === 403)) return;
+  if (args.usedUserKey) return;
   const outcome = args.outcome || classifyRouteReliability(args.ok, args.status, args.error);
   const streamEvidence = normalizeStreamEvidenceWrite(args);
   const record: RouteReliabilityRecord = {
@@ -111,9 +141,7 @@ export async function recordRouteReliability(
     const writes: Promise<void>[] = [
       env.CHAT_STORE.put(routeReliabilityKey(args.routeId), JSON.stringify(record)),
     ];
-    if (args.providerId) {
-      writes.push(recordProviderRouteReliability(env, args, record));
-    }
+    if (args.providerId) writes.push(recordProviderRouteReliability(env, args, record));
     await Promise.all(writes);
   } catch {
     console.warn(JSON.stringify({
@@ -126,7 +154,7 @@ export async function recordRouteReliability(
 }
 
 export async function loadSkillSelectionTelemetry(
-  env: RouteReliabilityEnv,
+  env: RouteReliabilityStoreEnv,
   routeId: string,
   providerId: string,
 ): Promise<SkillSelectionTelemetryRecord | null> {
@@ -144,7 +172,7 @@ export async function loadSkillSelectionTelemetry(
 }
 
 export async function loadProviderRouteReliability(
-  env: RouteReliabilityEnv,
+  env: RouteReliabilityStoreEnv,
   routeId: string,
   providerId: string,
 ): Promise<ProviderRouteReliabilityRecord | null> {
@@ -172,7 +200,7 @@ export function isRecentProviderRouteReliability(
 }
 
 export async function loadRouteReliability(
-  env: RouteReliabilityEnv,
+  env: RouteReliabilityStoreEnv,
   routeId: string,
 ): Promise<RouteReliabilityRecord | null> {
   const key = routeReliabilityKey(routeId);
@@ -213,51 +241,38 @@ function routeReliabilityKey(routeId: string): string {
   return `${ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}`;
 }
 
-function providerRouteReliabilityKey(routeId: string, providerId: string): string {
+export function providerRouteReliabilityKey(routeId: string, providerId: string): string {
   return `${PROVIDER_ROUTE_RELIABILITY_PREFIX}${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
 }
 
-function skillSelectionTelemetryKey(routeId: string, providerId: string): string {
+export function skillSelectionTelemetryKey(routeId: string, providerId: string): string {
   return `${SKILL_SELECTION_TELEMETRY_PREFIX}${encodeURIComponent(routeId)}:${encodeURIComponent(providerId)}`;
 }
 
 async function recordSkillSelectionTelemetry(
-  env: RouteReliabilityEnv,
-  args: RouteReliabilityWrite,
+  env: RouteReliabilityWriteEnv,
+  args: SkillSelectionReliabilityWrite,
 ): Promise<void> {
   const providerId = args.providerId?.trim() || "";
   if (!providerId) return;
   const outcome = args.outcome || classifyRouteReliability(args.ok, args.status, args.error);
   const latencyMs = Math.max(0, Math.min(600_000, Date.now() - args.startedAt));
   try {
-    const previous = await loadSkillSelectionTelemetry(env, args.routeId, providerId);
-    const previousAttempts = previous?.attempts || 0;
-    const sampleWeight = Math.min(previousAttempts, MAX_PROVIDER_QUALITY_SAMPLES - 1);
-    const attempts = Math.min(MAX_PROVIDER_QUALITY_SAMPLES, sampleWeight + 1);
-    const successes = Math.min(
-      attempts,
-      Math.round((previousAttempts > 0 ? (previous?.successes || 0) / previousAttempts : 0) * sampleWeight)
-        + (args.ok ? 1 : 0),
-    );
-    const record: SkillSelectionTelemetryRecord = {
-      version: 1,
-      source: "real_task",
+    await env.PROVIDER_COORDINATOR.getByName(providerId).recordReliabilitySample({
       operation: "skill_selection",
-      routeId: args.routeId,
-      providerId,
-      attempts,
-      successes,
-      averageLatencyMs: Math.round((((previous?.averageLatencyMs || 0) * sampleWeight) + latencyMs) / attempts),
-      lastOutcome: outcome,
-      observedAt: new Date().toISOString(),
-      lastFallback: args.fallback,
-      fallbackCount: Math.min(
-        MAX_PROVIDER_QUALITY_SAMPLES,
-        (previous?.fallbackCount || 0) + (args.fallback ? 1 : 0),
-      ),
-      httpStatusClass: toHttpStatusClass(args.status),
-    };
-    await env.CHAT_STORE.put(skillSelectionTelemetryKey(args.routeId, providerId), JSON.stringify(record));
+      sample: {
+        version: 2,
+        source: "real_task",
+        routeId: args.routeId,
+        providerId,
+        ok: args.ok,
+        outcome,
+        observedAt: new Date().toISOString(),
+        latencyMs,
+        fallback: args.fallback,
+        httpStatusClass: toHttpStatusClass(args.status),
+      },
+    });
   } catch {
     console.warn(JSON.stringify({
       level: "warn",
@@ -269,7 +284,7 @@ async function recordSkillSelectionTelemetry(
   }
 }
 
-function normalizeSkillSelectionTelemetry(
+export function normalizeSkillSelectionTelemetry(
   value: unknown,
   routeId: string,
   providerId: string,
@@ -326,7 +341,7 @@ function normalizeSkillSelectionTelemetry(
   };
 }
 
-async function deleteInvalidReliabilityRecord(env: RouteReliabilityEnv, key: string): Promise<void> {
+async function deleteInvalidReliabilityRecord(env: RouteReliabilityStoreEnv, key: string): Promise<void> {
   try {
     await env.CHAT_STORE.delete(key);
   } catch {
@@ -335,13 +350,58 @@ async function deleteInvalidReliabilityRecord(env: RouteReliabilityEnv, key: str
 }
 
 async function recordProviderRouteReliability(
-  env: RouteReliabilityEnv,
-  args: RouteReliabilityWrite & { providerId?: string },
+  env: RouteReliabilityWriteEnv,
+  args: ChatReliabilityWrite,
   latest: RouteReliabilityRecord,
 ): Promise<void> {
   const providerId = args.providerId?.trim() || "";
   if (!providerId) return;
-  const previous = await loadProviderRouteReliability(env, args.routeId, providerId);
+  await env.PROVIDER_COORDINATOR.getByName(providerId).recordReliabilitySample({
+    operation: "chat",
+    sample: {
+      version: 2,
+      source: "real_task",
+      routeId: args.routeId,
+      providerId,
+      ok: latest.ok,
+      outcome: latest.outcome,
+      observedAt: latest.observedAt,
+      latencyMs: latest.latencyMs,
+      fallback: latest.fallback,
+      httpStatusClass: latest.httpStatusClass,
+      firstVisibleLatencyMs: latest.firstVisibleLatencyMs,
+      streamShape: latest.streamShape,
+    },
+  });
+}
+
+export function normalizeProviderReliabilitySample(value: unknown): ProviderReliabilitySample | null {
+  if (!isRecord(value)) return null;
+  const routeId = normalizeAggregateId(value.routeId);
+  const providerId = normalizeAggregateId(value.providerId);
+  if (!routeId || !providerId) return null;
+  const normalized = normalizeRouteReliability(value, routeId);
+  if (!normalized) return null;
+  return {
+    version: 2,
+    source: "real_task",
+    routeId,
+    providerId,
+    ok: normalized.ok,
+    outcome: normalized.outcome,
+    observedAt: normalized.observedAt,
+    latencyMs: normalized.latencyMs,
+    fallback: normalized.fallback,
+    httpStatusClass: normalized.httpStatusClass,
+    firstVisibleLatencyMs: normalized.firstVisibleLatencyMs,
+    streamShape: normalized.streamShape,
+  };
+}
+
+export function reduceSkillSelectionTelemetry(
+  previous: SkillSelectionTelemetryRecord | null,
+  latest: ProviderReliabilitySample,
+): SkillSelectionTelemetryRecord {
   const previousAttempts = previous?.attempts || 0;
   const sampleWeight = Math.min(previousAttempts, MAX_PROVIDER_QUALITY_SAMPLES - 1);
   const attempts = Math.min(MAX_PROVIDER_QUALITY_SAMPLES, sampleWeight + 1);
@@ -350,25 +410,59 @@ async function recordProviderRouteReliability(
     Math.round((previousAttempts > 0 ? (previous?.successes || 0) / previousAttempts : 0) * sampleWeight)
       + (latest.ok ? 1 : 0),
   );
-  const averageLatencyMs = Math.round(
-    (((previous?.averageLatencyMs || 0) * sampleWeight) + latest.latencyMs) / attempts,
-  );
-  const streamEvidence = aggregateProviderStreamEvidence(previous, latest, successes);
-  const record: ProviderRouteReliabilityRecord = {
-    version: 2,
+  return {
+    version: 1,
     source: "real_task",
-    routeId: args.routeId,
-    providerId,
+    operation: "skill_selection",
+    routeId: latest.routeId,
+    providerId: latest.providerId,
     attempts,
     successes,
-    averageLatencyMs,
+    averageLatencyMs: Math.round(
+      (((previous?.averageLatencyMs || 0) * sampleWeight) + latest.latencyMs) / attempts,
+    ),
     lastOutcome: latest.outcome,
     observedAt: latest.observedAt,
     lastFallback: latest.fallback,
-    fallbackCount: Math.min(MAX_PROVIDER_QUALITY_SAMPLES, (previous?.fallbackCount || 0) + (latest.fallback ? 1 : 0)),
-    ...streamEvidence,
+    fallbackCount: Math.min(
+      MAX_PROVIDER_QUALITY_SAMPLES,
+      (previous?.fallbackCount || 0) + (latest.fallback ? 1 : 0),
+    ),
+    httpStatusClass: latest.httpStatusClass,
   };
-  await env.CHAT_STORE.put(providerRouteReliabilityKey(args.routeId, providerId), JSON.stringify(record));
+}
+
+export function reduceProviderRouteReliability(
+  previous: ProviderRouteReliabilityRecord | null,
+  latest: ProviderReliabilitySample,
+): ProviderRouteReliabilityRecord {
+  const previousAttempts = previous?.attempts || 0;
+  const sampleWeight = Math.min(previousAttempts, MAX_PROVIDER_QUALITY_SAMPLES - 1);
+  const attempts = Math.min(MAX_PROVIDER_QUALITY_SAMPLES, sampleWeight + 1);
+  const successes = Math.min(
+    attempts,
+    Math.round((previousAttempts > 0 ? (previous?.successes || 0) / previousAttempts : 0) * sampleWeight)
+      + (latest.ok ? 1 : 0),
+  );
+  return {
+    version: 2,
+    source: "real_task",
+    routeId: latest.routeId,
+    providerId: latest.providerId,
+    attempts,
+    successes,
+    averageLatencyMs: Math.round(
+      (((previous?.averageLatencyMs || 0) * sampleWeight) + latest.latencyMs) / attempts,
+    ),
+    lastOutcome: latest.outcome,
+    observedAt: latest.observedAt,
+    lastFallback: latest.fallback,
+    fallbackCount: Math.min(
+      MAX_PROVIDER_QUALITY_SAMPLES,
+      (previous?.fallbackCount || 0) + (latest.fallback ? 1 : 0),
+    ),
+    ...aggregateProviderStreamEvidence(previous, latest, successes),
+  };
 }
 
 function normalizeRouteReliability(value: unknown, routeId: string): RouteReliabilityRecord | null {
@@ -405,7 +499,7 @@ function normalizeRouteReliability(value: unknown, routeId: string): RouteReliab
   };
 }
 
-function normalizeProviderRouteReliability(
+export function normalizeProviderRouteReliability(
   value: unknown,
   routeId: string,
   providerId: string,
@@ -461,7 +555,7 @@ function normalizeProviderRouteReliability(
 }
 
 function normalizeStreamEvidenceWrite(
-  value: Pick<RouteReliabilityWrite, "ok" | "firstVisibleLatencyMs" | "streamShape">,
+  value: Pick<ChatReliabilityWrite, "ok" | "firstVisibleLatencyMs" | "streamShape">,
 ): Pick<RouteReliabilityRecord, "firstVisibleLatencyMs" | "streamShape"> {
   if (
     !value.ok
@@ -633,6 +727,11 @@ function toHttpStatusClass(status: number | undefined): "4xx" | "5xx" | undefine
   if (status >= 500) return "5xx";
   if (status >= 400) return "4xx";
   return undefined;
+}
+
+function normalizeAggregateId(value: unknown): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 160 || value.trim() !== value) return "";
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

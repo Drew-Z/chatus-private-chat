@@ -20,6 +20,7 @@ import {
   type ConversationSkillMode,
   type TeamAgentProps,
 } from "./contracts/agent";
+import { agentErrorMessage } from "./contracts/agent-error";
 import type {
   CapabilityAssignment,
   CapabilityToolExecutionResult,
@@ -107,6 +108,7 @@ import {
   createQuotaAdmissionService,
   type QuotaBucket,
   type QuotaUsageResult,
+  type TurnAdmission,
 } from "./services/quota-admission";
 import {
   createManagedSecretService,
@@ -6111,6 +6113,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
               ok: true,
               fallback,
               startedAt,
+              usedUserKey: route.credential.usedUserKey,
             });
             await recordChatMetric(env, { kind: "success", label: session.label, routeId, fallback });
           },
@@ -6278,22 +6281,67 @@ export async function prepareTeamAgentTurn(
     };
   }
 
+  let admission: TurnAdmission | undefined;
+  const admitOnce = async (): Promise<TurnAdmission> => {
+    if (!admission) {
+      admission = await quotaAdmissionService(env).admitTurn(
+        session,
+        access,
+        input.continuation !== true,
+      );
+    }
+    return admission;
+  };
+  const rejectAdmission = async (
+    rejected: Extract<TurnAdmission, { ok: false }>,
+  ): Promise<PreparedTeamAgentTurn> => {
+    if (rejected.error === "rate_limited") {
+      await recordChatMetric(env, { kind: "rate_limited", label: session.label });
+    }
+    return {
+      ok: false,
+      error: rejected.error,
+      message: agentErrorMessage(rejected.error),
+      status: 429,
+    };
+  };
+  const cancelTurn = async (): Promise<PreparedTeamAgentTurn> => {
+    if (admission?.ok) await admission.release();
+    return {
+      ok: false,
+      error: "request_cancelled",
+      message: agentErrorMessage("request_cancelled"),
+      status: 499,
+    };
+  };
+
+  if (input.abortSignal?.aborted) return cancelTurn();
+
   let skillSelection: AgentSkillSelectionMetadata | undefined;
   let skillSnapshotIds: string[] | undefined;
   let selectedSkillIds = input.skillIds || [];
   if (session.kind === "member" && input.skillMode === "automatic" && selectedPublicRoute) {
+    const availableSkills = getPublicCapabilities(config, access.user).skills;
+    if (availableSkills.length) {
+      const selectorAdmission = await admitOnce();
+      if (!selectorAdmission.ok) return rejectAdmission(selectorAdmission);
+      if (input.abortSignal?.aborted) return cancelTurn();
+    }
     const selectorAttempt = await runAutomaticSkillSelector(env, {
       config,
       access,
       routeId: selectedPublicRoute.id,
       userApiKey: input.userApiKey?.trim() || "",
       latestUserText: latestPrompt?.text || "",
+      availableSkills,
       signal: input.abortSignal,
     });
+    if (input.abortSignal?.aborted) return cancelTurn();
 
     config = await loadAppConfig(env);
     access = await getRouteAccess(config, session, env);
     if (!access.routes.length) {
+      if (admission?.ok) await admission.release();
       return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
     }
     selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
@@ -6309,6 +6357,7 @@ export async function prepareTeamAgentTurn(
     skillSelection = resolved.metadata;
     if (resolved.metadata.source === "model") skillSnapshotIds = resolved.skillIds;
   }
+  if (input.abortSignal?.aborted) return cancelTurn();
   const selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
   const messages = await buildMessagesWithSystem(
     env,
@@ -6337,7 +6386,9 @@ export async function prepareTeamAgentTurn(
       && (!(toolDefinitions.length || memoryToolEnabled) || route.supportsTools)
     ),
   });
+  if (input.abortSignal?.aborted) return cancelTurn();
   if (prepared.userKeyRequiredRouteId) {
+    if (admission?.ok) await admission.release();
     return {
       ok: false,
       error: "user_api_key_required",
@@ -6367,6 +6418,7 @@ export async function prepareTeamAgentTurn(
   }
 
   if (!candidates.length) {
+    if (admission?.ok) await admission.release();
     await recordChatMetric(env, { kind: "failure", label: session.label });
     return {
       ok: false,
@@ -6377,18 +6429,10 @@ export async function prepareTeamAgentTurn(
     };
   }
 
-  const admission = await quotaAdmissionService(env).admitTurn(session, access, input.continuation !== true);
-  if (!admission.ok) {
-    if (admission.error === "rate_limited") {
-      await recordChatMetric(env, { kind: "rate_limited", label: session.label });
-    }
-    return {
-      ok: false,
-      error: admission.error,
-      message: admission.error === "concurrent_turn" ? "当前访客会话已有任务正在运行" : "额度已用完",
-      status: 429,
-    };
-  }
+  if (input.abortSignal?.aborted) return cancelTurn();
+  const turnAdmission = await admitOnce();
+  if (!turnAdmission.ok) return rejectAdmission(turnAdmission);
+  if (input.abortSignal?.aborted) return cancelTurn();
 
   let streamFailureRecorded = false;
   const recordStreamFailure = async () => {
@@ -6399,15 +6443,19 @@ export async function prepareTeamAgentTurn(
 
   const model = createFallbackLanguageModel(candidates, {
     onSuccess: async (event) => {
-      await recordRouteReliability(env, {
-        routeId: event.routeId,
-        providerId: event.providerId,
-        ok: true,
-        fallback: event.fallback,
-        startedAt: event.startedAt,
-        firstVisibleLatencyMs: event.firstVisibleLatencyMs,
-        streamShape: event.streamShape,
-      });
+      const credential = credentials.get(routeProviderKey(event.routeId, event.providerId));
+      if (credential) {
+        await recordRouteReliability(env, {
+          routeId: event.routeId,
+          providerId: event.providerId,
+          ok: true,
+          fallback: event.fallback,
+          startedAt: event.startedAt,
+          usedUserKey: credential.usedUserKey,
+          firstVisibleLatencyMs: event.firstVisibleLatencyMs,
+          streamShape: event.streamShape,
+        });
+      }
       await recordChatMetric(env, {
         kind: "success",
         label: session.label,
@@ -6417,17 +6465,19 @@ export async function prepareTeamAgentTurn(
     },
     onFailure: async (event) => {
       const credential = credentials.get(routeProviderKey(event.routeId, event.providerId));
-      await recordRouteReliability(env, {
-        routeId: event.routeId,
-        providerId: event.providerId,
-        ok: false,
-        fallback: event.fallback,
-        startedAt: event.startedAt,
-        status: event.status,
-        error: event.error,
-        outcome: event.protocolError ? "protocol_error" : undefined,
-        usedUserKey: credential?.usedUserKey,
-      });
+      if (credential) {
+        await recordRouteReliability(env, {
+          routeId: event.routeId,
+          providerId: event.providerId,
+          ok: false,
+          fallback: event.fallback,
+          startedAt: event.startedAt,
+          status: event.status,
+          error: event.error,
+          outcome: event.protocolError ? "protocol_error" : undefined,
+          usedUserKey: credential.usedUserKey,
+        });
+      }
       await recordChatMetric(env, { kind: "route_error", label: session.label, routeId: event.routeId });
     },
   });
@@ -6443,13 +6493,13 @@ export async function prepareTeamAgentTurn(
     runTool: toolRuntime.runTool,
     closeTools: toolRuntime.close,
     maxToolSteps: MAX_TOOL_ROUNDS,
-    remaining: admission.remaining,
+    remaining: turnAdmission.remaining,
     routeId: selectedPublicRoute?.id || selectedRoute,
     skillIds: selectedSkills.map(({ id }) => id),
     skillSelection,
     skillSnapshotIds,
     recordStreamFailure,
-    releaseTurn: admission.release,
+    releaseTurn: turnAdmission.release,
   };
 }
 
@@ -6466,10 +6516,11 @@ async function runAutomaticSkillSelector(
     routeId: string;
     userApiKey: string;
     latestUserText: string;
+    availableSkills: ReturnType<typeof getPublicCapabilities>["skills"];
     signal?: AbortSignal;
   },
 ): Promise<AutomaticSkillSelectorAttempt> {
-  const availableSkills = getPublicCapabilities(args.config, args.access.user).skills;
+  const availableSkills = args.availableSkills;
   if (!availableSkills.length) return { reason: "no_valid_skills" };
 
   const controller = new AbortController();
@@ -7698,6 +7749,7 @@ async function completeWithUserRoute(
           ok: true,
           fallback,
           startedAt,
+          usedUserKey: route.credential.usedUserKey,
         });
         return { ok: true, text: text.trim(), routeId };
       }
@@ -7708,6 +7760,7 @@ async function completeWithUserRoute(
         outcome: "protocol_error",
         fallback,
         startedAt,
+        usedUserKey: route.credential.usedUserKey,
       });
       lastError = "empty completion";
       lastRouteId = routeId;
@@ -8197,6 +8250,7 @@ async function runCapabilityLoopInner(
         ok: true,
         fallback: selected.fallback,
         startedAt: selected.startedAt,
+        usedUserKey: selected.usedUserKey,
       });
       await recordChatMetric(args.env, {
         kind: "success",

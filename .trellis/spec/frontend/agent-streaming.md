@@ -373,48 +373,95 @@ messages: await convertToModelMessages(this.messages, { tools })
 - HTTP `400`/`422` and BYOK `401`/`403` are terminal. Retryable upstream, timeout, protocol-before-output, and network failures may advance to an allowed configured fallback.
 - Preserve candidates by exact `(logicalRouteId, providerId)` pair. The same provider may appear again for a different logical fallback model because a failure can be model-specific; do not globally deduplicate the fallback plan by provider ID.
 
-## Provider Capacity Contract
+## Scenario: Turn Admission, Provider Capacity, And Reliability Authority
+
+### 1. Scope / Trigger
+
+Use this contract when changing Agent admission, Automatic Skill selection, Provider capacity, passive route quality, first-visible stream telemetry, or the `ProviderCoordinator` storage boundary.
+
+### 2. Signatures
+
+```typescript
+admitOnce(): Promise<TurnAdmission>
+ProviderCoordinator.recordReliabilitySample({ operation: "chat" | "skill_selection", sample })
+createProviderFirstVisibleDeadline(parentSignal?): { signal, commit, dispose }
+```
+
+```text
+ProviderCoordinator instance = providerId
+reliability:chat:<encoded routeId>                 # authoritative DO record
+reliability:skill_selection:<encoded routeId>      # authoritative DO record
+route-provider-reliability:<routeId>:<providerId>  # KV projection and migration seed
+route-provider-skill-selection:<routeId>:<providerId> # KV projection and migration seed
+```
+
+### 3. Contracts
 
 - Capacity is provider-scoped across every offered model and every teammate. `exclusive` has capacity one, `bounded` uses `maxConcurrent`, and `unlimited` bypasses lease acquisition.
-- Try ordered candidates without waiting first. Skip an occupied provider while another eligible candidate is immediately available; wait only when every eligible candidate is occupied.
-- The all-busy wait uses one shared deadline of at most 10 seconds. The first granted lease wins and losing waits are cancelled; timeout returns the stable busy response.
-- During one availability-selection round, enqueue at most one waiter per provider even when later logical fallbacks reuse that provider. After a failed attempt releases its lease, a later model on the same provider may enter a new selection round.
-- A repeated acquisition for the same request ID while queued shares the original waiter promise; it must never create a second lease.
-- Hold a streaming lease until success, upstream failure, cancellation, or client disconnect. Lease TTL and coordinator alarms recover abandoned capacity without interrupting an active request.
-- On Durable Object restart, discard malformed and expired lease records, keep at most one lease per token and request ID, retain the longest valid duplicate, rewrite normalized storage, and schedule the alarm for the earliest surviving expiry.
+- Member turn concurrency intentionally remains unlimited. Daily/minute message buckets own member fairness, the existing guest lease prevents duplicate guest turns, and Provider leases own upstream capacity. Do not add a member lease, configuration field, or silent limit without measured saturation and an explicit product limit.
+- Try ordered candidates without waiting first. The all-busy wait uses one shared deadline of at most 10 seconds; during one selection round enqueue at most one waiter per Provider, and repeated acquisition for the same request ID reuses the original waiter.
+- Hold a streaming lease until success, upstream failure, cancellation, or client disconnect. On restart, normalize leases and schedule the earliest surviving expiry.
+- Quota is consumed once per admitted user message, not per selector, fallback attempt, or continuation. An eligible Automatic turn calls `admitOnce()` before selector Provider work and reuses that admission for the main answer. A pre-aborted turn consumes nothing; parent cancellation during selection releases capacity and prevents main-model preparation.
+- Every shared chat reliability call explicitly supplies `usedUserKey`. Any BYOK success or failure class is excluded from both `route-reliability:` and exact route/provider quality. Selector attempts remain allowed only in the separate redacted `skill_selection` telemetry keyspace.
+- `ProviderCoordinator`, addressed by `providerId`, is the single writer for bounded chat and selector aggregates. Durable Object storage is authoritative; existing KV records seed only the first missing DO record and remain read-compatible projections for the route planner and admin API. A KV mirror failure never rolls back the DO aggregate or changes chat behavior.
+- Provider aggregate records retain at most 1,000 samples and satisfy `progressiveSamples <= streamSamples <= successes <= attempts`. Administrator priority remains authoritative; recent passive quality breaks equal-priority ties only, and active probes are forbidden.
+- A shared 60-second boundary starts immediately before each streaming Provider request and covers construction plus pre-visible reads. Text/reasoning/tool/source/file/approval parts commit Agent fallback; legacy SSE commits on non-empty text. Commitment clears the deadline timer but preserves parent cancellation and never ends an otherwise valid long stream.
+- `firstVisibleLatencyMs` still measures only the first non-empty text/reasoning delta. Telemetry forwards stream parts unchanged and never records prompts, completions, tool payloads, raw chunks, Provider bodies, credentials, or member identifiers.
 
-## Reliability And Quota
+### 4. Validation & Error Matrix
 
-- Quota is consumed once during turn preparation, not once per fallback attempt.
-- Automatic Skill selection performs no quota admission. The main turn remains the single user-message quota owner, including continuation semantics.
-- Every real offering attempt records redacted passive reliability keyed by the exact `(logicalRouteId, providerId)` pair. BYOK authentication failures do not overwrite shared provider quality.
-- Selector attempts record redacted `skill_selection` telemetry under `route-provider-skill-selection:`. These records may describe offering fallback and latency but must never enter `route-provider-reliability:` or affect chat ordering/cost aggregates.
-- Administrator priority is authoritative. Passive real-task success rate and latency order only offerings at the same priority; no active probe may influence this ordering.
-- A successful logical-route fallback records the selected route as `fallback: true`; exhausted or post-output failures also record the overall request failure.
-- Telemetry callbacks are best effort and must never alter stream success or failure.
+| Condition | Required result |
+| --- | --- |
+| Automatic quota exhausted | Stable quota error and zero selector/main Provider requests |
+| Parent cancelled before admission | `request_cancelled`, no charge, no Provider request |
+| Parent cancelled during selector | Abort selector, release lease, no fallback or main model |
+| BYOK success, auth, rate-limit, server, timeout, protocol, or network sample | No shared logical or exact quality mutation |
+| Concurrent samples for one Provider/route | Preserve every input in the bounded DO aggregate and KV projection |
+| DO record exists but KV projection differs | Continue from DO authority and repair the projection on the next sample |
+| KV projection write fails | Keep the authoritative DO sample; log only bounded IDs and continue chat |
+| No visible output for 60 seconds | Abort upstream and allow only existing pre-output fallback |
+| Parent cancellation before visible output | Abort without fallback |
+| Visible output then stream exceeds 60 seconds | Continue; the first-visible timer is cleared |
 
-### First-visible Latency And Stream Shape
+### 5. Good/Base/Bad Cases
 
-- Observe provider delivery at the `LanguageModelV3` committed-stream boundary before UI-message transformation. Forward every provider part unchanged; telemetry must not split, merge, delay, or fabricate deltas.
-- First-visible latency is the bounded elapsed time from provider-attempt start to the first non-empty `text-delta` or `reasoning-delta`. Metadata-only, source, file, tool, and approval events still commit fallback selection but do not become text-stream samples.
-- A successfully finished text stream with one visible text/reasoning delta is `single_chunk`; two or more are `progressive`. Cancellation and any failure, including a post-output failure, never increment successful stream-shape samples.
-- Per `(logicalRouteId, providerId)` version-2 records retain at most 1,000 bounded samples plus average/latest first-visible latency, latest shape, and progressive sample count. Stored and projected aggregates must satisfy `progressiveSamples <= streamSamples <= successes <= attempts`; when the bounded success history shrinks after a failure, stream counters shrink proportionally so the writer cannot create a record that its own reader rejects. Version-1 development records are invalidated and deleted on read rather than migrated.
-- The admin API and exact client decoder expose counts, timing, and the two shape literals only. They must never expose prompts, completions, tool payloads, raw chunks, provider response metadata, or credentials.
-- A single-chunk result means the upstream exposed one visible delta; the client must keep the truthful waiting state and render that delta normally instead of simulating token streaming.
+- Good: one Automatic user message is admitted before selector I/O, uses one of several Provider offerings, streams an answer, and consumes exactly one quota unit.
+- Good: two concurrent chat samples reach one ProviderCoordinator, both survive eviction, and a stale KV projection cannot replace the DO aggregate.
+- Base: a valid legacy KV aggregate seeds an empty DO record once, after which all mutations use DO state while readers keep the same KV key.
+- Bad: read-modify-write aggregate counters directly in KV, let any BYOK outcome influence shared ordering, leave a first-visible timer active after commitment, or silently reject parallel member conversations.
 
-## Required Tests
+### 6. Tests Required
 
-- Unit-test pre-output fallback, post-output route locking, terminal failure classes, cancellation, and telemetry callback isolation.
-- Assert a retryable failure may advance to a different logical model on the same provider, while one lease-selection round still creates at most one candidate per provider.
-- Test lease/error lifecycle directly in the Worker isolate. Do not pass an intentionally errored response body across the workerd RPC boundary merely to assert rejection; workerd reports that expected stream failure as an uncaught isolate warning even when the host assertion catches it.
-- Integration-test `prepareTeamAgentTurn -> streamText -> UIMessageStream` with local fake provider responses; no test may contact a model channel.
-- For progressive acceptance, gate the fake provider stream: release one visible delta, assert the downstream UI-message reader consumes it, then release the later delta and finish. Reading only the final concatenated body does not prove incremental delivery.
-- Seed an impossible aggregate with `streamSamples > successes` and assert both the storage normalizer and exact client decoder reject it; at the 1,000-sample cap, add a failure and assert stream counters remain within the reduced success count.
-- Seed malformed, expired, and duplicate persisted leases, evict the coordinator, and assert normalized capacity, storage, idempotent request recovery, and the earliest alarm.
-- Pass the Agent request abort signal through to `streamText`.
-- Pass the Agent abort signal into Automatic Skill selection, but retain the selector's independent five-second hard boundary and ignore late success from a non-cooperative dependency.
-- Assert selector and main-answer telemetry use different storage keys, selector attempts do not change chat reliability, and daily/minute quota increments exactly once.
+- Unit-test pre-output fallback, post-output route locking, terminal failure classes, parent cancellation, the 60-second first-visible boundary, and telemetry callback isolation with fake Providers only.
+- Team Agent tests prove exhausted Automatic quota creates zero selector/main calls, one admission covers selector plus answer, continuations are free, pre-admission cancellation is free, and selector cancellation releases the lease with zero main calls.
+- Parameterize every BYOK success/failure class and assert both shared logical and exact route/provider records remain byte-for-byte unchanged while selector telemetry still records a redacted attempt.
+- Concurrently write two chat and two selector samples to one Provider/route, evict the Durable Object, and assert exact attempts, successes, fallback, latency/shape invariants, and DO authority over a changed KV projection.
+- Seed malformed and valid legacy aggregates separately; invalid data fails closed, valid v2 chat/v1 selector data seeds once, and telemetry or mirror failure cannot fail chat.
+- Integration-test `prepareTeamAgentTurn -> streamText -> UIMessageStream`; gate progressive fake output rather than reading only the final concatenated body. No test may contact a live model or MCP server.
 - Keep `chatRecovery` configured as a class field, never inside `onStart()`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await runAutomaticSkillSelector(input);
+const admission = await admitTurn();
+const previous = await kv.get(key);
+await kv.put(key, JSON.stringify(reduce(previous, sample)));
+```
+
+#### Correct
+
+```typescript
+const admission = await admitOnce();
+if (!admission.ok) return rejectAdmission(admission);
+await runAutomaticSkillSelector(input);
+await env.PROVIDER_COORDINATOR.getByName(providerId)
+  .recordReliabilitySample({ operation: "chat", sample });
+```
+
+Admission precedes auxiliary Provider work and is reused by the answer; one provider-scoped Durable Object serializes every aggregate mutation while KV remains a compatibility projection.
 
 ## Scenario: Durable Message Branches And Safe Truncation Metadata
 
