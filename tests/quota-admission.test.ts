@@ -63,6 +63,22 @@ describe("quota admission service", () => {
     expect(harness.getBucket).toHaveBeenCalledTimes(1);
   });
 
+  it("admits concurrent member turns without acquiring the guest lease", async () => {
+    const personal = createBucket();
+    const harness = createHarness({ bill: personal }, 4);
+
+    const [first, second] = await Promise.all([
+      harness.service.admitTurn(MEMBER, { user: {} }),
+      harness.service.admitTurn(MEMBER, { user: {} }),
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(personal.acquireGuestTurn).not.toHaveBeenCalled();
+    expect(personal.releaseGuestTurn).not.toHaveBeenCalled();
+    expect(personal.consumeLimits).toHaveBeenCalledTimes(2);
+  });
+
   it("refunds the personal bucket when the guest source bucket rejects admission", async () => {
     const personal = createBucket();
     const source = createBucket({

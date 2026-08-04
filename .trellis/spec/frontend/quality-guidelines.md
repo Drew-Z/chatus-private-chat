@@ -65,6 +65,92 @@ git diff --check
 
 - Run `npm run check:frontend` before `npm test`, not concurrently. The Vite build replaces generated files under `public/react-chat/` while Worker asset tests read that directory; parallel execution can create transient legacy-shell or missing-fingerprinted-asset failures.
 
+## Scenario: Vitest Project Split And Istanbul Coverage
+
+### 1. Scope / Trigger
+
+Use this contract when adding or moving a Vitest file, changing Cloudflare runtime imports, changing `vitest.config.ts`, changing coverage dependencies or floors, or changing the PR Vitest command/artifact.
+
+### 2. Signatures
+
+```text
+npm test                         # uninstrumented local feedback and benchmark
+npm run test:coverage            # one complete Istanbul-instrumented run
+npm test -- --coverage           # PR quality Vitest command
+npx vitest list --project node --filesOnly --json
+npx vitest list --project workers --filesOnly --json
+```
+
+```typescript
+WORKERS_TEST_FILES: readonly string[]
+TRANSITIVE_WORKERS_TEST_FILES: readonly string[]
+TEST_COVERAGE_THRESHOLDS = { statements: 60, branches: 57, functions: 55, lines: 65 }
+```
+
+### 3. Contracts
+
+- The root configuration owns two named projects. `node` includes `tests/**/*.test.ts`, excludes browser tests and every `WORKERS_TEST_FILES` entry, and keeps normal file parallelism. `workers` includes exactly `WORKERS_TEST_FILES`, uses `cloudflareTest`, and keeps `maxWorkers: 1`.
+- Workers ownership contains the eight tests with direct `cloudflare:test` / `cloudflare:workers` imports plus the documented transitive exception `tests/image-input.test.ts`. The shared constant is the configuration source of truth; the governance test independently asks Vitest for both resolved file collections.
+- The two resolved collections must be disjoint and their union must equal every repository `tests/**/*.test.ts` file. A direct Cloudflare import outside the Workers collection fails governance. A new transitive dependency must be added explicitly to `TRANSITIVE_WORKERS_TEST_FILES` with a source assertion.
+- Coverage uses `@vitest/coverage-istanbul`, never V8. One combined run covers `src/**/*.ts` and `client/src/**/*.{ts,tsx}`, emits text, JSON summary, and local HTML, and enforces the four positive integer global floors above.
+- Local `npm test` stays uninstrumented so performance evidence is comparable. PR quality replaces that one command with `npm test -- --coverage`; it must not run a second complete Vitest suite for coverage.
+- CI retains only `coverage/coverage-summary.json` for 14 days. The source-level HTML tree remains local and ignored; delivery artifacts must not upload the complete coverage directory.
+- Re-benchmark project-boundary or governance-collection changes with three serial uninstrumented full runs. Retain the split only when every run preserves the complete file/test baseline and the median satisfies the active task bound.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| A test appears in both resolved projects | Governance test fails before shipping |
+| A test appears in neither resolved project | Governance test fails against the disk inventory |
+| Direct Cloudflare import is collected by Node | Governance test fails |
+| Undocumented transitive Worker dependency is collected by Node | Move it to the explicit exception set and add a source assertion |
+| Workers project loses `maxWorkers: 1` | Governance test fails |
+| Coverage provider changes to V8 or a floor is missing/non-positive | Governance test or instrumented run fails |
+| Any measured metric is below its integer floor | `test:coverage` exits non-zero |
+| PR runs both uninstrumented and instrumented full Vitest | Workflow governance test fails |
+| CI tries to upload the HTML coverage tree | Workflow artifact governance test fails |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a pure decoder test is collected only by Node, a Worker integration test only by the serial Workers project, and one Istanbul run enforces the combined floor.
+- Base: `npm test` runs all files without instrumentation and supplies a comparable local performance sample.
+- Bad: infer ownership only from a hand-maintained complement inside the test; the assertion becomes true by construction and does not prove Vitest's actual collection.
+- Bad: upload `coverage/` as a PR artifact; the HTML report retains source-level views outside the bounded JSON delivery contract.
+
+### 6. Tests Required
+
+- Run both `vitest list --project ... --filesOnly --json` commands from the governance test and assert project names, disjointness, exact Workers ownership, and union equality with the recursive disk inventory.
+- Scan source imports for the eight direct Cloudflare dependencies and assert the one documented transitive exception still imports the Worker/TeamAgent boundary.
+- Parse the workflow structurally and assert the single coverage-enabled Vitest command plus the exact bounded summary artifact path and retention.
+- Run one complete Istanbul suite and a temporary higher-threshold negative check; record the measured four metrics and fixed floors.
+- Record three serial uninstrumented samples after project-boundary changes; do not discard a slow sample without restarting and documenting the entire benchmark.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```typescript
+const workers = new Set(WORKERS_TEST_FILES);
+const node = allFiles.filter((file) => !workers.has(file));
+expect(new Set([...node, ...workers])).toEqual(new Set(allFiles));
+```
+
+This only proves that a locally constructed complement is a complement.
+
+#### Correct
+
+```typescript
+const [node, workers] = await Promise.all([
+  listVitestProjectFiles("node"),
+  listVitestProjectFiles("workers"),
+]);
+expect(intersection(node, workers)).toEqual([]);
+expect(union(node, workers)).toEqual(listUnitTestFiles());
+```
+
+Use Vitest's resolved collections as independent evidence, then compare them with the repository inventory.
+
 ## Code Review Checklist
 
 - Does every queried ID exist in the paired HTML and remain unique?

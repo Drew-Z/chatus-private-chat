@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { dirname, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { parseDocument } from "yaml";
 import ciWorkflowRaw from "../.github/workflows/ci.yml?raw";
 import deployWorkflowRaw from "../.github/workflows/deploy.yml?raw";
@@ -8,6 +11,12 @@ import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.ym
 import checkFrontendSourceRaw from "../scripts/check-frontend.mjs?raw";
 import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
 import packageSourceRaw from "../package.json?raw";
+import vitestConfigSourceRaw from "../vitest.config.ts?raw";
+import {
+  TEST_COVERAGE_THRESHOLDS,
+  TRANSITIVE_WORKERS_TEST_FILES,
+  WORKERS_TEST_FILES,
+} from "../vitest.constants";
 import { classifyChangedPaths } from "../scripts/classify-ci-paths.mjs";
 import { assertMainTip, parseRemoteMain } from "../scripts/assert-main-tip.mjs";
 import { createDeliveryManifest } from "../scripts/write-delivery-manifest.mjs";
@@ -22,6 +31,8 @@ const acceptanceWorkflow = normalizeText(acceptanceWorkflowRaw);
 const checkFrontendSource = normalizeText(checkFrontendSourceRaw);
 const agentRunnerSource = normalizeText(agentRunnerSourceRaw);
 const packageSource = normalizeText(packageSourceRaw);
+const vitestConfigSource = normalizeText(vitestConfigSourceRaw);
+const execFileAsync = promisify(execFile);
 
 type WorkflowStep = {
   name?: string;
@@ -53,6 +64,66 @@ type Workflow = {
 const parsedCiWorkflow = parseWorkflow(ciWorkflow, "ci.yml");
 const parsedDeployWorkflow = parseWorkflow(deployWorkflow, "deploy.yml");
 const parsedAcceptanceWorkflow = parseWorkflow(acceptanceWorkflow, "production-acceptance.yml");
+
+describe("Vitest project and coverage governance", () => {
+  it("keeps Cloudflare-dependent tests in one serial Workers project", async () => {
+    const unitFiles = listUnitTestFiles(resolve(repoRoot, "tests"));
+    const configuredWorkers = [...WORKERS_TEST_FILES].sort();
+    const directlyImportedWorkers = unitFiles.filter((file) => {
+      const source = readFileSync(resolve(repoRoot, file), "utf8");
+      return /(?:from\s+|import\s*)["']cloudflare:(?:test|workers)["']/u.test(source);
+    });
+    const transitiveWorkers = new Set<string>(TRANSITIVE_WORKERS_TEST_FILES);
+    const [nodeFiles, workersFiles] = await Promise.all([
+      listVitestProjectFiles("node"),
+      listVitestProjectFiles("workers"),
+    ]);
+    const nodeSet = new Set(nodeFiles);
+    const workersSet = new Set(workersFiles);
+
+    expect(directlyImportedWorkers).toEqual(configuredWorkers.filter((file) => !transitiveWorkers.has(file)));
+    expect([...transitiveWorkers]).toEqual(["tests/image-input.test.ts"]);
+    expect(readFileSync(resolve(repoRoot, "tests/image-input.test.ts"), "utf8")).toMatch(
+      /from\s+["']\.\.\/src\/(?:worker|agent\/team-agent)["']/u,
+    );
+    expect(configuredWorkers).toHaveLength(9);
+    expect(nodeFiles.length).toBeGreaterThan(0);
+    expect(workersFiles).toEqual(configuredWorkers);
+    expect(nodeFiles.filter((file) => workersSet.has(file))).toEqual([]);
+    expect(workersFiles.filter((file) => nodeSet.has(file))).toEqual([]);
+    expect([...new Set([...nodeFiles, ...workersFiles])].sort()).toEqual(unitFiles);
+    expect(vitestConfigSource).toContain('name: "node"');
+    expect(vitestConfigSource).toContain("exclude: [...sharedExclude, ...WORKERS_TEST_FILES]");
+    expect(vitestConfigSource).toContain('name: "workers"');
+    expect(vitestConfigSource).toContain("include: [...WORKERS_TEST_FILES]");
+    expect(vitestConfigSource).toContain("maxWorkers: 1");
+  });
+
+  it("uses one explicit Istanbul coverage budget", () => {
+    const packageJson = JSON.parse(packageSource) as {
+      scripts?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    expect(packageJson.scripts?.test).toBe("vitest run");
+    expect(packageJson.scripts?.["test:coverage"]).toBe("vitest run --coverage");
+    expect(packageJson.devDependencies?.["@vitest/coverage-istanbul"]).toBe("^4.1.10");
+    expect(vitestConfigSource).toContain('provider: "istanbul"');
+    expect(vitestConfigSource).not.toContain('provider: "v8"');
+    expect(vitestConfigSource).toContain('reporter: ["text", "json-summary", "html"]');
+    expect(vitestConfigSource).toContain('reportsDirectory: "coverage"');
+    expect(vitestConfigSource).toContain("thresholds: TEST_COVERAGE_THRESHOLDS");
+    expect(Object.keys(TEST_COVERAGE_THRESHOLDS).sort()).toEqual([
+      "branches",
+      "functions",
+      "lines",
+      "statements",
+    ]);
+    for (const threshold of Object.values(TEST_COVERAGE_THRESHOLDS)) {
+      expect(Number.isInteger(threshold)).toBe(true);
+      expect(threshold).toBeGreaterThan(0);
+    }
+  });
+});
 
 describe("delivery path classification", () => {
   it("runs both browser suites for workspace-facing paths", () => {
@@ -196,7 +267,7 @@ describe("pull-request delivery workflow", () => {
     expect(quality.needs).toBe("changes");
     expectCommandsInOrder(quality, [
       "npm run check:frontend",
-      "npm test",
+      "npm test -- --coverage",
       "npm run typecheck",
       "npx wrangler deploy --dry-run",
       "git diff --check",
@@ -308,6 +379,12 @@ describe("workflow structural governance", () => {
     expectArtifact(parsedCiWorkflow, "quality", "Retain quality manifest", {
       name: "pr-quality-${{ github.sha }}",
       path: "artifacts/quality/manifest.json",
+      retentionDays: 14,
+      always: true,
+    });
+    expectArtifact(parsedCiWorkflow, "quality", "Retain coverage summary", {
+      name: "pr-coverage-${{ github.sha }}",
+      path: "coverage/coverage-summary.json",
       retentionDays: 14,
       always: true,
     });
@@ -792,6 +869,42 @@ describe("main deployment governance", () => {
     expect(JSON.parse(packageSource).version).toMatch(/^0\./u);
   });
 });
+
+async function listVitestProjectFiles(projectName: "node" | "workers"): Promise<string[]> {
+  const vitestCli = resolve(repoRoot, "node_modules/vitest/vitest.mjs");
+  const result = await execFileAsync(
+    process.execPath,
+    [vitestCli, "list", "--project", projectName, "--filesOnly", "--json"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    },
+  );
+  const output = typeof result.stdout === "string" ? result.stdout : result.stdout.toString("utf8");
+  const parsed: unknown = JSON.parse(output);
+  if (!Array.isArray(parsed)) throw new Error(`Vitest ${projectName} list must be an array`);
+  return parsed.map((entry) => {
+    if (!isRecord(entry) || typeof entry.file !== "string" || entry.projectName !== projectName) {
+      throw new Error(`Vitest ${projectName} list contains an invalid entry`);
+    }
+    return relative(repoRoot, entry.file).replaceAll("\\", "/");
+  }).sort();
+}
+
+function listUnitTestFiles(directory: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const absolute = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listUnitTestFiles(absolute));
+    } else if (entry.isFile() && entry.name.endsWith(".test.ts")) {
+      files.push(relative(repoRoot, absolute).replaceAll("\\", "/"));
+    }
+  }
+  return files.sort();
+}
 
 function parseWorkflow(source: string, name: string): Workflow {
   const document = parseDocument(source, { prettyErrors: true, uniqueKeys: true });

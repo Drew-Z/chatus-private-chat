@@ -7,5 +7,6 @@ public/react-chat/
 public/legacy/
 .wrangler/
 dist/
+coverage/
 test-results/
 *.log

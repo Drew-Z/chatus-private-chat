@@ -11,26 +11,27 @@ Keep `vitest.config.ts` as the root orchestration and coverage configuration, th
 - `node`: normal Vitest Node environment, browser tests excluded, no Cloudflare plugin, and no `maxWorkers: 1` cap;
 - `workers`: the existing `cloudflareTest` plugin and Miniflare bindings, with `maxWorkers: 1` retained for Windows random-port stability.
 
-The Workers project owns exactly these files because they import `cloudflare:workers` or `cloudflare:test`:
+The Workers project owns exactly these files because all except `image-input.test.ts` import `cloudflare:workers` or `cloudflare:test` directly; `image-input.test.ts` transitively imports the Cloudflare Worker/TeamAgent runtime:
 
 1. `tests/document-ingest-queue.test.ts`
 2. `tests/document-ingest-state.test.ts`
-3. `tests/provider-coordinator.test.ts`
-4. `tests/route-reliability.test.ts`
-5. `tests/team-agent-turn.test.ts`
-6. `tests/user-state.test.ts`
-7. `tests/worker-api.test.ts`
-8. `tests/workspace-file.test.ts`
+3. `tests/image-input.test.ts`
+4. `tests/provider-coordinator.test.ts`
+5. `tests/route-reliability.test.ts`
+6. `tests/team-agent-turn.test.ts`
+7. `tests/user-state.test.ts`
+8. `tests/worker-api.test.ts`
+9. `tests/workspace-file.test.ts`
 
-The Node project includes the remaining unit tests and explicitly excludes the eight Workers files. A configuration contract test enumerates discovered test files and proves the two project sets are disjoint and complete, so a new Cloudflare-dependent test cannot silently run in the wrong environment.
+The Node project includes the remaining unit tests and explicitly excludes the nine Workers files. A configuration contract test enumerates discovered test files, verifies the direct-import set plus the documented transitive exception, and proves the two project sets are disjoint and complete, so a new Cloudflare-dependent test cannot silently run in the wrong environment.
 
-The split is retained only if three post-change `npm test` runs preserve 40 files / 581 tests and have a median no higher than 91.564 seconds. The observed pre-change median is 107.723 seconds. If the threshold is missed, revert the project split while retaining independently useful coverage and occupancy changes.
+The split is retained only if three post-change `npm test` runs preserve all 40 existing files, run at least the 581 baseline tests plus this task's regressions, and have a median no higher than 91.564 seconds. The observed pre-change median is 107.723 seconds. If the threshold is missed, revert the project split while retaining independently useful coverage and occupancy changes.
 
 ## Istanbul Coverage Budget
 
 Add `@vitest/coverage-istanbul` at the same compatible Vitest major and configure coverage once at the root. V8 coverage is forbidden because the Cloudflare Workers pool does not support it. Coverage emits terminal text, `json-summary`, and HTML under `coverage/`; generated output remains ignored and is not committed.
 
-`npm run test:coverage` invokes one complete `vitest run --coverage` across both projects. The PR quality job uses the same single instrumented run as its Vitest gate instead of running the suite once normally and once with coverage. Local `npm test` remains uninstrumented for the fast feedback and benchmark contract.
+`npm run test:coverage` invokes one complete `vitest run --coverage` across both projects. The PR quality job uses the same single instrumented run as its Vitest gate instead of running the suite once normally and once with coverage, then retains only the bounded `coverage-summary.json` artifact for 14 days. The source-level HTML report remains local and ignored. Local `npm test` remains uninstrumented for the fast feedback and benchmark contract.
 
 After the first complete instrumented run, pin explicit integer global thresholds for statements, branches, functions, and lines to the floor of the measured baseline. The final evidence records both the unrounded baseline and the configured floors. Istanbul returns non-zero when any metric falls below its floor; a focused governance test locks provider, reporters, report directory, and explicit thresholds.
 

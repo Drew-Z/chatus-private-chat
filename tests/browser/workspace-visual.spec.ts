@@ -285,6 +285,9 @@ test("file workspace stays contained and exposes exact version selection", async
       body: JSON.stringify(body),
     });
     if (url.pathname === "/api/workspace/files" && route.request().method() === "GET") {
+      const quotaBytes = (deleted ? 0 : currentVersion.size) + 8_192 + 2_048;
+      const extractedBytes = 1_536;
+      const pendingCleanupBytes = 3_072;
       await json({
         files: [...(deleted ? [] : [{
           id: fileId,
@@ -332,6 +335,13 @@ test("file workspace stays contained and exposes exact version selection", async
           ingestRetryAvailable: ingestStatus === "failed",
         }],
         maxFileBytes: 10 * 1024 * 1024,
+        usage: {
+          quotaBytes,
+          extractedBytes,
+          pendingCleanupBytes,
+          trackedBytes: quotaBytes + extractedBytes + pendingCleanupBytes,
+          limitBytes: 250 * 1024 * 1024,
+        },
       });
       return;
     }
@@ -404,6 +414,13 @@ test("file workspace stays contained and exposes exact version selection", async
   const panel = page.locator(".file-workspace");
   await expect(panel).toBeVisible();
   await expect(panel).toContainText("release-notes-with-a-deliberately-long-name.md");
+  const usage = panel.getByRole("region", { name: "工作区元数据用量" });
+  await expect(usage).toContainText("文件配额14.0 KB / 250.0 MB");
+  await expect(usage).toContainText("解析产物1.5 KB");
+  await expect(usage).toContainText("待清理3.0 KB");
+  await expect(usage).toContainText("元数据合计18.5 KB");
+  await expect(usage).toContainText("仅统计元数据记录，不代表 R2 实际占用。");
+  await expect(usage.getByRole("progressbar", { name: "文件配额" })).toHaveAttribute("value", "14336");
   const row = panel.locator(".file-workspace-row").filter({ hasText: "release-notes-with-a-deliberately-long-name.md" });
   const selection = row.getByRole("checkbox");
   await selection.click();
@@ -432,19 +449,66 @@ test("file workspace stays contained and exposes exact version selection", async
   const geometry = await panel.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     const rows = [...element.querySelectorAll<HTMLElement>(".file-workspace-row")];
+    const usage = element.querySelector<HTMLElement>(".file-workspace-usage");
     return {
       documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       panelFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1,
       rowsFit: rows.every((row) => row.scrollWidth <= row.clientWidth),
+      usageFits: Boolean(usage && usage.scrollWidth <= usage.clientWidth),
     };
   });
-  expect(geometry).toEqual({ documentFits: true, panelFits: true, rowsFit: true });
+  expect(geometry).toEqual({ documentFits: true, panelFits: true, rowsFit: true, usageFits: true });
   await attachScreenshot(page, testInfo, "file-workspace");
   await row.getByRole("button", { name: "删除文件" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "删除", exact: true }).click();
   await expect(row).toHaveCount(0);
   await expect(panel.locator(".file-workspace-actions span")).toHaveText("0/10");
   await expect(panel.getByRole("button", { name: "上传文件" })).toBeFocused();
+});
+
+test("file workspace recovers from an initial usage load failure", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "state recovery needs one desktop browser pass");
+  let allowSuccess = false;
+  let requests = 0;
+
+  await page.route("**/api/workspace/files**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() !== "GET" || url.pathname !== "/api/workspace/files") {
+      throw new Error(`unexpected workspace recovery request: ${request.method()} ${url.pathname}`);
+    }
+    requests += 1;
+    await route.fulfill({
+      status: allowSuccess ? 200 : 503,
+      contentType: "application/json",
+      body: JSON.stringify(allowSuccess ? {
+        files: [],
+        maxFileBytes: 10 * 1024 * 1024,
+        usage: {
+          quotaBytes: 0,
+          extractedBytes: 0,
+          pendingCleanupBytes: 0,
+          trackedBytes: 0,
+          limitBytes: 250 * 1024 * 1024,
+        },
+      } : { error: "fixture_unavailable", message: "合成文件工作区读取失败。" }),
+    });
+  });
+
+  await page.getByRole("button", { name: "文件", exact: true }).click();
+  const panel = page.locator(".file-workspace");
+  await expect(panel.getByRole("alert")).toContainText("合成文件工作区读取失败。");
+  await expect(panel.getByText("正在读取文件...")).toHaveCount(0);
+  await expect(panel.getByText("还没有文件", { exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("region", { name: "工作区元数据用量" })).toHaveCount(0);
+
+  allowSuccess = true;
+  await panel.getByRole("button", { name: "刷新文件" }).click();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+  await expect(panel.getByRole("region", { name: "工作区元数据用量" })).toContainText("文件配额0 B / 250.0 MB");
+  await expect(panel.getByText("还没有文件", { exact: true })).toBeVisible();
+  await expect(panel.getByText("正在读取文件...")).toHaveCount(0);
+  expect(requests).toBe(2);
 });
 
 test("branch origin hint returns to parent and handles missing parents", async ({ page }, testInfo) => {

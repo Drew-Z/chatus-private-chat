@@ -8,6 +8,7 @@ import {
 import type {
   WorkspaceFileProjection,
   WorkspaceFileVersionProjection,
+  WorkspaceTrackedUsage as WorkspaceTrackedUsageContract,
 } from "../../../src/contracts/workspace-file";
 import type {
   AgentSkillSelectionMetadata,
@@ -622,6 +623,8 @@ export type WorkspaceFileVersion = WorkspaceFileVersionProjection;
 
 export type WorkspaceFile = WorkspaceFileProjection;
 
+export type WorkspaceTrackedUsage = WorkspaceTrackedUsageContract;
+
 export type WorkspaceConversationFileRef = {
   fileId: string;
   versionId: string;
@@ -636,6 +639,7 @@ export type WorkspaceFilePage = {
   files: WorkspaceFile[];
   nextCursor?: string;
   maxFileBytes: number;
+  usage: WorkspaceTrackedUsage;
 };
 
 export type WorkspaceFileVersions = {
@@ -1972,11 +1976,31 @@ function isWorkspaceConversationFileRef(value: unknown): value is WorkspaceConve
 
 function isWorkspaceFilePage(value: unknown): value is WorkspaceFilePage {
   return isRecord(value)
-    && hasExactKeys(value, ["files", "maxFileBytes", ...(value.nextCursor === undefined ? [] : ["nextCursor"])])
+    && hasExactKeys(value, ["files", "maxFileBytes", "usage", ...(value.nextCursor === undefined ? [] : ["nextCursor"])])
     && Array.isArray(value.files)
     && value.files.every(isWorkspaceFile)
     && (value.nextCursor === undefined || typeof value.nextCursor === "string")
-    && isPositiveInteger(value.maxFileBytes);
+    && isPositiveInteger(value.maxFileBytes)
+    && isWorkspaceTrackedUsage(value.usage);
+}
+
+export function isWorkspaceTrackedUsage(value: unknown): value is WorkspaceTrackedUsage {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "quotaBytes",
+    "extractedBytes",
+    "pendingCleanupBytes",
+    "trackedBytes",
+    "limitBytes",
+  ])) return false;
+  if (
+    !isNonNegativeInteger(value.quotaBytes)
+    || !isNonNegativeInteger(value.extractedBytes)
+    || !isNonNegativeInteger(value.pendingCleanupBytes)
+    || !isNonNegativeInteger(value.trackedBytes)
+    || !isPositiveInteger(value.limitBytes)
+  ) return false;
+  const trackedBytes = value.quotaBytes + value.extractedBytes + value.pendingCleanupBytes;
+  return Number.isSafeInteger(trackedBytes) && value.trackedBytes === trackedBytes;
 }
 
 function isWorkspaceFileVersions(value: unknown): value is WorkspaceFileVersions {

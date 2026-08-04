@@ -68,7 +68,7 @@ jobs:
         run: npm run check:frontend
 
       - name: Test
-        run: npm test
+        run: npm test -- --coverage
 
       - name: Typecheck
         run: npm run typecheck
@@ -102,6 +102,15 @@ jobs:
         with:
           name: pr-quality-${{ github.sha }}
           path: artifacts/quality/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain coverage summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-coverage-${{ github.sha }}
+          path: coverage/coverage-summary.json
           if-no-files-found: error
           retention-days: 14
 

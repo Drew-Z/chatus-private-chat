@@ -24,6 +24,7 @@ import {
   workspaceFileDownloadUrl,
   type AgentConversation,
   type WorkspaceFile,
+  type WorkspaceTrackedUsage,
   type WorkspaceFileVersion,
 } from "../lib/api";
 import {
@@ -42,6 +43,7 @@ export function FileWorkspacePanel({
   onConversationUpdated: (conversation: AgentConversation) => void;
 }) {
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const [usage, setUsage] = useState<WorkspaceTrackedUsage | null>(null);
   const [nextCursor, setNextCursor] = useState("");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -77,11 +79,13 @@ export function FileWorkspacePanel({
       setFiles((current) => append
         ? [...new Map([...current, ...page.files].map((file) => [file.id, file])).values()]
         : page.files);
+      setUsage(page.usage);
       setNextCursor(page.nextCursor || "");
     } catch (failure) {
       if (sequence === requestSequence.current) {
         if (!append) {
           setFiles([]);
+          setUsage(null);
           setNextCursor("");
         }
         setError(fileError(failure, "文件列表读取失败。"));
@@ -264,9 +268,24 @@ export function FileWorkspacePanel({
 
   return (
     <div className="file-workspace" aria-busy={loading || Boolean(pendingId)}>
+      {usage && (
+        <section className="file-workspace-usage" aria-label="工作区元数据用量" aria-live="polite">
+          <div className="file-workspace-quota">
+            <span><strong>文件配额</strong><span>{formatBytes(usage.quotaBytes)} / {formatBytes(usage.limitBytes)}</span></span>
+            <progress aria-label="文件配额" max={usage.limitBytes} value={Math.min(usage.quotaBytes, usage.limitBytes)} />
+          </div>
+          <dl>
+            <div><dt>解析产物</dt><dd>{formatBytes(usage.extractedBytes)}</dd></div>
+            {usage.pendingCleanupBytes > 0 && <div><dt>待清理</dt><dd>{formatBytes(usage.pendingCleanupBytes)}</dd></div>}
+            <div><dt>元数据合计</dt><dd>{formatBytes(usage.trackedBytes)}</dd></div>
+          </dl>
+          <small>仅统计元数据记录，不代表 R2 实际占用。</small>
+        </section>
+      )}
       <div className="file-workspace-actions">
         <button ref={uploadButtonRef} className="icon-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={busy || Boolean(pendingId)} title="上传文件" aria-label="上传文件"><Upload size={17} /></button>
         <button className="icon-button" type="button" onClick={() => directoryInputRef.current?.click()} disabled={busy || Boolean(pendingId)} title="上传目录" aria-label="上传目录"><FolderUp size={17} /></button>
+        <button className="icon-button" type="button" onClick={refresh} disabled={busy || loading || Boolean(pendingId)} title="刷新文件" aria-label={loading ? "正在刷新文件" : "刷新文件"}><RefreshCw size={17} /></button>
         <input ref={fileInputRef} hidden type="file" multiple onChange={(event) => { void uploadFiles([...event.target.files || []]); event.target.value = ""; }} />
         <input ref={directoryInputRef} hidden type="file" multiple onChange={(event) => { void uploadFiles([...event.target.files || []]); event.target.value = ""; }} />
         <input ref={retryInputRef} hidden type="file" onChange={(event) => { const file = event.target.files?.[0]; if (file) void retryUpload(file); event.target.value = ""; }} />
@@ -280,7 +299,7 @@ export function FileWorkspacePanel({
       {error && <div className="file-workspace-error" role="alert"><span>{error}</span><button className="icon-button" type="button" onClick={() => setError("")} aria-label="关闭提示" title="关闭"><X size={15} /></button></div>}
       <div className="file-workspace-list">
         {loading && !files.length && <div className="sidebar-empty">正在读取文件...</div>}
-        {!loading && !files.length && <div className="sidebar-empty">{query ? "没有匹配的文件" : "还没有文件"}</div>}
+        {!loading && !error && !files.length && <div className="sidebar-empty">{query ? "没有匹配的文件" : "还没有文件"}</div>}
         {files.map((file) => {
           const selected = selectedByFile.get(file.id);
           const readyVersions = versions[file.id];
