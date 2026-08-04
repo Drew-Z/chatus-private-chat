@@ -89,6 +89,30 @@
         "status": "passed",
         "summary": "Spec compliance, cross-file action/runtime consistency, test coverage, dependency, and artifact privacy review passed",
         "at": "2026-08-04T12:00:47.055542+00:00"
+      },
+      {
+        "command": "gh api repos/Drew-Z/chatus-private-chat/actions/runs/30909738649/artifacts",
+        "status": "passed",
+        "summary": "Four unexpired exact-head artifacts retained through 2026-08-18: path 8892525946, Agent 8892569803, quality 8892612645, Workspace 8892744506; check annotations were empty",
+        "at": "2026-08-04T12:51:00.721636+00:00"
+      },
+      {
+        "command": "gh run view 30910437079",
+        "status": "passed",
+        "summary": "Exact main 59b877d95b671b93d096b092714e596f55f859e0 passed both stale-main guards, deterministic quality gates, resource provisioning, GitHub Actions Worker deploy, and production verification",
+        "at": "2026-08-04T12:51:00.741028+00:00"
+      },
+      {
+        "command": "gh api repos/Drew-Z/chatus-private-chat/actions/runs/30910437079/artifacts",
+        "status": "passed",
+        "summary": "Deployment path artifact 8892815181 retained through 2026-09-03 and production deployment artifact 8892913295 retained through 2026-11-02; both bind exact main SHA",
+        "at": "2026-08-04T12:51:00.780265+00:00"
+      },
+      {
+        "command": "gh run view 30909738649",
+        "status": "passed",
+        "summary": "PR #45 exact-head run passed changes, quality, Workspace Playwright, and local fake-Provider Agent jobs for head 518644eeef26828aab9b2f847737eed04ec6ac11",
+        "at": "2026-08-04T12:51:00.814263+00:00"
       }
     ]
   }
