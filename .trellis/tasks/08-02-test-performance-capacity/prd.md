@@ -38,7 +38,7 @@
 - [x] AC7. React 文件工作区以可访问、响应式的占用摘要显示配额、解析物和待清理占用；文案明确为元数据跟踪值，loading、ready、error 与刷新状态不互相覆盖。
 - [x] AC8. API/UI 不声称 R2 实际占用，不返回对象键或其他私有存储细节；相关类型检查、组件测试或 Playwright 验收通过。
 - [x] AC9. `npm run check:frontend`、`npm test`、`npm run test:coverage`、`npm run typecheck`、`npx wrangler deploy --dry-run`、`git diff --check`、Workspace Playwright、Trellis 全量一致性验证均通过。
-- [ ] AC10. spec 记录最终 serial Workers 决策、分池回滚证据、Istanbul 约束、成员 unlimited 决策、60 秒 deadline 与 metadata-tracked occupancy 合同；work commit、PR exact-head CI 和归档证据完整。
+- [x] AC10. spec 记录最终 serial Workers 决策、分池回滚证据、Istanbul 约束、成员 unlimited 决策、60 秒 deadline 与 metadata-tracked occupancy 合同；work commit、PR exact-head CI 和归档证据完整。
 
 ## Out of Scope
 

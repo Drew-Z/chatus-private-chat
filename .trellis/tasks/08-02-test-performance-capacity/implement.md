@@ -13,7 +13,15 @@
 - [x] Add state, API, component/config, and Workspace Playwright coverage for exact usage arithmetic, labels, responsive layout, error recovery, and privacy boundaries.
 - [x] Run three post-change uninstrumented `npm test` samples; retain the project split only if all 40 baseline files, at least 581 baseline tests, and every new regression pass with a median at most 91.564 seconds.
 - [x] Run `trellis-check`, focused capacity/Workspace/Provider suites, coverage enforcement, the full shipping gate, Workspace Playwright, Trellis consistency, and secret-boundary review.
-- [ ] Update the relevant frontend specs, commit, push, open a PR, retain exact-head CI evidence, verify exact-main GitHub Actions deployment, record evidence, and archive the child task.
+- [x] Update the relevant frontend specs, commit, push, open a PR, retain exact-head CI evidence, verify exact-main GitHub Actions deployment, record evidence, and archive the child task.
+
+## Delivery Evidence
+
+- Work commit: `0d06d1074175ae93b2ed15df6144570e4d76ee90`, the squash commit reachable from `main` for PR #46.
+- PR exact-head CI: head `55dc9dd34e95a16d9a94fbe68bc2dd4716a48b10`; `changes`, `quality`, `agent-browser`, and `workspace-browser` passed in [run 30939931722](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30939931722).
+- Exact-main deployment: SHA `0d06d1074175ae93b2ed15df6144570e4d76ee90` passed both main-SHA guards, Worker deployment, production verification, and deployment-manifest retention in [run 30940550954](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30940550954).
+- Production acceptance: the same main SHA passed deployed-revision verification, temporary-member acceptance, cleanup, and 90-day manifest retention in [run 30941162756](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30941162756).
+- Archive readiness: all acceptance criteria are checked, all required validation records pass, the work commit is main-reachable, the task has no children or waivers, and repository-wide Trellis consistency is verified before archive.
 
 ## Validation Commands
 

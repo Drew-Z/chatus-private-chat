@@ -15,7 +15,7 @@
   "branch": "codex/test-performance-capacity",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "e2a171b4b65959b72efd9edd18c5d34bdaef907e",
+  "commit": "0d06d1074175ae93b2ed15df6144570e4d76ee90",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/46",
   "subtasks": [],
   "children": [],
@@ -83,6 +83,24 @@
         "status": "passed",
         "summary": "7 Trellis validation tests passed",
         "at": "2026-08-04T18:40:04.198092+00:00"
+      },
+      {
+        "command": "GitHub PR exact-head CI",
+        "status": "passed",
+        "summary": "PR 46 head 55dc9dd34e95a16d9a94fbe68bc2dd4716a48b10: changes, quality, agent-browser, and workspace-browser passed in run 30939931722",
+        "at": "2026-08-04T19:04:30.732863+00:00"
+      },
+      {
+        "command": "GitHub exact-main deployment",
+        "status": "passed",
+        "summary": "Main 0d06d1074175ae93b2ed15df6144570e4d76ee90 deployed and verified in run 30940550954; deployment manifest retained",
+        "at": "2026-08-04T19:04:31.319170+00:00"
+      },
+      {
+        "command": "GitHub production acceptance",
+        "status": "passed",
+        "summary": "Main 0d06d1074175ae93b2ed15df6144570e4d76ee90 passed release verification and temporary-member acceptance in run 30941162756; manifest retained for 90 days",
+        "at": "2026-08-04T19:04:31.927986+00:00"
       }
     ]
   }
