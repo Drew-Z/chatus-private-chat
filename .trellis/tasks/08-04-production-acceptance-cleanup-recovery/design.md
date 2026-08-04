@@ -12,6 +12,8 @@
 
 The production script uses a five-second delay and eight attempts. This covers the Root Agent's eight-attempt persisted cleanup window without approaching the workflow timeout or login-failure throttle.
 
+After deletion returns or recovers, `waitForTemporaryMemberSessionRevocation()` checks the old cookie up to five times across a 60-second window. A `200` can occur while Cloudflare KV `list` has not yet observed the recently-created session; after each delayed `200`, the runner reissues the idempotent deletion. Only `401` proves revocation. Other statuses, an exhausted `200`, or re-delete failure remain fatal.
+
 ## Cleanup Orchestration
 
 `runProductionAcceptanceCleanup()` receives operation callbacks and attempts them in this order:

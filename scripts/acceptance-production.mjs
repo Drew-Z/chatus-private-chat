@@ -3,6 +3,7 @@ import {
   isProductionAcceptanceLabel,
   retryTemporaryMemberDeletion,
   runProductionAcceptanceCleanup,
+  waitForTemporaryMemberSessionRevocation,
 } from "./production-acceptance-cleanup.mjs";
 
 const productionUrl = process.env.PRODUCTION_URL?.trim() || process.argv[2] || "";
@@ -348,13 +349,25 @@ async function deleteTemporaryMemberData(member, { allowUnauthorized = false } =
   return finalResponse;
 }
 
+async function verifyTemporaryMemberSessionRevoked(member) {
+  await waitForTemporaryMemberSessionRevocation(
+    async () => {
+      const response = await request("/api/session", { cookie: member.cookie });
+      return response.status;
+    },
+    {
+      retryDeletion: () => deleteTemporaryMemberData(member, { allowUnauthorized: true }),
+      wait: sleep,
+    },
+  );
+}
+
 async function purgeMember(member) {
   const response = await deleteTemporaryMemberData(member);
   if (response.status === 200) {
     assert((response.headers.get("set-cookie") || "").includes("Max-Age=0"), "member data deletion: session cookie not cleared");
   }
-  const oldSession = await request("/api/session", { cookie: member.cookie });
-  await expectStatus(oldSession, 401, "revoked member session");
+  await verifyTemporaryMemberSessionRevoked(member);
 
   await loginMember(member);
   assert((await listConversations(member)).length === 0, "member data deletion: conversations remain");
