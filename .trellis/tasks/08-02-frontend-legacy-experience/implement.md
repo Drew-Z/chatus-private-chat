@@ -17,7 +17,7 @@
 - [x] Run focused tests, then the full shipping gate and Trellis consistency checks.
 - [x] Update frontend/platform specs for migration, provider-plan, redirect, accessibility, and delivery contracts.
 - [x] Commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
-- [ ] Clarify logical-model, Provider, and Offering identity labels after migration; cover the production-reported display with Playwright and deliver through PR/GitHub Actions.
+- [x] Clarify logical-model, Provider, and Offering identity labels after migration; cover the production-reported display with Playwright and deliver through PR/GitHub Actions.
 - [ ] Record exact main SHA deployment and user acceptance of both React admin access and production legacy-route migration before archive.
 
 ## Local Validation Evidence (2026-08-04)
@@ -40,6 +40,13 @@
 - PR CI run `30840081929` passed `changes`, `quality`, `agent-browser`, and `workspace-browser`. The retained artifacts are `pr-path-classification-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866397393`), `agent-playwright-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866433579`), `pr-quality-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866474577`), and `workspace-playwright-556ac518ea861f814b3311286effa25f83cfcae3` (ID `8866552599`); all expire 2026-08-17.
 - GitHub Actions deployment run `30840604819` passed against that exact main SHA, including the real deploy and production verification steps. The retained artifacts are `production-deployment-b508f3d0819a93c2bafc92c93b634b9d10f7ed13` (ID `8866683762`, expires 2026-11-01) and `deployment-paths-b508f3d0819a93c2bafc92c93b634b9d10f7ed13` (ID `8866593925`, expires 2026-09-02).
 - The authenticated administrator executed the production legacy-route migration in `/react-chat/admin`; CI and local scripts did not perform it. Final acceptance remains pending the clarified entity-ID display described below.
+
+## Identity Clarification Delivery Evidence (2026-08-04)
+
+- Work commit `baa08536a67d71ded163c0440024dde5208792fb`; PR [#44](https://github.com/Drew-Z/chatus-private-chat/pull/44) head `92c94361d888199c6a89d6fb511151ea1ead4ea8` merged by squash into exact main SHA `6fb3594843cc38b45484a91c8335dc489456b634`.
+- PR CI run `30892957232` passed `changes`, `quality`, `agent-browser`, and `workspace-browser`. Retained artifacts are `pr-path-classification-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8885806893`), `agent-playwright-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8885848634`), `pr-quality-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8885878541`), and `workspace-playwright-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8886000358`); all expire 2026-08-18.
+- GitHub Actions deployment run `30893500458` passed against exact main SHA `6fb3594843cc38b45484a91c8335dc489456b634`, including production verification and deployment manifest generation. Retained artifacts are `production-deployment-6fb3594843cc38b45484a91c8335dc489456b634` (ID `8886116637`, expires 2026-11-02) and `deployment-paths-6fb3594843cc38b45484a91c8335dc489456b634` (ID `8886018520`, expires 2026-09-03).
+- Final user acceptance of the clarified production labels remains pending; no local production probe or configuration mutation was used to substitute for that gate.
 
 ## Pending Manual Review (2026-08-04)
 

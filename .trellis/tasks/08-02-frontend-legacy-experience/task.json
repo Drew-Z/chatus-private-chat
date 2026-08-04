@@ -83,6 +83,18 @@
         "status": "passed",
         "summary": "desktop and touch migration identity checks passed; three unrelated viewports skipped by test scope",
         "at": "2026-08-04T08:38:49.503705+00:00"
+      },
+      {
+        "command": "gh run view 30892957232",
+        "status": "passed",
+        "summary": "PR CI passed changes, quality, fake Provider Agent, and Workspace Playwright; four artifacts retained through 2026-08-18",
+        "at": "2026-08-04T08:56:21.819608+00:00"
+      },
+      {
+        "command": "gh run view 30893500458",
+        "status": "passed",
+        "summary": "GitHub Actions deployed and verified exact main SHA 6fb3594843cc38b45484a91c8335dc489456b634; deployment artifacts retained",
+        "at": "2026-08-04T08:56:21.998332+00:00"
       }
     ]
   }
