@@ -1321,3 +1321,37 @@ Merged PR 33, verified exact-SHA GitHub Actions CI and Cloudflare deployment art
 ### Next Steps
 
 - None - task complete
+
+
+## Session 34: Complete CI delivery hardening
+
+**Date**: 2026-08-04
+**Task**: Complete CI delivery hardening
+**Branch**: `main`
+
+### Summary
+
+Hardened workflow YAML governance, job timeouts, Node 24 actions, exact-main deploy guards, path classification, and artifacts; PR #45 passed exact-head CI, GitHub Actions deployed exact main, and Trellis-only commits proved deploy skipping.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `47db7cc121aa749a6bdb94b4e8ce43077f6b061b` | (see git log) |
+| `59b877d95b671b93d096b092714e596f55f859e0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
