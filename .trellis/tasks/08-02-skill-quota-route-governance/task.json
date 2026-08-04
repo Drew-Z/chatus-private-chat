@@ -15,7 +15,7 @@
   "branch": "codex/skill-quota-route-governance",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "f03c13a323bdc29ae336e280c081a01d97b93f97",
   "pr_url": null,
   "subtasks": [],
   "children": [],
