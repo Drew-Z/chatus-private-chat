@@ -23,6 +23,11 @@ type RouteReliabilityWrite = {
   providerId?: string;
   // bounded outcome/status/latency fields only
 };
+
+ProviderCoordinator.recordReliabilitySample({
+  operation: "chat",
+  sample: { requestId?: string, /* bounded reliability fields */ },
+});
 ```
 
 Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capability SSE, MCP discovery/execution, administrator model discovery, and the React/admin reliability projections.
@@ -35,6 +40,7 @@ Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capabilit
 - `/api/chat`, Capability, MCP, and model-discovery boundaries preserve actionable busy/timeout/429/authentication/4xx/5xx/protocol/unavailable classes, then replace raw internal text with the canonical public message. Provider bodies, endpoints on failure, arbitrary exceptions, MCP server identifiers in member-facing messages, and tool results never cross the boundary.
 - Structured Agent failure logs contain only `level`, `event`, normalized `requestId`, phase, public error code, and optional logical route ID. Do not log the raw error/cause, member label, prompt, response, file/memory content, tool input/result, credential, endpoint, or Provider ID.
 - Passive correlation extends only the existing latest version-2 route/provider record with an optional normalized request ID. It creates no per-request key, active probe, or conversation trace and does not affect ordering/scoring.
+- Exact provider correlation follows the existing chat reliability write through `ProviderReliabilitySample`, the provider-scoped `ProviderCoordinator` reducer, and its KV projection. Do not restore a direct KV read-modify-write path. Automatic Skill selector telemetry remains isolated and does not inherit the answer turn request ID.
 - MCP OAuth audit targets omit the member label. They may retain the bounded server ID, operation, and discovery counts/status required for administration.
 - React shows/copies only a validated request reference. The chat banner renders the local canonical message; the admin reliability table may compact the display but copies the exact value.
 
@@ -49,6 +55,7 @@ Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capabilit
 | Workspace/preparation/runtime failure | `workspace_context_unavailable` / expected preparation code / `agent_runtime_error` with UI Message SSE |
 | MCP runtime/discovery error | Canonical registered MCP/tool code; no raw result, endpoint, or server ID in member text |
 | Stored reliability request ID is malformed | Reject the complete stored/client route record |
+| Chat sample reaches `ProviderCoordinator` | Preserve its normalized request ID in the authoritative DO aggregate and KV projection; omit it from selector telemetry |
 | Clipboard API rejects | Keep the original error/reference visible and omit success feedback |
 
 ## 5. Good / Base / Bad Cases
@@ -64,6 +71,7 @@ Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capabilit
 - Put secret-like markers in Provider bodies, exceptions, MCP results/endpoints/server IDs, member labels, files, and memory fixtures; assert absence from JSON/SSE/log/audit/UI outputs.
 - Cover `/api/chat`, Capability SSE, MCP discovery/execution, and model discovery for 401, 429, 5xx, network, invalid JSON/protocol, and post-output failures without live Provider/MCP requests.
 - Cover chat/admin reference display, full-value copy, clipboard failure, accessibility, and desktop/390px containment.
+- Exercise one chat reliability sample through `ProviderCoordinator`, eviction/readback, and the KV projection; assert the exact normalized request ID survives while selector telemetry remains unchanged.
 
 ## 7. Wrong vs Correct
 
