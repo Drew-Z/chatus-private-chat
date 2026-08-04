@@ -7,6 +7,7 @@ import {
 } from "../scripts/deployment-config.mjs";
 import deployWorkflow from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflow from "../.github/workflows/production-acceptance.yml?raw";
+import acceptanceCleanupSource from "../scripts/production-acceptance-cleanup.mjs?raw";
 import acceptanceProductionSource from "../scripts/acceptance-production.mjs?raw";
 import localEnvironmentExample from "../.env.example?raw";
 import packageSource from "../package.json?raw";
@@ -428,6 +429,24 @@ describe("repository deployment contract", () => {
     expect(acceptanceProductionSource).toContain("pre-acceptance release verification");
     expect(acceptanceProductionSource).toContain("post-cleanup release verification");
     expect(acceptanceProductionSource).toContain("await expectStatus(logout, 200, \"admin logout\")");
+    expect(acceptanceProductionSource).toContain(
+      "const originalAccess = await removeStaleTemporaryAccessEntries(adminCookie)",
+    );
+    expect(acceptanceProductionSource.indexOf("const originalAccess = await removeStaleTemporaryAccessEntries")).toBeLessThan(
+      acceptanceProductionSource.indexOf("const members ="),
+    );
+    expect(acceptanceProductionSource).toContain("await putAccessCodes(adminCookie, cleaned, current.revision)");
+    expect(acceptanceProductionSource).toContain(
+      "await deleteAccessCodes(adminCookie, current.revision, \"remove stale access-code override\")",
+    );
+    expect(acceptanceProductionSource).toContain("await runProductionAcceptanceCleanup({");
+    expect(acceptanceCleanupSource).toContain("for (const member of members)");
+    expect(acceptanceCleanupSource).toContain("await attempt(() => purgeMember(member), \"member purge\")");
+    expect(acceptanceProductionSource).not.toContain("Promise.all(members.map(async (member)");
+    expect(acceptanceWorkflow).toContain("if: github.ref == 'refs/heads/main'");
+    expect(acceptanceWorkflow).toContain("production-acceptance-${{ github.sha }}");
+    expect(acceptanceWorkflow).toContain("uses: actions/upload-artifact@v4");
+    expect(acceptanceWorkflow).toContain("retention-days: 90");
   });
 
   it("allows KV access updates to propagate without tripping the shared login throttle", () => {
