@@ -16,11 +16,12 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       deploy: ${{ steps.classify.outputs.deploy }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -41,16 +42,18 @@ jobs:
           fi
 
       - name: Retain deployment path classification
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-paths-${{ github.sha }}
           path: artifacts/path-classification/paths.json
+          if-no-files-found: error
           retention-days: 30
 
   deployment-skipped:
     needs: changes
     if: github.event_name == 'push' && needs.changes.outputs.deploy != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Record docs and Trellis-only skip
         run: echo "Deployment skipped because this commit changes only documentation or tracked Trellis records." >> "$GITHUB_STEP_SUMMARY"
@@ -59,6 +62,7 @@ jobs:
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: production
     env:
       CHATUS_WORKER_NAME: ${{ vars.CHATUS_WORKER_NAME }}
@@ -69,24 +73,18 @@ jobs:
       CHATUS_PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
     steps:
       - name: Checkout deployment revision
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Refuse a stale main revision
-        shell: bash
-        run: |
-          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
-          if [ -z "$remote_sha" ] || [ "$remote_sha" != "$GITHUB_SHA" ]; then
-            echo "Refusing to deploy a revision that is no longer the main branch tip"
-            exit 1
-          fi
-
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
+
+      - name: Refuse a stale main revision
+        run: node scripts/assert-main-tip.mjs
 
       - name: Install dependencies
         run: npm ci
@@ -161,13 +159,7 @@ jobs:
           NODE
 
       - name: Refuse a stale main revision before deploy
-        shell: bash
-        run: |
-          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
-          if [ -z "$remote_sha" ] || [ "$remote_sha" != "$GITHUB_SHA" ]; then
-            echo "Refusing to deploy a revision that is no longer the main branch tip"
-            exit 1
-          fi
+        run: node scripts/assert-main-tip.mjs
 
       - name: Deploy Worker
         env:
@@ -202,7 +194,7 @@ jobs:
 
       - name: Retain deployment manifest
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-deployment-${{ github.sha }}
           path: artifacts/deployment/manifest.json

@@ -12,13 +12,14 @@ permissions:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       workspace: ${{ steps.classify.outputs.workspace }}
       agent: ${{ steps.classify.outputs.agent }}
       deploy: ${{ steps.classify.outputs.deploy }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -37,23 +38,25 @@ jobs:
           fi
 
       - name: Retain path classification
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-path-classification-${{ github.sha }}
           path: artifacts/path-classification/paths.json
+          if-no-files-found: error
           retention-days: 14
 
   quality:
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -95,7 +98,7 @@ jobs:
 
       - name: Retain quality manifest
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-quality-${{ github.sha }}
           path: artifacts/quality/manifest.json
@@ -106,9 +109,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.workspace == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -117,7 +121,7 @@ jobs:
       - run: npm run test:browser:workspace
       - name: Retain Workspace Playwright artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: workspace-playwright-${{ github.sha }}
           path: test-results/workspace-visual
@@ -128,9 +132,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.agent == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -142,7 +147,7 @@ jobs:
         run: npm run test:browser:agent
       - name: Retain fake-Provider Agent artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-playwright-${{ github.sha }}
           path: test-results/agent-e2e-ci

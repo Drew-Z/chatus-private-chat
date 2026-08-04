@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseDocument } from "yaml";
 import ciWorkflowRaw from "../.github/workflows/ci.yml?raw";
 import deployWorkflowRaw from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.yml?raw";
@@ -8,6 +9,7 @@ import checkFrontendSourceRaw from "../scripts/check-frontend.mjs?raw";
 import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
 import packageSourceRaw from "../package.json?raw";
 import { classifyChangedPaths } from "../scripts/classify-ci-paths.mjs";
+import { assertMainTip, parseRemoteMain } from "../scripts/assert-main-tip.mjs";
 import { createDeliveryManifest } from "../scripts/write-delivery-manifest.mjs";
 import { provisionR2Bucket } from "../scripts/provision-r2-bucket.mjs";
 import { provisionDocumentIngestQueues } from "../scripts/provision-document-ingest-queues.mjs";
@@ -21,8 +23,39 @@ const checkFrontendSource = normalizeText(checkFrontendSourceRaw);
 const agentRunnerSource = normalizeText(agentRunnerSourceRaw);
 const packageSource = normalizeText(packageSourceRaw);
 
+type WorkflowStep = {
+  name?: string;
+  id?: string;
+  uses?: string;
+  if?: string;
+  run?: string;
+  env?: Record<string, unknown>;
+  with?: Record<string, unknown>;
+};
+
+type WorkflowJob = {
+  needs?: string | string[];
+  if?: string;
+  environment?: string;
+  outputs?: Record<string, unknown>;
+  steps?: WorkflowStep[];
+  "runs-on"?: string;
+  "timeout-minutes"?: number;
+};
+
+type Workflow = {
+  on?: unknown;
+  permissions?: Record<string, unknown>;
+  concurrency?: Record<string, unknown>;
+  jobs: Record<string, WorkflowJob>;
+};
+
+const parsedCiWorkflow = parseWorkflow(ciWorkflow, "ci.yml");
+const parsedDeployWorkflow = parseWorkflow(deployWorkflow, "deploy.yml");
+const parsedAcceptanceWorkflow = parseWorkflow(acceptanceWorkflow, "production-acceptance.yml");
+
 describe("delivery path classification", () => {
-  it("runs Workspace Playwright only for workspace-facing paths", () => {
+  it("runs both browser suites for workspace-facing paths", () => {
     expect(classifyChangedPaths(["client/src/components/ChatWorkspace.tsx"])).toMatchObject({
       workspace: true,
       agent: true,
@@ -49,13 +82,22 @@ describe("delivery path classification", () => {
     });
   });
 
-  it("classifies documentation and Trellis records without deploying", () => {
-    expect(classifyChangedPaths(["docs/operations.md", ".trellis/tasks/01-01-example/prd.md"])).toEqual({
+  it("classifies approved documentation and Trellis record types without deploying", () => {
+    const paths = [
+      "docs/architecture.svg",
+      "docs/operations.md",
+      ".trellis/tasks/01-01-example/prd.md",
+      ".trellis/tasks/01-01-example/task.json",
+      ".trellis/tasks/01-01-example/check.jsonl",
+      ".trellis/spec/platform/index.md",
+      ".trellis/workspace/zhang/index.md",
+    ];
+    expect(classifyChangedPaths(paths)).toEqual({
       workspace: false,
       agent: false,
       deploy: false,
       docsOnly: true,
-      paths: [".trellis/tasks/01-01-example/prd.md", "docs/operations.md"],
+      paths: [...paths].sort(),
     });
   });
 
@@ -67,8 +109,65 @@ describe("delivery path classification", () => {
     });
   });
 
-  it("treats executable Trellis scripts as code rather than records", () => {
-    expect(classifyChangedPaths([".trellis/scripts/task.py"])).toMatchObject({
+  it.each([
+    ".trellis/scripts/task.py",
+    ".trellis/tasks/01-01-example/tool.js",
+    ".trellis/spec/platform/check.ts",
+    ".trellis/workspace/zhang/replay.py",
+    ".trellis/tasks/01-01-example/unknown.yaml",
+    "docs/build.js",
+  ])("treats executable or unknown record-adjacent path %s as code", (path) => {
+    expect(classifyChangedPaths([path])).toMatchObject({ deploy: true, docsOnly: false });
+  });
+
+  it.each([
+    ".github/workflows/ci.yml",
+    ".github/workflows/deploy.yml",
+    "scripts/classify-ci-paths.mjs",
+    "scripts/assert-main-tip.mjs",
+    "tests/delivery-governance.test.ts",
+  ])("runs both browser suites when delivery governance path %s changes", (path) => {
+    expect(classifyChangedPaths([path])).toMatchObject({
+      workspace: true,
+      agent: true,
+      deploy: true,
+      docsOnly: false,
+    });
+  });
+
+  it("normalizes, deduplicates, and sorts paths deterministically", () => {
+    expect(classifyChangedPaths([
+      ".\\client\\src\\main.tsx",
+      "client/src/main.tsx",
+      "  ./README.md  ",
+      "",
+    ])).toEqual({
+      workspace: true,
+      agent: true,
+      deploy: true,
+      docsOnly: false,
+      paths: ["README.md", "client/src/main.tsx"],
+    });
+  });
+
+  it("fails closed for an empty or unknown change list", () => {
+    expect(classifyChangedPaths([])).toEqual({
+      workspace: false,
+      agent: false,
+      deploy: true,
+      docsOnly: false,
+      paths: [],
+    });
+    expect(classifyChangedPaths(["config-without-extension"])).toMatchObject({
+      deploy: true,
+      docsOnly: false,
+    });
+  });
+
+  it("runs every gate for manual all-path classification", () => {
+    expect(classifyChangedPaths(["README.md"], { all: true })).toMatchObject({
+      workspace: true,
+      agent: true,
       deploy: true,
       docsOnly: false,
     });
@@ -76,22 +175,54 @@ describe("delivery path classification", () => {
 });
 
 describe("pull-request delivery workflow", () => {
-  it("keeps stable quality and conditional browser checks", () => {
-    expect(ciWorkflow).toContain("pull_request:");
-    expect(ciWorkflow).toContain("quality:");
-    expect(ciWorkflow).toContain("workspace-browser:");
-    expect(ciWorkflow).toContain("agent-browser:");
-    expect(ciWorkflow).toContain("npm run check:frontend");
-    expect(ciWorkflow).toContain("npm test");
-    expect(ciWorkflow).toContain("npm run typecheck");
-    expect(ciWorkflow).toContain("npx wrangler deploy --dry-run");
-    expect(ciWorkflow).toContain("git diff --check");
-    expect(ciWorkflow).toContain('git diff --check "$BASE_SHA" "$HEAD_SHA"');
-    expect(ciWorkflow).toContain("npm run test:browser:workspace");
-    expect(ciWorkflow).toContain("npm run test:browser:agent");
-    expect(ciWorkflow).toContain("actions/upload-artifact@v4");
-    expect(ciWorkflow).not.toContain("acceptance:production");
-    expect(ciWorkflow).not.toContain("smoke:production");
+  it("parses workflows with unique keys and rejects duplicate job keys", () => {
+    expect(Object.keys(parsedCiWorkflow.jobs).sort()).toEqual([
+      "agent-browser",
+      "changes",
+      "quality",
+      "workspace-browser",
+    ]);
+    expect(() => parseWorkflow([
+      "jobs:",
+      "  duplicate:",
+      "    runs-on: ubuntu-latest",
+      "  duplicate:",
+      "    runs-on: ubuntu-latest",
+    ].join("\n"), "duplicate.yml")).toThrow();
+  });
+
+  it("keeps the five quality gates ordered and excludes production operations", () => {
+    const quality = getJob(parsedCiWorkflow, "quality");
+    expect(quality.needs).toBe("changes");
+    expectCommandsInOrder(quality, [
+      "npm run check:frontend",
+      "npm test",
+      "npm run typecheck",
+      "npx wrangler deploy --dry-run",
+      "git diff --check",
+    ]);
+    expect(joinJobRuns(quality)).toContain('git diff --check "$BASE_SHA" "$HEAD_SHA"');
+    expect(joinWorkflowRuns(parsedCiWorkflow)).not.toContain("acceptance:production");
+    expect(joinWorkflowRuns(parsedCiWorkflow)).not.toContain("smoke:production");
+  });
+
+  it("wires conditional browser jobs to exact classification outputs", () => {
+    const changes = getJob(parsedCiWorkflow, "changes");
+    expect(changes.outputs).toEqual({
+      workspace: "${{ steps.classify.outputs.workspace }}",
+      agent: "${{ steps.classify.outputs.agent }}",
+      deploy: "${{ steps.classify.outputs.deploy }}",
+    });
+
+    const workspace = getJob(parsedCiWorkflow, "workspace-browser");
+    expect(workspace.needs).toBe("changes");
+    expect(workspace.if).toBe("needs.changes.outputs.workspace == 'true'");
+    expect(joinJobRuns(workspace)).toContain("npm run test:browser:workspace");
+
+    const agent = getJob(parsedCiWorkflow, "agent-browser");
+    expect(agent.needs).toBe("changes");
+    expect(agent.if).toBe("needs.changes.outputs.agent == 'true'");
+    expect(joinJobRuns(agent)).toContain("npm run test:browser:agent");
   });
 
   it("normalizes frontend structure-check text before multi-line assertions", () => {
@@ -138,25 +269,179 @@ describe("pull-request delivery workflow", () => {
   });
 });
 
-describe("main deployment governance", () => {
-  it("skips docs-only deployment and retains exact-SHA artifacts", () => {
-    expect(deployWorkflow).toContain("classify-ci-paths.mjs");
-    expect(deployWorkflow).toContain("deployment-skipped:");
-    expect(deployWorkflow).toContain("needs.changes.outputs.deploy");
-    expect(deployWorkflow).toContain("write-delivery-manifest.mjs");
-    expect(deployWorkflow).toContain("actions/upload-artifact@v4");
-    expect(deployWorkflow).toContain("Checkout deployment revision");
-    expect(deployWorkflow).toContain(
-      "- name: Checkout deployment revision\n        uses: actions/checkout@v5\n        with:\n          fetch-depth: 0",
-    );
-    expect(deployWorkflow.match(/git ls-remote origin refs\/heads\/main/g)).toHaveLength(2);
+describe("workflow structural governance", () => {
+  it("enforces bounded job timeouts", () => {
+    expectJobTimeouts(parsedCiWorkflow, {
+      changes: 5,
+      quality: 20,
+      "workspace-browser": 20,
+      "agent-browser": 20,
+    });
+    expectJobTimeouts(parsedDeployWorkflow, {
+      changes: 5,
+      "deployment-skipped": 5,
+      deploy: 30,
+    });
+    expectJobTimeouts(parsedAcceptanceWorkflow, { acceptance: 15 });
   });
 
-  it("retains a production-acceptance summary without moving acceptance into PR CI", () => {
-    expect(acceptanceWorkflow).toContain("write-delivery-manifest.mjs");
-    expect(acceptanceWorkflow).toContain("actions/upload-artifact@v4");
-    expect(acceptanceWorkflow).toContain("steps.acceptance.outcome");
-    expect(acceptanceWorkflow).toContain("refs/heads/main");
+  it("uses only approved Node 24 official action majors", () => {
+    const approved = new Set([
+      "actions/checkout@v7",
+      "actions/setup-node@v7",
+      "actions/upload-artifact@v7",
+    ]);
+    const used = [parsedCiWorkflow, parsedDeployWorkflow, parsedAcceptanceWorkflow]
+      .flatMap((workflow) => Object.values(workflow.jobs))
+      .flatMap((job) => job.steps ?? [])
+      .flatMap((step) => step.uses ? [step.uses] : []);
+    expect(used.length).toBeGreaterThan(0);
+    for (const action of used) expect(approved.has(action), action).toBe(true);
+  });
+
+  it("retains exact-SHA artifacts with bounded failure behavior", () => {
+    expectArtifact(parsedCiWorkflow, "changes", "Retain path classification", {
+      name: "pr-path-classification-${{ github.sha }}",
+      path: "artifacts/path-classification/paths.json",
+      retentionDays: 14,
+    });
+    expectArtifact(parsedCiWorkflow, "quality", "Retain quality manifest", {
+      name: "pr-quality-${{ github.sha }}",
+      path: "artifacts/quality/manifest.json",
+      retentionDays: 14,
+      always: true,
+    });
+    expectArtifact(parsedCiWorkflow, "workspace-browser", "Retain Workspace Playwright artifacts", {
+      name: "workspace-playwright-${{ github.sha }}",
+      path: "test-results/workspace-visual",
+      retentionDays: 14,
+      always: true,
+    });
+    expectArtifact(parsedCiWorkflow, "agent-browser", "Retain fake-Provider Agent artifacts", {
+      name: "agent-playwright-${{ github.sha }}",
+      path: "test-results/agent-e2e-ci",
+      retentionDays: 14,
+      always: true,
+    });
+    expectArtifact(parsedDeployWorkflow, "changes", "Retain deployment path classification", {
+      name: "deployment-paths-${{ github.sha }}",
+      path: "artifacts/path-classification/paths.json",
+      retentionDays: 30,
+    });
+    expectArtifact(parsedDeployWorkflow, "deploy", "Retain deployment manifest", {
+      name: "production-deployment-${{ github.sha }}",
+      path: "artifacts/deployment/manifest.json",
+      retentionDays: 90,
+      always: true,
+    });
+    expectArtifact(parsedAcceptanceWorkflow, "acceptance", "Retain production-acceptance summary", {
+      name: "production-acceptance-${{ github.sha }}",
+      path: "artifacts/production-acceptance/manifest.json",
+      retentionDays: 90,
+      always: true,
+    });
+    expectAlwaysStepBefore(parsedCiWorkflow, "quality", "Write quality manifest", "Retain quality manifest");
+    expectAlwaysStepBefore(parsedDeployWorkflow, "deploy", "Write deployment manifest", "Retain deployment manifest");
+    expectAlwaysStepBefore(
+      parsedAcceptanceWorkflow,
+      "acceptance",
+      "Write acceptance manifest",
+      "Retain production-acceptance summary",
+    );
+  });
+});
+
+describe("main deployment governance", () => {
+  it("keeps docs-only skip and non-canceling exact-main deployment structure", () => {
+    expect(parsedDeployWorkflow.concurrency).toEqual({
+      group: "chatus-production-mutation",
+      "cancel-in-progress": false,
+    });
+    const changes = getJob(parsedDeployWorkflow, "changes");
+    expect(changes.outputs).toEqual({ deploy: "${{ steps.classify.outputs.deploy }}" });
+    expect(joinJobRuns(changes)).toContain("classify-ci-paths.mjs");
+
+    const skipped = getJob(parsedDeployWorkflow, "deployment-skipped");
+    expect(skipped.needs).toBe("changes");
+    expect(skipped.if).toBe("github.event_name == 'push' && needs.changes.outputs.deploy != 'true'");
+
+    const deploy = getJob(parsedDeployWorkflow, "deploy");
+    expect(deploy.needs).toBe("changes");
+    expect(deploy.if).toBe("github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true'");
+    expect(deploy.environment).toBe("production");
+    expect(getNamedStep(deploy, "Checkout deployment revision").with).toEqual({ "fetch-depth": 0 });
+
+    const firstGuard = getNamedStepIndex(deploy, "Refuse a stale main revision");
+    const provisionR2 = getNamedStepIndex(deploy, "Provision workspace R2 bucket");
+    const provisionQueues = getNamedStepIndex(deploy, "Provision document ingest Queues");
+    const prepareSecrets = getNamedStepIndex(deploy, "Prepare deployment configuration and Worker secrets");
+    const secondGuard = getNamedStepIndex(deploy, "Refuse a stale main revision before deploy");
+    const deployWorker = getNamedStepIndex(deploy, "Deploy Worker");
+    expect(firstGuard).toBeLessThan(provisionR2);
+    expect(firstGuard).toBeLessThan(provisionQueues);
+    expect(firstGuard).toBeLessThan(prepareSecrets);
+    expect(secondGuard).toBe(deployWorker - 1);
+    for (const name of ["Refuse a stale main revision", "Refuse a stale main revision before deploy"]) {
+      const step = getNamedStep(deploy, name);
+      expect(step.run).toBe("node scripts/assert-main-tip.mjs");
+      expect(step.if).toBeUndefined();
+    }
+  });
+
+  it("keeps production acceptance main-only, serialized, and exact-SHA", () => {
+    expect(parsedAcceptanceWorkflow.concurrency).toEqual({
+      group: "chatus-production-mutation",
+      "cancel-in-progress": false,
+    });
+    const acceptance = getJob(parsedAcceptanceWorkflow, "acceptance");
+    expect(acceptance.if).toBe("github.ref == 'refs/heads/main'");
+    expect(acceptance.environment).toBe("production");
+    expectCommandsInOrder(acceptance, [
+      "smoke:production",
+      "acceptance:production",
+      "write-delivery-manifest.mjs",
+    ]);
+    expect(getNamedStep(acceptance, "Write acceptance manifest").env).toEqual({
+      DELIVERY_STATUS: "release=${{ steps.release.outcome }},acceptance=${{ steps.acceptance.outcome }}",
+    });
+  });
+
+  it("validates the remote main revision without leaking command failures", async () => {
+    const expectedSha = "a".repeat(40);
+    const exactOutput = `${expectedSha}\trefs/heads/main\n`;
+    await expect(assertMainTip({
+      expectedSha,
+      readRemoteMain: async () => exactOutput,
+    })).resolves.toBe(expectedSha);
+    await expect(assertMainTip({
+      expectedSha,
+      readRemoteMain: async () => `${"b".repeat(40)}\trefs/heads/main\n`,
+    })).rejects.toThrow("no longer the main branch tip");
+    await expect(assertMainTip({
+      expectedSha,
+      readRemoteMain: async () => "",
+    })).rejects.toThrow("missing or ambiguous");
+    await expect(assertMainTip({
+      expectedSha,
+      readRemoteMain: async () => `${exactOutput}${exactOutput}`,
+    })).rejects.toThrow("missing or ambiguous");
+    await expect(assertMainTip({
+      expectedSha: "invalid",
+      readRemoteMain: async () => exactOutput,
+    })).rejects.toThrow("40-character lowercase Git SHA");
+    await expect(assertMainTip({
+      expectedSha: expectedSha.toUpperCase(),
+      readRemoteMain: async () => exactOutput,
+    })).rejects.toThrow("40-character lowercase Git SHA");
+
+    const commandFailure = assertMainTip({
+      expectedSha,
+      readRemoteMain: async () => { throw new Error("credential-bearing command detail"); },
+    });
+    await expect(commandFailure).rejects.toThrow("Unable to read the remote main revision");
+    await expect(commandFailure).rejects.not.toThrow("credential-bearing command detail");
+    expect(parseRemoteMain(exactOutput)).toBe(expectedSha);
+    expect(() => parseRemoteMain(`${"c".repeat(39)}\trefs/heads/main\n`)).toThrow("invalid");
   });
 
   it("provisions the R2 bucket only after an exact missing response", async () => {
@@ -507,6 +792,94 @@ describe("main deployment governance", () => {
     expect(JSON.parse(packageSource).version).toMatch(/^0\./u);
   });
 });
+
+function parseWorkflow(source: string, name: string): Workflow {
+  const document = parseDocument(source, { prettyErrors: true, uniqueKeys: true });
+  if (document.errors.length > 0) {
+    throw new Error(`${name} is invalid: ${document.errors.map((error) => error.message).join("; ")}`);
+  }
+  const parsed: unknown = document.toJS();
+  if (!isRecord(parsed) || !isRecord(parsed.jobs)) throw new Error(`${name} must define a jobs mapping`);
+  return parsed as Workflow;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getJob(workflow: Workflow, name: string): WorkflowJob {
+  const job = workflow.jobs[name];
+  if (!isRecord(job)) throw new Error(`Workflow job ${name} is missing or invalid`);
+  return job as WorkflowJob;
+}
+
+function getJobSteps(job: WorkflowJob): WorkflowStep[] {
+  if (!Array.isArray(job.steps)) throw new Error("Workflow job steps are missing or invalid");
+  return job.steps;
+}
+
+function getNamedStep(job: WorkflowJob, name: string): WorkflowStep {
+  const step = getJobSteps(job).find((candidate) => candidate.name === name);
+  if (!step) throw new Error(`Workflow step ${name} is missing`);
+  return step;
+}
+
+function getNamedStepIndex(job: WorkflowJob, name: string): number {
+  const index = getJobSteps(job).findIndex((candidate) => candidate.name === name);
+  if (index === -1) throw new Error(`Workflow step ${name} is missing`);
+  return index;
+}
+
+function joinJobRuns(job: WorkflowJob): string {
+  return getJobSteps(job).flatMap((step) => typeof step.run === "string" ? [step.run] : []).join("\n");
+}
+
+function joinWorkflowRuns(workflow: Workflow): string {
+  return Object.values(workflow.jobs).map(joinJobRuns).join("\n");
+}
+
+function expectCommandsInOrder(job: WorkflowJob, commands: string[]) {
+  const runs = getJobSteps(job).map((step) => step.run ?? "");
+  let previous = -1;
+  for (const command of commands) {
+    const index = runs.findIndex((run, candidateIndex) => candidateIndex > previous && run.includes(command));
+    expect(index, `Expected command after step ${previous}: ${command}`).toBeGreaterThan(previous);
+    previous = index;
+  }
+}
+
+function expectJobTimeouts(workflow: Workflow, expected: Record<string, number>) {
+  expect(Object.keys(workflow.jobs).sort()).toEqual(Object.keys(expected).sort());
+  for (const [name, timeout] of Object.entries(expected)) {
+    const value = getJob(workflow, name)["timeout-minutes"];
+    expect(value, `${name} timeout`).toBe(timeout);
+    expect(value, `${name} timeout must stay bounded`).toBeLessThanOrEqual(timeout);
+  }
+}
+
+function expectArtifact(
+  workflow: Workflow,
+  jobName: string,
+  stepName: string,
+  expected: { name: string; path: string; retentionDays: number; always?: boolean },
+) {
+  const step = getNamedStep(getJob(workflow, jobName), stepName);
+  expect(step.uses).toBe("actions/upload-artifact@v7");
+  expect(step.with).toEqual({
+    name: expected.name,
+    path: expected.path,
+    "if-no-files-found": "error",
+    "retention-days": expected.retentionDays,
+  });
+  expect(step.if).toBe(expected.always ? "always()" : undefined);
+}
+
+function expectAlwaysStepBefore(workflow: Workflow, jobName: string, writerName: string, uploadName: string) {
+  const job = getJob(workflow, jobName);
+  const writer = getNamedStep(job, writerName);
+  expect(writer.if).toBe("always()");
+  expect(getNamedStepIndex(job, writerName)).toBeLessThan(getNamedStepIndex(job, uploadName));
+}
 
 function apiResponse(
   status: number,

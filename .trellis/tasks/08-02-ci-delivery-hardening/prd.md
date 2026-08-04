@@ -29,14 +29,14 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 三份 workflow 均通过 YAML 结构解析；重复键、缺失 job、错误 `needs`/`if`、缺失命令或 step 顺序漂移会使 Vitest 失败。
-- [ ] AC2. CI、deploy 与 production acceptance 的所有 job 都有符合 R2 上限的 `timeout-minutes`，部署重试仍受 deploy job 总超时约束。
-- [ ] AC3. 路径分类表驱动测试覆盖正斜杠/反斜杠、`./`、重复项、空输入、混合变更、每类边界文件、合法 Trellis records 与 Trellis 可执行/未知扩展；未知项不会得到 docs-only skip。
-- [ ] AC4. workflow、分类器和交付治理测试自身的变更触发 Workspace 与 fake-Provider Agent Playwright；结构化断言证明两个 browser job 的 `needs` 和 `if` 精确连接 `changes` outputs。
-- [ ] AC5. stale-main helper 的 match、mismatch、empty、ambiguous、invalid 和 command-failure deterministic tests 通过；workflow 结构证明两个 guard 分别位于首次生产 mutation 前和 `Deploy Worker` 紧前。
-- [ ] AC6. 每个治理 artifact 的 exact-SHA 名称、路径、missing-file 策略、`always()` 策略和保留期都有结构化断言；manifest 仍只包含批准的非敏感字段。
-- [ ] AC7. 三份 workflow 只使用批准的 Node 24 GitHub action majors，GitHub CI 不再产生本任务针对的 Node 20 action runtime warning。
-- [ ] AC8. `npm run check:frontend`、全量 Vitest、typecheck、Wrangler dry-run、Workspace Playwright、fake-Provider Agent Playwright、`git diff --check`、Trellis 全量一致性与 Trellis 单测全部通过。
+- [x] AC1. 三份 workflow 均通过 YAML 结构解析；重复键、缺失 job、错误 `needs`/`if`、缺失命令或 step 顺序漂移会使 Vitest 失败。
+- [x] AC2. CI、deploy 与 production acceptance 的所有 job 都有符合 R2 上限的 `timeout-minutes`，部署重试仍受 deploy job 总超时约束。
+- [x] AC3. 路径分类表驱动测试覆盖正斜杠/反斜杠、`./`、重复项、空输入、混合变更、每类边界文件、合法 Trellis records 与 Trellis 可执行/未知扩展；未知项不会得到 docs-only skip。
+- [x] AC4. workflow、分类器和交付治理测试自身的变更触发 Workspace 与 fake-Provider Agent Playwright；结构化断言证明两个 browser job 的 `needs` 和 `if` 精确连接 `changes` outputs。
+- [x] AC5. stale-main helper 的 match、mismatch、empty、ambiguous、invalid 和 command-failure deterministic tests 通过；workflow 结构证明两个 guard 分别位于首次生产 mutation 前和 `Deploy Worker` 紧前。
+- [x] AC6. 每个治理 artifact 的 exact-SHA 名称、路径、missing-file 策略、`always()` 策略和保留期都有结构化断言；manifest 仍只包含批准的非敏感字段。
+- [x] AC7. 三份 workflow 只使用批准的 Node 24 GitHub action majors，GitHub CI 不再产生本任务针对的 Node 20 action runtime warning。
+- [x] AC8. `npm run check:frontend`、全量 Vitest、typecheck、Wrangler dry-run、Workspace Playwright、fake-Provider Agent Playwright、`git diff --check`、Trellis 全量一致性与 Trellis 单测全部通过。
 - [ ] AC9. PR CI 在 exact head SHA 上按影响路径通过并保留 artifacts；合并后的 exact main SHA 由 GitHub Actions 部署和验证，Trellis/docs-only 记录提交继续明确跳过部署。
 
 ## Out Of Scope

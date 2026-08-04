@@ -33,6 +33,35 @@ const SHARED_FILES = new Set([
   "wrangler.jsonc",
 ]);
 
+const GOVERNANCE_PREFIXES = [".github/"];
+
+const GOVERNANCE_FILES = new Set([
+  "scripts/assert-main-tip.mjs",
+  "scripts/classify-ci-paths.mjs",
+  "tests/delivery-governance.test.ts",
+]);
+
+const DOCUMENTATION_EXTENSIONS = new Set([
+  ".gif",
+  ".jpeg",
+  ".jpg",
+  ".md",
+  ".mdx",
+  ".pdf",
+  ".png",
+  ".svg",
+  ".txt",
+  ".webp",
+]);
+
+const TRELLIS_RECORD_PREFIXES = [
+  ".trellis/tasks/",
+  ".trellis/spec/",
+  ".trellis/workspace/",
+];
+
+const TRELLIS_RECORD_EXTENSIONS = new Set([".json", ".jsonl", ".md"]);
+
 export function classifyChangedPaths(inputPaths, options = {}) {
   const paths = [...new Set(inputPaths.map(normalizePath).filter(Boolean))].sort();
   if (options.all === true) {
@@ -41,8 +70,9 @@ export function classifyChangedPaths(inputPaths, options = {}) {
 
   const docsOnly = paths.length > 0 && paths.every(isDocumentationPath);
   const shared = paths.some((path) => SHARED_FILES.has(path));
-  const workspace = !docsOnly && (shared || paths.some(isWorkspacePath));
-  const agent = !docsOnly && (shared || paths.some(isAgentPath));
+  const governance = paths.some(isGovernancePath);
+  const workspace = !docsOnly && (shared || governance || paths.some(isWorkspacePath));
+  const agent = !docsOnly && (shared || governance || paths.some(isAgentPath));
 
   return {
     workspace,
@@ -58,11 +88,22 @@ function normalizePath(value) {
 }
 
 function isDocumentationPath(path) {
-  return path.startsWith("docs/")
-    || path.startsWith(".trellis/tasks/")
-    || path.startsWith(".trellis/spec/")
-    || path.startsWith(".trellis/workspace/")
-    || path.endsWith(".md");
+  const lowerPath = path.toLowerCase();
+  const extension = readExtension(lowerPath);
+  if (extension === ".md") return true;
+  if (lowerPath.startsWith("docs/")) return DOCUMENTATION_EXTENSIONS.has(extension);
+  return TRELLIS_RECORD_PREFIXES.some((prefix) => lowerPath.startsWith(prefix))
+    && TRELLIS_RECORD_EXTENSIONS.has(extension);
+}
+
+function isGovernancePath(path) {
+  return GOVERNANCE_FILES.has(path) || GOVERNANCE_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
+function readExtension(path) {
+  const slashIndex = path.lastIndexOf("/");
+  const dotIndex = path.lastIndexOf(".");
+  return dotIndex > slashIndex ? path.slice(dotIndex) : "";
 }
 
 function isWorkspacePath(path) {
