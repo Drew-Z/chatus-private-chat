@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "7e0aadf71d335abc8adab2e180fe6fa875b80845",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/40",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/42",
   "subtasks": [],
   "children": [],
   "parent": "08-02-project-hardening-followups",
