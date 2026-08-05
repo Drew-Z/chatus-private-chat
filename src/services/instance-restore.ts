@@ -794,7 +794,13 @@ async function validateKnownPayloads(
         }
         continue;
       }
-      if (["user_state", "root_team_agent", "conversation_team_agent", "provider_coordinator"].includes(entry.store)) {
+      if ([
+        "user_state",
+        "root_team_agent",
+        "conversation_team_agent",
+        "provider_coordinator",
+        "provider_attempt_ledger",
+      ].includes(entry.store)) {
         const snapshot = decodeDurableObjectCaptureSnapshot(bytes, entry.schemaVersion);
         const itemCount = snapshot.tables.reduce((count, table) => count + table.rows.length, snapshot.storage.length);
         if (itemCount !== entry.itemCount) throw new InstanceRestoreError("restore_payload_count_mismatch");
@@ -983,20 +989,28 @@ function normalizeRestoreTargetIdentity(value: unknown): RestoreTargetIdentityV1
   if (bindings.some((binding) => !binding)) return undefined;
   const normalized = bindings as RestoreTargetBindingV1[];
   if (!isStrictlySorted(normalized.map(({ bindingName }) => bindingName))) return undefined;
-  const required = new Map<RestoreTargetBindingKind | string, string>([
-    ["kv:CHAT_STORE", ""],
-    ["r2:WORKSPACE_FILES", ""],
-    ["queue:DOCUMENT_INGEST", ""],
-    ["dlq:DOCUMENT_INGEST_DLQ", ""],
-    ["durable_object:USER_STATE", "UserState"],
-    ["durable_object:TEAM_AGENT", "TeamAgent"],
-    ["durable_object:PROVIDER_COORDINATOR", "ProviderCoordinator"],
-    ["durable_object:INSTANCE_COORDINATOR", "InstanceCoordinator"],
+  const required = new Map<RestoreTargetBindingKind | string, {
+    className: string;
+    migrationTag: string;
+  }>([
+    ["kv:CHAT_STORE", { className: "", migrationTag: "" }],
+    ["r2:WORKSPACE_FILES", { className: "", migrationTag: "" }],
+    ["queue:DOCUMENT_INGEST", { className: "", migrationTag: "" }],
+    ["dlq:DOCUMENT_INGEST_DLQ", { className: "", migrationTag: "" }],
+    ["durable_object:USER_STATE", { className: "UserState", migrationTag: "v1" }],
+    ["durable_object:TEAM_AGENT", { className: "TeamAgent", migrationTag: "v2" }],
+    ["durable_object:PROVIDER_COORDINATOR", { className: "ProviderCoordinator", migrationTag: "v3" }],
+    ["durable_object:INSTANCE_COORDINATOR", { className: "InstanceCoordinator", migrationTag: "v4" }],
+    ["durable_object:PROVIDER_ATTEMPT_LEDGER", { className: "ProviderAttemptLedger", migrationTag: "v5" }],
   ]);
   if (normalized.length !== required.size) return undefined;
   for (const binding of normalized) {
-    const expectedClass = required.get(`${binding.kind}:${binding.bindingName}`);
-    if (expectedClass === undefined || binding.className !== expectedClass) return undefined;
+    const expected = required.get(`${binding.kind}:${binding.bindingName}`);
+    if (
+      !expected
+      || binding.className !== expected.className
+      || binding.migrationTag !== expected.migrationTag
+    ) return undefined;
   }
   return {
     version: 1,
@@ -1562,7 +1576,7 @@ function isTargetBindingKind(value: unknown): value is RestoreTargetBindingKind 
 
 function isObjectKind(value: unknown): value is InstanceObjectKind {
   return value === "user_state" || value === "root_team_agent" || value === "conversation_team_agent"
-    || value === "provider_coordinator";
+    || value === "provider_coordinator" || value === "provider_attempt_ledger";
 }
 
 function isRestorePhase(value: unknown): value is InstanceRestorePhase {

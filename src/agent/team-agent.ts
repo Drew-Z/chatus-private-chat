@@ -101,6 +101,7 @@ import {
   workspaceExtractedObjectKey,
 } from "../contracts/workspace-file";
 import type { Session } from "../contracts/session";
+import { createProviderTurnId } from "../contracts/provider-attempt";
 import { createAgentToolSet } from "../services/agent-tools";
 import {
   acquireInstanceOperationFence,
@@ -122,7 +123,7 @@ const MAX_EXPORT_MESSAGE_TEXT_CHARS = 20_000;
 const MAX_EXPORT_MESSAGE_PARTS = 32;
 const MAX_CONVERSATION_TITLE_CHARS = 80;
 const MAX_SELECTED_SKILLS = 3;
-export const TEAM_AGENT_SCHEMA_VERSION = 6;
+export const TEAM_AGENT_SCHEMA_VERSION = 7;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const AGENT_IDENTITY_STORAGE_KEY = "chatus:agent-identity:v1";
 const GUEST_CLEANUP_TICKET_STORAGE_KEY = "chatus:guest-cleanup-ticket:v1";
@@ -630,6 +631,16 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           ON workspace_file_operations(terminal_at, next_attempt_at, updated_at)
         `;
         this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (6, ${Date.now()})`;
+      }
+      if (version < 7) {
+        this.sql`
+          CREATE TABLE IF NOT EXISTS chatus_provider_turn_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            turn_id TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (7, ${Date.now()})`;
       }
     });
   }
@@ -2588,6 +2599,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       },
     );
     if (!instanceFence) return fail("instance_maintenance", 503, "prepare");
+    const providerTurnId = this.resolveProviderTurnId(options?.continuation === true);
     let prepared: Awaited<ReturnType<typeof prepareTeamAgentTurn>>;
     try {
       prepared = await prepareTeamAgentTurn(this.env, session, {
@@ -2603,6 +2615,8 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         workspaceContext,
         requestId,
         abortSignal: options?.abortSignal,
+        turnId: providerTurnId,
+        operation: instanceFence.operation,
       });
     } catch {
       await instanceFence.release().catch(() => undefined);
@@ -3163,8 +3177,23 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.sql`DELETE FROM cf_ai_chat_agent_tool_runs`;
     this.sql`DELETE FROM capability_tool_trust`;
     this.sql`DELETE FROM chatus_conversation_branch_launches`;
+    this.sql`DELETE FROM chatus_provider_turn_state`;
     this.messages = [];
     this.pendingActivities.clear();
+  }
+
+  private resolveProviderTurnId(continuation: boolean): string {
+    const current = this.sql<{ turn_id: string }>`
+      SELECT turn_id FROM chatus_provider_turn_state WHERE singleton = 1 LIMIT 1
+    `[0]?.turn_id;
+    if (continuation && /^turn_[0-9a-f-]{36}$/i.test(current || "")) return current;
+    const turnId = createProviderTurnId();
+    this.sql`
+      INSERT INTO chatus_provider_turn_state(singleton, turn_id, updated_at)
+      VALUES (1, ${turnId}, ${Date.now()})
+      ON CONFLICT(singleton) DO UPDATE SET turn_id = excluded.turn_id, updated_at = excluded.updated_at
+    `;
+    return turnId;
   }
 
   private requireRootScope(): void {

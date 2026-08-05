@@ -305,7 +305,7 @@ describe("workspace file API and R2 recovery", () => {
         ).toArray().map((row) => row.name),
       };
     });
-    expect(schema.versions).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(schema.versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(schema.tables).toEqual([
       "conversation_file_refs",
       "workspace_file_operations",
@@ -386,7 +386,7 @@ describe("workspace file API and R2 recovery", () => {
       state.storage.sql.exec(
         "CREATE INDEX workspace_file_operations_file ON workspace_file_operations(file_id, created_at DESC)",
       );
-      state.storage.sql.exec("DELETE FROM _sql_schema_migrations WHERE id = 6");
+      state.storage.sql.exec("DELETE FROM _sql_schema_migrations WHERE id >= 6");
       (instance as unknown as { applySchemaMigrations(): void }).applySchemaMigrations();
     });
 

@@ -120,7 +120,10 @@ export function createDocumentIngestCaptureAdapter(
 }
 
 export async function createRegisteredDurableObjectCaptureAdapters(
-  env: Pick<Env, "INSTANCE_COORDINATOR" | "USER_STATE" | "TEAM_AGENT" | "PROVIDER_COORDINATOR">,
+  env: Pick<
+    Env,
+    "INSTANCE_COORDINATOR" | "USER_STATE" | "TEAM_AGENT" | "PROVIDER_COORDINATOR" | "PROVIDER_ATTEMPT_LEDGER"
+  >,
   coordinatorName: string,
 ): Promise<CaptureStoreAdapter[]> {
   const registry = await env.INSTANCE_COORDINATOR.getByName(coordinatorName).listRegisteredObjects();
@@ -189,6 +192,8 @@ export async function createRegisteredDurableObjectCaptureAdapters(
       ? env.USER_STATE.getByName(object.instanceName)
       : object.kind === "provider_coordinator"
         ? env.PROVIDER_COORDINATOR.getByName(object.instanceName)
+        : object.kind === "provider_attempt_ledger"
+          ? env.PROVIDER_ATTEMPT_LEDGER.getByName(object.instanceName)
         : env.TEAM_AGENT.getByName(object.instanceName);
     adapters.push(createRegistryObjectAdapter(
       object,
@@ -208,6 +213,7 @@ export async function createRegisteredDurableObjectCaptureAdapters(
     ["root_team_agent", "root_team_agent"],
     ["conversation_team_agent", "conversation_team_agent"],
     ["provider_coordinator", "provider_coordinator"],
+    ["provider_attempt_ledger", "provider_attempt_ledger"],
   ] as const) {
     if (!registry.objects.some((object) => object.kind === kind)) {
       adapters.push(emptyInventoryAdapter(store, `instance-registry:empty:${kind}`));

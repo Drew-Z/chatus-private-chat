@@ -13,6 +13,7 @@
 | [Provider Plan Runtime](./provider-plan-runtime.md) | Passive quality ordering, access/capability filtering, BYOK gating, and credential preparation |
 | [Provider Tool Runtime](./provider-tool-runtime.md) | OpenAI/Anthropic tool-turn adapters, history, parsing, and error contracts |
 | [Provider Stream Runtime](./provider-stream-runtime.md) | OpenAI/Anthropic streaming adapters, pre-output validation, cancellation, and fallback boundary |
+| [Provider Attempt Ledger](./provider-attempt-ledger.md) | Server-issued turn/run/attempt identity, required shadow capture, diagnostics, privacy, and recovery |
 | [Public Error Projection And Correlation](./public-error-governance.md) | Canonical browser errors, per-turn references, redacted logs/audits, and passive correlation |
 | [Feedback And Administrative Audit Persistence](./feedback-audit-persistence.md) | KV record ownership, exact decoding, privacy, retention, deletion, and failure policies |
 | [Backup, Restore, And Permanent Deletion](./backup-restore.md) | Recovery meanings, data inventory, readiness gates, key custody, autonomous durable purge retry, and purge invariants |

@@ -38,6 +38,12 @@ The Worker creates one plan runtime from its current immutable configuration sna
 
 Legacy chat streaming, Team Agent turns, small completion tasks, and legacy capability tool loops consume the same prepared-plan contract. Each caller may apply its own image/tool predicate, then owns capacity acquisition, attempt execution, pre-output fallback decisions, telemetry, quota release, and response formatting.
 
+The plan runtime does not issue Provider attempt identity. After preparation, the
+caller creates a run through `provider-attempt-runtime`, uses the prepared
+candidate's exact logical route, Provider, model, credential source, and
+`planIndex` as the immutable attempt attribution, then starts the ledger before
+Provider I/O. Browser attribution fields never enter this boundary.
+
 The plan runtime never retries an attempted provider and never observes visible stream output. The rule that fallback cannot cross the first-visible-output boundary remains in the protocol and response lifecycle layers.
 
 `preparePlan()` has no abort/deadline contract and may await passive-quality or credential dependencies. A bounded auxiliary caller such as Automatic Skill selection must race the entire pipeline, including `preparePlan()`, leases, Provider I/O, telemetry, and release, against its own hard deadline. Passing an abort signal only to the later Provider request is insufficient.
@@ -67,6 +73,7 @@ The plan runtime never retries an attempted provider and never observes visible 
 - Unit-test credential exceptions, missing credentials, fallback indexes, and required-user-key termination.
 - Unit-test provider-backed routes with stale legacy shadows before and after shadow removal, including endpoint/model/auth/header/limit/capability equivalence.
 - Keep Worker and Team Agent integration tests for streaming, tool loops, fallback, leases, quotas, telemetry, and cancellation.
+- Assert prepared `planIndex` and exact server-selected route dimensions reach the Provider attempt ledger, including credential-unavailable candidates skipped before execution.
 - For Automatic Skill selection, assert offering fallback works, no configured logical fallback is contacted, and a late successful Provider result is ignored after five seconds.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 

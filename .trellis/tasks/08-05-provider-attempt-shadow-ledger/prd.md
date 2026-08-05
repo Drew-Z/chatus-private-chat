@@ -36,18 +36,18 @@ feedback, or billing claims.
 
 ## Acceptance Criteria
 
-- [ ] AC1. Every fake Provider call in main answer, Automatic Skill, retry,
+- [x] AC1. Every fake Provider call in main answer, Automatic Skill, retry,
       fallback and approved tool-continuation fixtures has exactly one attempt.
-- [ ] AC2. Turn/run/attempt identities are opaque, server-issued, durable and
+- [x] AC2. Turn/run/attempt identities are opaque, server-issued, durable and
       bound to operation-fence idempotency.
-- [ ] AC3. Multi-Provider fallback reconciliation accounts for failed and
+- [x] AC3. Multi-Provider fallback reconciliation accounts for failed and
       successful attempts without incrementing one user-message quota twice.
-- [ ] AC4. Replayed callbacks/retries cannot create duplicate ledger attempts or
+- [x] AC4. Replayed callbacks/retries cannot create duplicate ledger attempts or
       overwrite earlier evidence.
-- [ ] AC5. Browser attribution fields are ignored/rejected and cannot change
+- [x] AC5. Browser attribution fields are ignored/rejected and cannot change
       Provider/offering/model/route ownership.
-- [ ] AC6. Ledger, logs, exports and diagnostics pass content/secret leak scans.
-- [ ] AC7. Backup/restore and deletion classification for the ledger is explicit
+- [x] AC6. Ledger, logs, exports and diagnostics pass content/secret leak scans.
+- [x] AC7. Backup/restore and deletion classification for the ledger is explicit
       and covered by deterministic fixtures.
 - [ ] AC8. Full gates, specs, PR/commit/deployment evidence and archive checks pass.
 

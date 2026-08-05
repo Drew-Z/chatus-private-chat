@@ -38,6 +38,7 @@ const baseConfig = {
       { name: "USER_STATE", class_name: "UserState" },
       { name: "TEAM_AGENT", class_name: "TeamAgent" },
       { name: "PROVIDER_COORDINATOR", class_name: "ProviderCoordinator" },
+      { name: "PROVIDER_ATTEMPT_LEDGER", class_name: "ProviderAttemptLedger" },
       { name: "INSTANCE_COORDINATOR", class_name: "InstanceCoordinator" },
     ],
   },
@@ -46,6 +47,7 @@ const baseConfig = {
     { tag: "v2", new_sqlite_classes: ["TeamAgent"] },
     { tag: "v3", new_sqlite_classes: ["ProviderCoordinator"] },
     { tag: "v4", new_sqlite_classes: ["InstanceCoordinator"] },
+    { tag: "v5", new_sqlite_classes: ["ProviderAttemptLedger"] },
   ],
 };
 
@@ -160,6 +162,16 @@ describe("deployment configuration", () => {
       ...baseConfig,
       migrations: baseConfig.migrations.filter(({ tag }) => tag !== "v4"),
     }, instance)).toThrow(/migration v4/);
+    expect(() => buildDeploymentConfig({
+      ...baseConfig,
+      durable_objects: {
+        bindings: baseConfig.durable_objects.bindings.filter(({ name }) => name !== "PROVIDER_ATTEMPT_LEDGER"),
+      },
+    }, instance)).toThrow(/PROVIDER_ATTEMPT_LEDGER/);
+    expect(() => buildDeploymentConfig({
+      ...baseConfig,
+      migrations: baseConfig.migrations.filter(({ tag }) => tag !== "v5"),
+    }, instance)).toThrow(/migration v5/);
   });
 
   it("requires distinct document ingest Queue and DLQ names", () => {
@@ -399,6 +411,10 @@ describe("repository deployment contract", () => {
     expect(config.migrations).toContainEqual({
       tag: "v4",
       new_sqlite_classes: ["InstanceCoordinator"],
+    });
+    expect(config.migrations).toContainEqual({
+      tag: "v5",
+      new_sqlite_classes: ["ProviderAttemptLedger"],
     });
     expect(config.migrations.some((migration: Record<string, unknown>) => "new_classes" in migration)).toBe(false);
   });

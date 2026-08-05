@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
 import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse } from "../client/src/lib/api";
 import { resolveProviderRouteCandidates } from "../src/services/provider-router";
+import {
+  ProviderAttemptLedgerError,
+  createProviderAttemptRuntime,
+} from "../src/services/provider-attempt-runtime";
 import worker, {
   getTeamAgentConversationInstanceName,
   getTeamAgentInstanceName,
@@ -410,6 +414,35 @@ async function getPersistedAgentMessages(agent: DurableObjectStub<TeamAgent>): P
     ).toArray();
     return rows.map((row) => JSON.parse(row.message) as UIMessage);
   });
+}
+
+async function seedProviderAttempt(providerId: string) {
+  const runtime = createProviderAttemptRuntime({
+    ledger: env.PROVIDER_ATTEMPT_LEDGER,
+    mode: "required",
+    operation: {
+      version: 1,
+      operationId: `provider-operation-${crypto.randomUUID()}`,
+      fenceId: crypto.randomUUID(),
+      kind: "provider_turn",
+      startedAt: Date.now(),
+    },
+  });
+  const run = runtime.createRun("main_answer");
+  const handle = await run.start({
+    logicalRouteId: "retained-evidence",
+    providerId,
+    model: "fake-model",
+    credentialClass: "managed",
+    fallbackIndex: 0,
+  });
+  await handle.succeed();
+  return {
+    providerId,
+    turnId: runtime.turnId,
+    runId: run.runId,
+    attemptId: handle.attemptId!,
+  };
 }
 
 describe("Worker API", () => {
@@ -2440,6 +2473,15 @@ describe("Worker API", () => {
       content: JSON.stringify({ characters: 8, codePoints: 8, words: 2, lines: 2 }),
     });
     expect(providerName).toMatch(/^text_stats_[a-f0-9]{10}$/);
+    const toolAttempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName("legacy:tools").listRecent({ limit: 10 });
+    expect(toolAttempts).toHaveLength(2);
+    expect(toolAttempts.map(({ runKind }) => runKind).sort()).toEqual([
+      "legacy_capability",
+      "tool_continuation",
+    ]);
+    expect(new Set(toolAttempts.map(({ turnId }) => turnId))).toHaveProperty("size", 1);
+    expect(new Set(toolAttempts.map(({ runId }) => runId))).toHaveProperty("size", 2);
+    expect(toolAttempts.every(({ status }) => status === "succeeded")).toBe(true);
   });
 
   it("completes an Anthropic built-in tool round trip", async () => {
@@ -2578,6 +2620,7 @@ describe("Worker API", () => {
       defaults: { defaultRoute: "model", allowedRoutes: ["model"] },
     }));
     const { cookie } = await login();
+    const usageBefore = (await apiRequest("/api/session", cookie).then((item) => item.json()) as any).usage.used;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes("anthropic-stream-error.example")) {
@@ -2592,7 +2635,15 @@ describe("Worker API", () => {
     const response = await apiRequest("/api/chat", cookie, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
-      body: JSON.stringify({ routeId: "model", messages: [{ role: "user", content: "执行回退测试" }] }),
+      body: JSON.stringify({
+        routeId: "model",
+        providerId: "forged-provider",
+        model: "forged-model",
+        turnId: `turn_${crypto.randomUUID()}`,
+        runId: `run_${crypto.randomUUID()}`,
+        attemptId: `attempt_${crypto.randomUUID()}`,
+        messages: [{ role: "user", content: "执行回退测试" }],
+      }),
     });
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toContain("备用服务商完成");
@@ -2614,6 +2665,28 @@ describe("Worker API", () => {
     });
     await expect(env.PROVIDER_COORDINATOR.getByName(primaryId).inspect()).resolves.toMatchObject({ active: 0 });
     await expect(env.PROVIDER_COORDINATOR.getByName(backupId).inspect()).resolves.toMatchObject({ active: 0 });
+    const [primaryAttempt] = await env.PROVIDER_ATTEMPT_LEDGER.getByName(primaryId).listRecent();
+    const [backupAttempt] = await env.PROVIDER_ATTEMPT_LEDGER.getByName(backupId).listRecent();
+    expect(primaryAttempt).toMatchObject({
+      logicalRouteId: "model",
+      providerId: primaryId,
+      model: "anthropic-primary",
+      fallbackIndex: 0,
+      status: "failed",
+      errorClass: "provider_protocol_error",
+    });
+    expect(backupAttempt).toMatchObject({
+      turnId: primaryAttempt.turnId,
+      runId: primaryAttempt.runId,
+      logicalRouteId: "model",
+      providerId: backupId,
+      model: "openai-backup",
+      fallbackIndex: 1,
+      status: "succeeded",
+    });
+    expect(JSON.stringify([primaryAttempt, backupAttempt])).not.toContain("forged-");
+    const usageAfter = (await apiRequest("/api/session", cookie).then((item) => item.json()) as any).usage.used;
+    expect(usageAfter).toBe(usageBefore + 1);
   });
 
   it("rejects an empty DONE-only stream and records a protocol failure", async () => {
@@ -2690,6 +2763,82 @@ describe("Worker API", () => {
     expect(upstreamCancelled).toBe(true);
     expect(completed).toBe(0);
     expect(failures).toEqual([failure]);
+  });
+
+  it("runs lease and admission cleanup before surfacing a terminal ledger failure", async () => {
+    const ledgerError = new ProviderAttemptLedgerError();
+    let released = 0;
+    let admissionReleased = 0;
+    const response = responseWithProviderLease(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(openAiTextEvent("已完成")));
+          controller.close();
+        },
+      }), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+      {
+        providerId: "test-provider",
+        requestId: "test-request",
+        release: async () => { released += 1; },
+      },
+      {
+        attempt: {
+          succeed: async () => { throw ledgerError; },
+          fail: async () => undefined,
+          cancel: async () => undefined,
+          timeout: async () => undefined,
+        },
+        onComplete: async () => { admissionReleased += 1; },
+        onError: async () => undefined,
+      },
+    );
+
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await expect(reader.read()).rejects.toBe(ledgerError);
+    expect(released).toBe(1);
+    expect(admissionReleased).toBe(1);
+  });
+
+  it("records and surfaces a bodyless provider response as a protocol failure", async () => {
+    const ledgerError = new ProviderAttemptLedgerError();
+    let released = 0;
+    let admissionReleased = 0;
+    let upstreamCancelled = 0;
+    const failures: unknown[] = [];
+    const response = responseWithProviderLease(
+      new Response(null, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+      {
+        providerId: "test-provider",
+        requestId: "test-request",
+        release: async () => { released += 1; },
+      },
+      {
+        attempt: {
+          succeed: async () => undefined,
+          fail: async (error) => {
+            failures.push(error);
+            throw ledgerError;
+          },
+          cancel: async () => undefined,
+          timeout: async () => undefined,
+        },
+        onComplete: async () => undefined,
+        onError: async (error) => {
+          failures.push(error);
+          admissionReleased += 1;
+        },
+      },
+      async () => { upstreamCancelled += 1; },
+    );
+
+    await expect(response.body!.getReader().read()).rejects.toBe(ledgerError);
+    expect(failures).toHaveLength(2);
+    expect(failures[0]).toMatchObject({ name: "ProviderProtocolError" });
+    expect(failures[1]).toBe(failures[0]);
+    expect(released).toBe(1);
+    expect(admissionReleased).toBe(1);
+    expect(upstreamCancelled).toBe(1);
   });
 
   it("releases a provider lease on stream cancellation without recording success or failure", async () => {
@@ -3905,6 +4054,7 @@ describe("Worker API", () => {
 
   it("deletes all user conversations and long-term memory", async () => {
     const { cookie, label } = await login();
+    const providerEvidence = await seedProviderAttempt(`retained-${crypto.randomUUID()}`);
     await apiRequest("/api/memory", cookie, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -3978,6 +4128,16 @@ describe("Worker API", () => {
     await expect(env.CHAT_STORE.get(legacyChatIndexKey)).resolves.toBeNull();
     await expect(env.CHAT_STORE.get(ROUTES_CONFIG_KEY, "json")).resolves.toEqual(preservedConfig);
     await expect(env.CHAT_STORE.get(preservedRouteSecretKey)).resolves.toBe(preservedRouteSecretRecord);
+    const retainedAttempts = await env.PROVIDER_ATTEMPT_LEDGER
+      .getByName(providerEvidence.providerId)
+      .listRecent();
+    expect(retainedAttempts).toEqual([expect.objectContaining({
+      attemptId: providerEvidence.attemptId,
+      turnId: providerEvidence.turnId,
+      runId: providerEvidence.runId,
+      status: "succeeded",
+    })]);
+    expect(JSON.stringify(retainedAttempts)).not.toContain(label);
     await runInDurableObject(oauthData.state, async (_instance, state) => {
       for (const table of [
         "mcp_oauth_states",
@@ -4038,6 +4198,7 @@ describe("Worker API", () => {
 
   it("exports bounded user conversations and memory without message metadata or file URLs", async () => {
     const { cookie, label } = await login();
+    const providerEvidence = await seedProviderAttempt(`export-excluded-${crypto.randomUUID()}`);
     const oauthData = await seedMcpOAuthData(label, "export-oauth");
     await apiRequest("/api/agent/memory", cookie, {
       method: "PUT",
@@ -4104,6 +4265,10 @@ describe("Worker API", () => {
     expect(JSON.stringify(payload)).not.toContain("ciphertext");
     expect(JSON.stringify(payload)).not.toContain("mcp_oauth");
     expect(JSON.stringify(payload)).not.toContain("export-issuer.example");
+    expect(JSON.stringify(payload)).not.toContain(providerEvidence.providerId);
+    expect(JSON.stringify(payload)).not.toContain(providerEvidence.turnId);
+    expect(JSON.stringify(payload)).not.toContain(providerEvidence.runId);
+    expect(JSON.stringify(payload)).not.toContain(providerEvidence.attemptId);
   });
 
   it("keeps user exports isolated and requires an authenticated session", async () => {
@@ -4242,6 +4407,107 @@ describe("Worker API", () => {
     expect(fetchSpy).toHaveBeenCalledOnce();
   });
 
+  it("persists content-free attempts for memory suggestions and conversation summaries", async () => {
+    const providerId = `auxiliary-${crypto.randomUUID()}`;
+    const endpoint = `https://${providerId}.example/v1`;
+    const promptMarker = `PRIVATE_AUXILIARY_PROMPT_${crypto.randomUUID()}`;
+    const memoryMarker = `PRIVATE_MEMORY_COMPLETION_${crypto.randomUUID()}`;
+    const summaryMarker = `PRIVATE_SUMMARY_COMPLETION_${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Auxiliary provider",
+          type: "openai-chat",
+          baseUrl: endpoint,
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        auxiliary: {
+          label: "Auxiliary",
+          offerings: [{ providerId, model: "auxiliary-model" }],
+        },
+      },
+      defaults: {
+        defaultRoute: "auxiliary",
+        allowedRoutes: ["auxiliary"],
+        dailyMessageLimit: 5,
+      },
+    }));
+    const { cookie } = await login();
+    const adminCookie = await adminLogin();
+    const before = await apiRequest("/api/session", cookie).then((response) => response.json()) as any;
+    const completionResponse = (text: string) => new Response(JSON.stringify({
+      id: `chatcmpl-${crypto.randomUUID()}`,
+      object: "chat.completion",
+      created: 1,
+      model: "auxiliary-model",
+      choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce(async () => completionResponse(`- ${memoryMarker}`))
+      .mockImplementationOnce(async () => completionResponse(summaryMarker));
+
+    const memory = await apiRequest("/api/memory/suggest", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "auxiliary",
+        messages: [{ role: "user", content: promptMarker }],
+      }),
+    });
+    expect(memory.status, await memory.clone().text()).toBe(200);
+    await expect(memory.json()).resolves.toMatchObject({ suggestion: `- ${memoryMarker}` });
+
+    const summary = await apiRequest("/api/session-summary", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "auxiliary",
+        messages: [{ role: "user", content: promptMarker }],
+      }),
+    });
+    expect(summary.status, await summary.clone().text()).toBe(200);
+    await expect(summary.json()).resolves.toMatchObject({ summary: summaryMarker });
+
+    const after = await apiRequest("/api/session", cookie).then((response) => response.json()) as any;
+    expect(after.usage.remaining).toBe(before.usage.remaining - 1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    const diagnostics = await apiRequest(
+      `/api/admin/provider-attempts?providerId=${encodeURIComponent(providerId)}&limit=10`,
+      adminCookie,
+    );
+    expect(diagnostics.status, await diagnostics.clone().text()).toBe(200);
+    const payload = await diagnostics.json() as any;
+    expect(payload.providerId).toBe(providerId);
+    expect(payload.attempts).toHaveLength(2);
+    expect(payload.attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runKind: "memory_suggestion",
+        logicalRouteId: "auxiliary",
+        providerId,
+        model: "auxiliary-model",
+        status: "succeeded",
+      }),
+      expect.objectContaining({
+        runKind: "conversation_summary",
+        logicalRouteId: "auxiliary",
+        providerId,
+        model: "auxiliary-model",
+        status: "succeeded",
+      }),
+    ]));
+    expect(new Set(payload.attempts.map((attempt: any) => attempt.runId)).size).toBe(2);
+    expect(new Set(payload.attempts.map((attempt: any) => attempt.turnId)).size).toBe(2);
+    expect(JSON.stringify(payload)).not.toContain(promptMarker);
+    expect(JSON.stringify(payload)).not.toContain(memoryMarker);
+    expect(JSON.stringify(payload)).not.toContain(summaryMarker);
+    expect(JSON.stringify(payload)).not.toContain("test-route-key");
+    expect(JSON.stringify(payload)).not.toContain(endpoint);
+  });
+
   it("requires an admin session for managed route-secret APIs", async () => {
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/setup-status"))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/setup-smoke", {
@@ -4249,6 +4515,9 @@ describe("Worker API", () => {
     }))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets"))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/reliability"))).status).toBe(401);
+    expect((await exports.default.fetch(new Request(
+      "https://example.test/api/admin/provider-attempts?providerId=test",
+    ))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -5979,6 +6248,28 @@ describe("Worker API", () => {
       const [url, init] = fetchSpy.mock.calls[0];
       expect(url).toBe("https://models.example/v1/models");
       expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-route-key");
+      const diagnostics = await apiRequest(
+        "/api/admin/provider-attempts?providerId=models&limit=10",
+        cookie,
+      );
+      expect(diagnostics.status).toBe(200);
+      const diagnosticPayload = await diagnostics.json() as any;
+      expect(diagnosticPayload).toMatchObject({
+        providerId: "models",
+        attempts: [expect.objectContaining({
+          runKind: "model_discovery",
+          logicalRouteId: "model-discovery",
+          providerId: "models",
+          model: "model-list",
+          status: "succeeded",
+        })],
+      });
+      expect(JSON.stringify(diagnosticPayload)).not.toMatch(/idempotency|fence|test-route-key/i);
+      const invalidLimit = await apiRequest(
+        "/api/admin/provider-attempts?providerId=models&limit=101",
+        cookie,
+      );
+      expect(invalidLimit.status).toBe(400);
     } finally {
       fetchSpy.mockRestore();
     }

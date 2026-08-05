@@ -38,6 +38,13 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 
 The Worker owns the attempt loop. It may try another eligible provider only when `callProviderStream` returns an HTTP failure or throws before returning `{ ok: true }`.
 
+Before calling this adapter, the Worker starts one attempt through the required
+Provider attempt runtime. The response/lease wrapper appends success, failure,
+or cancellation exactly once. A successful response with no body is a protocol
+failure: cancel upstream, settle the ledger, release Provider/admission
+resources, and surface any terminal ledger failure. A
+`ProviderAttemptLedgerError` is infrastructure failure and never opens fallback.
+
 Once `{ ok: true }` is returned, the Worker wraps the body with the provider lease lifecycle. Completion records success; stream failure records the protocol or upstream error; cancellation releases capacity without recording a synthetic success or failure. None of these post-return paths may re-enter provider selection.
 
 The runtime owns the child deadline lifecycle. It disposes the timer and parent listener on HTTP failure, pre-visible failure, stream completion, or cancellation; the Worker still owns the Provider lease and fallback decision.
@@ -66,6 +73,7 @@ The runtime owns the child deadline lifecycle. It disposes the timer and parent 
 - Use fake timers and local fake streams to prove a stalled fetch and stalled pre-visible read abort at 60 seconds, parent cancellation remains non-fallback, and a committed stream can continue beyond 60 seconds.
 - Unit-test Anthropic text, finish, stop, and cancellation conversion.
 - Keep Worker integration tests for HTTP and protocol fallback, post-visible failure, provider lease release, reliability telemetry, and BYOK terminal classification.
+- Assert one ledger attempt per fake stream request, including pre-visible fallback, post-visible failure, cancellation, timeout, and bodyless-response cleanup.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 
 ## 7. Wrong vs Correct

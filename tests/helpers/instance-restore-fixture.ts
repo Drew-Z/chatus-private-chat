@@ -418,7 +418,10 @@ function fixtureObjects(principalCount: number): InstanceObjectRegistrationV1[] 
       objectRegistration("user_state", `source-user-${index}`, ""),
     );
   }
-  objects.push(objectRegistration("provider_coordinator", "source-provider", ""));
+  objects.push(
+    objectRegistration("provider_attempt_ledger", "source-provider-ledger", ""),
+    objectRegistration("provider_coordinator", "source-provider", ""),
+  );
   return objects.sort((left, right) => compareStrings(objectKey(left.kind, left.instanceName), objectKey(right.kind, right.instanceName)));
 }
 
@@ -432,7 +435,9 @@ function objectRegistration(
     kind,
     instanceName,
     rootInstanceName,
-    schemaVersion: `${kind}-schema-v1`,
+    schemaVersion: kind === "provider_attempt_ledger"
+      ? "provider-attempt-ledger-v1"
+      : `${kind}-schema-v1`,
     stateClass: "authoritative",
     restoreBehavior: "restore",
     registeredAt: FIXED_NOW.getTime(),
@@ -441,8 +446,8 @@ function objectRegistration(
 
 function fixtureMappings(objects: InstanceObjectRegistrationV1[]): RestoreObjectMappingV1[] {
   return objects.map((object) => {
-    const principalSuffix = object.kind === "provider_coordinator"
-      ? "provider"
+    const principalSuffix = object.kind === "provider_coordinator" || object.kind === "provider_attempt_ledger"
+      ? object.kind.replaceAll("_", "-")
       : /-(\d+)$/.exec(object.instanceName)?.[1] || "1";
     const conversation = object.kind === "conversation_team_agent";
     return {
@@ -463,9 +468,10 @@ function fixtureTarget(manifest: CaptureManifestV1): RestoreTargetIdentityV1 {
     { kind: "kv", bindingName: "CHAT_STORE", physicalId: "target-kv", className: "", migrationTag: "" },
     { kind: "queue", bindingName: "DOCUMENT_INGEST", physicalId: "target-queue", className: "", migrationTag: "" },
     { kind: "dlq", bindingName: "DOCUMENT_INGEST_DLQ", physicalId: "target-dlq", className: "", migrationTag: "" },
-    { kind: "durable_object", bindingName: "INSTANCE_COORDINATOR", physicalId: "target-instance-do", className: "InstanceCoordinator", migrationTag: "v1" },
-    { kind: "durable_object", bindingName: "PROVIDER_COORDINATOR", physicalId: "target-provider-do", className: "ProviderCoordinator", migrationTag: "v1" },
-    { kind: "durable_object", bindingName: "TEAM_AGENT", physicalId: "target-team-do", className: "TeamAgent", migrationTag: "v1" },
+    { kind: "durable_object", bindingName: "INSTANCE_COORDINATOR", physicalId: "target-instance-do", className: "InstanceCoordinator", migrationTag: "v4" },
+    { kind: "durable_object", bindingName: "PROVIDER_ATTEMPT_LEDGER", physicalId: "target-provider-attempt-do", className: "ProviderAttemptLedger", migrationTag: "v5" },
+    { kind: "durable_object", bindingName: "PROVIDER_COORDINATOR", physicalId: "target-provider-do", className: "ProviderCoordinator", migrationTag: "v3" },
+    { kind: "durable_object", bindingName: "TEAM_AGENT", physicalId: "target-team-do", className: "TeamAgent", migrationTag: "v2" },
     { kind: "durable_object", bindingName: "USER_STATE", physicalId: "target-user-do", className: "UserState", migrationTag: "v1" },
     { kind: "r2", bindingName: "WORKSPACE_FILES", physicalId: "target-r2", className: "", migrationTag: "" },
   ];

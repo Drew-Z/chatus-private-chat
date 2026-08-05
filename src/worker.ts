@@ -64,6 +64,7 @@ import type {
   ResolvedProviderRoute,
   RouteConfig,
 } from "./contracts/provider";
+import { createProviderTurnId } from "./contracts/provider-attempt";
 import type { GuestSession, Session } from "./contracts/session";
 import {
   MAX_WORKSPACE_FILE_BYTES,
@@ -167,7 +168,17 @@ import {
   type ProviderToolExecutionResult,
   type ProviderToolHistory,
 } from "./services/provider-tool-runtime";
-import { createProviderPlanRuntime } from "./services/provider-plan-runtime";
+import {
+  createProviderPlanRuntime,
+  type PreparedProviderRoute,
+} from "./services/provider-plan-runtime";
+import {
+  createProviderAttemptRuntime,
+  ProviderAttemptLedgerError,
+  type ProviderAttemptHandle,
+  type ProviderAttemptRun,
+  type ProviderAttemptRuntime,
+} from "./services/provider-attempt-runtime";
 import {
   callProviderStream,
   UpstreamRequestError,
@@ -178,12 +189,14 @@ import {
   type FeedbackReason,
 } from "./services/feedback-audit";
 import type { ProviderCoordinator } from "./provider-coordinator";
+import type { ProviderAttemptLedger } from "./provider-attempt-ledger";
 import {
   acquireInstanceOperationFence,
   INSTANCE_MAINTENANCE_COORDINATOR,
   type InstanceMaintenanceInspection,
   type InstanceOperationFence,
   type InstanceOperationKind,
+  type InstanceOperationStateV1,
 } from "./services/instance-capture";
 import { captureDurableObjectState } from "./services/durable-object-capture";
 
@@ -391,6 +404,7 @@ export type Env = {
   USER_STATE: DurableObjectNamespace<UserState>;
   TEAM_AGENT: DurableObjectNamespace<TeamAgent>;
   PROVIDER_COORDINATOR: DurableObjectNamespace<ProviderCoordinator>;
+  PROVIDER_ATTEMPT_LEDGER: DurableObjectNamespace<ProviderAttemptLedger>;
   INSTANCE_COORDINATOR: DurableObjectNamespace<InstanceCoordinator>;
   ACCESS_CODES?: string;
   ACCESS_CODES_MODE?: string;
@@ -417,6 +431,7 @@ export type Env = {
   DEFAULT_CLIENT?: string;
   DOCUMENT_INGEST_QUEUE_NAME?: string;
   DOCUMENT_INGEST_DLQ_NAME?: string;
+  PROVIDER_ATTEMPT_LEDGER_MODE?: string;
   BLOCKED_PROMPTS?: string;
   ADMIN_TOKEN?: string;
   ROUTE_KEYS_MASTER_KEY?: string;
@@ -1783,7 +1798,7 @@ async function handleRequest(
         env,
         `${requestId}:${url.pathname === MCP_OAUTH_CALLBACK_PATH ? "oauth" : "http"}`,
         url.pathname === MCP_OAUTH_CALLBACK_PATH ? "oauth_callback" : "http_mutation",
-        () => handleApi(request, env, url, ctx, requestId),
+        (fence) => handleApi(request, env, url, ctx, requestId, fence),
       );
     }
     return handleApi(request, env, url, ctx, requestId);
@@ -1846,11 +1861,16 @@ async function acquireBackgroundInstanceOperation(
   return acquireInstanceOperation(env, `${scope}:${crypto.randomUUID()}`, "background_cleanup");
 }
 
+function requireInstanceFence(fence: InstanceOperationFence | undefined): InstanceOperationFence {
+  if (!fence) throw new Error("instance_operation_fence_required");
+  return fence;
+}
+
 async function handleRequestWithInstanceOperation(
   env: Env,
   operationId: string,
   kind: InstanceOperationKind,
-  handler: () => Promise<Response>,
+  handler: (fence: InstanceOperationFence) => Promise<Response>,
 ): Promise<Response> {
   const fence = await acquireInstanceOperation(env, operationId, kind);
   if (!fence) {
@@ -1861,7 +1881,7 @@ async function handleRequestWithInstanceOperation(
   }
   let response: Response;
   try {
-    response = await handler();
+    response = await handler(fence);
   } catch (error) {
     await fence.release().catch(() => undefined);
     throw error;
@@ -1873,15 +1893,22 @@ async function responseWithInstanceOperationFence(
   response: Response,
   fence: InstanceOperationFence,
 ): Promise<Response> {
+  return responseWithRelease(response, fence.release);
+}
+
+async function responseWithRelease(
+  response: Response,
+  release: () => Promise<void>,
+): Promise<Response> {
   const isEventStream = response.headers.get("Content-Type")?.toLowerCase().includes("text/event-stream") === true;
   if (response.webSocket) {
-    const settle = () => void fence.release().catch(() => undefined);
+    const settle = () => void release().catch(() => undefined);
     response.webSocket.addEventListener("close", settle, { once: true });
     response.webSocket.addEventListener("error", settle, { once: true });
     return response;
   }
   if (!response.body || !isEventStream) {
-    await fence.release();
+    await release();
     return response;
   }
   const reader = response.body.getReader();
@@ -1889,7 +1916,7 @@ async function responseWithInstanceOperationFence(
   const settle = async () => {
     if (settled) return;
     settled = true;
-    await fence.release().catch(() => undefined);
+    await release().catch(() => undefined);
   };
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -2079,6 +2106,7 @@ async function handleApi(
   url: URL,
   ctx: ExecutionContext | undefined,
   requestId: string,
+  instanceFence?: InstanceOperationFence,
 ): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: sensitiveResponseHeaders() });
@@ -2105,7 +2133,7 @@ async function handleApi(
     if (!admin) {
       return jsonResponse({ error: "unauthorized" }, 401);
     }
-    return handleAdminApi(request, env, url);
+    return handleAdminApi(request, env, url, instanceFence);
   }
 
   if (url.pathname === "/api/login" && request.method === "POST") {
@@ -2149,7 +2177,7 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/chat" && request.method === "POST") {
-    return handleChat(request, env, session);
+    return handleChat(request, env, session, requireInstanceFence(instanceFence));
   }
   if (url.pathname === "/api/tool-approvals" && request.method === "POST") {
     return handleToolApproval(request, env, session);
@@ -2232,11 +2260,11 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/memory/suggest" && request.method === "POST") {
-    return handleMemorySuggest(request, env, session);
+    return handleMemorySuggest(request, env, session, requireInstanceFence(instanceFence));
   }
 
   if (url.pathname === "/api/session-summary" && request.method === "POST") {
-    return handleSessionSummary(request, env, session);
+    return handleSessionSummary(request, env, session, requireInstanceFence(instanceFence));
   }
 
   if (url.pathname === "/api/chats" && request.method === "GET") {
@@ -2421,7 +2449,12 @@ async function handleAdminLogout(request: Request, env: Env, url: URL): Promise<
   );
 }
 
-async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleAdminApi(
+  request: Request,
+  env: Env,
+  url: URL,
+  instanceFence?: InstanceOperationFence,
+): Promise<Response> {
   if (url.pathname === "/api/admin/session" && request.method === "GET") {
     return jsonResponse({ authenticated: true });
   }
@@ -2571,8 +2604,12 @@ async function handleAdminApi(request: Request, env: Env, url: URL): Promise<Res
     return handleGetAdminReliability(env);
   }
 
+  if (url.pathname === "/api/admin/provider-attempts" && request.method === "GET") {
+    return handleAdminProviderAttempts(env, url);
+  }
+
   if (url.pathname === "/api/admin/route-models" && request.method === "POST") {
-    return handleAdminRouteModels(request, env);
+    return handleAdminRouteModels(request, env, requireInstanceFence(instanceFence));
   }
 
   if (url.pathname === "/api/admin/mcp-discovery" && request.method === "POST") {
@@ -4089,7 +4126,12 @@ async function handleFeedback(request: Request, env: Env, session: Session): Pro
   return jsonResponse({ ok: true, rating: body.rating });
 }
 
-async function handleMemorySuggest(request: Request, env: Env, session: Session): Promise<Response> {
+async function handleMemorySuggest(
+  request: Request,
+  env: Env,
+  session: Session,
+  instanceFence: InstanceOperationFence,
+): Promise<Response> {
   if (request.headers.get("x-chatus-client") !== "web") {
     return jsonResponse({ error: "forbidden" }, 403);
   }
@@ -4128,6 +4170,12 @@ async function handleMemorySuggest(request: Request, env: Env, session: Session)
     maxTokens: 500,
     temperature: 0.2,
     consumeQuota: true,
+    providerRun: createProviderAttemptRuntime({
+      ledger: env.PROVIDER_ATTEMPT_LEDGER,
+      mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
+      operation: instanceFence.operation,
+      turnId: createProviderTurnId(),
+    }).createRun("memory_suggestion"),
   });
   if (!result.ok) {
     return jsonResponse({ error: result.error, message: result.message, routeId: result.routeId }, result.status);
@@ -4137,7 +4185,12 @@ async function handleMemorySuggest(request: Request, env: Env, session: Session)
   return jsonResponse({ suggestion, routeId: result.routeId });
 }
 
-async function handleSessionSummary(request: Request, env: Env, session: Session): Promise<Response> {
+async function handleSessionSummary(
+  request: Request,
+  env: Env,
+  session: Session,
+  instanceFence: InstanceOperationFence,
+): Promise<Response> {
   if (request.headers.get("x-chatus-client") !== "web") {
     return jsonResponse({ error: "forbidden" }, 403);
   }
@@ -4182,6 +4235,12 @@ async function handleSessionSummary(request: Request, env: Env, session: Session
     maxTokens: 700,
     temperature: 0.2,
     consumeQuota: false,
+    providerRun: createProviderAttemptRuntime({
+      ledger: env.PROVIDER_ATTEMPT_LEDGER,
+      mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
+      operation: instanceFence.operation,
+      turnId: createProviderTurnId(),
+    }).createRun("conversation_summary"),
   });
   if (!result.ok) {
     return jsonResponse({ error: result.error, message: result.message, routeId: result.routeId }, result.status);
@@ -5470,7 +5529,11 @@ function chatIndexKey(label: string): string {
   return `chats:${encodeURIComponent(label)}:index`;
 }
 
-async function handleAdminRouteModels(request: Request, env: Env): Promise<Response> {
+async function handleAdminRouteModels(
+  request: Request,
+  env: Env,
+  instanceFence: InstanceOperationFence,
+): Promise<Response> {
   const body = await readJson<{
     providerId?: unknown;
     routeId?: unknown;
@@ -5523,13 +5586,13 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
     queueTimeoutMs: 10_000,
     priority: 0,
   };
-  let apiKey = "";
+  let credential: ProviderCredential;
   try {
-    apiKey = await resolveRouteKey(route, env, "");
+    credential = await resolveRouteCredential(route, env, "");
   } catch (error) {
     return routeSecretAdminErrorResponse(error);
   }
-  if (!apiKey) {
+  if (!credential.apiKey || credential.source === "missing") {
     return jsonResponse(
       { error: "missing_key", message: "无法读取线路密钥，请检查 API Key Ref 是否对应 Worker Secret" },
       400,
@@ -5537,14 +5600,33 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
   }
 
   const headers = buildHeaders(route.headers);
-  setAuthHeader(headers, route, apiKey, type === "anthropic-messages" ? "x-api-key" : "Authorization");
+  setAuthHeader(
+    headers,
+    route,
+    credential.apiKey,
+    type === "anthropic-messages" ? "x-api-key" : "Authorization",
+  );
   headers.set("Accept", "application/json");
   if (type === "anthropic-messages" && !headers.has("anthropic-version")) {
     headers.set("anthropic-version", DEFAULT_ANTHROPIC_VERSION);
   }
 
   const endpoint = routeModelsUrl(route);
+  const providerRun = createProviderAttemptRuntime({
+    ledger: env.PROVIDER_ATTEMPT_LEDGER,
+    mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
+    operation: instanceFence.operation,
+    turnId: createProviderTurnId(),
+  }).createRun("model_discovery");
+  let attemptHandle: ProviderAttemptHandle | undefined;
   try {
+    attemptHandle = await providerRun.start({
+      logicalRouteId: route.routeId,
+      providerId: route.providerId,
+      model: route.model,
+      credentialClass: credential.source,
+      fallbackIndex: 0,
+    });
     const response = await fetch(endpoint, {
       method: "GET",
       headers,
@@ -5552,6 +5634,8 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
     });
     const text = await response.text();
     if (!response.ok) {
+      await attemptHandle.fail({ status: response.status });
+      attemptHandle = undefined;
       const error = projectAgentStreamError({ status: response.status });
       return jsonResponse(
         {
@@ -5566,6 +5650,10 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
     try {
       payload = JSON.parse(text) as unknown;
     } catch {
+      const protocolError = new Error("Provider model discovery response was invalid.");
+      protocolError.name = "ProviderProtocolError";
+      await attemptHandle.fail(protocolError);
+      attemptHandle = undefined;
       return jsonResponse({
         error: "provider_protocol_error",
         message: agentErrorMessage("provider_protocol_error"),
@@ -5573,13 +5661,21 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
     }
     const models = extractModelList(payload);
     if (!models.length) {
+      const protocolError = new Error("Provider model discovery returned no models.");
+      protocolError.name = "ProviderProtocolError";
+      await attemptHandle.fail(protocolError);
+      attemptHandle = undefined;
       return jsonResponse({
         error: "provider_protocol_error",
         message: agentErrorMessage("provider_protocol_error"),
       }, 502);
     }
+    await attemptHandle.succeed();
+    attemptHandle = undefined;
     return jsonResponse({ models, count: models.length, endpoint });
   } catch (error) {
+    if (error instanceof ProviderAttemptLedgerError) throw error;
+    await attemptHandle?.fail(error);
     const projected = projectAgentStreamError(error);
     return jsonResponse(
       {
@@ -5589,6 +5685,26 @@ async function handleAdminRouteModels(request: Request, env: Env): Promise<Respo
       502,
     );
   }
+}
+
+async function handleAdminProviderAttempts(env: Env, url: URL): Promise<Response> {
+  const providerId = url.searchParams.get("providerId")?.trim() || "";
+  const parsedLimit = Number(url.searchParams.get("limit") || "25");
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+    return jsonResponse({ error: "invalid_limit" }, 400);
+  }
+  const config = await loadAppConfig(env);
+  const configuredProviderIds = new Set(Object.keys(config.providers));
+  for (const [routeId, route] of Object.entries(config.routes)) {
+    for (const candidate of resolveProviderRouteCandidates(routeId, route, config.providers)) {
+      configuredProviderIds.add(candidate.providerId);
+    }
+  }
+  if (!providerId || !configuredProviderIds.has(providerId)) {
+    return jsonResponse({ error: providerId ? "provider_not_found" : "provider_id_required" }, providerId ? 404 : 400);
+  }
+  const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent({ limit: parsedLimit });
+  return jsonResponse({ providerId, attempts });
 }
 
 function routeModelsUrl(route: ResolvedProviderRoute): string {
@@ -6268,7 +6384,12 @@ async function handleToolApproval(request: Request, env: Env, session: Session):
   return jsonResponse({ ok: true });
 }
 
-async function handleChat(request: Request, env: Env, session: Session): Promise<Response> {
+async function handleChat(
+  request: Request,
+  env: Env,
+  session: Session,
+  instanceFence: InstanceOperationFence,
+): Promise<Response> {
   const length = Number(request.headers.get("content-length") || "0");
   if (length > MAX_REQUEST_BYTES) {
     return jsonResponse({ error: "request_too_large" }, 413);
@@ -6356,6 +6477,12 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
 
   const selectedSkills = getSelectedSkills(config, body.skillIds, access.user);
   const messages = await buildMessagesWithSystem(env, session, normalized, sessionSummary, access.user, selectedSkills);
+  const providerAttempts = createProviderAttemptRuntime({
+    ledger: env.PROVIDER_ATTEMPT_LEDGER,
+    mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
+    operation: instanceFence.operation,
+    turnId: createProviderTurnId(),
+  });
 
   const userApiKey = typeof body.userApiKey === "string" ? body.userApiKey.trim() : "";
   const toolDefinitions = selectedPublicRoute?.supportsTools
@@ -6368,19 +6495,27 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     }
     const chatId = normalizeCapabilityId(body.chatId, 80);
     if (!chatId) return jsonResponse({ error: "invalid_chat_id" }, 400);
-    return getUserState(env, session.label).runCapabilityChat({
-      session,
-      access,
-      config,
-      selectedRoute: selectedPublicRoute?.id || selectedRoute,
-      routeIds: capabilityRouteIds,
-      messages,
-      tools: toolDefinitions,
-      userApiKey,
-      temperature: body.temperature,
-      remaining: admission.remaining,
-      chatId,
-    });
+    try {
+      const response = await getUserState(env, session.label).runCapabilityChat({
+        session,
+        access,
+        config,
+        selectedRoute: selectedPublicRoute?.id || selectedRoute,
+        routeIds: capabilityRouteIds,
+        messages,
+        tools: toolDefinitions,
+        userApiKey,
+        temperature: body.temperature,
+        remaining: admission.remaining,
+        chatId,
+        turnId: providerAttempts.turnId,
+        operation: instanceFence.operation,
+      });
+      return responseWithRelease(response, admission.release);
+    } catch (error) {
+      await admission.release().catch(() => undefined);
+      throw error;
+    }
   }
   const prepared = await providerPlanRuntime(env, config).preparePlan({
     routeIds,
@@ -6402,6 +6537,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     ? { ...prepared.lastError, status: 500, error: { status: 500 } }
     : null;
   let attemptedRoutes = 0;
+  const providerRun = providerAttempts.createRun("main_answer");
 
   while (remaining.length) {
     const acquired = await acquireFirstAvailableProvider(env, remaining, request.signal);
@@ -6421,7 +6557,17 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
     const startedAt = Date.now();
     const fallback = route.planIndex > 0 || attemptedRoutes > 1;
     let handedOff = false;
+    let attemptHandle: ProviderAttemptHandle | undefined;
     try {
+      if (route.credential.source === "missing") throw new Error("provider_credential_missing");
+      attemptHandle = await providerRun.start({
+        logicalRouteId: routeId,
+        providerId: route.providerId,
+        model: route.model,
+        credentialClass: route.credential.source,
+        fallbackIndex: route.planIndex,
+        startedAt,
+      });
       const result = await callRoute({
         route,
         routeId,
@@ -6437,6 +6583,7 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
         result.response.headers.set("X-RateLimit-Remaining", String(admission.remaining));
         result.response.headers.set("X-Chatus-Route", routeId);
         const response = responseWithProviderLease(result.response, lease, {
+          attempt: attemptHandle,
           onComplete: async () => {
             await admission.release();
             await recordRouteReliability(env, {
@@ -6465,12 +6612,15 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
             await recordChatMetric(env, { kind: "route_error", label: session.label, routeId });
             await recordChatMetric(env, { kind: "failure", label: session.label });
           },
+          onCancel: admission.release,
         }, result.cancelUpstream, request.signal);
         handedOff = true;
         return response;
       }
 
       lastError = { ...result.error, error: { status: result.error.status } };
+      await attemptHandle.fail({ status: result.error.status });
+      attemptHandle = undefined;
       await recordRouteReliability(env, {
         routeId,
         providerId: route.providerId,
@@ -6483,6 +6633,17 @@ async function handleChat(request: Request, env: Env, session: Session): Promise
       await recordChatMetric(env, { kind: "route_error", label: session.label, routeId });
       if (result.terminal) break;
     } catch (error) {
+      if (error instanceof ProviderAttemptLedgerError) {
+        await admission.release();
+        throw error;
+      }
+      try {
+        await attemptHandle?.fail(error);
+        attemptHandle = undefined;
+      } catch (attemptError) {
+        await admission.release().catch(() => undefined);
+        throw attemptError;
+      }
       if (request.signal.aborted) {
         await admission.release();
         throw error;
@@ -6544,6 +6705,8 @@ export type TeamAgentTurnInput = {
   workspaceContext?: string;
   requestId?: string;
   abortSignal?: AbortSignal;
+  turnId: string;
+  operation: InstanceOperationStateV1;
 };
 
 export type PreparedTeamAgentTurn =
@@ -6572,6 +6735,12 @@ export async function prepareTeamAgentTurn(
   session: Session,
   input: TeamAgentTurnInput,
 ): Promise<PreparedTeamAgentTurn> {
+  const providerAttempts = createProviderAttemptRuntime({
+    ledger: env.PROVIDER_ATTEMPT_LEDGER,
+    mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
+    operation: input.operation,
+    turnId: input.turnId,
+  });
   if ((await inspectInstanceMaintenance(env)).blocked) {
     return {
       ok: false,
@@ -6671,15 +6840,22 @@ export async function prepareTeamAgentTurn(
       if (!selectorAdmission.ok) return rejectAdmission(selectorAdmission);
       if (input.abortSignal?.aborted) return cancelTurn();
     }
-    const selectorAttempt = await runAutomaticSkillSelector(env, {
-      config,
-      access,
-      routeId: selectedPublicRoute.id,
-      userApiKey: input.userApiKey?.trim() || "",
-      latestUserText: latestPrompt?.text || "",
-      availableSkills,
-      signal: input.abortSignal,
-    });
+    let selectorAttempt: AutomaticSkillSelectorAttempt;
+    try {
+      selectorAttempt = await runAutomaticSkillSelector(env, {
+        config,
+        access,
+        routeId: selectedPublicRoute.id,
+        userApiKey: input.userApiKey?.trim() || "",
+        latestUserText: latestPrompt?.text || "",
+        availableSkills,
+        signal: input.abortSignal,
+        providerAttempts,
+      });
+    } catch (error) {
+      if (admission?.ok) await admission.release().catch(() => undefined);
+      throw error;
+    }
     if (input.abortSignal?.aborted) return cancelTurn();
 
     config = await loadAppConfig(env);
@@ -6752,6 +6928,8 @@ export async function prepareTeamAgentTurn(
       routeId,
       providerId: route.providerId,
       model: createProviderLanguageModel(route, route.credential.apiKey),
+      modelName: route.model,
+      credentialClass: route.credential.source === "missing" ? undefined : route.credential.source,
       usedUserKey: route.credential.usedUserKey,
       acquireLease: (waitMs, signal) => acquireProviderLease(env, route, waitMs, signal),
       settings: {
@@ -6785,6 +6963,7 @@ export async function prepareTeamAgentTurn(
     await recordChatMetric(env, { kind: "failure", label: session.label });
   };
 
+  let providerRunIndex = 0;
   const model = createFallbackLanguageModel(candidates, {
     onSuccess: async (event) => {
       const credential = credentials.get(routeProviderKey(event.routeId, event.providerId));
@@ -6826,6 +7005,10 @@ export async function prepareTeamAgentTurn(
       }
       await recordChatMetric(env, { kind: "route_error", label: session.label, routeId: event.routeId });
     },
+  }, {
+    createRun: () => providerAttempts.createRun(
+      providerRunIndex++ === 0 && input.continuation !== true ? "main_answer" : "tool_continuation"
+    ),
   });
   const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env, session.label);
 
@@ -6864,30 +7047,53 @@ async function runAutomaticSkillSelector(
     latestUserText: string;
     availableSkills: ReturnType<typeof getPublicCapabilities>["skills"];
     signal?: AbortSignal;
+    providerAttempts: ProviderAttemptRuntime;
   },
 ): Promise<AutomaticSkillSelectorAttempt> {
   const availableSkills = args.availableSkills;
   if (!availableSkills.length) return { reason: "no_valid_skills" };
 
   const controller = new AbortController();
+  let activeAttempt: ProviderAttemptHandle | undefined;
   let resolveBoundary: (attempt: AutomaticSkillSelectorAttempt) => void = () => undefined;
   const boundary = new Promise<AutomaticSkillSelectorAttempt>((resolve) => {
     resolveBoundary = resolve;
   });
-  const abortAtBoundary = (reason: unknown) => {
-    if (!controller.signal.aborted) controller.abort(reason);
+  const abortAtBoundary = (reason: unknown, terminal: "cancel" | "timeout") => {
+    if (controller.signal.aborted) return;
+    controller.abort(reason);
+    const attemptHandle = activeAttempt;
+    activeAttempt = undefined;
+    if (attemptHandle) {
+      void (terminal === "timeout" ? attemptHandle.timeout() : attemptHandle.cancel())
+        .catch(() => undefined);
+    }
     resolveBoundary({ reason: "timeout" });
   };
-  const abortFromParent = () => abortAtBoundary(args.signal?.reason);
+  const abortFromParent = () => abortAtBoundary(args.signal?.reason, "cancel");
   if (args.signal?.aborted) return { reason: "timeout" };
   args.signal?.addEventListener("abort", abortFromParent, { once: true });
   const deadline = setTimeout(() => {
-    abortAtBoundary(new DOMException("Skill selection timed out", "TimeoutError"));
+    abortAtBoundary(new DOMException("Skill selection timed out", "TimeoutError"), "timeout");
   }, SKILL_SELECTOR_DEADLINE_MS);
-  const attempt = runAutomaticSkillSelectorAttempt(env, args, availableSkills, controller.signal)
-    .catch((): AutomaticSkillSelectorAttempt => ({
-      reason: controller.signal.aborted ? "timeout" : "provider_error",
-    }));
+  const attempt = runAutomaticSkillSelectorAttempt(
+    env,
+    args,
+    availableSkills,
+    controller.signal,
+    {
+      started(handle) {
+        activeAttempt = handle;
+      },
+      settled(handle) {
+        if (activeAttempt === handle) activeAttempt = undefined;
+      },
+    },
+  )
+    .catch((error): AutomaticSkillSelectorAttempt => {
+      if (error instanceof ProviderAttemptLedgerError) throw error;
+      return { reason: controller.signal.aborted ? "timeout" : "provider_error" };
+    });
 
   try {
     return await Promise.race([attempt, boundary]);
@@ -6905,9 +7111,14 @@ async function runAutomaticSkillSelectorAttempt(
     routeId: string;
     userApiKey: string;
     latestUserText: string;
+    providerAttempts: ProviderAttemptRuntime;
   },
   availableSkills: ReturnType<typeof getPublicCapabilities>["skills"],
   signal: AbortSignal,
+  attemptLifecycle: {
+    started(handle: ProviderAttemptHandle): void;
+    settled(handle: ProviderAttemptHandle): void;
+  },
 ): Promise<AutomaticSkillSelectorAttempt> {
   const prepared = await providerPlanRuntime(env, args.config).preparePlan({
     routeIds: [args.routeId],
@@ -6920,6 +7131,7 @@ async function runAutomaticSkillSelectorAttempt(
   }
 
   const remaining = [...prepared.candidates];
+  const providerRun = args.providerAttempts.createRun("automatic_skill");
   let attempted = 0;
   let lastReason: AgentSkillSelectionReason = "provider_error";
   const messages: ChatMessage[] = [
@@ -6952,7 +7164,19 @@ async function runAutomaticSkillSelectorAttempt(
     attempted += 1;
     const startedAt = Date.now();
     const fallback = route.planIndex > 0 || attempted > 1;
+    let attemptHandle: ProviderAttemptHandle | undefined;
     try {
+      if (route.credential.source === "missing") throw new Error("provider_credential_missing");
+      attemptHandle = await providerRun.start({
+        logicalRouteId: route.routeId,
+        providerId: route.providerId,
+        model: route.model,
+        credentialClass: route.credential.source,
+        fallbackIndex: route.planIndex,
+        startedAt,
+      });
+      attemptLifecycle.started(attemptHandle);
+      signal.throwIfAborted();
       const text = await completeOnce({
         route,
         apiKey: route.credential.apiKey,
@@ -6965,6 +7189,10 @@ async function runAutomaticSkillSelectorAttempt(
       signal.throwIfAborted();
       const parsed = parseAutomaticSkillSelection(text, args.config, args.access.user);
       if (parsed.skillIds?.length) {
+        const settledHandle = attemptHandle;
+        await settledHandle.succeed();
+        attemptLifecycle.settled(settledHandle);
+        attemptHandle = undefined;
         await recordRouteReliability(env, {
           operation: "skill_selection",
           routeId: route.routeId,
@@ -6976,6 +7204,12 @@ async function runAutomaticSkillSelectorAttempt(
         return { skillIds: parsed.skillIds };
       }
       lastReason = parsed.reason || "invalid_response";
+      const protocolError = new Error("Automatic Skill selection response was invalid.");
+      protocolError.name = "ProviderProtocolError";
+      const settledHandle = attemptHandle;
+      await settledHandle.fail(protocolError);
+      attemptLifecycle.settled(settledHandle);
+      attemptHandle = undefined;
       await recordRouteReliability(env, {
         operation: "skill_selection",
         routeId: route.routeId,
@@ -6986,6 +7220,11 @@ async function runAutomaticSkillSelectorAttempt(
         startedAt,
       });
     } catch (error) {
+      if (error instanceof ProviderAttemptLedgerError) throw error;
+      const settledHandle = attemptHandle;
+      await settledHandle?.fail(error);
+      if (settledHandle) attemptLifecycle.settled(settledHandle);
+      attemptHandle = undefined;
       const status = providerErrorStatus(error);
       lastReason = signal.aborted || isAbortLikeError(error) ? "timeout" : "provider_error";
       await recordRouteReliability(env, {
@@ -8019,6 +8258,7 @@ async function completeWithUserRoute(
     maxTokens?: number;
     temperature?: number;
     consumeQuota?: boolean;
+    providerRun: ProviderAttemptRun;
   },
 ): Promise<
   | { ok: true; text: string; routeId: string }
@@ -8079,7 +8319,17 @@ async function completeWithUserRoute(
     attemptedRoutes += 1;
     const startedAt = Date.now();
     const fallback = route.planIndex > 0 || attemptedRoutes > 1;
+    let attemptHandle: ProviderAttemptHandle | undefined;
     try {
+      if (route.credential.source === "missing") throw new Error("provider_credential_missing");
+      attemptHandle = await args.providerRun.start({
+        logicalRouteId: routeId,
+        providerId: route.providerId,
+        model: route.model,
+        credentialClass: route.credential.source,
+        fallbackIndex: route.planIndex,
+        startedAt,
+      });
       const text = await completeOnce({
         route,
         apiKey: route.credential.apiKey,
@@ -8089,6 +8339,8 @@ async function completeWithUserRoute(
         env,
       });
       if (text.trim()) {
+        await attemptHandle.succeed();
+        attemptHandle = undefined;
         await recordRouteReliability(env, {
           routeId,
           providerId: route.providerId,
@@ -8099,6 +8351,10 @@ async function completeWithUserRoute(
         });
         return { ok: true, text: text.trim(), routeId };
       }
+      const protocolError = new Error("Provider completion was empty.");
+      protocolError.name = "ProviderProtocolError";
+      await attemptHandle.fail(protocolError);
+      attemptHandle = undefined;
       await recordRouteReliability(env, {
         routeId,
         providerId: route.providerId,
@@ -8111,6 +8367,8 @@ async function completeWithUserRoute(
       lastError = "empty completion";
       lastRouteId = routeId;
     } catch (error) {
+      if (error instanceof ProviderAttemptLedgerError) throw error;
+      await attemptHandle?.fail(error);
       await recordRouteReliability(env, {
         routeId,
         providerId: route.providerId,
@@ -8279,8 +8537,10 @@ async function callRoute(args: {
 }
 
 type ProviderStreamLifecycle = {
+  attempt?: ProviderAttemptHandle;
   onComplete: () => Promise<void>;
   onError: (error: unknown) => Promise<void>;
+  onCancel?: () => Promise<void>;
 };
 
 export function responseWithProviderLease(
@@ -8290,12 +8550,7 @@ export function responseWithProviderLease(
   cancelUpstream?: (reason?: unknown) => Promise<void>,
   requestSignal?: AbortSignal,
 ): Response {
-  if (!response.body) {
-    void cancelUpstream?.();
-    void lease.release();
-    return response;
-  }
-  const reader = response.body.getReader();
+  const reader = response.body?.getReader();
   let settled = false;
   let abortHandler: (() => void) | null = null;
   const removeAbortHandler = () => {
@@ -8307,13 +8562,44 @@ export function responseWithProviderLease(
     if (settled) return;
     settled = true;
     removeAbortHandler();
+    let attemptError: unknown;
+    try {
+      if (kind === "complete") await lifecycle.attempt?.succeed();
+      else if (kind === "error") await lifecycle.attempt?.fail(error);
+      else await lifecycle.attempt?.cancel();
+    } catch (caught) {
+      attemptError = caught;
+    }
     await lease.release().catch(() => undefined);
     if (kind === "complete") {
       await lifecycle.onComplete().catch(() => undefined);
     } else if (kind === "error") {
       await lifecycle.onError(error).catch(() => undefined);
+    } else {
+      await lifecycle.onCancel?.().catch(() => undefined);
     }
+    if (attemptError) throw attemptError;
   };
+  if (!reader) {
+    const error = new Error("Provider stream response body is unavailable.");
+    error.name = "ProviderProtocolError";
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await cancelUpstream?.(error).catch(() => undefined);
+        try {
+          await settle("error", error);
+          controller.error(error);
+        } catch (ledgerError) {
+          controller.error(ledgerError);
+        }
+      },
+    });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
   const cancelReaders = (reason?: unknown) => Promise.all([
     reader.cancel(reason).catch(() => undefined),
     cancelUpstream?.(reason).catch(() => undefined),
@@ -8372,6 +8658,8 @@ type CapabilityChatArgs = {
   userApiKey: string;
   temperature: unknown;
   remaining: number;
+  turnId: string;
+  operation: InstanceOperationStateV1;
   requestSignal?: AbortSignal;
 };
 
@@ -8479,11 +8767,18 @@ async function runCapabilityLoopInner(
     event: ToolEventSummary,
   ) => ToolApprovalDecision | Promise<ToolApprovalDecision>,
 ): Promise<void> {
+  const providerAttempts = createProviderAttemptRuntime({
+    ledger: args.env.PROVIDER_ATTEMPT_LEDGER,
+    mode: args.env.PROVIDER_ATTEMPT_LEDGER_MODE,
+    operation: args.operation,
+    turnId: args.turnId,
+  });
+  const initialProviderRun = providerAttempts.createRun("legacy_capability");
   const aliasMap = new Map(args.tools.map((tool) => [tool.providerName, tool]));
   let selected:
     | {
         routeId: string;
-        route: ResolvedProviderRoute;
+        route: PreparedProviderRoute;
         lease: ProviderLease;
         history: ProviderToolHistory;
         turn: ModelTurn;
@@ -8524,7 +8819,18 @@ async function runCapabilityLoopInner(
     const startedAt = Date.now();
     const fallback = route.planIndex > 0 || attemptedRoutes > 1;
     let handedOff = false;
+    let attemptHandle: ProviderAttemptHandle | undefined;
     try {
+      if (route.credential.source === "missing") throw new Error("provider_credential_missing");
+      const startedAttempt = await initialProviderRun.start({
+        logicalRouteId: routeId,
+        providerId: route.providerId,
+        model: route.model,
+        credentialClass: route.credential.source,
+        fallbackIndex: route.planIndex,
+        startedAt,
+      });
+      attemptHandle = startedAttempt;
       const turn = await callProviderToolTurn({
         route,
         apiKey: route.credential.apiKey,
@@ -8535,6 +8841,8 @@ async function runCapabilityLoopInner(
         signal,
         usedUserKey: route.credential.usedUserKey,
       });
+      await startedAttempt.succeed();
+      attemptHandle = undefined;
       selected = {
         routeId,
         route,
@@ -8549,6 +8857,8 @@ async function runCapabilityLoopInner(
       handedOff = true;
       break;
     } catch (error) {
+      if (error instanceof ProviderAttemptLedgerError) throw error;
+      await attemptHandle?.fail(error);
       lastError = error instanceof ProviderToolError
         ? error
         : new ProviderToolError(
@@ -8697,7 +9007,19 @@ async function runCapabilityLoopInner(
     if (round + 1 >= MAX_TOOL_ROUNDS) {
       throw new CapabilityError("tool_round_limit", `单次对话最多执行 ${MAX_TOOL_ROUNDS} 轮工具交互`);
     }
+    let continuationAttempt: ProviderAttemptHandle | undefined;
     try {
+      const continuationRun = providerAttempts.createRun("tool_continuation");
+      if (selected.route.credential.source === "missing") throw new Error("provider_credential_missing");
+      const startedAttempt = await continuationRun.start({
+        logicalRouteId: selected.routeId,
+        providerId: selected.route.providerId,
+        model: selected.route.model,
+        credentialClass: selected.route.credential.source,
+        fallbackIndex: selected.route.planIndex,
+        startedAt: Date.now(),
+      });
+      continuationAttempt = startedAttempt;
       turn = await callProviderToolTurn({
         route: selected.route,
         apiKey: selected.apiKey,
@@ -8708,7 +9030,11 @@ async function runCapabilityLoopInner(
         signal,
         usedUserKey: selected.usedUserKey,
       });
+      await startedAttempt.succeed();
+      continuationAttempt = undefined;
     } catch (error) {
+      if (error instanceof ProviderAttemptLedgerError) throw error;
+      await continuationAttempt?.fail(error);
       await recordRouteReliability(args.env, {
         routeId: selected.routeId,
         providerId: selected.route.providerId,

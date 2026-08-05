@@ -10,6 +10,7 @@ export const INSTANCE_CAPTURE_REQUIRED_STORES = [
   "workspace_files",
   "document_ingest_queue",
   "provider_coordinator",
+  "provider_attempt_ledger",
   "instance_object_registry",
   "instance_coordinator_runtime",
 ] as const;
@@ -30,7 +31,8 @@ export type InstanceObjectKind =
   | "user_state"
   | "root_team_agent"
   | "conversation_team_agent"
-  | "provider_coordinator";
+  | "provider_coordinator"
+  | "provider_attempt_ledger";
 
 export type InstanceMaintenanceStateV1 = {
   version: 1;
@@ -148,7 +150,10 @@ export type InstanceObjectRegistryBaselineInput = {
   confirmedAt: number;
 };
 
-export type InstanceOperationFence = { release(): Promise<void> };
+export type InstanceOperationFence = {
+  readonly operation: InstanceOperationStateV1;
+  release(): Promise<void>;
+};
 
 export interface InstanceMaintenanceCoordinator {
   requestMaintenance(input: InstanceMaintenanceRequestInput): Promise<InstanceMaintenanceResult>;
@@ -189,6 +194,7 @@ export async function acquireInstanceOperationFence(
   }
   let released = false;
   return {
+    operation: { ...request },
     async release() {
       if (released) return;
       const result = await releaseInstanceOperationFence(coordinator, {
@@ -1045,7 +1051,7 @@ function isInstanceOperationKind(value: unknown): value is InstanceOperationKind
 
 function isInstanceObjectKind(value: unknown): value is InstanceObjectKind {
   return value === "user_state" || value === "root_team_agent" || value === "conversation_team_agent"
-    || value === "provider_coordinator";
+    || value === "provider_coordinator" || value === "provider_attempt_ledger";
 }
 
 function isValidStateRestoreCombination(

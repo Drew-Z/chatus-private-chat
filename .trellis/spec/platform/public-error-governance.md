@@ -32,6 +32,9 @@ ProviderCoordinator.recordReliabilitySample({
 
 Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capability SSE, MCP discovery/execution, administrator model discovery, instance-maintenance admission, and the React/admin reliability projections.
 
+Content-free Provider attempt diagnostics are available only at authenticated
+`GET /api/admin/provider-attempts?providerId=<configured-id>&limit=<1..100>`.
+
 ## 3. Contracts
 
 - `src/contracts/agent-error.ts` owns the finite code registry, canonical Chinese messages, exact Agent envelope parser/serializer, request-reference normalization, and Provider classification. Unknown internal codes fail closed to `agent_error`.
@@ -43,6 +46,7 @@ Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capabilit
 - Passive correlation extends only the existing latest version-2 route/provider record with an optional normalized request ID. It creates no per-request key, active probe, or conversation trace and does not affect ordering/scoring.
 - Exact provider correlation follows the existing chat reliability write through `ProviderReliabilitySample`, the provider-scoped `ProviderCoordinator` reducer, and its KV projection. Do not restore a direct KV read-modify-write path. Automatic Skill selector telemetry remains isolated and does not inherit the answer turn request ID.
 - MCP OAuth audit targets omit the member label. They may retain the bounded server ID, operation, and discovery counts/status required for administration.
+- Provider attempt diagnostics omit prompt/completion/tool data, credentials, raw Provider metadata, invoice data, idempotency keys, and complete operation fences. They may expose opaque turn/run/attempt IDs, exact configured route dimensions, bounded terminal class/timing, credential class, and operation kind. Account deletion retains this instance-level evidence; user export excludes it.
 - React shows/copies only a validated request reference. The chat banner renders the local canonical message; the admin reliability table may compact the display but copies the exact value.
 
 ## 4. Validation & Error Matrix
@@ -59,6 +63,7 @@ Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capabilit
 | Stored reliability request ID is malformed | Reject the complete stored/client route record |
 | Chat sample reaches `ProviderCoordinator` | Preserve its normalized request ID in the authoritative DO aggregate and KV projection; omit it from selector telemetry |
 | Clipboard API rejects | Keep the original error/reference visible and omit success feedback |
+| Provider-attempt diagnostics request an unknown shard or out-of-range limit | Reject without creating/opening arbitrary operator-selected evidence |
 
 ## 5. Good / Base / Bad Cases
 

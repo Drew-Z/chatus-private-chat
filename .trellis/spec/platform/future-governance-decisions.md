@@ -4,7 +4,7 @@
 
 Use this contract when planning or implementing member sharing/transfer/ACL, Provider usage/cost/budget/feedback accounting, full-instance backup/restore, RPO/RTO commitments, or destructive legacy retirement.
 
-These capabilities are not implemented. Design records under `.trellis/tasks/07-27-q3-followup-design-decisions/research/` establish future gates but do not create a supported API, schema, workflow, or operating claim.
+Provider attempt identity and content-free shadow evidence now satisfy the first prerequisite for future finance work. Usage normalization, cost, budgets, finance feedback receipts, ACL, numeric RPO/RTO, and destructive legacy retirement remain unimplemented. Design records under `.trellis/tasks/07-27-q3-followup-design-decisions/research/` establish future gates but do not by themselves create a supported API, schema, workflow, or operating claim.
 
 ## 2. Signatures And Current Decision Records
 
@@ -32,6 +32,7 @@ Future tasks must copy the relevant decision and risk IDs into their PRD rather 
 ### Provider Usage, Cost, Budget, And Feedback
 
 - Keep user turn, logical run, and physical Provider attempt identities distinct. Actual Provider/offering/model attribution is generated server-side at the execution boundary.
+- The v1 Provider attempt ledger is authoritative for exact call identity only. A lingering `started` record after terminal-RPC failure is incomplete evidence, and no ledger field represents normalized usage, price, money, budget reservation, invoice reconciliation, or finance feedback.
 - Provider-reported, estimated, invoice-reconciled, corrected, and unknown usage are distinct evidence. Unknown never means zero.
 - Every monetary amount has currency, precision, immutable price-catalog version, and provenance. Corrections append reversing/replacement evidence.
 - Hard budgets require idempotent reserve, settle/release, and reconcile semantics before any Provider call. Fallback and tool loops cannot bypass them.
