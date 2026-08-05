@@ -37,19 +37,19 @@ claims remain limited to the evidence actually produced by retained drills.
 
 ## Acceptance Criteria
 
-- [ ] AC1. Exact-target preflight rejects incompatible manifest/schema/bindings,
+- [x] AC1. Exact-target preflight rejects incompatible manifest/schema/bindings,
       non-empty targets, duplicate mappings, wrong keys and tampered archives.
-- [ ] AC2. Fault injection after every checkpoint can be retried to one identical
+- [x] AC2. Fault injection after every checkpoint can be retried to one identical
       converged target without duplicate or missing state.
-- [ ] AC3. Stable identity reconciliation reports zero unresolved references and
+- [x] AC3. Stable identity reconciliation reports zero unresolved references and
       proves no cross-principal or cross-conversation access.
-- [ ] AC4. Queue fixtures restore/regenerate queued, extracting, failed and DLQ
+- [x] AC4. Queue fixtures restore/regenerate queued, extracting, failed and DLQ
       work without silent drop or double extraction.
-- [ ] AC5. Reconciliation verifies counts/checksums/exclusions, R2 metadata,
+- [x] AC5. Reconciliation verifies counts/checksums/exclusions, R2 metadata,
       decrypt canaries, auth, isolation and permanent deletion behavior.
-- [ ] AC6. Failed targets remain isolated and can be retried or discarded without
+- [x] AC6. Failed targets remain isolated and can be retried or discarded without
       mutating or mixing with the untouched source.
-- [ ] AC7. A retained local/non-production exact-SHA drill records phase timings,
+- [x] AC7. A retained local/non-production exact-SHA drill records phase timings,
       loss and operator waits while making no numeric RPO/RTO commitment.
 - [ ] AC8. Full gates, specs, PR/commit/deployment evidence and Trellis archive
       validation are complete before recovery support is described.

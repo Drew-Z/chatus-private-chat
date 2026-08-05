@@ -267,4 +267,110 @@ The export may be truncated and excludes configuration, credentials, Durable Obj
 
 ```text
 Use user export/import only for bounded user portability. Preserve instance identity for deployment rollback. Treat full-instance disaster recovery as unavailable until every readiness gate in this contract passes.
+
+## Scenario: Isolated restore drill
+
+### 1. Scope / Trigger
+
+Use this scenario when implementing or reviewing the internal, local/non-production
+restore engine for a sealed `CaptureManifestV1`. It validates recovery claims without
+adding a production restore API, Cloudflare management call, cutover, or RPO/RTO promise.
+
+### 2. Signatures
+
+```typescript
+restoreIsolatedInstance(input: {
+  operationId: string;
+  archive: EncryptedCaptureArchiveV1;
+  archiveKey: Uint8Array;
+  target: RestoreTargetIdentityV1;
+  mappings: RestoreObjectMappingV1[];
+  checkpoints: InstanceRestoreCheckpointStore;
+  adapter: IsolatedRestoreTargetAdapter;
+}): Promise<RestoreIsolatedInstanceResult>
+
+IsolatedRestoreTargetAdapter.readPhaseReceipt({
+  operationId, manifest, target, targetIdentityDigest, inputDigest, phase,
+}): Promise<RestoreTargetPhaseReceiptV1 | undefined>
+```
+
+### 3. Contracts
+
+- Decrypt and validate every manifest/payload, registry, schema, binding, mapping,
+  Queue state, and canonical JSON value before `inspectTarget()` or any target write.
+- The approved order is `preflight`, `provision`, `durable_stores`, `user_state`,
+  `root_agent`, `conversation_agents`, `workspace_files`, `queue_regeneration`,
+  `reconciliation`, `acceptance`, `eligible_for_cutover`.
+- Ordinary restore phases receive only `restoreBehavior: "restore"` entries. Queue
+  `rebuild` and `exclude` entries are validated/reconciled but never sent to
+  `restoreEntries()`.
+- Every target mutation atomically commits a target receipt bound to operation ID,
+  archive ID/checksum, target digest, phase, input digest, result digest and time.
+  Central checkpoints are a replay index; on retry the target receipt is recovered
+  before an action is invoked. A missing, divergent, or count/byte-mismatched receipt
+  fails closed.
+- `queued` and valid `extracting` rows enqueue once; ordinary `failed` rows remain
+  failed; `document_ingest_retry_exhausted` with attempts >= 4 remains DLQ; `ready`
+  and `deleted` rows perform no logical send. Impossible combinations are rejected.
+- Canonical Base64 `""` decodes to a legal zero-byte `ArrayBuffer`/R2/KV value.
+- Retained drill evidence contains only exact commit SHA, checksums/digests, bounded
+  counts, timings, loss boundary, and enum states. It omits archive/object IDs,
+  labels, object keys, content, ciphertext, credentials, and raw exceptions.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Wrong key, AAD/payload tamper, malformed canonical JSON | Reject before target inspection with stable archive/payload error |
+| Non-empty, write-open, incompatible schema/binding, insufficient capacity target | Reject before phase action |
+| Duplicate, orphan, missing, mutable-label-derived, or root-conflicting mapping | Reject before target inspection |
+| Existing checkpoint/receipt identity or digest differs | `restore_checkpoint_conflict` / `restore_checkpoint_diverged` |
+| Target action commits then process/central checkpoint fails | Retry reads the exact target receipt; action count remains one |
+| Target receipt is absent after an action or has extra/secret fields | Fail closed with receipt error; keep writes closed |
+| Queue status/error/attempt combination is impossible | `restore_queue_evidence_invalid` before target inspection |
+| Reconciliation reports unresolved references or writes open | Reject and do not mark eligible |
+| Drill evidence includes a label, object key, content, ciphertext, or credential | Reject evidence artifact |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a fresh isolated target receives a verified archive, each phase records one
+  receipt, a retry reuses receipts, and reconciliation proves zero unresolved references.
+- Good: an empty KV value, empty R2 object, and empty DO binary value round-trip without
+  being mistaken for malformed Base64.
+- Base: a failed target remains isolated and is discarded or retried; the untouched
+  source digest is unchanged and no writes reopen before acceptance.
+- Bad: replay an adapter action merely because the central checkpoint write was lost,
+  send Queue evidence directly as durable rows, or retain archive IDs/labels in drill evidence.
+
+### 6. Tests Required
+
+- Use a local fake provider/adapter and a real `captureInstance()` AES-GCM archive.
+- Assert wrong-key/tamper paths make zero target calls; test target identity, schema,
+  capacity, emptiness, duplicate/orphan/root-conflict mappings.
+- Inject a failure after every phase receipt commit and a central checkpoint write
+  ambiguity; assert one logical action per phase and identical convergence on retry.
+- Cover `queued`, `extracting`, ordinary `failed`, DLQ, `ready`, and `deleted` plus
+  invalid combinations; assert no duplicate Queue operation keys.
+- Assert source-before/source-after digest equality, writes closed, deletion/auth/
+  isolation canaries, zero unresolved references, and absence of sensitive evidence fields.
+- Run `scripts/run-isolated-restore-drill.mjs` with the current 40-character worktree
+  SHA and retain only `test-results/restore-drill/<sha>.json` (ignored by Git).
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```typescript
+const checkpoint = await checkpoints.read(operationId, phase);
+await adapter.restoreEntries(input); // replays after a completed checkpoint
+```
+
+#### Correct
+
+```typescript
+const receipt = await adapter.readPhaseReceipt(input);
+if (receipt) return reuseReceipt(receipt);
+const committed = await adapter.restoreEntries(input); // atomically records receipt
+await checkpoints.write(checkpointFromReceipt(committed));
+```
 ```
