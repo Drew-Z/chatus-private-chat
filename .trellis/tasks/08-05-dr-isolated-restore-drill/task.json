@@ -3,7 +3,7 @@
   "name": "dr-isolated-restore-drill",
   "title": "DR isolated restore drill",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,15 +12,60 @@
   "assignee": "zhang",
   "createdAt": "2026-08-05",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/dr-isolated-restore-drill",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "4a63d7a55727a6b53f703c79245a937d14f9f9c3",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/48",
   "subtasks": [],
   "children": [],
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npx vitest run tests/instance-restore.test.ts tests/instance-restore-drill.test.ts",
+        "status": "passed",
+        "summary": "Focused restore and drill suites passed: 23 tests.",
+        "at": "2026-08-05T10:26:57.700559+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Full Vitest passed: 43 files and 634 tests.",
+        "at": "2026-08-05T10:26:58.840709+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-05T10:26:59.871725+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Client build and frontend structure checks passed.",
+        "at": "2026-08-05T10:27:00.901154+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler dry-run passed without deployment.",
+        "at": "2026-08-05T10:27:01.972909+00:00"
+      },
+      {
+        "command": "node scripts/run-isolated-restore-drill.mjs",
+        "status": "passed",
+        "summary": "Local isolated drill passed and retained sanitized exact-SHA evidence.",
+        "at": "2026-08-05T10:27:03.010459+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Git whitespace validation passed.",
+        "at": "2026-08-05T10:27:03.990948+00:00"
+      }
+    ]
+  }
 }
