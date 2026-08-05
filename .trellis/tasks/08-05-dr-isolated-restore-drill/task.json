@@ -15,7 +15,7 @@
   "branch": "codex/dr-isolated-restore-drill",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "4a63d7a55727a6b53f703c79245a937d14f9f9c3",
   "pr_url": null,
   "subtasks": [],
   "children": [],
