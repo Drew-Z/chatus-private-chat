@@ -11,6 +11,11 @@ import {
   type ProviderRouteReliabilityRecord,
   type SkillSelectionTelemetryRecord,
 } from "./services/route-reliability";
+import { captureDurableObjectState } from "./services/durable-object-capture";
+import {
+  INSTANCE_MAINTENANCE_COORDINATOR,
+} from "./services/instance-capture";
+import type { InstanceCoordinator } from "./instance-coordinator";
 
 const LEASES_STORAGE_KEY = "provider-leases:v1";
 const DEFAULT_LEASE_TTL_MS = 15 * 60 * 1_000;
@@ -20,9 +25,11 @@ const MAX_CAPACITY = 100;
 const MAX_WAITERS = 200;
 const RELIABILITY_CHAT_PREFIX = "reliability:chat:";
 const RELIABILITY_SELECTOR_PREFIX = "reliability:skill_selection:";
+export const PROVIDER_COORDINATOR_SCHEMA_VERSION = 1;
 
 type ProviderCoordinatorEnv = {
   CHAT_STORE: KVNamespace;
+  INSTANCE_COORDINATOR: DurableObjectNamespace<InstanceCoordinator>;
 };
 
 export type ProviderReliabilityOperation = "chat" | "skill_selection";
@@ -81,6 +88,21 @@ export class ProviderCoordinator extends DurableObject<ProviderCoordinatorEnv> {
   constructor(ctx: DurableObjectState, env: ProviderCoordinatorEnv) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
+      const instanceName = ctx.id.name;
+      if (!instanceName) throw new Error("provider_coordinator_instance_name_unavailable");
+      const registered = await env.INSTANCE_COORDINATOR
+        .getByName(INSTANCE_MAINTENANCE_COORDINATOR)
+        .registerObject({
+          version: 1,
+          kind: "provider_coordinator",
+          instanceName,
+          rootInstanceName: "",
+          schemaVersion: `provider-coordinator-v${PROVIDER_COORDINATOR_SCHEMA_VERSION}`,
+          stateClass: "rebuildable",
+          restoreBehavior: "rebuild",
+          registeredAt: Date.now(),
+        });
+      if (!registered.ok) throw new Error(registered.error);
       this.leases = normalizeStoredLeases(await ctx.storage.get(LEASES_STORAGE_KEY), Date.now());
       // Rewrite recovered state so malformed records cannot survive a restart.
       await this.persistLeases();
@@ -209,6 +231,15 @@ export class ProviderCoordinator extends DurableObject<ProviderCoordinatorEnv> {
         expiresAt: this.leases.map((lease) => lease.expiresAt).sort((a, b) => a - b),
       };
     });
+  }
+
+  async captureInstanceState(captureEpoch: string) {
+    if (!isCaptureEpoch(captureEpoch)) throw new Error("capture_epoch_invalid");
+    return captureDurableObjectState(
+      this.ctx.storage,
+      `provider-coordinator-v${PROVIDER_COORDINATOR_SCHEMA_VERSION}`,
+      () => false,
+    );
   }
 
   async alarm(): Promise<void> {
@@ -391,4 +422,11 @@ function clampInteger(value: unknown, min: number, max: number, fallback: number
   return typeof value === "number" && Number.isFinite(value)
     ? Math.min(max, Math.max(min, Math.floor(value)))
     : fallback;
+}
+
+function isCaptureEpoch(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 160
+    && /^[A-Za-z0-9][A-Za-z0-9:._/-]*$/.test(value);
 }

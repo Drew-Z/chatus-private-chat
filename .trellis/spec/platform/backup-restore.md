@@ -4,7 +4,7 @@
 
 Use this contract when changing user export/import, deployment rollback, instance identity, Cloudflare storage bindings, managed-secret custody, Durable Object persistence, or `DELETE /api/user-data`.
 
-Chatus currently supports bounded user portability and deployment rollback. It does not yet provide an automated full-instance backup or restore. Cloudflare point-in-time recovery for one SQLite Durable Object is a platform primitive, not proof of a consistent restore across `CHAT_STORE`, `UserState`, root/conversation `TeamAgent` instances, and provider coordination state.
+Chatus currently supports bounded user portability, deployment rollback, and internal stop-write capture primitives. It does not yet provide an automated full-instance backup or restore. Cloudflare point-in-time recovery for one SQLite Durable Object is a platform primitive, not proof of a consistent restore across `CHAT_STORE`, `UserState`, root/conversation `TeamAgent` instances, and provider coordination state.
 
 ## 2. Signatures
 
@@ -35,7 +35,7 @@ usage:{encodeURIComponent(label)}:{YYYY-MM-DD}
 chatus:agent-identity:v1
 ```
 
-No full-instance backup manifest, archive envelope, capture command, or restore command exists yet. Do not invent a supported signature before its transport and restore drill are implemented.
+`CaptureManifestV1` and the encrypted archive envelope now exist as internal service contracts. There is still no production capture API/CLI, archive transport, restore command, target provisioning flow, or restore drill. Do not describe the internal capture primitive as a supported recoverable-instance workflow.
 
 ## 3. Contracts
 
@@ -91,7 +91,94 @@ A future instance backup/restore implementation is ready only when all of these 
 
 Do not promise numeric RPO/RTO until an executable capture schedule and measured restore drill can support those values.
 
-The ciphertext inventory above is a design contract for a future manifest, not a backup implementation. No current API, CLI, archive envelope, or restore path may claim to export or restore OAuth MCP tokens.
+The ciphertext inventory above is implemented only inside the encrypted internal capture envelope. No current public API/CLI or restore path may claim to export or restore OAuth MCP tokens, and the manifest may identify only the table/class, schema, count, and ciphertext-only policy.
+
+## Scenario: Stop-write instance capture primitives
+
+### 1. Scope / Trigger
+
+Use this scenario when changing `InstanceCoordinator`, `captureInstance()`, a store-owned capture adapter, maintenance admission, or the encrypted archive envelope. It proves one sealed capture epoch only; restore support remains gated by transport plus the isolated restore drill.
+
+### 2. Signatures
+
+```typescript
+captureInstance({
+  archiveId, keyId, archiveKey, source, captureEpoch, capturedAt,
+  coordinator, drain, adapters,
+  persistArchive: (archive) => Promise<{ evidenceId: string }>,
+}): Promise<{ manifest: CaptureManifestV1; archive: EncryptedCaptureArchiveV1 }>
+
+InstanceCoordinator.confirmObjectRegistryBaseline({
+  version: 1,
+  inventoryId: string,
+  objects: InstanceObjectRegistrationV1[],
+  confirmedAt: number,
+})
+```
+
+`InstanceOperationStateV1` contains exact `operationId`, random per-acquisition `fenceId`, operation `kind`, and `startedAt`. A release must present the same `operationId`, `fenceId`, and `kind`.
+
+### 3. Contracts
+
+- The baseline input is the operator-owned external historical object inventory. Confirmation rejects conflicts, atomically adds inventory objects that have not awakened since rollout, and persists a bounded `inventoryId`, object count, and digest. Merely repeating the coordinator's currently observed list is not proof that dormant historical objects are complete.
+- A new object identity invalidates the baseline. Adapter construction and the registry adapter capture both re-read `baselineComplete` and the digest so an identity appearing before or during maintenance aborts the capture.
+- Request maintenance before draining. New HTTP mutations, Provider/Agent turns, OAuth callbacks, Queue delivery, Workspace mutation, branches, and cleanup acquire durable fences; each acquisition has an independent `fenceId`, including duplicate logical operation IDs.
+- Ambiguous acquire and release RPCs retry the same `fenceId`; a failed acquire path attempts the same bounded cleanup. Long-term coordinator unavailability or process termination remains fail-closed: never expire a possibly live stream by time alone.
+- Every required store is present in one epoch. KV unknown prefixes, Durable Object unknown tables/values, R2 missing/changed objects, incomplete Queue regeneration evidence, schema drift, duplicate payloads, and unresolved generation references abort sealing.
+- AES-GCM uses an externally supplied 32-byte archive key, fresh IVs, and AAD bound to the archive header plus payload identity and plaintext metadata. The manifest itself is encrypted; key material and source content never enter maintenance evidence.
+- `persistArchive()` must durably accept the encrypted envelope and return a bounded content-free evidence ID before maintenance can be released with `outcome: "captured"`. Persistence failure releases as `failed` and returns no archive result.
+- `instance_coordinator_runtime` is an explicit exclusion rebuilt empty; Provider leases/reliability are rebuildable. No capture outcome implies archive transport, restore, cutover, or numeric RPO/RTO support.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| External inventory is missing, malformed, omits an observed object, or conflicts with schema/ownership | Reject baseline with `instance_object_conflict` |
+| New identity appears after baseline | Invalidate baseline; stale adapters fail with `capture_object_registry_changed` |
+| Two operations share one logical ID | Store two independent fence IDs; releasing one leaves the other active |
+| Acquire/release RPC rejects after persisting | Retry/reconcile the exact fence; persistent uncertainty remains fail-closed |
+| Drain proof is unknown/non-zero or a durable fence remains | Do not activate maintenance or capture |
+| Archive key is missing/wrong, payload/AAD is changed, or a store/reference is incomplete | Fail without a valid archive result and release maintenance as failed |
+| Archive persistence fails or returns an invalid evidence ID | Never record `captured`; release as failed |
+| Encrypted envelope verifies but no restore drill exists | Keep full-instance recovery unsupported |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an external inventory seeds a dormant `UserState`, every store captures one epoch, the encrypted envelope is durably accepted, then the coordinator records only its evidence ID and reopens writes.
+- Base: a failed drain or archive sink releases the requested/active boundary as failed; source stores remain unchanged and no archive is returned.
+- Bad: confirm the objects that happened to wake, let two deliveries share one releasable fence, mark captured before durable persistence, or call a readable archive a recoverable instance.
+
+### 6. Tests Required
+
+- Prove external inventory seeding, later-registration invalidation, digest recheck, unknown/missing stores, cross-generation references, Queue/DLQ regeneration evidence, and explicit exclusions.
+- Prove independent duplicate-operation fences, ambiguous acquire/release reconciliation, drain rejection, every capture-phase rollback, and persistent fail-closed behavior.
+- Prove wrong/missing keys, fresh IVs, AAD/header/payload tamper rejection, deterministic manifest checksums, exact payload counts/sizes, and absence of keys/content from evidence.
+- In the archive callback, assert maintenance is still active/pending; inject callback failure and assert no captured outcome or returned archive.
+- Keep all fixtures local. Never call a live Provider/MCP, production storage, local production deploy, or synthetic production probe.
+
+### 7. Wrong Vs Correct
+
+Wrong:
+
+```typescript
+const archive = await encryptCaptureArchive(snapshot);
+await coordinator.releaseMaintenance({ outcome: "captured" });
+return archive; // the process may terminate before any durable sink accepts it
+```
+
+Correct:
+
+```typescript
+const archive = await encryptCaptureArchive(snapshot);
+const receipt = await persistArchive(archive);
+await coordinator.releaseMaintenance({
+  outcome: "captured",
+  archiveEvidenceId: receipt.evidenceId,
+});
+return archive;
+```
+
+The maintenance outcome follows durable encrypted-envelope custody, not in-memory construction.
 
 ### Autonomous Purge Retry
 

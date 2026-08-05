@@ -17,6 +17,7 @@ const AGENT_ERROR_MESSAGES = {
   agent_context_invalid: "工具续接上下文无法恢复，请刷新页面后重试。",
   conversation_not_found: "当前会话不存在或已删除，请新建会话后重试。",
   workspace_context_unavailable: "工作区上下文暂时无法加载，请稍后重试。",
+  instance_maintenance: "实例正在维护，请稍后重试。",
   session_expired: "登录会话已过期，请重新登录。",
   public_access_disabled: "公开访问已关闭，请登录后继续。",
   no_routes_available: "当前没有可用模型，请联系管理员完成配置。",

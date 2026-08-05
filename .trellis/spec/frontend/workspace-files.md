@@ -109,12 +109,21 @@ type WorkspaceTrackedUsage = {
 ### Async Document Ingest
 
 - Upload finalization persists `queued`, generation `1`, and the deterministic key `workspaceExtractedObjectKey(originalKey, generation)`, then sends the exact `{ ownerId, fileId, versionId, generation }` message. A Queue send failure marks that generation failed and returns a retryable `503`; the HTTP response never returns the internal message.
+- Instance maintenance is checked before Queue-name dispatch, and every main/DLQ message execution owns an independent durable `document_ingest` fence. Admission failure retries the message; a fence is held through parse/R2/finalize or DLQ recording and released only after the handler settles.
 - The main consumer is locked to batch size `1`, concurrency `1`, and `max_retries: 3` (initial delivery plus three retries). Transient failures return the state to `queued`; permanent parser failures become `failed` and ack; the DLQ marks only the matching queued/extracting generation failed.
 - `extracting` owns a 60-second processing lease. A duplicate delivery retries after the remaining lease instead of doing parallel work; an expired lease increments attempts and reclaims only the same file/version/generation. This prevents a Worker termination between begin and failure recording from leaving a version permanently stuck.
 - Manual retry is current-version-only and changes only `failed -> queued`, increments generation, clears artifact metadata, and sends a new message. Old main/DLQ/completion messages cannot change the new generation.
 - `deleted` is terminal. File/account deletion tombstones ingest state first and deletes both original and extracted keys. Late completion, failure, DLQ, and begin calls cannot revive content.
 - The parser accepts only UTF-8 text, a pre-gated PDF subset, and structurally matched DOCX/XLSX/PPTX packages. PDF names are escape-decoded before rejecting scripts/actions/attachments/encryption/object streams. OOXML verifies main content type plus root relationship, rejects macros/ActiveX/OLE/embedded packages/external or escaping relationships/nested archives, and bounds ZIP/XML/domain expansion.
 - Parser budgets are centralized: 200 PDF pages, 10,000 PDF objects, 512 ZIP entries, 8 MiB per expanded entry, 32 MiB total expanded bytes, 100:1 ratio, XML depth 64, 128 attributes per element, 100,000 rows, 50,000 cells, 500 slides, 200,000 output characters, and a 5-second cooperative deadline.
+
+### Maintenance Capture Inventory
+
+- Workspace HTTP mutations, upload/download state transitions, account purge, Queue delivery, scheduled cleanup, branch launch, and Agent turns participate in the shared instance-maintenance admission boundary. Reads and successful logout remain available; `GET /api/mcp/oauth/status` is blocked because it may persist review state.
+- The encrypted capture payload inventories every R2 object byte plus bounded metadata/checksum and every registered root `TeamAgent` SQLite/KV snapshot. R2 object keys and member/file identities remain internal encrypted archive content and never enter browser, logs, public errors, or content-free maintenance evidence.
+- `captureDocumentIngestEvidence()` records durable queued, extracting, failed, and DLQ-regeneration rows because Cloudflare Queue bodies are not enumerable. The evidence identifies its root Agent generation and must not claim a Queue body dump.
+- Capture is stop-write and one-epoch. Unknown R2/KV objects, missing bytes, changed size/checksum, incomplete root registry, schema drift, or unresolved root/conversation/generation references fail the whole archive rather than silently omitting Workspace state.
+- Root/conversation objects that have not awakened must come from the externally confirmed instance inventory. Registering a new object invalidates the baseline before another capture can proceed.
 
 ### Exact Conversation References
 
@@ -164,6 +173,7 @@ type WorkspaceTrackedUsage = {
 | Cleanup inspection or logs are produced | Expose aggregate timing/count/state only; omit labels, IDs, operation IDs, object keys, content, secrets, and raw exceptions |
 | Download size/checksum metadata differs | `503 workspace_object_unavailable` / `workspace_object_invalid`; do not stream bytes |
 | Queue binding/name contract is missing or Queue send fails | Retry/fail closed; mark the exact generation failed so manual retry is available |
+| Instance maintenance blocks Queue/Workspace/cleanup admission | Retry Queue work or return canonical `503 instance_maintenance`; write no new metadata/R2 state |
 | Duplicate delivery arrives during an active processing lease | Retry after the bounded remainder; do not parse in parallel |
 | Processing lease expired after Worker termination | Reclaim the same generation and increment attempts |
 | Parser finds active content, package mismatch, traversal, encryption, malformed input, or a resource limit | Persist a bounded permanent error, ack, and make zero Provider calls |
@@ -200,6 +210,8 @@ type WorkspaceTrackedUsage = {
 - Prove object keys and raw PDF/Office bytes are absent from APIs, exports, client state, Provider payloads, and diagnostics.
 - Table-test normal Queue extraction for all five formats and permanent rejection for macro/script, ActiveX/OLE, embedded/nested archives, external/escaping relationships, compression bombs, encryption, corrupt packages, and PDF active names before Provider execution.
 - Prove initial delivery plus exactly three transient retries reaches DLQ; permanent failure does not retry; manual retry advances generation; duplicate/concurrent/expired-lease/old-generation/deleted races remain idempotent.
+- During maintenance, prove queued/DLQ delivery retries, Workspace/API/Agent/cleanup mutation admission is fenced, reads/logout remain available, and every admitted operation holds an independent fence until its stream or side effects settle.
+- Capture queued/extracting/failed/DLQ regeneration evidence, immutable R2 bytes/checksums, root/conversation metadata and exact generation references; reject missing/changed objects, unknown state, incomplete external inventory, and late registration without publishing an archive.
 - Boundary-test text/document bytes, 49/50/51 upload selection, 250 MiB concurrent admission, and 9/10/11 exact turn references.
 - Prove the fake Provider receives only verified ready extracted text for 10 exact versions, consumes one user-message quota unit, and receives zero calls for tampered artifacts.
 - Prove conversation deletion, file deletion, and account deletion clean their respective references, versions, operations, and R2 objects.

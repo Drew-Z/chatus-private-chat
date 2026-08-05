@@ -42,6 +42,8 @@ Future tasks must copy the relevant decision and risk IDs into their PRD rather 
 - User export/import and code rollback are not full-instance recovery.
 - Full-instance recovery remains unsupported until a versioned encrypted manifest, one consistency protocol, external key custody, stable object mapping, idempotent restore order, reconciliation, and a retained restore drill all exist.
 - The first implementation should prefer an explicit stop-write capture boundary unless a global epoch/changelog can prove online consistency across KV, R2, Queue, and every Durable Object.
+- The internal stop-write capture primitive closes only capture-integrity evidence for `DR-01`, `DR-02`, and `DR-04`: one epoch, externally keyed encryption, durable-fence admission, explicit Queue regeneration evidence, and fail-closed inventory/reference validation. It does not close archive transport, restore mapping/order, reconciliation, cutover, drill, RPO, or RTO gates.
+- Cloudflare cannot enumerate historical dormant Durable Object identities. A complete capture therefore requires an operator-owned external object inventory whose bounded evidence ID and digest are retained; a registry made only from objects that happened to awaken is incomplete.
 - Sessions, leases, PKCE state, and other declared ephemeral data are explicit exclusions; missing state is never inferred after restore.
 - Do not publish numeric RPO/RTO until a capture schedule and repeated representative restore drills measure them.
 
@@ -75,6 +77,7 @@ Every implementation task must include:
 | Hard budget lacks atomic idempotent reservation | Do not enforce or call it a hard budget |
 | Feedback trusts browser Provider attribution | Reject the attribution design |
 | Backup lacks consistency, key, mapping, reconciliation, or drill | Keep full-instance recovery unsupported |
+| Capture baseline has no external historical Durable Object inventory evidence | Reject capture readiness; do not infer completeness from the runtime registry |
 | RPO/RTO has no measured schedule/drill evidence | Do not publish the number |
 | Legacy cleanup lacks per-surface rollback/observation evidence | Do not delete the surface or data |
 
