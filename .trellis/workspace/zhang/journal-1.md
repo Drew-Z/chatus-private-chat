@@ -1388,3 +1388,36 @@ Completed the serial Workers/Istanbul coverage decision, member concurrency and 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 36: Complete React admin migration and legacy retirement
+
+**Date**: 2026-08-05
+**Task**: Complete React admin migration and legacy retirement
+**Branch**: `main`
+
+### Summary
+
+Recorded authenticated administrator acceptance of the clarified logical-model, Provider, and Offering display after production legacy-route migration; verified PR and exact-main deployment evidence; archived the final child task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6fb3594843cc38b45484a91c8335dc489456b634` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
