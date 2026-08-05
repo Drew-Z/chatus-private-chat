@@ -199,7 +199,19 @@ export class InstanceCoordinator extends DurableObject<Record<string, never>> {
       if (rawExisting !== undefined) {
         const existing = normalizeInstanceObjectRegistration(rawExisting);
         if (!existing) return { ok: false, error: "instance_maintenance_state_invalid" };
-        if (!sameRegistration(existing, registration)) return { ok: false, error: "instance_object_conflict" };
+        if (!sameRegistration(existing, registration)) {
+          if (!isForwardSchemaRegistrationUpgrade(existing, registration)) {
+            return { ok: false, error: "instance_object_conflict" };
+          }
+          if (stored.state && stored.state.phase !== "released") {
+            return { ok: false, error: "instance_maintenance_busy" };
+          }
+          await this.ctx.storage.put(key, registration);
+          await this.ctx.storage.delete(INSTANCE_OBJECT_BASELINE_KEY);
+          const objects = await this.readRegisteredObjects();
+          if (!objects) return { ok: false, error: "instance_maintenance_state_invalid" };
+          return this.registryResult(objects, { complete: false });
+        }
         const objects = await this.readRegisteredObjects();
         if (!objects) return { ok: false, error: "instance_maintenance_state_invalid" };
         return this.registryResult(objects, baseline);
@@ -389,12 +401,36 @@ function normalizeObjectInventory(value: unknown): InstanceObjectRegistrationV1[
 }
 
 function sameRegistration(left: InstanceObjectRegistrationV1, right: InstanceObjectRegistrationV1): boolean {
+  return sameRegistrationIdentityAndPolicy(left, right)
+    && left.schemaVersion === right.schemaVersion;
+}
+
+function sameRegistrationIdentityAndPolicy(
+  left: InstanceObjectRegistrationV1,
+  right: InstanceObjectRegistrationV1,
+): boolean {
   return left.kind === right.kind
     && left.instanceName === right.instanceName
     && left.rootInstanceName === right.rootInstanceName
-    && left.schemaVersion === right.schemaVersion
     && left.stateClass === right.stateClass
     && left.restoreBehavior === right.restoreBehavior;
+}
+
+function isForwardSchemaRegistrationUpgrade(
+  existing: InstanceObjectRegistrationV1,
+  registration: InstanceObjectRegistrationV1,
+): boolean {
+  if (!sameRegistrationIdentityAndPolicy(existing, registration)) return false;
+  const current = parseSchemaVersion(existing.schemaVersion);
+  const next = parseSchemaVersion(registration.schemaVersion);
+  return Boolean(current && next && current.family === next.family && next.version > current.version);
+}
+
+function parseSchemaVersion(value: string): { family: string; version: number } | undefined {
+  const match = /^([a-z][a-z0-9-]*)-v([1-9][0-9]*)$/.exec(value);
+  if (!match) return undefined;
+  const version = Number(match[2]);
+  return Number.isSafeInteger(version) ? { family: match[1]!, version } : undefined;
 }
 
 function sameOperationFence(left: InstanceOperationStateV1, right: InstanceOperationStateV1): boolean {
