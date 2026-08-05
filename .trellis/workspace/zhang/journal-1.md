@@ -1488,3 +1488,39 @@ Implemented maintenance-fenced encrypted capture primitives, merged PR #47, reta
 ### Next Steps
 
 - None - task complete
+
+
+## Session 39: DR isolated restore drill delivery
+
+**Date**: 2026-08-05
+**Task**: DR isolated restore drill delivery
+**Branch**: `main`
+
+### Summary
+
+Implemented and delivered the local isolated restore engine with target receipts, strict mappings, Queue regeneration, reconciliation, fault-injection coverage, exact-SHA secret-safe drill evidence, PR CI, exact-main deployment, production acceptance, and task archival.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4a63d7a` | (see git log) |
+| `f7dc3c1` | (see git log) |
+| `0ead97a` | (see git log) |
+| `fbb816d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
