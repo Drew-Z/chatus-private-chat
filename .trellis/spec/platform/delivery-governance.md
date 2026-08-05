@@ -42,6 +42,8 @@ Main deployment preserves the early and late remote-main SHA guards and the non-
 
 Trellis archive validates before any state or directory mutation. A code task requires checked acceptance criteria with no `TBD`, passed records for the five baseline commands, a resolving `task.json.commit`, a valid HTTPS `task.json.pr_url`, completed children, a free archive destination, repository-wide parent/child consistency, and a current workspace root index.
 
+A parent task's final integration review must also reconcile the exact `task.json.children` set with every child count/list stated in `prd.md`, `design.md`, and `implement.md`. For each child, record its archived status, checked AC set, resolving work commit, PR evidence, and completed delivery checklist. `validate-all` proves the machine-readable graph and workspace projection; it cannot prove that prose still says the right child count or that an archived child's human execution checklist was fully closed.
+
 Validation entries and waivers live under `task.json.meta`:
 
 ```json
@@ -80,6 +82,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 | Work commit does not resolve | Archive rejects |
 | Code task lacks a valid PR URL | Archive rejects |
 | Child is active/incomplete or task graph is inconsistent | Archive rejects |
+| Parent prose or delivery matrix disagrees with `task.json.children` | Final integration review remains incomplete until the records are reconciled |
 | Workspace root projection is stale | `validate-all` fails; `--fix-workspace-index` regenerates it |
 | Waiver is malformed | Archive rejects under the non-waivable `waiver` gate |
 
@@ -90,6 +93,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 - Bad: classify every `.trellis/**` path as documentation, causing executable archive-script changes to bypass the deployment decision.
 - Bad: run `git diff --check` with no revisions on a clean PR checkout; it checks only working-tree changes and cannot detect whitespace already committed in the PR.
 - Bad: archive first and validate afterward, or use a note such as `waived` without structured approver/timestamp evidence.
+- Bad: report a parent as complete because `validate-all` passes while its PRD/design still says seven children for an eight-child task graph or an archived child retains an unchecked delivery item.
 
 ## 6. Tests Required
 
@@ -100,6 +104,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 - Run the manifest writer under Node and assert a 0.x package line, exact commit, SHA-256 lockfile/bundle fields, and the bounded key set. Assert the fake-Provider runner writes a bounded summary into its caller-owned artifact directory even when Playwright produces no screenshot or trace.
 - Run `.trellis/tests` for checked/unchecked AC, missing validation, missing work commit, missing PR URL, incomplete children, occupied archive target, structured waiver scope, duplicates, cycles, orphans, fail-before-mutate, and workspace-index repair.
 - Run `python ./.trellis/scripts/task.py validate-all` against the real repository.
+- For a parent task, compare its exact `task.json.children` set with every child list/count in the planning artifacts, then inspect each resolved active/archive child for completed AC, work commit, PR evidence, and final delivery checklist state.
 - Before shipping, run both browser suites and all commands in `frontend/quality-guidelines.md`.
 
 ## 7. Wrong vs Correct

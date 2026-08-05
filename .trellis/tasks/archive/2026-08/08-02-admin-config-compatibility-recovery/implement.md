@@ -11,7 +11,7 @@
 - [x] Extend Workspace Playwright with the exact legacy projection and verify operational admin render plus one recovery/save path.
 - [x] Run focused tests, then `trellis-check`, the complete shipping gate, and Trellis consistency validation.
 - [x] Update the relevant frontend API/capability spec with the fail-closed legacy compatibility rule.
-- [ ] Commit the focused work, open a PR, retain CI artifacts, merge, validate the GitHub Actions deployment at the exact SHA, record evidence, and archive the child.
+- [x] Commit the focused work, open a PR, retain CI artifacts, merge, validate the GitHub Actions deployment at the exact SHA, record evidence, and archive the child.
 
 ## Validation Commands
 

@@ -6,7 +6,7 @@
 
 ## Background
 
-- 生产部署、PR 门禁、Trellis 归档和 Q3 产品治理已完成；当前 `main` 干净且无活动任务。
+- 生产部署、PR 门禁、Trellis 归档和 Q3 产品治理已完成；本父任务随后把健康度审计拆为八个独立交付子任务。
 - 访客清理、Workspace outbox 和会话级联清理在 `src/worker.ts:8168-8223`、`src/worker.ts:3877-3926`、`src/worker.ts:3834-3839` 存在流量驱动重试或失败吞掉问题。
 - Provider/MCP 错误边界在 `src/services/provider-tool-runtime.ts:197-206`、`src/worker.ts:5960-5967`、`src/worker.ts:8081-8089` 可能把上游响应体或原始异常投影给客户端。
 - Automatic Skill 在 `src/worker.ts:5874-5900` 先于 `src/worker.ts:5970-5981` 配额 admission；BYOK 质量隔离和 KV 聚合并发性不足，见 `src/services/route-reliability.ts:95`、`:233-260`、`:344-371`。
@@ -26,14 +26,14 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1. 七个子任务均有独立 PRD、验收证据和 work commit；父任务记录依赖、状态和最终整体验证。
-- [ ] AC2. 访客、Workspace 文件、会话、账户删除的失败注入测试证明后台重试最终完成，且不会重复删除或丢失 marker。
-- [ ] AC3. 上游/运行时错误 fuzz 或 secret-bearing synthetic tests 证明公共响应和日志不含原始 body、URL、token 或成员标识。
-- [ ] AC4. automatic Skill 配额顺序、BYOK 隔离、聚合并发、Provider 无字节 deadline 均有 deterministic tests；容量策略有明确成员并发决策。
-- [ ] AC5. React/legacy 浏览器测试覆盖键盘、390px、自动滚动和直接入口；旧 `/admin.html` 只重定向到 React 后台，旧 route 渠道的 Provider + Offering 迁移有密钥安全与引用保持证据；性能拆包有前后压缩传输与 CPU 证据，未达预算则记录不实施。
-- [ ] AC6. CI/deploy workflow 使用 YAML 结构校验、job timeout、精确路径分类和 artifact 证据；Trellis docs-only 提交仍跳过部署。
-- [ ] AC7. 全量 frontend、Vitest、typecheck、Wrangler dry-run、Workspace/Agent Playwright、Trellis 和交付治理测试通过；生产验收只使用 exact main SHA。
-- [ ] AC8. React 后台可加载服务端投影的禁用/待复审旧 MCP 工具；治理字段不完整的启用工具仍被拒绝，旧工具可删除或通过同 ID 重新发现升级，且无关配置保存不丢失、不重启用该工具。
+- [x] AC1. 八个子任务均有独立 PRD、验收证据和 work commit；父任务记录依赖、状态和最终整体验证。
+- [x] AC2. 访客、Workspace 文件、会话、账户删除的失败注入测试证明后台重试最终完成，且不会重复删除或丢失 marker。
+- [x] AC3. 上游/运行时错误 fuzz 或 secret-bearing synthetic tests 证明公共响应和日志不含原始 body、URL、token 或成员标识。
+- [x] AC4. automatic Skill 配额顺序、BYOK 隔离、聚合并发、Provider 无字节 deadline 均有 deterministic tests；容量策略有明确成员并发决策。
+- [x] AC5. React/legacy 浏览器测试覆盖键盘、390px、自动滚动和直接入口；旧 `/admin.html` 只重定向到 React 后台，旧 route 渠道的 Provider + Offering 迁移有密钥安全与引用保持证据；性能拆包有前后压缩传输与 CPU 证据，未达预算则记录不实施。
+- [x] AC6. CI/deploy workflow 使用 YAML 结构校验、job timeout、精确路径分类和 artifact 证据；Trellis docs-only 提交仍跳过部署。
+- [x] AC7. 全量 frontend、Vitest、typecheck、Wrangler dry-run、Workspace/Agent Playwright、Trellis 和交付治理测试通过；生产验收只使用 exact main SHA。
+- [x] AC8. React 后台可加载服务端投影的禁用/待复审旧 MCP 工具；治理字段不完整的启用工具仍被拒绝，旧工具可删除或通过同 ID 重新发现升级，且无关配置保存不丢失、不重启用该工具。
 
 ## Out of Scope
 
@@ -50,3 +50,4 @@
 5. `08-02-frontend-legacy-experience`（P1）
 6. `08-02-ci-delivery-hardening`（P1）
 7. `08-02-test-performance-capacity`（P2）
+8. `08-04-production-acceptance-cleanup-recovery`（P0）

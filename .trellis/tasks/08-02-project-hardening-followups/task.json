@@ -3,7 +3,7 @@
   "name": "project-hardening-followups",
   "title": "项目可靠性、安全与体验优化",
   "description": "基于 2026-08-02 只读审计，系统修复后台清理、公共错误边界、Automatic Skill 配额顺序、Provider 运行治理、前端回归与 CI 治理缺口。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -15,7 +15,7 @@
   "branch": null,
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "0d06d1074175ae93b2ed15df6144570e4d76ee90",
   "pr_url": null,
   "subtasks": [],
   "children": [
@@ -31,5 +31,92 @@
   "parent": null,
   "relatedFiles": [],
   "notes": "Planning authorized 2026-08-02 after read-only audit. Parent owns cross-child acceptance, dependency ordering, and final integration evidence.",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite build and frontend structure checks passed; bundle measured 902.06 KB minified and 250.90 KB gzip JS",
+        "at": "2026-08-05T01:11:15.268617+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "40 files and 587 tests passed through the serial Workers pool",
+        "at": "2026-08-05T01:11:15.891994+00:00"
+      },
+      {
+        "command": "npm run test:coverage",
+        "status": "passed",
+        "summary": "40 files and 587 tests passed; Istanbul 60.78 statements, 57.57 branches, 55.78 functions, and 65.22 lines",
+        "at": "2026-08-05T01:11:16.501893+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "84 passed and 46 viewport-conditional skips across 130 Workspace cases",
+        "at": "2026-08-05T01:11:17.105154+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 browser tests passed with the isolated local fake Provider",
+        "at": "2026-08-05T01:11:17.694651+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React, and browser TypeScript checks passed",
+        "at": "2026-08-05T01:11:18.315072+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 bundle dry-run passed without deployment",
+        "at": "2026-08-05T01:11:18.912548+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors in the final parent evidence diff",
+        "at": "2026-08-05T01:11:19.529166+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task graph and Workspace index consistency passed",
+        "at": "2026-08-05T01:11:20.141418+00:00"
+      },
+      {
+        "command": "python -m unittest discover -s .trellis/tests -p test_*.py -v",
+        "status": "passed",
+        "summary": "All 7 Trellis validation tests passed",
+        "at": "2026-08-05T01:11:20.783326+00:00"
+      },
+      {
+        "command": "Cross-child integration review",
+        "status": "passed",
+        "summary": "Eight archived children have checked acceptance criteria, resolvable work commits, PR evidence, and compatible cleanup, privacy, quota, frontend, delivery, and rollback contracts",
+        "at": "2026-08-05T01:11:21.403551+00:00"
+      },
+      {
+        "command": "GitHub exact-main deployment and acceptance",
+        "status": "passed",
+        "summary": "Deployable main 0d06d1074175ae93b2ed15df6144570e4d76ee90 passed deployment run 30940550954 and production acceptance run 30941162756 with retained manifests",
+        "at": "2026-08-05T01:11:22.029808+00:00"
+      },
+      {
+        "command": "GitHub Trellis-only deployment skip",
+        "status": "passed",
+        "summary": "Runs 30964338638 and 30964420540 classified later Trellis-only commits and skipped Worker deployment",
+        "at": "2026-08-05T01:11:22.649831+00:00"
+      },
+      {
+        "command": "Trellis spec reconciliation",
+        "status": "passed",
+        "summary": "Delivery governance now requires parent prose and delivery matrices to reconcile with the exact task.json child set and archived child evidence",
+        "at": "2026-08-05T01:13:51.034549+00:00"
+      }
+    ]
+  }
 }
