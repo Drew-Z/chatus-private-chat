@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "c7469679a47b5f6b70be40476f93dd8f98ebd2dd",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/49",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/50",
   "subtasks": [],
   "children": [],
   "parent": "08-05-post-hardening-roadmap",
