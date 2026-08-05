@@ -37,7 +37,7 @@
 - [x] AC7. React 新后台仍覆盖 Provider 密钥录入/轮换、模型发现、逻辑模型、能力/MCP、成员访问、公开访问、可靠性、运营与 logout；被退役的 JSON reset/CSV 控件有明确决策记录而非静默遗漏。
 - [x] AC8. 流式自动滚动、legacy 图片键盘入口、React/legacy 直接入口和 390px 布局 Playwright 通过；admin 拆包有测量结论，未达预算则不实施。
 - [x] AC9. `npm run check:frontend`、相关 Vitest、`npm test`、`npm run typecheck`、`npx wrangler deploy --dry-run`、Workspace Playwright、Agent fake-Provider Playwright、`git diff --check` 和 Trellis 全量一致性验证通过。
-- [ ] AC10. work commit、PR CI、main exact SHA、GitHub Actions 部署、artifacts、用户确认新版后台与迁移结果均记录后任务才归档；生产配置迁移动作由已登录管理员在新版页面执行，不由 CI 或本地脚本代做。
+- [x] AC10. work commit、PR CI、main exact SHA、GitHub Actions 部署、artifacts、用户确认新版后台与迁移结果均记录后任务才归档；生产配置迁移动作由已登录管理员在新版页面执行，不由 CI 或本地脚本代做。
 
 ## Out of Scope
 

@@ -15,7 +15,7 @@
   "branch": "codex/frontend-entity-id-clarity",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "baa08536a67d71ded163c0440024dde5208792fb",
+  "commit": "6fb3594843cc38b45484a91c8335dc489456b634",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/44",
   "subtasks": [],
   "children": [],
@@ -95,6 +95,12 @@
         "status": "passed",
         "summary": "GitHub Actions deployed and verified exact main SHA 6fb3594843cc38b45484a91c8335dc489456b634; deployment artifacts retained",
         "at": "2026-08-04T08:56:21.998332+00:00"
+      },
+      {
+        "command": "Authenticated administrator acceptance",
+        "status": "passed",
+        "summary": "Administrator completed the production legacy-route migration in React admin and confirmed the clarified logical-model, Provider, and Offering display on 2026-08-05 Asia/Shanghai",
+        "at": "2026-08-05T00:33:42.257912+00:00"
       }
     ]
   }

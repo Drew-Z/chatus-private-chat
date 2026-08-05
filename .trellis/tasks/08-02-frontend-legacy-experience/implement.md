@@ -18,7 +18,7 @@
 - [x] Update frontend/platform specs for migration, provider-plan, redirect, accessibility, and delivery contracts.
 - [x] Commit in reviewable batches, open a PR, retain CI artifacts, merge and deploy only through GitHub Actions.
 - [x] Clarify logical-model, Provider, and Offering identity labels after migration; cover the production-reported display with Playwright and deliver through PR/GitHub Actions.
-- [ ] Record exact main SHA deployment and user acceptance of both React admin access and production legacy-route migration before archive.
+- [x] Record exact main SHA deployment and user acceptance of both React admin access and production legacy-route migration before archive.
 
 ## Local Validation Evidence (2026-08-04)
 
@@ -46,13 +46,13 @@
 - Work commit `baa08536a67d71ded163c0440024dde5208792fb`; PR [#44](https://github.com/Drew-Z/chatus-private-chat/pull/44) head `92c94361d888199c6a89d6fb511151ea1ead4ea8` merged by squash into exact main SHA `6fb3594843cc38b45484a91c8335dc489456b634`.
 - PR CI run `30892957232` passed `changes`, `quality`, `agent-browser`, and `workspace-browser`. Retained artifacts are `pr-path-classification-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8885806893`), `agent-playwright-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8885848634`), `pr-quality-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8885878541`), and `workspace-playwright-ef359bf6a6a87b31b10ae1e3ede60b63e6026f36` (ID `8886000358`); all expire 2026-08-18.
 - GitHub Actions deployment run `30893500458` passed against exact main SHA `6fb3594843cc38b45484a91c8335dc489456b634`, including production verification and deployment manifest generation. Retained artifacts are `production-deployment-6fb3594843cc38b45484a91c8335dc489456b634` (ID `8886116637`, expires 2026-11-02) and `deployment-paths-6fb3594843cc38b45484a91c8335dc489456b634` (ID `8886018520`, expires 2026-09-03).
-- Final user acceptance of the clarified production labels remains pending; no local production probe or configuration mutation was used to substitute for that gate.
+- The authenticated administrator confirmed the clarified production labels after deployment; no local production probe or configuration mutation was used to substitute for that gate.
 
-## Pending Manual Review (2026-08-04)
+## Final Manual Acceptance (2026-08-05)
 
 - The authenticated administrator completed the production legacy-route migration and confirmed that React admin, migrated Providers, and their Offerings are accessible.
-- The migrated records preserve the intended identifiers (`<routeId>` and `<routeId>-provider`), but the current labels do not clearly distinguish logical-model IDs, Provider IDs, and Offering counts.
-- AC10 remains open until a follow-up UI clarification is delivered through PR/GitHub Actions and the administrator confirms the clarified production display. This manual gate is parked and does not block work on the next independent parent-task child.
+- The follow-up identity clarification preserves the intended identifiers (`<routeId>` and `<routeId>-provider`) while distinguishing logical-model IDs, Provider IDs, and Offering counts.
+- The administrator confirmed the clarified production display as accepted. CI and local scripts did not read or mutate production configuration, and the production migration remained an explicit authenticated React action.
 
 ## Validation Commands
 
