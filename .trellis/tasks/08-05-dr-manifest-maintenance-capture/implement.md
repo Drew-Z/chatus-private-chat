@@ -17,7 +17,7 @@
       fake Provider tests, and the full validation baseline from the parent.
 - [x] Update backup/recovery, security, Queue and delivery specs; append `DR-01`,
       `DR-02`, and `DR-04` evidence without declaring restore support.
-- [ ] Commit, open a PR, retain exact-head CI and exact-main GitHub Actions
+- [x] Commit, open a PR, retain exact-head CI and exact-main GitHub Actions
       evidence when deployable, record work commit/validations, then archive.
 
 ## Rollback Point
@@ -99,3 +99,35 @@ unchanged. After sealing, disable capture entry points while retaining evidence.
   reported `Repository consistency: OK`.
 - All Provider/MCP fixtures were local. No live model, live MCP, production probe,
   local production deployment, or secret/content-bearing artifact was used.
+
+## Delivery Evidence
+
+- The exact work commit is
+  `d877ee6cee7c2921c4041f3a763e9b3bb7242947`; task evidence was committed
+  separately so the implementation revision remains traceable.
+- PR [#47](https://github.com/Drew-Z/chatus-private-chat/pull/47) merged the exact
+  head `30da20e5b46329ac74f3752da6fe37ccd7c69045` as main revision
+  `1a016d42389a13d58bc1e32578ceebd23fe8fabd`.
+- Exact-head PR run
+  [30979361666](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30979361666)
+  passed `changes`, `quality`, `workspace-browser`, and `agent-browser`. Its
+  path-classification, quality, coverage, Workspace Playwright, and local
+  fake-Provider Agent artifacts were retained by GitHub Actions.
+- Exact-main deployment run
+  [30980066814](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30980066814)
+  passed the `deploy` job for `1a016d42389a13d58bc1e32578ceebd23fe8fabd`,
+  including both stale-main guards, production smoke, and manifest retention.
+  Artifacts `deployment-paths-1a016d42389a13d58bc1e32578ceebd23fe8fabd`
+  and `production-deployment-1a016d42389a13d58bc1e32578ceebd23fe8fabd`
+  were retained; the deployment manifest expires 2026-11-03.
+- Exact-main production member acceptance run
+  [30980363359](https://github.com/Drew-Z/chatus-private-chat/actions/runs/30980363359)
+  passed deployed-revision verification and temporary-member acceptance for the
+  same SHA. Artifact
+  `production-acceptance-1a016d42389a13d58bc1e32578ceebd23fe8fabd` was retained
+  through 2026-11-03. No credential, response body, conversation content, or
+  stored memory was copied into this task.
+- Pre-archive `git diff --check` and
+  `python ./.trellis/scripts/task.py validate-all` passed after the delivery
+  evidence and code-task branch metadata were recorded; repository consistency
+  remained `OK` with every acceptance and implementation checkbox complete.

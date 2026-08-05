@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-08-05",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/dr-manifest-maintenance-capture",
   "base_branch": "main",
   "worktree_path": null,
   "commit": "d877ee6cee7c2921c4041f3a763e9b3bb7242947",
@@ -71,6 +71,24 @@
         "status": "passed",
         "summary": "Repository consistency OK",
         "at": "2026-08-05T05:34:53.701362+00:00"
+      },
+      {
+        "command": "GitHub Actions PR #47 exact-head CI",
+        "status": "passed",
+        "summary": "Run 30979361666 passed changes, quality, workspace-browser, and agent-browser for head 30da20e5b46329ac74f3752da6fe37ccd7c69045",
+        "at": "2026-08-05T06:12:07.848546+00:00"
+      },
+      {
+        "command": "GitHub Actions exact-main deployment",
+        "status": "passed",
+        "summary": "Run 30980066814 deployed and production-smoked merge SHA 1a016d42389a13d58bc1e32578ceebd23fe8fabd; manifests retained",
+        "at": "2026-08-05T06:12:08.460014+00:00"
+      },
+      {
+        "command": "GitHub Actions exact-main production acceptance",
+        "status": "passed",
+        "summary": "Run 30980363359 passed deployed-revision and temporary-member acceptance for SHA 1a016d42389a13d58bc1e32578ceebd23fe8fabd; manifest retained",
+        "at": "2026-08-05T06:12:09.043453+00:00"
       }
     ]
   }

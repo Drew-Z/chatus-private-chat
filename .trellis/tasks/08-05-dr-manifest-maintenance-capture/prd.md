@@ -55,7 +55,7 @@ does not claim that Chatus can yet restore a full instance.
       deterministic and tamper detection invalidates the archive.
 - [x] AC7. Failure injection at each phase exits or rolls back maintenance safely
       and never publishes a recoverable-instance claim.
-- [ ] AC8. Focused tests, full shipping gates, spec updates, PR evidence, exact
+- [x] AC8. Focused tests, full shipping gates, spec updates, PR evidence, exact
       work commit, and archive validation are retained before task archive.
 
 ## Out of Scope
