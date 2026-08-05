@@ -12,7 +12,7 @@
 - [x] Run `trellis-check`, focused tests and the full parent validation baseline.
 - [x] Update Provider, quota, telemetry, privacy and recovery specs; append
       `FIN-01` and `FIN-05` evidence while documenting unsupported accounting.
-- [ ] Commit, PR, CI/deployment evidence, validation records and archive checks.
+- [x] Commit, PR, CI/deployment evidence, validation records and archive checks.
 
 ## Rollback Point
 

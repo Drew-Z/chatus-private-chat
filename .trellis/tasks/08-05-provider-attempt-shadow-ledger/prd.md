@@ -49,7 +49,7 @@ feedback, or billing claims.
 - [x] AC6. Ledger, logs, exports and diagnostics pass content/secret leak scans.
 - [x] AC7. Backup/restore and deletion classification for the ledger is explicit
       and covered by deterministic fixtures.
-- [ ] AC8. Full gates, specs, PR/commit/deployment evidence and archive checks pass.
+- [x] AC8. Full gates, specs, PR/commit/deployment evidence and archive checks pass.
 
 ## Out of Scope
 
