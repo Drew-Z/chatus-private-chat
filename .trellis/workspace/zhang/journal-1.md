@@ -1524,3 +1524,37 @@ Implemented and delivered the local isolated restore engine with target receipts
 ### Next Steps
 
 - None - task complete
+
+
+## Session 40: Provider schema registration recovery
+
+**Date**: 2026-08-06
+**Task**: Provider schema registration recovery
+**Branch**: `main`
+
+### Summary
+
+Fixed forward Durable Object schema registration after production acceptance exposed a post-eviction TeamAgent v6-to-v7 conflict; passed local and PR gates, exact-SHA deployment and temporary-member acceptance, updated recovery specs, and archived the provider attempt shadow ledger task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c7469679a47b5f6b70be40476f93dd8f98ebd2dd` | (see git log) |
+| `1d19919` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
