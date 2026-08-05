@@ -11,7 +11,7 @@
 | AC5 | Worker fixtures submit forged `turnId`, `runId`, `attemptId`, Provider, offering, and model fields and prove the ledger uses only server-selected values. | Passed |
 | AC6 | Exact input decoders reject content fields; SQL column, diagnostics, account deletion, user export, log, and secret-marker fixtures exclude prompt, completion, tool payload, credentials, raw Provider metadata, and invoice data. | Passed |
 | AC7 | Capture registers `provider-attempt-ledger-v1` as `authoritative/restore`; restore requires `PROVIDER_ATTEMPT_LEDGER/ProviderAttemptLedger/v5`; deletion retains instance evidence and user export excludes it. | Passed |
-| AC8 | All local gates and Trellis consistency pass. Work commit, PR, CI, exact-SHA deployment, production acceptance, and archive evidence remain pending. | Pending |
+| AC8 | All local gates and Trellis consistency pass. Work commit `7b09f0029d7c49048a4a1d9a47056b4a4725c1c8` and draft PR [#49](https://github.com/Drew-Z/chatus-private-chat/pull/49) are recorded. CI, exact-SHA deployment, production acceptance, and archive evidence remain pending. | Pending |
 
 ## Risk evidence
 
