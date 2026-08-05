@@ -3,7 +3,7 @@
   "name": "provider-attempt-shadow-ledger",
   "title": "Provider attempt shadow ledger",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,15 +12,66 @@
   "assignee": "zhang",
   "createdAt": "2026-08-05",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/provider-attempt-shadow-ledger",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "7b09f0029d7c49048a4a1d9a47056b4a4725c1c8",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/49",
   "subtasks": [],
   "children": [],
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite client build and frontend structure checks passed",
+        "at": "2026-08-05T18:53:26.416541+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "44 files and 648 tests passed with local fixtures only",
+        "at": "2026-08-05T18:53:27.676098+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed",
+        "at": "2026-08-05T18:53:28.649786+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright passed 84 tests with 46 conditional skips across five viewports",
+        "at": "2026-08-05T18:53:29.706217+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake Provider Agent Playwright passed 3 tests",
+        "at": "2026-08-05T18:53:30.839710+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler dry-run passed with five SQLite Durable Object bindings including ProviderAttemptLedger v5",
+        "at": "2026-08-05T18:53:31.851628+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository-wide Trellis consistency passed",
+        "at": "2026-08-05T18:53:32.875183+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors after code, spec, and task evidence updates",
+        "at": "2026-08-05T18:54:44.468218+00:00"
+      }
+    ]
+  }
 }

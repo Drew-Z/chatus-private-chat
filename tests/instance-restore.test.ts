@@ -39,6 +39,17 @@ describe("isolated restore engine", () => {
     });
 
     expect(result.drill.status).toBe("passed");
+    expect(fixture.manifest.entries).toContainEqual(expect.objectContaining({
+      store: "provider_attempt_ledger",
+      schemaVersion: "provider-attempt-ledger-v1",
+      stateClass: "authoritative",
+      restoreBehavior: "restore",
+    }));
+    expect(fixture.target.bindings).toContainEqual(expect.objectContaining({
+      bindingName: "PROVIDER_ATTEMPT_LEDGER",
+      className: "ProviderAttemptLedger",
+      migrationTag: "v5",
+    }));
     expect(result.reconciliation.unresolvedReferences).toBe(0);
     expect(result.acceptance.writesOpen).toBe(false);
     expect(result.checkpoints.map(({ phase }) => phase)).toEqual([...INSTANCE_RESTORE_PHASES]);
@@ -162,6 +173,24 @@ describe("isolated restore engine", () => {
       adapter: targetAdapter,
     })).rejects.toMatchObject({ code: "restore_target_invalid" });
     expect(targetAdapter.actionOrder).toEqual([]);
+
+    const migrationAdapter = createRecordingRestoreAdapter(fixture);
+    const wrongMigrationTarget = {
+      ...fixture.target,
+      bindings: fixture.target.bindings.map((binding) => binding.bindingName === "PROVIDER_ATTEMPT_LEDGER"
+        ? { ...binding, migrationTag: "v4" }
+        : binding),
+    };
+    await expect(restoreIsolatedInstance({
+      operationId: "restore-wrong-migration",
+      archive: fixture.archive,
+      archiveKey: fixture.archiveKey,
+      target: wrongMigrationTarget,
+      mappings: fixture.mappings,
+      checkpoints: new MemoryRestoreCheckpointStore(),
+      adapter: migrationAdapter,
+    })).rejects.toMatchObject({ code: "restore_input_invalid" });
+    expect(migrationAdapter.calls.get("inspect") || 0).toBe(0);
   });
 
   it.each(INSTANCE_RESTORE_PHASES)("recovers after a failure immediately after %s commit without replaying it", async (phase) => {

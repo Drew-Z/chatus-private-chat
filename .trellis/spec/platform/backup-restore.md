@@ -57,6 +57,7 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
 - Workspace-file state: the `WORKSPACE_FILES` R2 bucket plus root `TeamAgent` file, immutable-version, exact-reference, and operation/outbox tables. A future backup manifest must inventory object keys indirectly, sizes, SHA-256 checksums, version/generation ownership, and include/exclude decisions without exposing keys to users.
 - Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
+- Provider attempt shards are authoritative instance-level operational evidence. Each `provider_attempt_ledger` object captures as `provider-attempt-ledger-v1` with `restoreBehavior: "restore"`; it is retained by member account deletion and excluded from user export.
 - Member OAuth MCP token rows in `UserState.mcp_oauth_tokens` and their owner binding are required durable security state. Token values are AES-GCM ciphertext whose AAD binds member, server, and schema v1; the original `ROUTE_KEYS_MASTER_KEY` remains external key material. A future manifest may record only the table/class, schema version, row count, and an explicit `ciphertextOnly: true` inventory marker. The manifest must not contain `encrypted_record`, IV, ciphertext, access/refresh token, member label, server endpoint, authorization code, state, verifier, or session fingerprint.
 - External key material required to decrypt archived ciphertext. In particular, the original `ROUTE_KEYS_MASTER_KEY` must be retained outside the application data archive under operator control.
 
@@ -71,6 +72,7 @@ These remain in the recovery inventory until a separate migration-retirement aud
 
 - `session:*` and `admin:*` sessions are not restored; users and administrators authenticate again.
 - `provider-leases:v1` and its alarm are not restored; provider capacity starts empty and is rebuilt by new requests.
+- `ProviderCoordinator` reliability remains rebuildable, but `ProviderAttemptLedger` events/projections are not reliability telemetry and must not be excluded or rebuilt.
 - Guest turn leases, minute bursts, login-failure windows, and passive route-reliability telemetry may expire or rebuild. Guest cleanup KV markers and Root cleanup tickets are durable deletion ownership and must not be treated as expiring/rebuildable state until their purge completes.
 - OAuth PKCE state and member discovery candidates are short-lived/rebuildable and are not restored. Future manifests must list `mcp_oauth_states` and `mcp_oauth_discovery_candidates` as explicit exclusions; members restart authorization or discovery after recovery.
 
@@ -83,7 +85,7 @@ A future instance backup/restore implementation is ready only when all of these 
 1. **Manifest:** a versioned manifest records source account/Worker/KV identity, applied schema/migration versions, export timestamp, included and excluded key prefixes/object classes, stable Durable Object identifiers, counts, sizes, and integrity checks.
 2. **Consistency:** capture uses a documented stop-write/maintenance boundary or an equivalent protocol. There is no global transaction across KV and multiple Durable Objects.
 3. **Confidentiality:** archives are encrypted, logs remain secret-free, and decryption keys have an external custody/rotation policy. The archive cannot be the only copy of `ROUTE_KEYS_MASTER_KEY`.
-4. **Provisioning:** the target has compatible bindings and append-only Durable Object migrations before import. Existing migration tags are never rewritten.
+4. **Provisioning:** the target has compatible bindings and append-only Durable Object migrations before import. The current exact Durable Object mapping is `USER_STATE/UserState/v1`, `TEAM_AGENT/TeamAgent/v2`, `PROVIDER_COORDINATOR/ProviderCoordinator/v3`, `INSTANCE_COORDINATOR/InstanceCoordinator/v4`, and `PROVIDER_ATTEMPT_LEDGER/ProviderAttemptLedger/v5`. Existing migration tags are never rewritten.
 5. **Identity mapping:** every user label and chat ID maps deterministically to the intended root/conversation object. Importing data into differently derived object names is not recovery.
 6. **Restore order:** validate/decrypt the archive; provision schema; restore durable KV configuration and transitional sources; restore `UserState` and Agent objects using the manifest mapping; leave sessions/leases empty; then reopen writes.
 7. **Reconciliation:** compare manifest counts/checksums and run product acceptance for authentication, user isolation, conversations, memory, managed configuration, and permanent deletion.
@@ -217,6 +219,7 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 | Import version/envelope is unsupported | Reject it; do not coerce it into partial state |
 | Worker name, KV namespace, or account changes | Treat the target as a new instance boundary, not restored data |
 | Original `ROUTE_KEYS_MASTER_KEY` is unavailable | Old managed provider-key ciphertext is unrecoverable; require keys to be re-entered |
+| Provider attempt capture is missing, classified rebuildable, or uses a target other than `ProviderAttemptLedger`/`v5` | Reject capture/restore readiness before target mutation |
 | Proposed instance backup lacks manifest, consistency, mapping, reconciliation, or drill evidence | Keep full-instance recovery marked unsupported |
 | Any permanent-delete sub-operation fails | Fail the request; a retry repeats exact idempotent deletes |
 | Account purge starts while a workspace upload is pending | Fail with `workspace_purge_pending_upload`; keep the session valid for retry |
@@ -250,6 +253,7 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 - Prove additive legacy cleanup metadata migration, due filtering, exponential backoff/cap, terminal retention, bounded alarm batches, eviction recovery, and privacy-safe aggregate evidence.
 - Prove the anti-resurrection timestamp rejects stale uploads while an explicit user-selected `restore` can recover old backup content.
 - Prove provider/access configuration and encrypted secret records are not deleted with one member's data.
+- Prove member deletion retains content-free Provider attempts, user export excludes them, capture marks them authoritative/restore, and isolated restore rejects any wrong v1-v5 Durable Object migration tag.
 - Keep tests local and deterministic; do not call a live model or print access codes, credentials, conversations, or memories.
 - Run the full project quality gate from `frontend/quality-guidelines.md`.
 

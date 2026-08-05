@@ -1,6 +1,9 @@
 import { env, exports } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { getAgentByName } from "agents";
 import { stepCountIs, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TeamAgent } from "../src/agent/team-agent";
 import { createAgentToolSet } from "../src/services/agent-tools";
 import {
   loadProviderRouteReliability,
@@ -14,11 +17,48 @@ const ROUTE_SECRET_PREFIX = "route-secret:";
 const PUBLIC_ROUTE_ID = "public-agent-route";
 const PRIVATE_ROUTE_ID = "private-agent-route";
 
+function turnContext() {
+  return {
+    turnId: `turn_${crypto.randomUUID()}`,
+    operation: {
+      version: 1 as const,
+      operationId: `provider-turn-${crypto.randomUUID()}`,
+      fenceId: crypto.randomUUID(),
+      kind: "provider_turn" as const,
+      startedAt: Date.now(),
+    },
+  };
+}
+
 describe("prepared TeamAgent turn", () => {
   beforeEach(async () => {
     await env.CHAT_STORE.delete(ROUTES_CONFIG_KEY);
     await clearRouteReliability();
     await clearRouteSecrets();
+  });
+
+  it("persists one server turn identity across continuations and rotates it for the next message", async () => {
+    const label = `agent-provider-turn-${crypto.randomUUID()}`;
+    const stub = await getAgentByName(env.TEAM_AGENT, label, {
+      props: {
+        userLabel: label,
+        scope: "root",
+        accessKind: "member",
+        sessionExpiresAt: Number.MAX_SAFE_INTEGER,
+      },
+    }) as DurableObjectStub<TeamAgent>;
+    await runInDurableObject(stub, async (instance) => {
+      const resolveTurn = (instance as unknown as {
+        resolveProviderTurnId(continuation: boolean): string;
+      }).resolveProviderTurnId.bind(instance);
+      const first = resolveTurn(false);
+      const continuation = resolveTurn(true);
+      const next = resolveTurn(false);
+      expect(first).toMatch(/^turn_[0-9a-f-]{36}$/i);
+      expect(continuation).toBe(first);
+      expect(next).not.toBe(first);
+      expect(resolveTurn(true)).toBe(next);
+    });
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -66,7 +106,7 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
 
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "整理三条发布检查事项" }],
       requestId,
     });
@@ -141,7 +181,7 @@ describe("prepared TeamAgent turn", () => {
       lastSeen: now,
       expiresAt: now + 60_000,
     };
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "用两段合成内容回答" }],
     });
     expect(prepared.ok).toBe(true);
@@ -233,7 +273,7 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
 
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "统计这段文字" }],
       skillIds: ["writing"],
     });
@@ -296,7 +336,7 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
 
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "继续旧会话" }],
       skillIds: ["writing"],
     });
@@ -388,7 +428,8 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
 
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const context = turnContext();
+    const prepared = await prepareTeamAgentTurn(env, session, { ...context,
       messages: [{ role: "user", content: "Compare the evidence" }],
       skillMode: "automatic",
       skillIds: ["writing"],
@@ -419,9 +460,30 @@ describe("prepared TeamAgent turn", () => {
       lastOutcome: "success",
       lastFallback: true,
     });
+    const [firstAttempt] = await env.PROVIDER_ATTEMPT_LEDGER.getByName("first").listRecent();
+    const [secondAttempt] = await env.PROVIDER_ATTEMPT_LEDGER.getByName("second").listRecent();
+    expect(firstAttempt).toMatchObject({
+      turnId: context.turnId,
+      runKind: "automatic_skill",
+      logicalRouteId: "primary",
+      model: "selector-model",
+      fallbackIndex: 0,
+      status: "failed",
+      errorClass: "upstream_unavailable",
+    });
+    expect(secondAttempt).toMatchObject({
+      turnId: context.turnId,
+      runId: firstAttempt.runId,
+      runKind: "automatic_skill",
+      logicalRouteId: "primary",
+      model: "selector-model",
+      fallbackIndex: 1,
+      status: "succeeded",
+    });
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName("forbidden").listRecent()).resolves.toEqual([]);
     await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
 
-    const next = await prepareTeamAgentTurn(env, session, {
+    const next = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "This is a second user turn" }],
       skillMode: "manual",
       skillIds: [],
@@ -471,7 +533,7 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
 
-    const admitted = await prepareTeamAgentTurn(env, session, {
+    const admitted = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Consume the only message unit" }],
       skillMode: "manual",
       skillIds: [],
@@ -479,7 +541,7 @@ describe("prepared TeamAgent turn", () => {
     expect(admitted.ok).toBe(true);
     if (admitted.ok) await Promise.allSettled([admitted.closeTools(), admitted.releaseTurn()]);
 
-    const rejected = await prepareTeamAgentTurn(env, session, {
+    const rejected = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Do not start selection" }],
       skillMode: "automatic",
       skillIds: [],
@@ -533,7 +595,7 @@ describe("prepared TeamAgent turn", () => {
     const controller = new AbortController();
     controller.abort(new DOMException("cancelled by user", "AbortError"));
 
-    const cancelled = await prepareTeamAgentTurn(env, session, {
+    const cancelled = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Do not charge this turn" }],
       skillMode: "automatic",
       skillIds: [],
@@ -542,7 +604,7 @@ describe("prepared TeamAgent turn", () => {
     expect(cancelled).toMatchObject({ ok: false, error: "request_cancelled", status: 499 });
     expect(fetchSpy).not.toHaveBeenCalled();
 
-    const next = await prepareTeamAgentTurn(env, session, {
+    const next = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "This turn should still be admitted" }],
       skillMode: "manual",
       skillIds: [],
@@ -607,7 +669,7 @@ describe("prepared TeamAgent turn", () => {
     };
     const controller = new AbortController();
 
-    const preparing = prepareTeamAgentTurn(env, session, {
+    const preparing = prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Cancel during selection" }],
       skillMode: "automatic",
       skillIds: [],
@@ -671,6 +733,7 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
     const input = {
+      ...turnContext(),
       messages: [{ role: "user" as const, content: "Continue with automatic selection" }],
       skillMode: "automatic" as const,
       skillIds: [] as string[],
@@ -680,12 +743,12 @@ describe("prepared TeamAgent turn", () => {
     expect(initial.ok).toBe(true);
     if (initial.ok) await Promise.allSettled([initial.closeTools(), initial.releaseTurn()]);
 
-    const continuation = await prepareTeamAgentTurn(env, session, { ...input, continuation: true });
+    const continuation = await prepareTeamAgentTurn(env, session, { ...turnContext(), ...input, continuation: true });
     expect(continuation.ok).toBe(true);
     if (continuation.ok) await Promise.allSettled([continuation.closeTools(), continuation.releaseTurn()]);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
 
-    const nextTurn = await prepareTeamAgentTurn(env, session, {
+    const nextTurn = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: input.messages,
       skillMode: "manual",
       skillIds: [],
@@ -724,7 +787,7 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
 
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Continue the draft" }],
       skillMode: "automatic",
       skillIds: ["writing", "revoked"],
@@ -777,7 +840,7 @@ describe("prepared TeamAgent turn", () => {
       expiresAt: now + 60_000,
     };
     const startedAt = Date.now();
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Analyze and draft the result" }],
       skillMode: "automatic",
       skillIds: [],
@@ -798,7 +861,17 @@ describe("prepared TeamAgent turn", () => {
       ],
     });
     await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName("legacy:primary").listRecent({ limit: 100 });
+    expect(attempts).toContainEqual(expect.objectContaining({
+      runKind: "automatic_skill",
+      logicalRouteId: "primary",
+      model: "selector-model",
+      status: "timed_out",
+      errorClass: "upstream_timeout",
+      startedAt: expect.any(Number),
+      endedAt: expect.any(Number),
+    }));
   }, 8_000);
 
   it("revalidates automatic model output after a concurrent Skill revocation", async () => {
@@ -838,7 +911,7 @@ describe("prepared TeamAgent turn", () => {
       lastSeen: now,
       expiresAt: now + 60_000,
     };
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Draft a report" }],
       skillMode: "automatic",
       skillIds: ["writing"],
@@ -870,13 +943,13 @@ describe("prepared TeamAgent turn", () => {
       sourceKey: `guest-source:${"b".repeat(64)}`,
     };
 
-    const forged = await prepareTeamAgentTurn(env, session, {
+    const forged = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       routeId: PRIVATE_ROUTE_ID,
       messages: [{ role: "user", content: "try private route" }],
     });
     expect(forged).toMatchObject({ ok: false, error: "route_not_allowed", status: 403 });
 
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       routeId: PUBLIC_ROUTE_ID,
       sessionSummary: "GUEST SUMMARY MUST NOT REACH PROVIDER",
       skillIds: ["private"],
@@ -920,13 +993,13 @@ describe("prepared TeamAgent turn", () => {
       lastSeen: now,
       expiresAt: now + 60_000,
     };
-    const input = { messages: [{ role: "user" as const, content: "继续完成这个任务" }] };
+    const input = { ...turnContext(), messages: [{ role: "user" as const, content: "继续完成这个任务" }] };
 
     const initial = await prepareTeamAgentTurn(env, session, input);
     expect(initial.ok).toBe(true);
     if (initial.ok) await initial.closeTools();
 
-    const continuation = await prepareTeamAgentTurn(env, session, { ...input, continuation: true });
+    const continuation = await prepareTeamAgentTurn(env, session, { ...turnContext(), ...input, continuation: true });
     expect(continuation.ok).toBe(true);
     if (continuation.ok) await continuation.closeTools();
 
@@ -989,7 +1062,7 @@ describe("prepared TeamAgent turn", () => {
         ? openAiToolCallStreamResponse(name, { text: "hello world" })
         : openAiStreamResponse("统计完成，共 11 个字符、2 个单词。");
     });
-    const prepared = await prepareTeamAgentTurn(env, session, {
+    const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "统计 hello world" }],
       skillIds: ["writing"],
     });

@@ -6,6 +6,13 @@ Use this contract when changing non-streaming OpenAI-compatible or Anthropic-com
 
 The module is a protocol adapter. Provider selection, credentials, leases, fallback, reliability telemetry, capability assignment, user approval, tool budgets, MCP execution, and result-size enforcement remain outside it.
 
+Provider attempt identity also remains outside this adapter. The legacy or
+Agent capability owner starts an attempt before every `callProviderToolTurn`.
+The initial capability call and each continuation use distinct logical runs
+under the same admitted turn; retries/fallbacks inside one run receive distinct
+attempts. Required ledger-start failure blocks the Provider call and is not a
+tool/provider fallback condition.
+
 ## 2. Signatures
 
 - Module: `src/services/provider-tool-runtime.ts`
@@ -61,6 +68,7 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 - Unit-test Anthropic system/image conversion, mixed text/tool-use parsing, error results, and user/tool-result history append.
 - Assert 400/401/429/5xx and invalid-JSON outcomes retain distinct public classes without exposing the Provider message, response body, or endpoint.
 - Keep Worker integration tests for multi-round OpenAI and Anthropic capability execution, provider lease release, fallback, approval, and MCP execution.
+- Assert initial and continuation fake Provider calls have separate run/attempt IDs, one shared turn ID, and no second user-message quota admission.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 
 ## 7. Wrong vs Correct

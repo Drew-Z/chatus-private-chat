@@ -13,6 +13,8 @@ import {
 } from "../src/services/instance-capture-adapters";
 import { normalizeDurableObjectCaptureValue } from "../src/services/durable-object-capture";
 import type { ProviderCoordinator } from "../src/provider-coordinator";
+import { PROVIDER_ATTEMPT_LEDGER_SCHEMA_VERSION } from "../src/provider-attempt-ledger";
+import { createProviderAttemptRuntime } from "../src/services/provider-attempt-runtime";
 import {
   acquireInstanceOperationFence,
   captureInstance,
@@ -831,6 +833,30 @@ describe("instance capture contracts", () => {
     const provider = env.PROVIDER_COORDINATOR.getByName(providerName) as DurableObjectStub<ProviderCoordinator>;
     await expect(provider.captureInstanceState("epoch-provider-schema"))
       .resolves.toMatchObject({ schemaVersion: "provider-coordinator-v1" });
+    const providerLedgerName = `capture-provider-ledger-${crypto.randomUUID()}`;
+    const providerAttempts = createProviderAttemptRuntime({
+      ledger: env.PROVIDER_ATTEMPT_LEDGER,
+      mode: "required",
+      operation: {
+        version: 1,
+        operationId: `capture-provider-turn-${crypto.randomUUID()}`,
+        fenceId: crypto.randomUUID(),
+        kind: "provider_turn",
+        startedAt: Date.now(),
+      },
+    });
+    const providerAttempt = await providerAttempts.createRun("main_answer").start({
+      logicalRouteId: "capture-route",
+      providerId: providerLedgerName,
+      model: "capture-model",
+      credentialClass: "managed",
+      fallbackIndex: 0,
+    });
+    await providerAttempt.succeed();
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerLedgerName).captureInstanceState("epoch-provider-ledger"))
+      .resolves.toMatchObject({
+        schemaVersion: `provider-attempt-ledger-v${PROVIDER_ATTEMPT_LEDGER_SCHEMA_VERSION}`,
+      });
     const registry = await coordinator(INSTANCE_MAINTENANCE_COORDINATOR).listRegisteredObjects();
     expect(registry).toMatchObject({
       ok: true,
@@ -838,6 +864,7 @@ describe("instance capture contracts", () => {
         expect.objectContaining({ kind: "user_state", instanceName: userStateName }),
         expect.objectContaining({ kind: "root_team_agent", instanceName: name }),
         expect.objectContaining({ kind: "provider_coordinator", instanceName: providerName }),
+        expect.objectContaining({ kind: "provider_attempt_ledger", instanceName: providerLedgerName }),
       ]),
     });
   });
@@ -1131,9 +1158,12 @@ describe("instance capture contracts", () => {
       "workspace_files",
       "document_ingest_queue",
       "provider_coordinator",
+      "provider_attempt_ledger",
     ]));
     expect(verified.payloads.find(({ entry }) => entry.store === "provider_coordinator")?.entry)
       .toMatchObject({ stateClass: "rebuildable", restoreBehavior: "rebuild" });
+    expect(verified.payloads.find(({ entry }) => entry.store === "provider_attempt_ledger")?.entry)
+      .toMatchObject({ stateClass: "authoritative", restoreBehavior: "restore" });
   });
 });
 

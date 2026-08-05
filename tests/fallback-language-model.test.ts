@@ -4,8 +4,14 @@ import type {
   LanguageModelV3GenerateResult,
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
+import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { createFallbackLanguageModel, type ProviderAttemptEvent } from "../src/services/fallback-language-model";
+import {
+  createProviderAttemptRuntime,
+  ProviderAttemptLedgerError,
+  type ProviderAttemptRun,
+} from "../src/services/provider-attempt-runtime";
 
 const CALL_OPTIONS = { prompt: [] } as unknown as LanguageModelV3CallOptions;
 
@@ -38,27 +44,56 @@ function model(args: {
 }
 
 describe("fallback language model", () => {
+  it("fails closed before Provider execution when required ledger start is unavailable", async () => {
+    const primary = model({ stream: successfulStream("must not run") });
+    const backup = model({ stream: successfulStream("must not run either") });
+    const primarySpy = vi.spyOn(primary, "doStream");
+    const backupSpy = vi.spyOn(backup, "doStream");
+    const run = {
+      turnId: `turn_${crypto.randomUUID()}`,
+      runId: `run_${crypto.randomUUID()}`,
+      runKind: "main_answer",
+      start: vi.fn().mockRejectedValue(new ProviderAttemptLedgerError()),
+    } satisfies ProviderAttemptRun;
+    const router = createFallbackLanguageModel([
+      { routeId: "primary", providerId: "primary", usedUserKey: false, model: primary },
+      { routeId: "backup", providerId: "backup", usedUserKey: false, model: backup },
+    ], {}, { createRun: () => run });
+
+    await expect(router.doStream(CALL_OPTIONS)).rejects.toBeInstanceOf(ProviderAttemptLedgerError);
+    expect(run.start).toHaveBeenCalledOnce();
+    expect(primarySpy).not.toHaveBeenCalled();
+    expect(backupSpy).not.toHaveBeenCalled();
+  });
+
   it("falls back when a route fails before visible output and discards its metadata", async () => {
     const success: ProviderAttemptEvent[] = [];
     const failure: ProviderAttemptEvent[] = [];
     const primaryError = { statusCode: 503, message: "unavailable" };
+    const primaryProviderId = `primary-${crypto.randomUUID()}`;
+    const backupProviderId = `backup-${crypto.randomUUID()}`;
+    const attempts = attemptRuntime();
     const router = createFallbackLanguageModel([
       {
         routeId: "primary",
-        providerId: "primary-provider",
+        providerId: primaryProviderId,
+        modelName: "primary-model",
+        credentialClass: "managed",
         usedUserKey: false,
         model: model({ stream: [{ type: "stream-start", warnings: [] }, { type: "error", error: primaryError }] }),
       },
       {
         routeId: "backup",
-        providerId: "backup-provider",
+        providerId: backupProviderId,
+        modelName: "backup-model",
+        credentialClass: "worker",
         usedUserKey: false,
         model: model({ stream: successfulStream("ok") }),
       },
     ], {
       onSuccess: (event) => success.push(event),
       onFailure: (event) => failure.push(event),
-    });
+    }, { createRun: () => attempts.createRun("main_answer") });
 
     const result = await router.doStream(CALL_OPTIONS);
     const parts = await readStream(result.stream);
@@ -72,6 +107,22 @@ describe("fallback language model", () => {
       visibleOutputStarted: true,
       streamShape: "single_chunk",
     })]);
+    const [primaryAttempt] = await env.PROVIDER_ATTEMPT_LEDGER.getByName(primaryProviderId).listRecent();
+    const [backupAttempt] = await env.PROVIDER_ATTEMPT_LEDGER.getByName(backupProviderId).listRecent();
+    expect(primaryAttempt).toMatchObject({
+      turnId: attempts.turnId,
+      runKind: "main_answer",
+      status: "failed",
+      errorClass: "upstream_unavailable",
+      fallbackIndex: 0,
+    });
+    expect(backupAttempt).toMatchObject({
+      turnId: attempts.turnId,
+      runId: primaryAttempt.runId,
+      runKind: "main_answer",
+      status: "succeeded",
+      fallbackIndex: 1,
+    });
   });
 
   it("forwards the first delta before a later delta is released and records progressive evidence", async () => {
@@ -133,16 +184,20 @@ describe("fallback language model", () => {
     const release = vi.fn();
     const success: ProviderAttemptEvent[] = [];
     const failure: ProviderAttemptEvent[] = [];
+    const providerId = `provider-cancelled-${crypto.randomUUID()}`;
+    const attempts = attemptRuntime();
     const router = createFallbackLanguageModel([{
       routeId: "cancelled",
-      providerId: "provider-cancelled",
+      providerId,
+      modelName: "cancelled-model",
+      credentialClass: "worker",
       usedUserKey: false,
       model: model({ streamSource: source }),
       acquireLease: async () => ({ release }),
     }], {
       onSuccess: (event) => success.push(event),
       onFailure: (event) => failure.push(event),
-    });
+    }, { createRun: () => attempts.createRun("main_answer") });
 
     const resultPromise = router.doStream(CALL_OPTIONS);
     controller.enqueue({ type: "text-delta", id: "text-1", delta: "partial" });
@@ -154,6 +209,13 @@ describe("fallback language model", () => {
     expect(release).toHaveBeenCalledOnce();
     expect(success).toEqual([]);
     expect(failure).toEqual([]);
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent()).resolves.toEqual([
+      expect.objectContaining({
+        turnId: attempts.turnId,
+        status: "cancelled",
+        errorClass: "request_cancelled",
+      }),
+    ]);
   });
 
   it("never switches routes after visible output has started", async () => {
@@ -196,10 +258,15 @@ describe("fallback language model", () => {
       const backup = model({ stream: successfulStream("deadline fallback") });
       const backupSpy = vi.spyOn(backup, "doStream");
       const failures: ProviderAttemptEvent[] = [];
+      const primaryProviderId = `deadline-primary-${crypto.randomUUID()}`;
+      const backupProviderId = `deadline-backup-${crypto.randomUUID()}`;
+      const attempts = attemptRuntime();
       const router = createFallbackLanguageModel([
         {
           routeId: "primary",
-          providerId: "primary-provider",
+          providerId: primaryProviderId,
+          modelName: "deadline-primary-model",
+          credentialClass: "managed",
           usedUserKey: false,
           model: model({
             streamSource: stalled,
@@ -210,11 +277,15 @@ describe("fallback language model", () => {
         },
         {
           routeId: "backup",
-          providerId: "backup-provider",
+          providerId: backupProviderId,
+          modelName: "deadline-backup-model",
+          credentialClass: "worker",
           usedUserKey: false,
           model: backup,
         },
-      ], { onFailure: (event) => failures.push(event) });
+      ], { onFailure: (event) => failures.push(event) }, {
+        createRun: () => attempts.createRun("main_answer"),
+      });
 
       const resultPromise = router.doStream(CALL_OPTIONS);
       await started;
@@ -230,6 +301,12 @@ describe("fallback language model", () => {
       expect(backupSpy).toHaveBeenCalledOnce();
       expect(failures).toEqual([
         expect.objectContaining({ routeId: "primary", visibleOutputStarted: false }),
+      ]);
+      await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(primaryProviderId).listRecent()).resolves.toEqual([
+        expect.objectContaining({ status: "timed_out", errorClass: "upstream_timeout" }),
+      ]);
+      await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(backupProviderId).listRecent()).resolves.toEqual([
+        expect.objectContaining({ status: "succeeded" }),
       ]);
     } finally {
       vi.useRealTimers();
@@ -410,6 +487,20 @@ describe("fallback language model", () => {
     ]);
   });
 });
+
+function attemptRuntime() {
+  return createProviderAttemptRuntime({
+    ledger: env.PROVIDER_ATTEMPT_LEDGER,
+    mode: "required",
+    operation: {
+      version: 1,
+      operationId: `fallback-test-${crypto.randomUUID()}`,
+      fenceId: crypto.randomUUID(),
+      kind: "provider_turn",
+      startedAt: Date.now(),
+    },
+  });
+}
 
 function streamOf(parts: LanguageModelV3StreamPart[]): ReadableStream<LanguageModelV3StreamPart> {
   return new ReadableStream({

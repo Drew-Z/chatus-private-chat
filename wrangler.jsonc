@@ -56,6 +56,10 @@
         "class_name": "ProviderCoordinator"
       },
       {
+        "name": "PROVIDER_ATTEMPT_LEDGER",
+        "class_name": "ProviderAttemptLedger"
+      },
+      {
         "name": "INSTANCE_COORDINATOR",
         "class_name": "InstanceCoordinator"
       }
@@ -77,6 +81,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["InstanceCoordinator"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["ProviderAttemptLedger"]
     }
   ],
   "vars": {
@@ -95,7 +103,8 @@
     "DEFAULT_MAX_TOKENS": "4096",
     "DEFAULT_CLIENT": "react",
     "DOCUMENT_INGEST_QUEUE_NAME": "chatus-document-ingest-local",
-    "DOCUMENT_INGEST_DLQ_NAME": "chatus-document-ingest-dlq-local"
+    "DOCUMENT_INGEST_DLQ_NAME": "chatus-document-ingest-dlq-local",
+    "PROVIDER_ATTEMPT_LEDGER_MODE": "required"
   },
   "observability": {
     "enabled": true,
