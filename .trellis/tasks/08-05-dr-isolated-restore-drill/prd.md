@@ -51,7 +51,7 @@ claims remain limited to the evidence actually produced by retained drills.
       mutating or mixing with the untouched source.
 - [x] AC7. A retained local/non-production exact-SHA drill records phase timings,
       loss and operator waits while making no numeric RPO/RTO commitment.
-- [ ] AC8. Full gates, specs, PR/commit/deployment evidence and Trellis archive
+- [x] AC8. Full gates, specs, PR/commit/deployment evidence and Trellis archive
       validation are complete before recovery support is described.
 
 ## Out of Scope

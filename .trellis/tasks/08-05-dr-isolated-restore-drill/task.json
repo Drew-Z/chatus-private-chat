@@ -65,6 +65,30 @@
         "status": "passed",
         "summary": "Git whitespace validation passed.",
         "at": "2026-08-05T10:27:03.990948+00:00"
+      },
+      {
+        "command": "gh pr checks 48",
+        "status": "passed",
+        "summary": "Exact-head PR checks passed: changes, quality, and local fake agent; workspace browser skipped by impact path.",
+        "at": "2026-08-05T11:42:40.508564+00:00"
+      },
+      {
+        "command": "gh run view 30998075097",
+        "status": "passed",
+        "summary": "Exact-main deploy passed for merge SHA 7e2e8f84acce5da93e504e291d99668cd52d3d88; deployment artifact retained.",
+        "at": "2026-08-05T11:42:41.507825+00:00"
+      },
+      {
+        "command": "gh run view 31002401552",
+        "status": "passed",
+        "summary": "Production member acceptance passed for exact merge SHA 7e2e8f84acce5da93e504e291d99668cd52d3d88; acceptance artifact retained.",
+        "at": "2026-08-05T11:42:42.516883+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Trellis repository consistency validation passed.",
+        "at": "2026-08-05T11:42:43.595314+00:00"
       }
     ]
   }

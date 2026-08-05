@@ -15,7 +15,7 @@
 - [x] Run `trellis-check`, focused tests and the full parent validation baseline.
 - [x] Update recovery, identity, Queue, storage, deletion and delivery specs;
       append `DR-01` through `DR-05` evidence without premature RPO/RTO claims.
-- [ ] Commit, PR, exact-head CI, exact-main deployment/acceptance when applicable,
+- [x] Commit, PR, exact-head CI, exact-main deployment/acceptance when applicable,
       validation records and archive checks.
 
 ## Rollback Point
