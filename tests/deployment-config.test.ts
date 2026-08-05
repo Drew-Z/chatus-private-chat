@@ -38,12 +38,14 @@ const baseConfig = {
       { name: "USER_STATE", class_name: "UserState" },
       { name: "TEAM_AGENT", class_name: "TeamAgent" },
       { name: "PROVIDER_COORDINATOR", class_name: "ProviderCoordinator" },
+      { name: "INSTANCE_COORDINATOR", class_name: "InstanceCoordinator" },
     ],
   },
   migrations: [
     { tag: "v1", new_sqlite_classes: ["UserState"] },
     { tag: "v2", new_sqlite_classes: ["TeamAgent"] },
     { tag: "v3", new_sqlite_classes: ["ProviderCoordinator"] },
+    { tag: "v4", new_sqlite_classes: ["InstanceCoordinator"] },
   ],
 };
 
@@ -144,6 +146,20 @@ describe("deployment configuration", () => {
   it("requires exactly one WORKSPACE_FILES binding", () => {
     const instance = readInstanceConfiguration(validEnvironment);
     expect(() => buildDeploymentConfig({ ...baseConfig, r2_buckets: [] }, instance)).toThrow(/WORKSPACE_FILES/);
+  });
+
+  it("requires every Durable Object binding and append-only SQLite migration", () => {
+    const instance = readInstanceConfiguration(validEnvironment);
+    expect(() => buildDeploymentConfig({
+      ...baseConfig,
+      durable_objects: {
+        bindings: baseConfig.durable_objects.bindings.filter(({ name }) => name !== "INSTANCE_COORDINATOR"),
+      },
+    }, instance)).toThrow(/INSTANCE_COORDINATOR/);
+    expect(() => buildDeploymentConfig({
+      ...baseConfig,
+      migrations: baseConfig.migrations.filter(({ tag }) => tag !== "v4"),
+    }, instance)).toThrow(/migration v4/);
   });
 
   it("requires distinct document ingest Queue and DLQ names", () => {
@@ -379,6 +395,10 @@ describe("repository deployment contract", () => {
     expect(config.migrations).toContainEqual({
       tag: "v3",
       new_sqlite_classes: ["ProviderCoordinator"],
+    });
+    expect(config.migrations).toContainEqual({
+      tag: "v4",
+      new_sqlite_classes: ["InstanceCoordinator"],
     });
     expect(config.migrations.some((migration: Record<string, unknown>) => "new_classes" in migration)).toBe(false);
   });

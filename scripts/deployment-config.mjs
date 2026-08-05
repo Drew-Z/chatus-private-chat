@@ -400,6 +400,28 @@ export function buildDeploymentConfig(baseConfig, instance) {
   }
 
   const config = structuredClone(baseConfig);
+  const durableObjectBindings = isRecord(config.durable_objects)
+    && Array.isArray(config.durable_objects.bindings)
+    ? config.durable_objects.bindings
+    : [];
+  const requiredDurableObjects = [
+    ["USER_STATE", "UserState", "v1"],
+    ["TEAM_AGENT", "TeamAgent", "v2"],
+    ["PROVIDER_COORDINATOR", "ProviderCoordinator", "v3"],
+    ["INSTANCE_COORDINATOR", "InstanceCoordinator", "v4"],
+  ];
+  const migrations = Array.isArray(config.migrations) ? config.migrations : [];
+  for (const [bindingName, className, migrationTag] of requiredDurableObjects) {
+    const bindings = durableObjectBindings.filter((binding) => binding?.name === bindingName);
+    if (bindings.length !== 1 || bindings[0]?.class_name !== className) {
+      throw new Error(`wrangler.jsonc must define exactly one ${bindingName} Durable Object binding for ${className}`);
+    }
+    const migration = migrations.find((candidate) => candidate?.tag === migrationTag);
+    if (!migration || !Array.isArray(migration.new_sqlite_classes)
+      || !migration.new_sqlite_classes.includes(className)) {
+      throw new Error(`wrangler.jsonc migration ${migrationTag} must create SQLite class ${className}`);
+    }
+  }
   const namespaces = Array.isArray(config.kv_namespaces) ? config.kv_namespaces : [];
   const chatStoreBindings = namespaces.filter((namespace) => namespace?.binding === "CHAT_STORE");
   if (chatStoreBindings.length !== 1) {

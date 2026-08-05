@@ -103,6 +103,13 @@ import {
 import type { Session } from "../contracts/session";
 import { createAgentToolSet } from "../services/agent-tools";
 import {
+  acquireInstanceOperationFence,
+  INSTANCE_MAINTENANCE_COORDINATOR,
+  stableJson,
+  type InstanceOperationFence,
+} from "../services/instance-capture";
+import { captureDurableObjectState } from "../services/durable-object-capture";
+import {
   prepareTeamAgentTurn,
   fileInputPolicy,
   imageInputPolicy,
@@ -115,6 +122,7 @@ const MAX_EXPORT_MESSAGE_TEXT_CHARS = 20_000;
 const MAX_EXPORT_MESSAGE_PARTS = 32;
 const MAX_CONVERSATION_TITLE_CHARS = 80;
 const MAX_SELECTED_SKILLS = 3;
+export const TEAM_AGENT_SCHEMA_VERSION = 6;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const AGENT_IDENTITY_STORAGE_KEY = "chatus:agent-identity:v1";
 const GUEST_CLEANUP_TICKET_STORAGE_KEY = "chatus:guest-cleanup-ticket:v1";
@@ -327,6 +335,80 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     await super.onStart(props);
     await this.initializeIdentity(props);
     this.applySchemaMigrations();
+    const schemaVersion = await this.getCaptureSchemaVersion();
+    const registered = await this.env.INSTANCE_COORDINATOR
+      .getByName(INSTANCE_MAINTENANCE_COORDINATOR)
+      .registerObject({
+        version: 1,
+        kind: this.scope === "root" ? "root_team_agent" : "conversation_team_agent",
+        instanceName: this.name,
+        rootInstanceName: this.scope === "conversation" ? this.rootInstance : "",
+        schemaVersion,
+        stateClass: "authoritative",
+        restoreBehavior: "restore",
+        registeredAt: Date.now(),
+      });
+    if (!registered.ok) throw new Error(registered.error);
+  }
+
+  async getCaptureSchemaVersion(): Promise<string> {
+    const version = this.sql<{ version: number }>`
+      SELECT COALESCE(MAX(id), 0) AS version FROM _sql_schema_migrations
+    `[0]?.version || 0;
+    if (version !== TEAM_AGENT_SCHEMA_VERSION) throw new Error("team_agent_schema_version_unsupported");
+    return `team-agent-v${version}`;
+  }
+
+  async captureInstanceState(captureEpoch: string) {
+    if (!isCaptureEpoch(captureEpoch)) throw new Error("capture_epoch_invalid");
+    const schemaVersion = await this.getCaptureSchemaVersion();
+    return captureDurableObjectState(
+      this.ctx.storage,
+      schemaVersion,
+      (table) => table === "_sql_schema_migrations"
+        || table === "capability_tool_trust"
+        || table === "conversation_file_refs"
+        || table.startsWith("chatus_")
+        || table.startsWith("workspace_")
+        || table.startsWith("cf_"),
+    );
+  }
+
+  async captureDocumentIngestEvidence(captureEpoch: string) {
+    this.requireRootScope();
+    if (!isCaptureEpoch(captureEpoch)) throw new Error("capture_epoch_invalid");
+    const rows = this.sql<{
+      id: string;
+      file_id: string;
+      object_key: string;
+      checksum: string;
+      state: string;
+      generation: number;
+      ingest_status: string;
+      ingest_generation: number;
+      ingest_attempts: number;
+      ingest_error: string;
+      extracted_object_key: string;
+      extracted_checksum: string;
+    }>`
+      SELECT id, file_id, object_key, checksum, state, generation,
+        ingest_status, ingest_generation, ingest_attempts, ingest_error,
+        extracted_object_key, extracted_checksum
+      FROM workspace_file_versions
+      ORDER BY id
+    `;
+    const evidence = {
+      version: 1,
+      captureEpoch,
+      source: "workspace_file_versions",
+      queueBodiesEnumerable: false,
+      regeneration: rows,
+    };
+    return {
+      schemaVersion: `document-ingest-evidence-v1/team-agent-v${TEAM_AGENT_SCHEMA_VERSION}`,
+      itemCount: rows.length,
+      bytes: new TextEncoder().encode(stableJson(evidence)),
+    };
   }
 
   private applySchemaMigrations(): void {
@@ -2061,6 +2143,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   async runCleanupSchedule(): Promise<void> {
     this.requireRootScope();
+    const operationId = `cleanup:${await contentFingerprint(this.name)}`;
+    const instanceFence = await acquireInstanceOperationFence(
+      this.env.INSTANCE_COORDINATOR.getByName(INSTANCE_MAINTENANCE_COORDINATOR),
+      { version: 1, operationId, kind: "background_cleanup", startedAt: Date.now() },
+    );
+    if (!instanceFence) return;
     let retryAt = Date.now();
     try {
       await runTeamAgentCleanupSchedule(this.env, this.userLabel, this);
@@ -2072,7 +2160,11 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         error: "cleanup_schedule_failed",
       }));
     }
-    await this.refreshCleanupSchedule(retryAt, false);
+    try {
+      await this.refreshCleanupSchedule(retryAt, false);
+    } finally {
+      await instanceFence.release().catch(() => undefined);
+    }
   }
 
   async refreshCleanupSchedule(nowValue = Date.now(), replaceExisting = true): Promise<void> {
@@ -2339,19 +2431,38 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       if (this.messages.length) return { ok: false, error: "branch_copy_conflict" };
       await this.persistMessages(messages);
     }
-    const now = Date.now();
-    this.sql`
-      INSERT INTO chatus_conversation_branch_launches(
-        request_id, fingerprint, state, body_json, created_at, updated_at
-      ) VALUES (
-        ${normalized.requestId}, ${normalized.fingerprint},
-        ${normalized.launch === "none" ? "ready" : "scheduled"},
-        ${JSON.stringify(normalized.body)}, ${now}, ${now}
-      )
-    `;
-    if (normalized.launch === "none") return { ok: true, started: false, state: "ready" };
-    this.ctx.waitUntil(this.runConversationBranch(normalized.requestId, normalized.launch));
-    return { ok: true, started: true, state: "scheduled" };
+    const instanceFence = normalized.launch === "none"
+      ? undefined
+      : await acquireInstanceOperationFence(
+          this.env.INSTANCE_COORDINATOR.getByName(INSTANCE_MAINTENANCE_COORDINATOR),
+          {
+            version: 1,
+            operationId: `branch:${await contentFingerprint(`${this.name}\0${normalized.requestId}`)}`,
+            kind: "agent_turn",
+            startedAt: Date.now(),
+          },
+        );
+    if (normalized.launch !== "none" && !instanceFence) {
+      return { ok: false, error: "conversation_busy" };
+    }
+    try {
+      const now = Date.now();
+      this.sql`
+        INSERT INTO chatus_conversation_branch_launches(
+          request_id, fingerprint, state, body_json, created_at, updated_at
+        ) VALUES (
+          ${normalized.requestId}, ${normalized.fingerprint},
+          ${normalized.launch === "none" ? "ready" : "scheduled"},
+          ${JSON.stringify(normalized.body)}, ${now}, ${now}
+        )
+      `;
+      if (normalized.launch === "none") return { ok: true, started: false, state: "ready" };
+      this.ctx.waitUntil(this.runConversationBranch(normalized.requestId, normalized.launch, instanceFence));
+      return { ok: true, started: true, state: "scheduled" };
+    } catch (error) {
+      await instanceFence?.release().catch(() => undefined);
+      throw error;
+    }
   }
 
   async clearConversation(): Promise<void> {
@@ -2467,6 +2578,16 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     } catch {
       return fail("workspace_context_unavailable", 503, "workspace_context");
     }
+    const instanceFence = await acquireInstanceOperationFence(
+      this.env.INSTANCE_COORDINATOR.getByName(INSTANCE_MAINTENANCE_COORDINATOR),
+      {
+        version: 1,
+        operationId: `agent:${requestId}`,
+        kind: "agent_turn",
+        startedAt: Date.now(),
+      },
+    );
+    if (!instanceFence) return fail("instance_maintenance", 503, "prepare");
     let prepared: Awaited<ReturnType<typeof prepareTeamAgentTurn>>;
     try {
       prepared = await prepareTeamAgentTurn(this.env, session, {
@@ -2484,10 +2605,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         abortSignal: options?.abortSignal,
       });
     } catch {
+      await instanceFence.release().catch(() => undefined);
       return fail("agent_runtime_error", 503, "prepare");
     }
 
     if (!prepared.ok) {
+      await instanceFence.release().catch(() => undefined);
       return fail(prepared.error, prepared.status, "prepare", prepared.routeId);
     }
     if (sdkRequestId) {
@@ -2530,7 +2653,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           ...(await convertToModelMessages(this.messages, { tools })),
         ];
       } catch {
-        await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
+        await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn(), instanceFence.release()]);
         return fail("agent_context_invalid", 409, "continuation", prepared.routeId);
       }
     }
@@ -2539,7 +2662,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const finalize = async () => {
       if (finalized) return;
       finalized = true;
-      await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn()]);
+      await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn(), instanceFence.release()]);
     };
     let streamFailureLogged = false;
     const projectStreamFailure = (error: unknown): AgentErrorCode => {
@@ -2956,16 +3079,17 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private async runConversationBranch(
     requestId: string,
     launch: Exclude<AgentConversationBranchLaunch, "none">,
+    instanceFence?: InstanceOperationFence,
   ): Promise<void> {
-    const row = this.getConversationBranchLaunchRow(requestId);
-    if (!row || row.state !== "scheduled") return;
-    this.sql`
-      UPDATE chatus_conversation_branch_launches
-      SET state = 'running', updated_at = ${Date.now()}
-      WHERE request_id = ${requestId} AND state = 'scheduled'
-    `;
-    const body = this.getPendingBranchBody();
     try {
+      const row = this.getConversationBranchLaunchRow(requestId);
+      if (!row || row.state !== "scheduled") return;
+      this.sql`
+        UPDATE chatus_conversation_branch_launches
+        SET state = 'running', updated_at = ${Date.now()}
+        WHERE request_id = ${requestId} AND state = 'scheduled'
+      `;
+      const body = this.getPendingBranchBody();
       const result = launch === "continue"
         ? await this.continueLastTurn(body)
         : await this.saveMessages((messages) => [...messages]);
@@ -2980,6 +3104,8 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         SET state = 'failed', updated_at = ${Date.now()}
         WHERE request_id = ${requestId}
       `;
+    } finally {
+      await instanceFence?.release().catch(() => undefined);
     }
   }
 
@@ -3846,6 +3972,13 @@ function workspaceUnavailableContext(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isCaptureEpoch(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 160
+    && /^[A-Za-z0-9][A-Za-z0-9:._/-]*$/.test(value);
 }
 
 function agentFailureResponse(

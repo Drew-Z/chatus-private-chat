@@ -54,6 +54,10 @@
       {
         "name": "PROVIDER_COORDINATOR",
         "class_name": "ProviderCoordinator"
+      },
+      {
+        "name": "INSTANCE_COORDINATOR",
+        "class_name": "InstanceCoordinator"
       }
     ]
   },
@@ -69,6 +73,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["ProviderCoordinator"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["InstanceCoordinator"]
     }
   ],
   "vars": {

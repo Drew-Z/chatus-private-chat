@@ -30,11 +30,12 @@ ProviderCoordinator.recordReliabilitySample({
 });
 ```
 
-Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capability SSE, MCP discovery/execution, administrator model discovery, and the React/admin reliability projections.
+Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capability SSE, MCP discovery/execution, administrator model discovery, instance-maintenance admission, and the React/admin reliability projections.
 
 ## 3. Contracts
 
 - `src/contracts/agent-error.ts` owns the finite code registry, canonical Chinese messages, exact Agent envelope parser/serializer, request-reference normalization, and Provider classification. Unknown internal codes fail closed to `agent_error`.
+- `instance_maintenance` is the only public maintenance-admission code. HTTP and Agent entry return the canonical message with `503` and optional numeric maintenance revision only; they omit operation/archive IDs, capture phase, inventory, fence IDs, store identities, and internal errors. Queue delivery retries without serializing coordinator state.
 - Agent `requestId` comes from the AIChat SDK turn, not the HTTP/WebSocket handshake. Accept only URL-safe values of 8-128 characters; invalid input becomes a server UUID. Reuse one normalized value in the error envelope, `X-Request-ID`, structured failure evidence, and latest passive Provider reliability.
 - The Agent envelope contains only `error`, canonical `message`, and optional `requestId`. The client maps the code through the local registry and never trusts serialized message text.
 - `/api/chat`, Capability, MCP, and model-discovery boundaries preserve actionable busy/timeout/429/authentication/4xx/5xx/protocol/unavailable classes, then replace raw internal text with the canonical public message. Provider bodies, endpoints on failure, arbitrary exceptions, MCP server identifiers in member-facing messages, and tool results never cross the boundary.
@@ -53,6 +54,7 @@ Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capabilit
 | Provider busy / timeout / 429 / 401-403 / 400-422 / 5xx | `provider_busy` / `upstream_timeout` / `upstream_rate_limited` / `upstream_authentication_failed` / `upstream_request_rejected` / `upstream_unavailable` |
 | Provider JSON/SSE shape is invalid | `provider_protocol_error`; no body or endpoint in the response |
 | Workspace/preparation/runtime failure | `workspace_context_unavailable` / expected preparation code / `agent_runtime_error` with UI Message SSE |
+| Maintenance is requested/active or coordinator state cannot be inspected safely | `503 instance_maintenance`; optional revision only, no internal capture/fence fields |
 | MCP runtime/discovery error | Canonical registered MCP/tool code; no raw result, endpoint, or server ID in member text |
 | Stored reliability request ID is malformed | Reject the complete stored/client route record |
 | Chat sample reaches `ProviderCoordinator` | Preserve its normalized request ID in the authoritative DO aggregate and KV projection; omit it from selector telemetry |
@@ -67,6 +69,7 @@ Affected public surfaces are Agent UI Message SSE, legacy `/api/chat`, Capabilit
 ## 6. Tests Required
 
 - Unit-test the complete registry, unknown codes, exact envelope keys/messages, valid/invalid request IDs, and every Provider classification.
+- Exercise maintenance across HTTP mutation, Agent entry, OAuth status/callback, Queue delivery, health, reads, and logout. Assert mutation/Agent payloads contain only the canonical code/message plus optional revision and that health creates no probe Agent/UserState identity.
 - Exercise preparation throw, synchronous stream throw, asynchronous pre/post-output failures, and workspace-context failure through local fake Provider fixtures; assert valid UI Message SSE, cleanup/accounting once, and matching envelope/header/log/reliability references.
 - Put secret-like markers in Provider bodies, exceptions, MCP results/endpoints/server IDs, member labels, files, and memory fixtures; assert absence from JSON/SSE/log/audit/UI outputs.
 - Cover `/api/chat`, Capability SSE, MCP discovery/execution, and model discovery for 401, 429, 5xx, network, invalid JSON/protocol, and post-output failures without live Provider/MCP requests.
