@@ -11,7 +11,7 @@
 | AC5 | Worker fixtures submit forged `turnId`, `runId`, `attemptId`, Provider, offering, and model fields and prove the ledger uses only server-selected values. | Passed |
 | AC6 | Exact input decoders reject content fields; SQL column, diagnostics, account deletion, user export, log, and secret-marker fixtures exclude prompt, completion, tool payload, credentials, raw Provider metadata, and invoice data. | Passed |
 | AC7 | Capture registers `provider-attempt-ledger-v1` as `authoritative/restore`; restore requires `PROVIDER_ATTEMPT_LEDGER/ProviderAttemptLedger/v5`; deletion retains instance evidence and user export excludes it. | Passed |
-| AC8 | All local gates and Trellis consistency pass. Work commit `7b09f0029d7c49048a4a1d9a47056b4a4725c1c8` and draft PR [#49](https://github.com/Drew-Z/chatus-private-chat/pull/49) are recorded. CI, exact-SHA deployment, production acceptance, and archive evidence remain pending. | Pending |
+| AC8 | Original work commit `7b09f0029d7c49048a4a1d9a47056b4a4725c1c8`, evidence commit `cb7cf4797de94565086f9e8cac004182e5939a71`, merged PR [#49](https://github.com/Drew-Z/chatus-private-chat/pull/49), merge SHA `7c84d359b55cb00c26e22389dbff20b57c30ec08`, passing CI run `31037448595`, and passing exact-SHA deployment run `31037988186` are recorded. Production acceptance run `31038341007` exposed the schema-registration restart regression below; follow-up work commit `c7469679a47b5f6b70be40476f93dd8f98ebd2dd` passes every local gate and draft PR [#50](https://github.com/Drew-Z/chatus-private-chat/pull/50) is open. Follow-up CI, merge, deployment, successful temporary-member acceptance, retained manifest, and archive remain pending. | Pending |
 
 ## Risk evidence
 
@@ -46,7 +46,8 @@
 | Command | Result |
 | --- | --- |
 | `npm run check:frontend` | Passed; Vite build and frontend structure checks |
-| `npm test` | Passed; 44 files, 648 tests |
+| `npx vitest run tests/instance-capture.test.ts` | Passed; 26 schema-registration, capture, and maintenance regression tests |
+| `npm test` | Passed; 44 files, 651 tests |
 | `npm run typecheck` | Passed; Worker, client, and browser TypeScript |
 | `npm run test:browser:workspace` | Passed; 84 tests, 46 conditional skips, five viewports |
 | `npm run test:browser:agent` | Passed; 3 local fake Provider tests |
@@ -56,3 +57,18 @@
 
 No validation used a live model, live MCP, synthetic production probe, or local
 production deployment.
+
+## Production acceptance regression
+
+### Observed evidence
+
+- PR #49 merged as `7c84d359b55cb00c26e22389dbff20b57c30ec08` after CI run `31037448595` passed.
+- Deployment run `31037988186` passed its exact-SHA smoke and retained the deployment manifest.
+- Exact-SHA production acceptance run `31038341007` later received `/healthz` 503 for all 12 attempts. Temporary-member acceptance correctly skipped because release health failed, and the failure manifest was retained for 90 days.
+
+### Root cause and prevention
+
+- Category: cross-layer migration contract plus regression-test gap. `TeamAgent` applied SQLite schema v7 during startup, then re-registered an existing `health:probe` object previously stored as `team-agent-v6`. `InstanceCoordinator.registerObject()` treated every schema change as `instance_object_conflict`, so a restarted isolate became permanently unavailable.
+- The deployment smoke hit the still-running v6 isolate and therefore could not prove the post-eviction startup path. The old registry test also encoded v6-to-v7 as an expected conflict, hiding the missing migration contract.
+- The follow-up permits only same-family, strictly increasing numeric schema upgrades for an otherwise identical object registration; persists the upgraded record; invalidates the object-registry baseline; and returns `instance_maintenance_busy` without mutation during requested/active maintenance.
+- Regression tests now cover forward upgrade persistence, baseline digest invalidation, exact-schema idempotency, downgrade/family/malformed/policy rejection, requested and active maintenance freeze, and preservation of the stored registration on every rejected path.

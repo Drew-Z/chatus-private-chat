@@ -116,6 +116,17 @@ InstanceCoordinator.confirmObjectRegistryBaseline({
   objects: InstanceObjectRegistrationV1[],
   confirmedAt: number,
 })
+
+InstanceCoordinator.registerObject({
+  version: 1,
+  kind: InstanceObjectKind,
+  instanceName: string,
+  rootInstanceName: string,
+  schemaVersion: `${string}-v${number}`,
+  stateClass: CaptureStateClass,
+  restoreBehavior: CaptureRestoreBehavior,
+  registeredAt: number,
+})
 ```
 
 `InstanceOperationStateV1` contains exact `operationId`, random per-acquisition `fenceId`, operation `kind`, and `startedAt`. A release must present the same `operationId`, `fenceId`, and `kind`.
@@ -124,6 +135,10 @@ InstanceCoordinator.confirmObjectRegistryBaseline({
 
 - The baseline input is the operator-owned external historical object inventory. Confirmation rejects conflicts, atomically adds inventory objects that have not awakened since rollout, and persists a bounded `inventoryId`, object count, and digest. Merely repeating the coordinator's currently observed list is not proof that dormant historical objects are complete.
 - A new object identity invalidates the baseline. Adapter construction and the registry adapter capture both re-read `baselineComplete` and the digest so an identity appearing before or during maintenance aborts the capture.
+- Re-registering an unchanged object is idempotent and preserves its stored record even when the caller supplies a later `registeredAt`. A schema migration may replace that record only when kind, instance identity, root ownership, state class, and restore behavior are unchanged; both schema strings match lowercase `<family>-v<positive base-10 integer>`; the family is identical; and the incoming numeric version is strictly greater. Skipped forward versions are legal because migration history, not the registry, proves the applied steps.
+- A successful schema registration upgrade persists the incoming schema record, deletes the confirmed object-registry baseline, and returns `baselineComplete: false` with the new registry digest. Operators must confirm a new external inventory before capture. Downgrades, family changes, leading-zero/zero/unsafe versions, and ownership or restore-policy drift return `instance_object_conflict` without changing the stored record.
+- Requested or active maintenance freezes both new identities and otherwise-valid schema upgrades. Exact same-schema registration remains idempotent, but an upgrade returns `instance_maintenance_busy` and writes nothing until maintenance is released. This ordering prevents a capture epoch from mixing an old external inventory with an object that migrated after the drain boundary.
+- Durable Object rollout tests must seed the previously deployed registration and then register the current schema. A deployment smoke can hit an already-running old isolate and pass before eviction; only the restart registration path proves that applying a new SQLite migration will not make the object permanently unavailable.
 - Request maintenance before draining. New HTTP mutations, Provider/Agent turns, OAuth callbacks, Queue delivery, Workspace mutation, branches, and cleanup acquire durable fences; each acquisition has an independent `fenceId`, including duplicate logical operation IDs.
 - Ambiguous acquire and release RPCs retry the same `fenceId`; a failed acquire path attempts the same bounded cleanup. Long-term coordinator unavailability or process termination remains fail-closed: never expire a possibly live stream by time alone.
 - Every required store is present in one epoch. KV unknown prefixes, Durable Object unknown tables/values, R2 missing/changed objects, incomplete Queue regeneration evidence, schema drift, duplicate payloads, and unresolved generation references abort sealing.
@@ -137,6 +152,9 @@ InstanceCoordinator.confirmObjectRegistryBaseline({
 | --- | --- |
 | External inventory is missing, malformed, omits an observed object, or conflicts with schema/ownership | Reject baseline with `instance_object_conflict` |
 | New identity appears after baseline | Invalidate baseline; stale adapters fail with `capture_object_registry_changed` |
+| Same object registers a higher numeric version in the same schema family while writes are open | Persist the upgrade, invalidate the baseline, and return the updated digest with `baselineComplete: false` |
+| Schema registration downgrades, changes family/policy/ownership, or uses a malformed numeric suffix | Return `instance_object_conflict`; preserve the existing registration and baseline |
+| A valid schema upgrade arrives while maintenance is requested or active | Return `instance_maintenance_busy`; preserve the existing registration and baseline |
 | Two operations share one logical ID | Store two independent fence IDs; releasing one leaves the other active |
 | Acquire/release RPC rejects after persisting | Retry/reconcile the exact fence; persistent uncertainty remains fail-closed |
 | Drain proof is unknown/non-zero or a durable fence remains | Do not activate maintenance or capture |
@@ -147,12 +165,17 @@ InstanceCoordinator.confirmObjectRegistryBaseline({
 ### 5. Good / Base / Bad Cases
 
 - Good: an external inventory seeds a dormant `UserState`, every store captures one epoch, the encrypted envelope is durably accepted, then the coordinator records only its evidence ID and reopens writes.
+- Good: `team-agent-v6` re-registers as `team-agent-v7` after applying its SQLite migration, the registry baseline becomes incomplete, and a newly confirmed external inventory restores capture readiness.
 - Base: a failed drain or archive sink releases the requested/active boundary as failed; source stores remain unchanged and no archive is returned.
+- Base: an unchanged object re-registers during maintenance and receives its existing idempotent record; a version upgrade waits until maintenance is released.
 - Bad: confirm the objects that happened to wake, let two deliveries share one releasable fence, mark captured before durable persistence, or call a readable archive a recoverable instance.
+- Bad: treat every schema change as an identity conflict. The deployment may pass a smoke against an old isolate, then return persistent 503 responses after eviction when the migrated object restarts and cannot re-register.
 
 ### 6. Tests Required
 
 - Prove external inventory seeding, later-registration invalidation, digest recheck, unknown/missing stores, cross-generation references, Queue/DLQ regeneration evidence, and explicit exclusions.
+- Prove same-family forward schema upgrade persistence, exact-schema idempotency, baseline deletion/digest change, downgrade/family/malformed/policy conflicts, and requested plus active maintenance rejection. Assert rejected upgrades leave the old registration unchanged.
+- For every Durable Object schema bump, seed the immediately previous deployed registration and execute the current startup registration locally; do not rely only on a fresh-object test or the first deployment health smoke.
 - Prove independent duplicate-operation fences, ambiguous acquire/release reconciliation, drain rejection, every capture-phase rollback, and persistent fail-closed behavior.
 - Prove wrong/missing keys, fresh IVs, AAD/header/payload tamper rejection, deterministic manifest checksums, exact payload counts/sizes, and absence of keys/content from evidence.
 - In the archive callback, assert maintenance is still active/pending; inject callback failure and assert no captured outcome or returned archive.
@@ -181,6 +204,25 @@ return archive;
 ```
 
 The maintenance outcome follows durable encrypted-envelope custody, not in-memory construction.
+
+Schema registration has the same migration boundary. Wrong:
+
+```typescript
+if (existing.schemaVersion !== incoming.schemaVersion) {
+  return { ok: false, error: "instance_object_conflict" };
+}
+```
+
+Correct:
+
+```typescript
+if (sameIdentityAndPolicy(existing, incoming) && isStrictForwardSchemaUpgrade(existing, incoming)) {
+  if (maintenanceRequestedOrActive) return { ok: false, error: "instance_maintenance_busy" };
+  await persistRegistrationAndInvalidateBaseline(incoming);
+}
+```
+
+Schema evolution is a controlled update of one registered object, not a new identity and not an unrestricted metadata rewrite.
 
 ### Autonomous Purge Retry
 

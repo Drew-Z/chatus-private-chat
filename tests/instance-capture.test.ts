@@ -537,7 +537,7 @@ describe("instance capture contracts", () => {
     });
   });
 
-  it("keeps a strict idempotent Durable Object registry and freezes new identities during maintenance", async () => {
+  it("keeps an idempotent Durable Object registry and freezes new identities during maintenance", async () => {
     const instance = coordinator();
     const registration = {
       version: 1 as const,
@@ -557,8 +557,6 @@ describe("instance capture contracts", () => {
       ok: true,
       objects: [registration],
     });
-    await expect(instance.registerObject({ ...registration, schemaVersion: "team-agent-v7" }))
-      .resolves.toEqual({ ok: false, error: "instance_object_conflict" });
     await expect(instance.listRegisteredObjects()).resolves.toMatchObject({
       ok: true,
       objects: [registration],
@@ -620,6 +618,131 @@ describe("instance capture contracts", () => {
       expectedRevision: requested.state.revision,
       outcome: "failed",
       releasedAt: 3,
+      lastError: "test_cleanup",
+    });
+  });
+
+  it("persists forward schema registration upgrades and invalidates the object baseline", async () => {
+    const instance = coordinator();
+    const registration = {
+      version: 1 as const,
+      kind: "root_team_agent" as const,
+      instanceName: "member-schema-upgrade",
+      rootInstanceName: "",
+      schemaVersion: "team-agent-v6",
+      stateClass: "authoritative" as const,
+      restoreBehavior: "restore" as const,
+      registeredAt: 1,
+    };
+    const initial = await instance.registerObject(registration);
+    if (!initial.ok) throw new Error("registration failed");
+    const baseline = await instance.confirmObjectRegistryBaseline({
+      version: 1,
+      inventoryId: "schema-upgrade-v6",
+      objects: initial.objects,
+      confirmedAt: 2,
+    });
+    if (!baseline.ok) throw new Error("baseline confirmation failed");
+
+    const upgraded = { ...registration, schemaVersion: "team-agent-v7", registeredAt: 3 };
+    const upgradeResult = await instance.registerObject(upgraded);
+    expect(upgradeResult).toMatchObject({
+      ok: true,
+      objects: [upgraded],
+      baselineComplete: false,
+    });
+    if (!upgradeResult.ok) throw new Error("schema upgrade failed");
+    expect(upgradeResult.registryDigest).not.toBe(baseline.registryDigest);
+    await expect(instance.registerObject({ ...upgraded, registeredAt: 4 })).resolves.toMatchObject({
+      ok: true,
+      objects: [upgraded],
+      baselineComplete: false,
+    });
+    await expect(instance.listRegisteredObjects()).resolves.toMatchObject({
+      ok: true,
+      objects: [upgraded],
+      baselineComplete: false,
+    });
+  });
+
+  it("rejects schema registration downgrades, family changes, malformed versions, and policy drift", async () => {
+    const instance = coordinator();
+    const registration = {
+      version: 1 as const,
+      kind: "root_team_agent" as const,
+      instanceName: "member-schema-conflicts",
+      rootInstanceName: "",
+      schemaVersion: "team-agent-v7",
+      stateClass: "authoritative" as const,
+      restoreBehavior: "restore" as const,
+      registeredAt: 1,
+    };
+    await expect(instance.registerObject(registration)).resolves.toMatchObject({ ok: true });
+    for (const schemaVersion of ["team-agent-v6", "other-agent-v8", "team-agent-v08", "team-agent-v0"]) {
+      await expect(instance.registerObject({ ...registration, schemaVersion, registeredAt: 2 }))
+        .resolves.toEqual({ ok: false, error: "instance_object_conflict" });
+    }
+    await expect(instance.registerObject({
+      ...registration,
+      schemaVersion: "team-agent-v8",
+      stateClass: "rebuildable",
+      restoreBehavior: "rebuild",
+      registeredAt: 2,
+    })).resolves.toEqual({ ok: false, error: "instance_object_conflict" });
+    await expect(instance.listRegisteredObjects()).resolves.toMatchObject({
+      ok: true,
+      objects: [registration],
+    });
+  });
+
+  it("keeps schema registration upgrades frozen while maintenance is requested or active", async () => {
+    const instance = coordinator();
+    const registration = {
+      version: 1 as const,
+      kind: "root_team_agent" as const,
+      instanceName: "member-schema-maintenance",
+      rootInstanceName: "",
+      schemaVersion: "team-agent-v6",
+      stateClass: "authoritative" as const,
+      restoreBehavior: "restore" as const,
+      registeredAt: 1,
+    };
+    await expect(instance.registerObject(registration)).resolves.toMatchObject({ ok: true });
+    const requested = await instance.requestMaintenance({
+      operationId: "schema-upgrade-freeze",
+      captureEpoch: "epoch-schema-upgrade-freeze",
+      requestedAt: 2,
+    });
+    if (!requested.ok) throw new Error("request failed");
+
+    await expect(instance.registerObject({
+      ...registration,
+      schemaVersion: "team-agent-v7",
+      registeredAt: 3,
+    })).resolves.toEqual({ ok: false, error: "instance_maintenance_busy" });
+    await expect(instance.registerObject({ ...registration, registeredAt: 3 })).resolves.toMatchObject({ ok: true });
+    const active = await instance.activateMaintenance({
+      operationId: requested.state.operationId,
+      captureEpoch: requested.state.captureEpoch,
+      expectedRevision: requested.state.revision,
+      proof: { version: 1, queue: "drained", activeOperations: 0, observedAt: 3 },
+    });
+    if (!active.ok) throw new Error("activation failed");
+    await expect(instance.registerObject({
+      ...registration,
+      schemaVersion: "team-agent-v7",
+      registeredAt: 4,
+    })).resolves.toEqual({ ok: false, error: "instance_maintenance_busy" });
+    await expect(instance.listRegisteredObjects()).resolves.toMatchObject({
+      ok: true,
+      objects: [registration],
+    });
+    await instance.releaseMaintenance({
+      operationId: requested.state.operationId,
+      captureEpoch: requested.state.captureEpoch,
+      expectedRevision: active.state.revision,
+      outcome: "failed",
+      releasedAt: 5,
       lastError: "test_cleanup",
     });
   });
