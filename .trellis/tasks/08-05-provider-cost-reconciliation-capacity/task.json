@@ -77,6 +77,30 @@
         "status": "passed",
         "summary": "Cross-layer runtime and recovery suite passed: 6 files, 190 tests",
         "at": "2026-08-06T07:54:55.023105+00:00"
+      },
+      {
+        "command": "gh run view 31084089459",
+        "status": "passed",
+        "summary": "PR CI passed changes, quality, Workspace Playwright, fake-Provider Agent, and retained five artifacts",
+        "at": "2026-08-06T08:44:50.638175+00:00"
+      },
+      {
+        "command": "gh run view 31084921765",
+        "status": "passed",
+        "summary": "Production deployment passed on merge SHA 48e8ecced8779fede59231516def0cf8eaf11669 and retained deployment manifests",
+        "at": "2026-08-06T08:44:51.662020+00:00"
+      },
+      {
+        "command": "gh run view 31085232339",
+        "status": "passed",
+        "summary": "Production member acceptance passed on merge SHA 48e8ecced8779fede59231516def0cf8eaf11669 and retained acceptance manifest",
+        "at": "2026-08-06T08:44:52.786830+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task tree and workspace root index are consistent before archive",
+        "at": "2026-08-06T08:45:34.074564+00:00"
       }
     ],
     "acceptance": {
@@ -87,7 +111,44 @@
       "AC5": "Operations API/UI and five-viewport fixtures cover usage/cost states, capacity, pagination, fallback, catalogs, and revision chains.",
       "AC6": "Finance policy retains instance evidence, excludes user export and raw invoices, and recovery/privacy tests remain green.",
       "AC7": "Hard budgets, member-visible money claims, and finance feedback remain unsupported and absent.",
-      "AC8": "Pending work commit, PR CI, exact-SHA deployment/acceptance artifacts, and archive checks."
+      "AC8": "Work commit, PR CI, exact-SHA deployment and production acceptance artifacts, full validation, and archive preflight passed."
+    },
+    "delivery": {
+      "workCommit": "374e25cbba8acac295fd5606c07c4cb6817d241b",
+      "pullRequest": {
+        "number": 51,
+        "url": "https://github.com/Drew-Z/chatus-private-chat/pull/51",
+        "ciRunId": 31084089459,
+        "headSha": "15309ce15aeb1a12b33b7c30dbb95e350a02edee",
+        "artifactRevisionSha": "ac2ff55fa672e1488041247d75a5386365d7e318",
+        "status": "success",
+        "artifacts": [
+          "pr-path-classification-ac2ff55fa672e1488041247d75a5386365d7e318",
+          "pr-quality-ac2ff55fa672e1488041247d75a5386365d7e318",
+          "pr-coverage-ac2ff55fa672e1488041247d75a5386365d7e318",
+          "workspace-playwright-ac2ff55fa672e1488041247d75a5386365d7e318",
+          "agent-playwright-ac2ff55fa672e1488041247d75a5386365d7e318"
+        ]
+      },
+      "merge": {
+        "sha": "48e8ecced8779fede59231516def0cf8eaf11669",
+        "mergedAt": "2026-08-06T08:26:43Z"
+      },
+      "deployment": {
+        "runId": 31084921765,
+        "sha": "48e8ecced8779fede59231516def0cf8eaf11669",
+        "status": "success",
+        "artifacts": [
+          "deployment-paths-48e8ecced8779fede59231516def0cf8eaf11669",
+          "production-deployment-48e8ecced8779fede59231516def0cf8eaf11669"
+        ]
+      },
+      "productionAcceptance": {
+        "runId": 31085232339,
+        "sha": "48e8ecced8779fede59231516def0cf8eaf11669",
+        "status": "success",
+        "artifact": "production-acceptance-48e8ecced8779fede59231516def0cf8eaf11669"
+      }
     },
     "decisions": {
       "FIN-02": "Implemented distinct reported, estimated, reconciled, corrected, unknown, and provisional evidence with immutable prices.",

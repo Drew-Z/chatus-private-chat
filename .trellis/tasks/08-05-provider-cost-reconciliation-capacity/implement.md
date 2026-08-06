@@ -14,7 +14,17 @@
       full parent validation baseline.
 - [x] Update accounting, Provider, privacy, admin and recovery specs; append
       `FIN-02`/`FIN-05` evidence and retain `FIN-04` as deferred.
-- [ ] Commit, PR, CI/deployment evidence, validation records and archive checks.
+- [x] Commit, PR, CI/deployment evidence, validation records and archive checks.
+
+## Delivery Record
+
+- Work commit `374e25cbba8acac295fd5606c07c4cb6817d241b` was delivered through
+  PR #51 and merged as `48e8ecced8779fede59231516def0cf8eaf11669`.
+- PR CI `31084089459`, Cloudflare deployment `31084921765`, and production
+  acceptance `31085232339` all passed on the exact tracked revisions; their
+  retained artifact names are recorded in `prd.md` and `task.json`.
+- Archive preflight includes all AC, passed validation records, work commit,
+  pull request, child status, waiver validation and workspace-index checks.
 
 ## Rollback Point
 

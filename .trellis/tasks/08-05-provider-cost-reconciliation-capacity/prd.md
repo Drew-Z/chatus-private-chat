@@ -48,7 +48,26 @@ unknown/provisional and keeping hard budgets disabled.
       production capture or member-visible money claim.
 - [x] AC7. Feedback capture/aggregation/routing and hard budget enforcement remain
       absent and explicitly unsupported.
-- [ ] AC8. Full gates, specs, PR/commit/deployment evidence and archive checks pass.
+- [x] AC8. Full gates, specs, PR/commit/deployment evidence and archive checks pass.
+
+## Delivery Evidence
+
+- Work commit: `374e25cbba8acac295fd5606c07c4cb6817d241b`.
+- PR #51: `https://github.com/Drew-Z/chatus-private-chat/pull/51`, merged to
+  `main` at `48e8ecced8779fede59231516def0cf8eaf11669`.
+- PR CI run `31084089459` passed `changes`, `quality`, `workspace-browser` and
+  `agent-browser`; retained artifacts are `pr-path-classification-ac2ff55fa672e1488041247d75a5386365d7e318`,
+  `pr-quality-ac2ff55fa672e1488041247d75a5386365d7e318`,
+  `pr-coverage-ac2ff55fa672e1488041247d75a5386365d7e318`,
+  `workspace-playwright-ac2ff55fa672e1488041247d75a5386365d7e318`, and
+  `agent-playwright-ac2ff55fa672e1488041247d75a5386365d7e318`.
+- Production deploy run `31084921765` succeeded for the merge SHA; retained
+  artifacts are `deployment-paths-48e8ecced8779fede59231516def0cf8eaf11669`
+  and `production-deployment-48e8ecced8779fede59231516def0cf8eaf11669`.
+- Production member acceptance run `31085232339` succeeded for the same merge
+  SHA; retained artifact is
+  `production-acceptance-48e8ecced8779fede59231516def0cf8eaf11669`.
+- `task.py validate-all` and archive preflight pass with no waiver.
 
 ## Out of Scope
 
