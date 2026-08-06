@@ -123,6 +123,19 @@ describe("fallback language model", () => {
       status: "succeeded",
       fallbackIndex: 1,
     });
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(backupProviderId).getFinanceSnapshot({
+      periodStart: backupAttempt.startedAt,
+      limit: 10,
+    })).resolves.toMatchObject({
+      capacity: { calls: 1, unknownUsageAttempts: 0 },
+      usage: {
+        inputNoCacheTokens: 1,
+        cacheReadInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTextTokens: 1,
+        reasoningOutputTokens: 0,
+      },
+    });
   });
 
   it("forwards the first delta before a later delta is released and records progressive evidence", async () => {

@@ -4,11 +4,21 @@
 
 Use this contract when planning or implementing member sharing/transfer/ACL, Provider usage/cost/budget/feedback accounting, full-instance backup/restore, RPO/RTO commitments, or destructive legacy retirement.
 
-Provider attempt identity and content-free shadow evidence now satisfy the first prerequisite for future finance work. Usage normalization, cost, budgets, finance feedback receipts, ACL, numeric RPO/RTO, and destructive legacy retirement remain unimplemented. Design records under `.trellis/tasks/07-27-q3-followup-design-decisions/research/` establish future gates but do not by themselves create a supported API, schema, workflow, or operating claim.
+Provider attempt identity, normalized usage, immutable price bindings, append-only
+cost evidence, and bounded reconciliation summaries are now supported for
+administrator operations. Hard budget enforcement, finance feedback receipts,
+ACL, numeric RPO/RTO, and destructive legacy retirement remain unimplemented.
+Design records under `.trellis/tasks/07-27-q3-followup-design-decisions/research/`
+establish future gates but do not by themselves create a supported API, schema,
+workflow, or operating claim for those deferred capabilities.
 
 ## 2. Signatures And Current Decision Records
 
-No runtime API, database table, migration, command, workflow, or environment key is supported for these capabilities. A future task must define its own versioned signatures after satisfying the gates below. Until then, the only supported signatures remain those documented in the existing capability, feedback/audit, backup/restore, and delivery specs.
+No runtime API, database table, migration, command, workflow, or environment
+key is supported for the deferred ACL, hard-budget, finance-feedback, numeric
+RPO/RTO, or destructive-retirement capabilities. Provider finance v2 signatures
+are documented in `provider-attempt-ledger.md`; a future deferred-capability task
+must define its own versioned signatures after satisfying the gates below.
 
 - `member-sharing-acl-design.md`: stable principal/resource identity, role/action policy, transfer, revoke, deletion, memory, trust, and export boundaries.
 - `provider-usage-cost-budget-feedback-design.md`: turn/run/attempt identity, evidence classes, price versions, reserve/settle/reconcile, feedback receipts, and privacy.
@@ -32,7 +42,11 @@ Future tasks must copy the relevant decision and risk IDs into their PRD rather 
 ### Provider Usage, Cost, Budget, And Feedback
 
 - Keep user turn, logical run, and physical Provider attempt identities distinct. Actual Provider/offering/model attribution is generated server-side at the execution boundary.
-- The v1 Provider attempt ledger is authoritative for exact call identity only. A lingering `started` record after terminal-RPC failure is incomplete evidence, and no ledger field represents normalized usage, price, money, budget reservation, invoice reconciliation, or finance feedback.
+- The v2 Provider attempt ledger is authoritative for exact call identity plus
+  content-free usage/price/cost/reconciliation evidence. A lingering `started`
+  record after terminal-RPC failure is incomplete evidence. Unknown usage never
+  means zero; hard budget reservation/settlement and finance feedback receipts
+  remain deferred.
 - Provider-reported, estimated, invoice-reconciled, corrected, and unknown usage are distinct evidence. Unknown never means zero.
 - Every monetary amount has currency, precision, immutable price-catalog version, and provenance. Corrections append reversing/replacement evidence.
 - Hard budgets require idempotent reserve, settle/release, and reconcile semantics before any Provider call. Fallback and tool loops cannot bypass them.
@@ -75,6 +89,8 @@ Every implementation task must include:
 | Share implicitly exposes memory, trust, credentials, or unrelated files | Reject the capability boundary |
 | Transfer can leave two/no owners after retry | Keep transfer unsupported |
 | Cost source or price is missing | Store unknown/provisional; never report zero/actual |
+| Reconciliation repeats a fingerprint with an older timestamp or changed identity | Reject the revision; preserve the append-only chain |
+| Raw invoice, credential, prompt, completion, or Provider response is supplied | Reject and retain only the bounded fingerprint/summary |
 | Hard budget lacks atomic idempotent reservation | Do not enforce or call it a hard budget |
 | Feedback trusts browser Provider attribution | Reject the attribution design |
 | Backup lacks consistency, key, mapping, reconciliation, or drill | Keep full-instance recovery unsupported |
@@ -92,7 +108,9 @@ Every implementation task must include:
 
 ## 6. Tests Required
 
-This design-only contract requires no runtime test. Its delivery must prove:
+The deferred portions of this contract require no runtime test. Provider finance
+runtime behavior is executable and follows the tests in
+`provider-attempt-ledger.md`; future design-only deliveries must prove:
 
 - only Trellis/spec/docs paths changed;
 - every decision document contains current evidence, invariants, options/recommendation, migration/rollback, acceptance scenarios, open decisions, and linked risks;

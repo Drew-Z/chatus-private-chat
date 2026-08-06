@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../contracts/chat";
 import type { ResolvedProviderRoute } from "../contracts/provider";
+import { emptyProviderTokenUsage, type ProviderTokenUsageV1 } from "../contracts/provider-finance";
 import { isTerminalProviderFailure } from "./provider-router";
 import {
   buildHeaders,
@@ -15,6 +16,7 @@ import {
   raceWithAbort,
   type ProviderFirstVisibleDeadline,
 } from "./provider-first-visible-deadline";
+import { normalizeAnthropicProviderUsage, normalizeOpenAiProviderUsage } from "./provider-usage";
 
 export const MAX_PROVIDER_STREAM_PREFLIGHT_BYTES = 256 * 1024;
 
@@ -23,6 +25,7 @@ export type ProviderStreamAttempt =
       ok: true;
       body: ReadableStream<Uint8Array>;
       cancelUpstream: (reason?: unknown) => Promise<void>;
+      usage: Promise<ProviderTokenUsageV1>;
     }
   | {
       ok: false;
@@ -64,11 +67,26 @@ export async function callProviderStream(args: ProviderStreamArgs): Promise<Prov
     );
 
     if (response.ok && response.body) {
+      const [responseBody, usageBody] = response.body.tee();
+      const usageCollector = collectProviderStreamUsage(usageBody, args.route.type);
       const normalizedBody = args.route.type === "anthropic-messages"
-        ? transformAnthropicStream(response.body)
-        : response.body;
-      const prepared = await prepareValidatedOpenAiSseStream(normalizedBody, deadline);
-      return { ok: true, body: prepared.body, cancelUpstream: prepared.cancel };
+        ? transformAnthropicStream(responseBody)
+        : responseBody;
+      let prepared: Awaited<ReturnType<typeof prepareValidatedOpenAiSseStream>>;
+      try {
+        prepared = await prepareValidatedOpenAiSseStream(normalizedBody, deadline);
+      } catch (error) {
+        await usageCollector.cancel(error);
+        throw error;
+      }
+      return {
+        ok: true,
+        body: prepared.body,
+        cancelUpstream: async (reason) => {
+          await Promise.all([prepared.cancel(reason), usageCollector.cancel(reason)]);
+        },
+        usage: usageCollector.usage,
+      };
     }
 
     const message = await response.text().catch(() => "");
@@ -99,10 +117,98 @@ async function callOpenAiChat(args: ProviderStreamArgs): Promise<Response> {
       model: args.route.model,
       messages: args.messages,
       stream: true,
+      stream_options: { include_usage: true },
       temperature: clampNumber(args.temperature, 0, 2, args.route.temperature ?? 0.7),
       ...(args.route.maxTokens ? { max_tokens: args.route.maxTokens } : {}),
     }),
   });
+}
+
+function collectProviderStreamUsage(
+  body: ReadableStream<Uint8Array>,
+  type: ResolvedProviderRoute["type"],
+): { usage: Promise<ProviderTokenUsageV1>; cancel: (reason?: unknown) => Promise<void> } {
+  const reader = body.getReader();
+  let cancelled = false;
+  const usage = (async () => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let latest = emptyProviderTokenUsage();
+    const anthropic = Object.create(null) as Record<string, unknown>;
+    try {
+      while (!cancelled) {
+        const next = await reader.read();
+        buffer += decoder.decode(next.value, { stream: !next.done });
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() || "";
+        for (const frame of frames) {
+          const payload = frame.split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).replace(/^ /, ""))
+            .join("\n")
+            .trim();
+          if (!payload || payload === "[DONE]") continue;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          if (!isRecord(parsed)) continue;
+          if (type === "anthropic-messages") {
+            if (isRecord(parsed.message) && isRecord(parsed.message.usage)) {
+              Object.assign(anthropic, parsed.message.usage);
+            }
+            if (isRecord(parsed.usage)) Object.assign(anthropic, parsed.usage);
+            latest = normalizeAnthropicProviderUsage(anthropic);
+          } else if (isRecord(parsed.usage)) {
+            latest = normalizeOpenAiProviderUsage(parsed.usage);
+          }
+        }
+        if (next.done) {
+          buffer += decoder.decode();
+          const finalFrame = buffer.trim();
+          if (finalFrame) {
+            const payload = finalFrame.split(/\r?\n/)
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).replace(/^ /, ""))
+              .join("\n")
+              .trim();
+            if (payload && payload !== "[DONE]") {
+              try {
+                const parsed = JSON.parse(payload);
+                if (isRecord(parsed)) {
+                  if (type === "anthropic-messages") {
+                    if (isRecord(parsed.message) && isRecord(parsed.message.usage)) {
+                      Object.assign(anthropic, parsed.message.usage);
+                    }
+                    if (isRecord(parsed.usage)) Object.assign(anthropic, parsed.usage);
+                    latest = normalizeAnthropicProviderUsage(anthropic);
+                  } else if (isRecord(parsed.usage)) {
+                    latest = normalizeOpenAiProviderUsage(parsed.usage);
+                  }
+                }
+              } catch {
+                // A truncated usage-only tail remains unknown rather than blocking completion.
+              }
+            }
+          }
+          return latest;
+        }
+      }
+    } catch {
+      return latest;
+    }
+    return latest;
+  })();
+  return {
+    usage,
+    async cancel(reason) {
+      if (cancelled) return;
+      cancelled = true;
+      await reader.cancel(reason).catch(() => undefined);
+    },
+  };
 }
 
 async function callAnthropicMessages(args: ProviderStreamArgs): Promise<Response> {

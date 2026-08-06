@@ -45,12 +45,25 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 
 ### Typed Admin Operations Projection
 
-- The typed Operations view reads the existing model-free `/api/admin/stats`, `/api/admin/audit`, and `/api/admin/feedback` endpoints through one browser API helper. Each response has an exact runtime decoder; components never cast raw JSON.
+- The typed Operations view reads the model-free `/api/admin/stats`, `/api/admin/audit`, `/api/admin/feedback`, and `/api/admin/provider-finance?limit=100` endpoints through one browser API helper. Each response has an exact runtime decoder; components never cast raw JSON.
 - Statistics validation preserves the server projection, not only its field types: the current day is first, trend/route/user day arrays retain the same order, totals equal their daily sums, rates match their counts, route statistics match the configured route list, and current member usage matches the first daily bucket.
 - Render only aggregate counts, member labels/display names, logical-route metadata, feedback rating/reason/time, and bounded audit action/target/time. Never render prompts, completions, message text, stored memory, plaintext credentials, custom headers, or raw provider payloads. Conversation/message identifiers used by the feedback repository are not visible UI content.
 - Keep the view passive. Refreshing Operations may read Durable Object, KV, session, and real-task metric state, but it must not call model discovery, provider validation, route-health completions, or any other model endpoint.
+- Finance projections distinguish `unknown | partial | reported | estimated |
+  reconciled` usage and `unknown | provisional | settled | corrected` cost;
+  token/amount dimensions remain visibly incomplete rather than zero-filled.
+  Provider capacity, catalog entries, attempts, and reconciliation revisions
+  each paginate at 20 items with filtered `N / total` counts. Reconciliation
+  rows show status, variance, revision, and superseded identity without raw
+  invoice material.
+- Finance entry forms are optional mutation tools on the Operations projection.
+  They keep local drafts dirty through validation, network, HTTP, decoder, and
+  `401` failures; a successful server mutation refreshes the snapshot before
+  clearing dirty state. Price form `createdAt` is never later than
+  `effectiveFrom`, and monetary decimal inputs are converted to integer micros
+  before the strict API request.
 - Use an unframed, scannable operations layout. Summary metrics form one full-width band; sections use restrained separators rather than nested cards. The eight-column member table scrolls inside its own wrapper on narrow screens and must never widen the admin page.
-- Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model.
+- Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model. Finance mutation coverage injects fake actions and asserts no horizontal overflow at both widths.
 
 ## Scenario: Recoverable React Admin Safety
 
@@ -116,7 +129,7 @@ paginateOperations<T>(items: T[], requestedPage: number, pageSize = 20)
 
 - Worker tests assert successful logout deletes KV and clears the cookie, deletion failure returns `500` with no `Set-Cookie` and preserves the session, and cross-origin logout has no session or cookie side effect.
 - Browser API tests assert network, HTTP, empty/non-JSON, false, and unknown-key logout responses reject; exact `{ ok: true }` succeeds.
-- Workspace browser tests assert loading, ready, initial error, successful retry, fail-closed logout, dialog focus/Tab/Escape/pending/error/retry/fallback focus, and the 20/21 boundary for all four Operations lists.
+- Workspace browser tests assert loading, ready, initial error, successful retry, fail-closed logout, dialog focus/Tab/Escape/pending/error/retry/fallback focus, and the 20/21 boundary for Operations routes, feedback, audit, member usage, Provider capacity, attempts, catalogs, and reconciliations.
 - Pagination helper tests assert empty, 20, 21, and stale-page clamping behavior. Fixtures remain synthetic and must not authenticate, call a model, or contact production.
 
 ### 7. Wrong vs Correct

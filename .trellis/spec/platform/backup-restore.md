@@ -57,7 +57,7 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
 - Workspace-file state: the `WORKSPACE_FILES` R2 bucket plus root `TeamAgent` file, immutable-version, exact-reference, and operation/outbox tables. A future backup manifest must inventory object keys indirectly, sizes, SHA-256 checksums, version/generation ownership, and include/exclude decisions without exposing keys to users.
 - Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
-- Provider attempt shards are authoritative instance-level operational evidence. Each `provider_attempt_ledger` object captures as `provider-attempt-ledger-v1` with `restoreBehavior: "restore"`; it is retained by member account deletion and excluded from user export.
+- Provider attempt shards are authoritative instance-level operational evidence. Each `provider_attempt_ledger` object captures as `provider-attempt-ledger-v2` with `restoreBehavior: "restore"`; it includes content-free attempt identity plus append-only usage, price, cost, and reconciliation evidence. It is retained by member account deletion and excluded from user export. Raw invoices and Provider responses are never captured.
 - Member OAuth MCP token rows in `UserState.mcp_oauth_tokens` and their owner binding are required durable security state. Token values are AES-GCM ciphertext whose AAD binds member, server, and schema v1; the original `ROUTE_KEYS_MASTER_KEY` remains external key material. A future manifest may record only the table/class, schema version, row count, and an explicit `ciphertextOnly: true` inventory marker. The manifest must not contain `encrypted_record`, IV, ciphertext, access/refresh token, member label, server endpoint, authorization code, state, verifier, or session fingerprint.
 - External key material required to decrypt archived ciphertext. In particular, the original `ROUTE_KEYS_MASTER_KEY` must be retained outside the application data archive under operator control.
 
@@ -261,7 +261,7 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 | Import version/envelope is unsupported | Reject it; do not coerce it into partial state |
 | Worker name, KV namespace, or account changes | Treat the target as a new instance boundary, not restored data |
 | Original `ROUTE_KEYS_MASTER_KEY` is unavailable | Old managed provider-key ciphertext is unrecoverable; require keys to be re-entered |
-| Provider attempt capture is missing, classified rebuildable, or uses a target other than `ProviderAttemptLedger`/`v5` | Reject capture/restore readiness before target mutation |
+| Provider attempt capture is missing, classified rebuildable, uses a schema other than `provider-attempt-ledger-v2`, or targets anything other than `ProviderAttemptLedger`/`v5` | Reject capture/restore readiness before target mutation |
 | Proposed instance backup lacks manifest, consistency, mapping, reconciliation, or drill evidence | Keep full-instance recovery marked unsupported |
 | Any permanent-delete sub-operation fails | Fail the request; a retry repeats exact idempotent deletes |
 | Account purge starts while a workspace upload is pending | Fail with `workspace_purge_pending_upload`; keep the session valid for retry |
@@ -295,7 +295,7 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 - Prove additive legacy cleanup metadata migration, due filtering, exponential backoff/cap, terminal retention, bounded alarm batches, eviction recovery, and privacy-safe aggregate evidence.
 - Prove the anti-resurrection timestamp rejects stale uploads while an explicit user-selected `restore` can recover old backup content.
 - Prove provider/access configuration and encrypted secret records are not deleted with one member's data.
-- Prove member deletion retains content-free Provider attempts, user export excludes them, capture marks them authoritative/restore, and isolated restore rejects any wrong v1-v5 Durable Object migration tag.
+- Prove member deletion retains content-free Provider attempts and finance evidence, user export excludes attempts/finance/raw invoices, capture marks the ledger authoritative/restore with `provider-attempt-ledger-v2`, and isolated restore rejects a v2 archive on a v1-only ledger target or any wrong v1-v5 Durable Object migration tag.
 - Keep tests local and deterministic; do not call a live model or print access codes, credentials, conversations, or memories.
 - Run the full project quality gate from `frontend/quality-guidelines.md`.
 

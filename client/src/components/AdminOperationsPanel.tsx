@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Activity, ChevronLeft, ChevronRight, MessageSquareText, RefreshCw, Route, ScrollText, ThumbsDown, ThumbsUp, Users } from "lucide-react";
+import { Activity, BookOpenText, ChevronLeft, ChevronRight, CircleDollarSign, Gauge, MessageSquareText, ReceiptText, RefreshCw, Route, ScrollText, ThumbsDown, ThumbsUp, Users } from "lucide-react";
 import {
   ApiError,
+  createAdminProviderPriceCatalog,
   fetchAdminOperations,
+  importAdminProviderReconciliation,
   type AdminAuditEntry,
   type AdminFeedbackEntry,
   type AdminOperationsSnapshot,
+  type AdminProviderFinanceAttempt,
+  type AdminProviderFinanceProvider,
+  type AdminProviderPriceCatalog,
+  type AdminProviderReconciliationInput,
 } from "../lib/api";
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
@@ -22,8 +28,14 @@ type OperationsViewState =
   | { status: "ready"; snapshot: AdminOperationsSnapshot; refreshing: boolean }
   | { status: "error"; message: string };
 
-type OperationsList = "routes" | "feedback" | "audit" | "users";
+type OperationsList = "routes" | "feedback" | "audit" | "users" | "providers" | "catalogs" | "financeAttempts" | "reconciliations";
 type OperationsPages = Record<OperationsList, number>;
+
+type FinanceActions = {
+  createPrice: (input: AdminProviderPriceCatalog) => Promise<void>;
+  importReconciliation: (input: AdminProviderReconciliationInput) => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+};
 
 export const OPERATIONS_PAGE_SIZE = 20;
 
@@ -63,6 +75,17 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
     }
   }
 
+  async function runFinanceMutation(action: () => Promise<unknown>, successText: string) {
+    try {
+      await action();
+      onNotice({ kind: "success", text: successText });
+      await refresh();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      throw error;
+    }
+  }
+
   return (
     <section className="admin-operations-panel" aria-labelledby="operations-admin-title" aria-busy={loading}>
       <div className="admin-operations-head">
@@ -87,28 +110,80 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
           </button>
         </div>
       ) : (
-        <AdminOperationsContent snapshot={viewState.snapshot} filter={filter} />
+        <AdminOperationsContent
+          snapshot={viewState.snapshot}
+          filter={filter}
+          financeActions={{
+            createPrice: (input) => runFinanceMutation(
+              () => createAdminProviderPriceCatalog(input),
+              "价格目录已保存。",
+            ),
+            importReconciliation: (input) => runFinanceMutation(
+              () => importAdminProviderReconciliation(input),
+              "Provider 对账摘要已导入。",
+            ),
+            onDirtyChange,
+          }}
+        />
       )}
     </section>
   );
 }
 
-export function AdminOperationsContent({ snapshot, filter = "" }: { snapshot: AdminOperationsSnapshot; filter?: string }) {
+export function AdminOperationsContent({
+  snapshot,
+  filter = "",
+  financeActions,
+}: {
+  snapshot: AdminOperationsSnapshot;
+  filter?: string;
+  financeActions?: FinanceActions;
+}) {
   const query = filter.trim().toLocaleLowerCase();
-  const [pages, setPages] = useState<OperationsPages>({ routes: 1, feedback: 1, audit: 1, users: 1 });
+  const [pages, setPages] = useState<OperationsPages>({
+    routes: 1,
+    feedback: 1,
+    audit: 1,
+    users: 1,
+    providers: 1,
+    catalogs: 1,
+    financeAttempts: 1,
+    reconciliations: 1,
+  });
+  const [priceDirty, setPriceDirty] = useState(false);
+  const [reconciliationDirty, setReconciliationDirty] = useState(false);
   const maxRequests = Math.max(1, ...snapshot.stats.trend.map((item) => item.requests));
   const users = useMemo(() => snapshot.stats.users.filter((user) => matchesQuery(query, user.label, user.displayName, user.defaultRoute)), [query, snapshot.stats.users]);
   const routes = useMemo(() => snapshot.stats.routeStats.filter((route) => matchesQuery(query, route.id, route.label, route.model)), [query, snapshot.stats.routeStats]);
   const audit = useMemo(() => snapshot.audit.filter((entry) => matchesQuery(query, entry.action, auditAction(entry), entry.target)), [query, snapshot.audit]);
   const feedback = useMemo(() => snapshot.feedback.filter((entry) => matchesQuery(query, entry.label, entry.routeId, entry.reason, feedbackReason(entry.reason))), [query, snapshot.feedback]);
+  const financeProviders = useMemo(() => snapshot.finance.providers.filter((provider) => matchesQuery(query, provider.providerId, provider.label)), [query, snapshot.finance.providers]);
+  const catalogs = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.catalogs
+    .filter((catalog) => matchesQuery(query, provider.providerId, provider.label, catalog.catalogVersionId, catalog.offeringId, catalog.model, catalog.currency))
+    .map((catalog) => ({ provider, catalog }))), [query, snapshot.finance.providers]);
+  const financeAttempts = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.attempts
+    .filter((attempt) => matchesQuery(query, provider.providerId, provider.label, attempt.logicalRouteId, attempt.model, attempt.usageState, attempt.costState))
+    .map((attempt) => ({ provider, attempt }))), [query, snapshot.finance.providers]);
+  const reconciliations = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.reconciliations
+    .filter((entry) => matchesQuery(query, provider.providerId, provider.label, entry.currency, entry.status))
+    .map((entry) => ({ provider, entry }))), [query, snapshot.finance.providers]);
   const routePage = paginateOperations(routes, pages.routes);
   const feedbackPage = paginateOperations(feedback, pages.feedback);
   const auditPage = paginateOperations(audit, pages.audit);
   const userPage = paginateOperations(users, pages.users);
+  const providerPage = paginateOperations(financeProviders, pages.providers);
+  const catalogPage = paginateOperations(catalogs, pages.catalogs);
+  const financeAttemptPage = paginateOperations(financeAttempts, pages.financeAttempts);
+  const reconciliationPage = paginateOperations(reconciliations, pages.reconciliations);
 
   useEffect(() => {
-    setPages({ routes: 1, feedback: 1, audit: 1, users: 1 });
+    setPages({ routes: 1, feedback: 1, audit: 1, users: 1, providers: 1, catalogs: 1, financeAttempts: 1, reconciliations: 1 });
   }, [query]);
+
+  useEffect(() => {
+    financeActions?.onDirtyChange(priceDirty || reconciliationDirty);
+    return () => financeActions?.onDirtyChange(false);
+  }, [financeActions, priceDirty, reconciliationDirty]);
 
   function setPage(list: OperationsList, page: number) {
     setPages((current) => ({ ...current, [list]: page }));
@@ -120,6 +195,8 @@ export function AdminOperationsContent({ snapshot, filter = "" }: { snapshot: Ad
     { label: "错误率", value: `${snapshot.stats.totals.errorRate}%` },
     { label: "Fallback", value: snapshot.stats.totals.fallbacks },
     { label: "限流", value: snapshot.stats.totals.rateLimited },
+    { label: "Provider 调用", value: snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.calls, 0) },
+    { label: "Usage 未知", value: snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.unknownUsageAttempts, 0) },
   ];
 
   return (
@@ -149,6 +226,44 @@ export function AdminOperationsContent({ snapshot, filter = "" }: { snapshot: Ad
             {!routePage.total && <p className="typed-admin-empty">没有匹配的线路统计</p>}
           </div>
           <PaginationControls label="逻辑模型结果" page={routePage} onPageChange={(page) => setPage("routes", page)} />
+        </OperationsSection>
+
+        <OperationsSection icon={<Gauge size={17} />} title="Provider 容量" meta={pageCountMeta(providerPage)}>
+          <div className="operations-compact-list">
+            {providerPage.items.map((provider) => (
+              <div key={provider.providerId}>
+                <span><strong>{provider.label}</strong><small>{provider.providerId} · Token {formatTokenTotal(provider)}</small></span>
+                <em>调用 {provider.capacity.calls} · 失败 {provider.capacity.failures} · 重试 {provider.capacity.retries} · Fallback {provider.capacity.fallbacks} · 平均 {provider.capacity.averageLatencyMs === null ? "未知" : `${provider.capacity.averageLatencyMs} ms`} · Usage 未知 {provider.capacity.unknownUsageAttempts}</em>
+              </div>
+            ))}
+            {!financeProviders.length && <p className="typed-admin-empty">没有匹配的 Provider 容量记录</p>}
+          </div>
+          <PaginationControls label="Provider 容量" page={providerPage} onPageChange={(page) => setPage("providers", page)} />
+        </OperationsSection>
+
+        <OperationsSection icon={<CircleDollarSign size={17} />} title="成本证据" meta="预算执行未启用">
+          <div className="operations-compact-list">
+            {financeProviders.flatMap((provider) => provider.costs.map((cost) => (
+              <div key={`${provider.providerId}:${cost.currency}`}>
+                <span><strong>{provider.label} · {cost.currency}</strong><small>未知 {cost.unknownAttempts} 次</small></span>
+                <em>暂估 {formatMicros(cost.provisionalMicros, cost.currency)} · 对账 {formatMicros(cost.settledMicros, cost.currency)} · 更正 {formatMicros(cost.correctedMicros, cost.currency)}</em>
+              </div>
+            )))}
+            {!financeProviders.some((provider) => provider.costs.length) && <p className="typed-admin-empty">尚无可计算成本，缺失值保持未知</p>}
+          </div>
+        </OperationsSection>
+
+        <OperationsSection icon={<BookOpenText size={17} />} title="价格目录" meta={pageCountMeta(catalogPage)}>
+          <div className="operations-compact-list">
+            {catalogPage.items.map(({ provider, catalog }) => (
+              <div key={`${provider.providerId}:${catalog.catalogVersionId}`}>
+                <span><strong>{provider.label} · {catalog.model}</strong><small>{catalog.catalogVersionId} · {catalog.currency} / {catalog.unit}</small></span>
+                <em>{formatCatalogPrice(catalog.inputNoCachePriceMicros, catalog.currency)} 输入 · 生效 {formatShortDate(catalog.effectiveFrom)}</em>
+              </div>
+            ))}
+            {!catalogPage.total && <p className="typed-admin-empty">尚无价格目录</p>}
+          </div>
+          <PaginationControls label="价格目录" page={catalogPage} onPageChange={(page) => setPage("catalogs", page)} />
         </OperationsSection>
 
         <OperationsSection icon={<MessageSquareText size={17} />} title="成员反馈" meta={feedbackSummary(feedback, feedbackPage.displayed)}>
@@ -184,7 +299,7 @@ export function AdminOperationsContent({ snapshot, filter = "" }: { snapshot: Ad
       <OperationsSection icon={<Users size={17} />} title="成员用量" meta={pageCountMeta(userPage)}>
         <div className="operations-user-table-wrap">
           <table className="operations-user-table">
-            <thead><tr><th>成员</th><th>今日用量</th><th>剩余</th><th>活跃会话</th><th>7 日请求</th><th>错误</th><th>记忆</th><th>默认模型</th></tr></thead>
+            <thead><tr><th scope="col">成员</th><th scope="col">今日用量</th><th scope="col">剩余</th><th scope="col">活跃会话</th><th scope="col">7 日请求</th><th scope="col">错误</th><th scope="col">记忆</th><th scope="col">默认模型</th></tr></thead>
             <tbody>{userPage.items.map((user) => (
               <tr key={user.label}>
                 <td><strong>{user.displayName}</strong><small>{user.label}{user.enabled ? "" : " · 已暂停"}</small></td>
@@ -196,8 +311,347 @@ export function AdminOperationsContent({ snapshot, filter = "" }: { snapshot: Ad
         </div>
         <PaginationControls label="成员用量" page={userPage} onPageChange={(page) => setPage("users", page)} />
       </OperationsSection>
+
+      <OperationsSection icon={<Activity size={17} />} title="Provider 尝试" meta={pageCountMeta(financeAttemptPage)}>
+        <div className="operations-user-table-wrap">
+          <table className="operations-user-table">
+            <thead><tr><th scope="col">Provider</th><th scope="col">逻辑模型</th><th scope="col">结果</th><th scope="col">Usage</th><th scope="col">成本</th><th scope="col">延迟</th><th scope="col">价格</th></tr></thead>
+            <tbody>{financeAttemptPage.items.map(({ provider, attempt }) => (
+              <tr key={attempt.attemptId}>
+                <td><strong>{provider.label}</strong><small>{provider.providerId}</small></td>
+                <td>{attempt.logicalRouteId}<small>{attempt.model}</small></td>
+                <td>{attempt.status}<small>{attempt.errorClass}</small></td>
+                <td>{financeUsageLabel(attempt)}<small>{formatAttemptTokens(attempt)}</small></td>
+                <td>{financeCostLabel(attempt)}<small>{formatAttemptCosts(attempt)}</small></td>
+                <td>{attempt.latencyMs === null ? "未知" : `${attempt.latencyMs} ms`}</td>
+                <td>{attempt.priceResolution === "matched" ? "已绑定" : "缺失"}<small>{attempt.catalogVersionId || "无目录版本"} · {attempt.fallbackIndex > 0 ? `Fallback #${attempt.fallbackIndex}` : "首选"}</small></td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!financeAttemptPage.total && <p className="typed-admin-empty">暂无匹配 Provider 尝试</p>}
+        </div>
+        <PaginationControls label="Provider 尝试" page={financeAttemptPage} onPageChange={(page) => setPage("financeAttempts", page)} />
+      </OperationsSection>
+
+      <OperationsSection icon={<ReceiptText size={17} />} title="Provider 对账" meta={pageCountMeta(reconciliationPage)}>
+        <div className="operations-event-list">
+          {reconciliationPage.items.map(({ provider, entry }) => (
+            <div key={entry.reconciliationId}>
+              <span className="operations-event-marker audit" aria-hidden="true" />
+              <span><strong>{provider.label} · {reconciliationStatus(entry.status)} · 修订 {entry.revision}</strong><small>{entry.currency} · 报告 {formatMicros(entry.reportedTotalMicros, entry.currency)} · 匹配 {formatMicros(entry.matchedTotalMicros, entry.currency)} · 差异 {formatMicros(entry.unmatchedVarianceMicros, entry.currency)} · {entry.supersedesReconciliationId ? `继承 ${entry.supersedesReconciliationId}` : "初始导入"} · <time dateTime={new Date(entry.importedAt).toISOString()}>{formatRelativeTime(new Date(entry.importedAt).toISOString())}</time></small></span>
+            </div>
+          ))}
+          {!reconciliationPage.total && <p className="typed-admin-empty">暂无对账摘要</p>}
+        </div>
+        <PaginationControls label="Provider 对账" page={reconciliationPage} onPageChange={(page) => setPage("reconciliations", page)} />
+      </OperationsSection>
+
+      {financeActions && (
+        <AdminFinanceEntryTools
+          providers={snapshot.finance.providers}
+          onCreatePrice={async (input) => {
+            await financeActions.createPrice(input);
+            setPriceDirty(false);
+          }}
+          onImportReconciliation={async (input) => {
+            await financeActions.importReconciliation(input);
+            setReconciliationDirty(false);
+          }}
+          onPriceDirtyChange={setPriceDirty}
+          onReconciliationDirtyChange={setReconciliationDirty}
+        />
+      )}
     </div>
   );
+}
+
+function AdminFinanceEntryTools({
+  providers,
+  onCreatePrice,
+  onImportReconciliation,
+  onPriceDirtyChange,
+  onReconciliationDirtyChange,
+}: {
+  providers: AdminProviderFinanceProvider[];
+  onCreatePrice: (input: AdminProviderPriceCatalog) => Promise<void>;
+  onImportReconciliation: (input: AdminProviderReconciliationInput) => Promise<void>;
+  onPriceDirtyChange: (dirty: boolean) => void;
+  onReconciliationDirtyChange: (dirty: boolean) => void;
+}) {
+  return (
+    <OperationsSection icon={<CircleDollarSign size={17} />} title="财务录入" meta="仅摘要、价格和对账指纹">
+      <div className="admin-finance-entry-grid">
+        <ProviderPriceCatalogForm providers={providers} onSubmit={onCreatePrice} onDirtyChange={onPriceDirtyChange} />
+        <ProviderReconciliationForm providers={providers} onSubmit={onImportReconciliation} onDirtyChange={onReconciliationDirtyChange} />
+      </div>
+    </OperationsSection>
+  );
+}
+
+type PriceDraft = {
+  providerId: string;
+  catalogVersionId: string;
+  offeringId: string;
+  model: string;
+  currency: string;
+  precision: string;
+  inputNoCachePrice: string;
+  cacheReadInputPrice: string;
+  cacheWriteInputPrice: string;
+  outputTextPrice: string;
+  reasoningOutputPrice: string;
+  effectiveFrom: string;
+  effectiveTo: string;
+  approver: string;
+  provenance: string;
+};
+
+function ProviderPriceCatalogForm({
+  providers,
+  onSubmit,
+  onDirtyChange,
+}: {
+  providers: AdminProviderFinanceProvider[];
+  onSubmit: (input: AdminProviderPriceCatalog) => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const [draft, setDraft] = useState<PriceDraft>(() => emptyPriceDraft(providers[0]?.providerId || ""));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    if (!draft.providerId && providers[0]) setDraft((current) => ({ ...current, providerId: providers[0].providerId }));
+  }, [draft.providerId, providers]);
+
+  function update<K extends keyof PriceDraft>(key: K, value: PriceDraft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+    onDirtyChange(true);
+    setSuccess("");
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPending(true);
+    setError("");
+    setSuccess("");
+    try {
+      const input = toPriceCatalogInput(draft);
+      await onSubmit(input);
+      onDirtyChange(false);
+      setSuccess("价格目录已提交，重复版本会保持幂等。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "价格目录提交失败。");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form className="admin-pool-form admin-finance-form" onSubmit={(event) => void submit(event)}>
+      <div className="admin-finance-form-heading"><h3>新增价格目录</h3><p>按生效时间绑定到后续 Provider 尝试。</p></div>
+      <div className="admin-form-grid two">
+        <label><span>Provider</span><select value={draft.providerId} onChange={(event) => update("providerId", event.target.value)} required><option value="">选择 Provider</option>{providers.map((provider) => <option key={provider.providerId} value={provider.providerId}>{provider.label}（{provider.providerId}）</option>)}</select></label>
+        <label><span>目录版本 ID</span><input value={draft.catalogVersionId} maxLength={160} onChange={(event) => update("catalogVersionId", event.target.value)} required /></label>
+        <label><span>Offering ID</span><input value={draft.offeringId} maxLength={160} onChange={(event) => update("offeringId", event.target.value)} required /></label>
+        <label><span>上游模型</span><input value={draft.model} maxLength={240} onChange={(event) => update("model", event.target.value)} required /></label>
+        <label><span>货币</span><input value={draft.currency} maxLength={3} onChange={(event) => update("currency", event.target.value.toUpperCase())} pattern="[A-Z]{3}" required /></label>
+        <label><span>精度</span><input type="number" min="0" max="6" step="1" value={draft.precision} onChange={(event) => update("precision", event.target.value)} required /></label>
+        <label><span>输入单价 / 百万 Token</span><input inputMode="decimal" value={draft.inputNoCachePrice} onChange={(event) => update("inputNoCachePrice", event.target.value)} placeholder="必填至少一项" /></label>
+        <label><span>缓存读单价</span><input inputMode="decimal" value={draft.cacheReadInputPrice} onChange={(event) => update("cacheReadInputPrice", event.target.value)} /></label>
+        <label><span>缓存写单价</span><input inputMode="decimal" value={draft.cacheWriteInputPrice} onChange={(event) => update("cacheWriteInputPrice", event.target.value)} /></label>
+        <label><span>输出单价</span><input inputMode="decimal" value={draft.outputTextPrice} onChange={(event) => update("outputTextPrice", event.target.value)} /></label>
+        <label><span>推理输出单价</span><input inputMode="decimal" value={draft.reasoningOutputPrice} onChange={(event) => update("reasoningOutputPrice", event.target.value)} /></label>
+        <label><span>生效时间</span><input type="datetime-local" value={draft.effectiveFrom} onChange={(event) => update("effectiveFrom", event.target.value)} required /></label>
+        <label><span>结束时间（可选）</span><input type="datetime-local" value={draft.effectiveTo} onChange={(event) => update("effectiveTo", event.target.value)} /></label>
+        <label><span>审批人</span><input value={draft.approver} maxLength={160} onChange={(event) => update("approver", event.target.value)} required /></label>
+        <label><span>价格来源</span><input value={draft.provenance} maxLength={320} onChange={(event) => update("provenance", event.target.value)} required /></label>
+      </div>
+      {(error || success) && <p className={error ? "form-message error" : "form-message"} role={error ? "alert" : "status"}>{error || success}</p>}
+      <button className="primary-button icon-text-button" type="submit" disabled={pending || !providers.length}><BookOpenText size={15} /><span>{pending ? "保存中..." : "保存价格目录"}</span></button>
+    </form>
+  );
+}
+
+type ReconciliationDraft = {
+  providerId: string;
+  fingerprint: string;
+  accountFingerprint: string;
+  periodStart: string;
+  periodEnd: string;
+  currency: string;
+  reportedTotal: string;
+  matchedTotal: string;
+  status: AdminProviderReconciliationInput["status"];
+};
+
+function ProviderReconciliationForm({
+  providers,
+  onSubmit,
+  onDirtyChange,
+}: {
+  providers: AdminProviderFinanceProvider[];
+  onSubmit: (input: AdminProviderReconciliationInput) => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const [draft, setDraft] = useState<ReconciliationDraft>(() => emptyReconciliationDraft(providers[0]?.providerId || ""));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    if (!draft.providerId && providers[0]) setDraft((current) => ({ ...current, providerId: providers[0].providerId }));
+  }, [draft.providerId, providers]);
+
+  function update<K extends keyof ReconciliationDraft>(key: K, value: ReconciliationDraft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+    onDirtyChange(true);
+    setSuccess("");
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPending(true);
+    setError("");
+    setSuccess("");
+    try {
+      const input = toReconciliationInput(draft);
+      await onSubmit(input);
+      onDirtyChange(false);
+      setSuccess("对账摘要已提交，原始发票不会进入系统。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "对账摘要提交失败。");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form className="admin-pool-form admin-finance-form" onSubmit={(event) => void submit(event)}>
+      <div className="admin-finance-form-heading"><h3>导入对账摘要</h3><p>只保存指纹、期间、金额和状态，不上传发票文件。</p></div>
+      <div className="admin-form-grid two">
+        <label><span>Provider</span><select value={draft.providerId} onChange={(event) => update("providerId", event.target.value)} required><option value="">选择 Provider</option>{providers.map((provider) => <option key={provider.providerId} value={provider.providerId}>{provider.label}（{provider.providerId}）</option>)}</select></label>
+        <label><span>货币</span><input value={draft.currency} maxLength={3} onChange={(event) => update("currency", event.target.value.toUpperCase())} pattern="[A-Z]{3}" required /></label>
+        <label className="admin-form-wide"><span>对账指纹</span><input value={draft.fingerprint} maxLength={71} onChange={(event) => update("fingerprint", event.target.value)} placeholder="sha256:..." required /></label>
+        <label className="admin-form-wide"><span>账户指纹</span><input value={draft.accountFingerprint} maxLength={76} onChange={(event) => update("accountFingerprint", event.target.value)} placeholder="acct_sha256:..." required /></label>
+        <label><span>期间开始</span><input type="datetime-local" value={draft.periodStart} onChange={(event) => update("periodStart", event.target.value)} required /></label>
+        <label><span>期间结束</span><input type="datetime-local" value={draft.periodEnd} onChange={(event) => update("periodEnd", event.target.value)} required /></label>
+        <label><span>报告总额</span><input inputMode="decimal" value={draft.reportedTotal} onChange={(event) => update("reportedTotal", event.target.value)} required /></label>
+        <label><span>已匹配总额</span><input inputMode="decimal" value={draft.matchedTotal} onChange={(event) => update("matchedTotal", event.target.value)} required /></label>
+        <label><span>对账状态</span><select value={draft.status} onChange={(event) => update("status", event.target.value as ReconciliationDraft["status"])}><option value="matched">已匹配</option><option value="partial">部分匹配</option><option value="disputed">有争议</option><option value="corrected">已更正</option><option value="closed">已关闭</option></select></label>
+      </div>
+      {(error || success) && <p className={error ? "form-message error" : "form-message"} role={error ? "alert" : "status"}>{error || success}</p>}
+      <button className="primary-button icon-text-button" type="submit" disabled={pending || !providers.length}><ReceiptText size={15} /><span>{pending ? "导入中..." : "导入对账摘要"}</span></button>
+    </form>
+  );
+}
+
+function emptyPriceDraft(providerId: string): PriceDraft {
+  return {
+    providerId,
+    catalogVersionId: "",
+    offeringId: "",
+    model: "",
+    currency: "USD",
+    precision: "6",
+    inputNoCachePrice: "",
+    cacheReadInputPrice: "",
+    cacheWriteInputPrice: "",
+    outputTextPrice: "",
+    reasoningOutputPrice: "",
+    effectiveFrom: formatDateTimeLocal(Date.now()),
+    effectiveTo: "",
+    approver: "",
+    provenance: "",
+  };
+}
+
+function emptyReconciliationDraft(providerId: string): ReconciliationDraft {
+  const end = Date.now();
+  return {
+    providerId,
+    fingerprint: "",
+    accountFingerprint: "",
+    periodStart: formatDateTimeLocal(end - 24 * 60 * 60 * 1_000),
+    periodEnd: formatDateTimeLocal(end),
+    currency: "USD",
+    reportedTotal: "",
+    matchedTotal: "",
+    status: "partial",
+  };
+}
+
+function toPriceCatalogInput(draft: PriceDraft): AdminProviderPriceCatalog {
+  const effectiveFrom = parseDateTime(draft.effectiveFrom, "生效时间");
+  const effectiveTo = draft.effectiveTo ? parseDateTime(draft.effectiveTo, "结束时间") : null;
+  if (effectiveTo !== null && effectiveTo <= effectiveFrom) throw new Error("结束时间必须晚于生效时间。");
+  const prices = {
+    inputNoCachePriceMicros: parseMoneyMicros(draft.inputNoCachePrice, "输入单价"),
+    cacheReadInputPriceMicros: parseMoneyMicros(draft.cacheReadInputPrice, "缓存读单价"),
+    cacheWriteInputPriceMicros: parseMoneyMicros(draft.cacheWriteInputPrice, "缓存写单价"),
+    outputTextPriceMicros: parseMoneyMicros(draft.outputTextPrice, "输出单价"),
+    reasoningOutputPriceMicros: parseMoneyMicros(draft.reasoningOutputPrice, "推理输出单价"),
+  };
+  if (!Object.values(prices).some((value) => value !== null)) throw new Error("至少填写一项 Token 单价。");
+  return {
+    version: 1,
+    catalogVersionId: draft.catalogVersionId.trim(),
+    providerId: draft.providerId,
+    offeringId: draft.offeringId.trim(),
+    model: draft.model.trim(),
+    currency: draft.currency.trim().toUpperCase(),
+    precision: parseInteger(draft.precision, "精度"),
+    unit: "million_tokens",
+    ...prices,
+    effectiveFrom,
+    effectiveTo,
+    approver: draft.approver.trim(),
+    provenance: draft.provenance.trim(),
+    createdAt: Math.min(Date.now(), effectiveFrom),
+  };
+}
+
+function toReconciliationInput(draft: ReconciliationDraft): AdminProviderReconciliationInput {
+  const periodStart = parseDateTime(draft.periodStart, "期间开始");
+  const periodEnd = parseDateTime(draft.periodEnd, "期间结束");
+  if (periodEnd <= periodStart) throw new Error("期间结束必须晚于期间开始。");
+  const reportedTotalMicros = parseMoneyMicros(draft.reportedTotal, "报告总额");
+  const matchedTotalMicros = parseMoneyMicros(draft.matchedTotal, "已匹配总额");
+  if (reportedTotalMicros === null || matchedTotalMicros === null) throw new Error("报告总额和已匹配总额必须填写。");
+  if (matchedTotalMicros > reportedTotalMicros) throw new Error("已匹配总额不能超过报告总额。");
+  return {
+    version: 1,
+    fingerprint: draft.fingerprint.trim(),
+    providerId: draft.providerId,
+    accountFingerprint: draft.accountFingerprint.trim(),
+    periodStart,
+    periodEnd,
+    currency: draft.currency.trim().toUpperCase(),
+    reportedTotalMicros,
+    matchedTotalMicros,
+    status: draft.status,
+    importedAt: Date.now(),
+  };
+}
+
+function parseDateTime(value: string, label: string): number {
+  const parsed = Date.parse(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label}格式无效。`);
+  return parsed;
+}
+
+function parseInteger(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label}格式无效。`);
+  return parsed;
+}
+
+function parseMoneyMicros(value: string, label: string): number | null {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  const micros = Math.round(parsed * 1_000_000);
+  if (!Number.isFinite(parsed) || parsed < 0 || !Number.isSafeInteger(micros)) throw new Error(`${label}格式无效。`);
+  return micros;
 }
 
 export function paginateOperations<T>(items: T[], requestedPage: number, pageSize = OPERATIONS_PAGE_SIZE) {
@@ -241,6 +695,65 @@ function feedbackSummary(entries: AdminFeedbackEntry[], displayed: number): stri
 function feedbackReason(reason: AdminFeedbackEntry["reason"]): string {
   const labels: Record<string, string> = { inaccurate: "不准确", misunderstood: "未理解", verbose: "过于冗长", format: "格式问题", other: "其他" };
   return reason ? labels[reason] || reason : "";
+}
+
+function formatTokenTotal(provider: AdminProviderFinanceProvider): string {
+  const values = Object.values(provider.usage);
+  const known = values.filter((value): value is number => value !== null);
+  if (!known.length) return "未知";
+  const total = known.reduce((sum, value) => sum + value, 0).toLocaleString();
+  return known.length === values.length ? total : `部分 ${total}`;
+}
+
+function financeUsageLabel(attempt: AdminProviderFinanceAttempt): string {
+  const labels = { unknown: "未知", partial: "部分", reported: "Provider 上报", estimated: "估算", reconciled: "已对账" } as const;
+  return labels[attempt.usageState];
+}
+
+function financeCostLabel(attempt: AdminProviderFinanceAttempt): string {
+  const labels = { unknown: "未知", provisional: "暂估", settled: "已对账", corrected: "已更正" } as const;
+  return labels[attempt.costState];
+}
+
+function formatAttemptTokens(attempt: AdminProviderFinanceAttempt): string {
+  const values = Object.values(attempt.usage);
+  const known = values.filter((value): value is number => value !== null);
+  if (!known.length) return "无可用 Token 证据";
+  const total = `${known.reduce((sum, value) => sum + value, 0).toLocaleString()} Token`;
+  return known.length === values.length ? total : `部分 ${total}`;
+}
+
+function formatAttemptCosts(attempt: AdminProviderFinanceAttempt): string {
+  return attempt.costs.length
+    ? attempt.costs.map((cost) => formatMicros(cost.totalMicros, cost.currency)).join(" · ")
+    : "无可用金额证据";
+}
+
+function formatMicros(value: number, currency: string): string {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(value / 1_000_000);
+}
+
+function formatCatalogPrice(value: number | null, currency: string): string {
+  return value === null ? "未知" : formatMicros(value, currency);
+}
+
+function formatShortDate(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(value);
+}
+
+function formatDateTimeLocal(value: number): string {
+  const date = new Date(value);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function reconciliationStatus(status: AdminProviderFinanceProvider["reconciliations"][number]["status"]): string {
+  return ({ matched: "已匹配", partial: "部分匹配", disputed: "有争议", corrected: "已更正", closed: "已关闭" } as const)[status];
 }
 
 function auditAction(entry: AdminAuditEntry): string {

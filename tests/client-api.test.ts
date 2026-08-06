@@ -26,6 +26,7 @@ import {
   isMcpOAuthStatusResponse,
   isAdminUsageResetResponse,
   isAdminOperationsStats,
+  isAdminProviderFinanceSnapshot,
   isAdminReliabilitySnapshot,
   isAdminSessionProjection,
   isAdminSetupStatus,
@@ -859,6 +860,121 @@ describe("React client runtime validation", () => {
     expect(isAdminOperationsStats({
       ...validOperationsStats,
       routes: [{ ...validOperationsStats.routes[0], apiKey: "secret" }],
+    })).toBe(false);
+  });
+
+  it("accepts exact content-free Provider finance evidence and rejects money ambiguity", () => {
+    const attempt = {
+      attemptId: "attempt_00000000-0000-4000-8000-000000000001",
+      runKind: "main_answer",
+      logicalRouteId: "reasoning",
+      offeringId: "reasoning/provider-a",
+      model: "model-a",
+      fallbackIndex: 0,
+      status: "succeeded",
+      errorClass: "none",
+      startedAt: 1_000,
+      endedAt: 1_100,
+      latencyMs: 100,
+      priceResolution: "matched",
+      catalogVersionId: "catalog-v1",
+      usageState: "reported",
+      usage: {
+        inputNoCacheTokens: 100,
+        cacheReadInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTextTokens: 20,
+        reasoningOutputTokens: 0,
+      },
+      costState: "provisional",
+      costs: [{ currency: "USD", provisionalMicros: 140, settledMicros: 0, correctedMicros: 0, totalMicros: 140 }],
+    };
+    const finance = {
+      version: 1,
+      generatedAt: 2_000,
+      periodStart: 0,
+      hardBudgetEnforcement: "unsupported",
+      providers: [{
+        version: 1,
+        providerId: "provider-a",
+        label: "Provider A",
+        generatedAt: 2_000,
+        periodStart: 0,
+        capacity: {
+          calls: 1,
+          succeeded: 1,
+          failures: 0,
+          retries: 0,
+          fallbacks: 0,
+          averageLatencyMs: 100,
+          unknownUsageAttempts: 0,
+          provisionalCostAttempts: 1,
+        },
+        usage: attempt.usage,
+        costs: [{ ...attempt.costs[0], unknownAttempts: 0 }],
+        attempts: [attempt],
+        reconciliations: [{
+          version: 1,
+          reconciliationId: "reconciliation-1",
+          revision: 1,
+          supersedesReconciliationId: null,
+          fingerprint: `sha256:${"c".repeat(64)}`,
+          providerId: "provider-a",
+          accountFingerprint: `acct_sha256:${"d".repeat(64)}`,
+          periodStart: 0,
+          periodEnd: 1_000,
+          currency: "USD",
+          reportedTotalMicros: 140,
+          matchedTotalMicros: 140,
+          unmatchedVarianceMicros: 0,
+          status: "matched",
+          importedAt: 2_000,
+        }],
+        catalogs: [{
+          version: 1,
+          catalogVersionId: "catalog-v1",
+          providerId: "provider-a",
+          offeringId: "reasoning/provider-a",
+          model: "model-a",
+          currency: "USD",
+          precision: 6,
+          unit: "million_tokens",
+          inputNoCachePriceMicros: 1_000_000,
+          cacheReadInputPriceMicros: 0,
+          cacheWriteInputPriceMicros: 0,
+          outputTextPriceMicros: 2_000_000,
+          reasoningOutputPriceMicros: 0,
+          effectiveFrom: 0,
+          effectiveTo: null,
+          approver: "finance-admin",
+          provenance: "provider-price-card",
+          createdAt: 0,
+        }],
+      }],
+    };
+    expect(isAdminProviderFinanceSnapshot(finance)).toBe(true);
+    expect(isAdminProviderFinanceSnapshot({ ...finance, hardBudgetEnforcement: "enabled" })).toBe(false);
+    expect(isAdminProviderFinanceSnapshot({
+      ...finance,
+      providers: [{ ...finance.providers[0], rawInvoice: "secret" }],
+    })).toBe(false);
+    expect(isAdminProviderFinanceSnapshot({
+      ...finance,
+      providers: [{
+        ...finance.providers[0],
+        attempts: [{ ...attempt, costs: [{ ...attempt.costs[0], totalMicros: 0 }] }],
+      }],
+    })).toBe(false);
+    expect(isAdminProviderFinanceSnapshot({
+      ...finance,
+      providers: [{
+        ...finance.providers[0],
+        reconciliations: [{
+          ...finance.providers[0].reconciliations[0],
+          revision: 2,
+          supersedesReconciliationId: null,
+        }],
+      }],
     })).toBe(false);
   });
 

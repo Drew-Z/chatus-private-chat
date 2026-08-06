@@ -17,7 +17,7 @@ tool/provider fallback condition.
 
 - Module: `src/services/provider-tool-runtime.ts`
 - History construction: `createProviderToolHistory(route, messages)`
-- Provider turn: `callProviderToolTurn({ route, apiKey, history, tools, temperature, defaultMaxTokens, signal, usedUserKey, fetch? })`
+- Provider turn: `callProviderToolTurn({ route, apiKey, history, tools, temperature, defaultMaxTokens, signal, usedUserKey, fetch? }) -> ModelTurn & { usage: ProviderTokenUsageV1 }`
 - History mutation: `appendProviderTurn(history, providerTurn)` and `appendProviderToolResults(history, results)`
 - Shared protocol helpers: `buildHeaders`, `setAuthHeader`, `routeUrl`, `clampNumber`, `formatUpstreamErrorMessage`, and `toAnthropicMessages`
 - Attempt error: `ProviderToolError(status, message, terminal, outcome?: "protocol_error")`
@@ -38,6 +38,11 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 - Invalid OpenAI argument JSON is preserved as `arguments=null, argumentsValid=false` so the shared capability loop reports the existing argument validation error instead of executing it.
 - HTTP failures become `ProviderToolError`. Status 400/422 and user-key 401/403 follow `isTerminalProviderFailure`; other provider failures remain eligible for pre-output fallback. The exact HTTP status stays available for outer classification, while the bounded upstream message is internal and must never become a browser response.
 - Invalid Provider JSON or response shape sets `outcome="protocol_error"`. The Capability/Worker boundary preserves that protocol class but replaces every internal message with the canonical public registry text.
+- A valid tool turn carries normalized Provider usage as content-free evidence.
+  Missing OpenAI/Anthropic dimensions remain `null`; usage is recorded
+  independently of tool approval, continuation, and terminal error projection.
+  A malformed or missing usage object does not become zero and does not expose
+  the Provider response body.
 
 ## 4. Validation & Error Matrix
 
@@ -54,6 +59,7 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 | Server credential returns 401/403 | Keep the attempt non-terminal so another eligible offering may be tried |
 | Anthropic inline image is malformed | Fail conversion before fetch |
 | Request signal aborts | Pass the same signal to fetch; outer capability runtime owns cancellation mapping and lease cleanup |
+| Usage is absent or only partially reported | Return `null` dimensions and append unknown/partial evidence; never synthesize zero tokens |
 
 ## 5. Good / Base / Bad Cases
 
@@ -69,6 +75,8 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 - Assert 400/401/429/5xx and invalid-JSON outcomes retain distinct public classes without exposing the Provider message, response body, or endpoint.
 - Keep Worker integration tests for multi-round OpenAI and Anthropic capability execution, provider lease release, fallback, approval, and MCP execution.
 - Assert initial and continuation fake Provider calls have separate run/attempt IDs, one shared turn ID, and no second user-message quota admission.
+- Assert tool-turn usage is normalized and appended independently for complete,
+  partial, missing, and late evidence, including a terminal tool error.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 
 ## 7. Wrong vs Correct

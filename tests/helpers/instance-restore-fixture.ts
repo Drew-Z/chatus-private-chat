@@ -436,7 +436,7 @@ function objectRegistration(
     instanceName,
     rootInstanceName,
     schemaVersion: kind === "provider_attempt_ledger"
-      ? "provider-attempt-ledger-v1"
+      ? "provider-attempt-ledger-v2"
       : `${kind}-schema-v1`,
     stateClass: "authoritative",
     restoreBehavior: "restore",

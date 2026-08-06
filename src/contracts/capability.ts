@@ -1,4 +1,5 @@
 import type { ToolEventSummary } from "./chat";
+import type { ProviderTokenUsageV1 } from "./provider-finance";
 
 export type ToolConfirmation = "auto" | "first-per-conversation" | "always";
 export type McpToolSideEffect = "read" | "write" | "destructive";
@@ -89,6 +90,7 @@ export type ModelTurn = {
   toolCalls: NormalizedToolCall[];
   finishReason: string;
   providerTurn: unknown;
+  usage: ProviderTokenUsageV1;
 };
 
 export type CapabilityStreamEvent =

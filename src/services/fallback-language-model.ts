@@ -23,6 +23,7 @@ import {
   type ProviderAttemptHandle,
   type ProviderAttemptRun,
 } from "./provider-attempt-runtime";
+import { normalizeLanguageModelV3Usage } from "./provider-usage";
 
 export type FallbackModelCandidate = {
   routeId: string;
@@ -88,6 +89,7 @@ export function createFallbackLanguageModel(
         try {
           attempt = await startProviderAttempt(attemptRun, candidate, candidates.indexOf(candidate), startedAt);
           const result = await candidate.model.doGenerate({ ...options, ...candidate.settings });
+          await captureAttemptUsage(attempt, result.usage, "ai_sdk_generate");
           await attempt?.succeed();
           await notify(callbacks.onSuccess, attemptEvent(candidate, fallback, startedAt, false));
           return result;
@@ -241,10 +243,11 @@ function monitorCommittedStream(args: {
   let firstTextDeltaAt = args.firstTextDeltaAt;
   let visibleTextDeltaCount = 0;
 
-  const settleSuccess = async () => {
+  const settleSuccess = async (usage: LanguageModelV3StreamPart & { type: "finish" }) => {
     if (settled) return;
     settled = true;
     try {
+      await captureAttemptUsage(args.attempt, usage.usage, "ai_sdk_stream_finish");
       await args.attempt?.succeed();
       await notify(args.callbacks.onSuccess, attemptEvent(
         args.candidate,
@@ -303,7 +306,7 @@ function monitorCommittedStream(args: {
           return;
         }
         if (next.value.type === "error") await settleFailure(next.value.error);
-        if (next.value.type === "finish") await settleSuccess();
+        if (next.value.type === "finish") await settleSuccess(next.value);
         if (isVisibleTextDelta(next.value)) {
           firstTextDeltaAt ??= Date.now();
           visibleTextDeltaCount += 1;
@@ -457,6 +460,22 @@ async function notify(
     await callback(event);
   } catch {
     // Telemetry must never change the model outcome.
+  }
+}
+
+async function captureAttemptUsage(
+  attempt: ProviderAttemptHandle | undefined,
+  usage: LanguageModelV3GenerateResult["usage"],
+  source: "ai_sdk_generate" | "ai_sdk_stream_finish",
+): Promise<void> {
+  if (!attempt) return;
+  try {
+    await attempt.recordUsage({
+      ...normalizeLanguageModelV3Usage(usage),
+      source,
+    });
+  } catch {
+    // Finance evidence retries independently and must not change the model outcome.
   }
 }
 
