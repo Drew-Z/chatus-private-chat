@@ -15,7 +15,7 @@
   "branch": "codex/provider-cost-reconciliation-capacity",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "374e25cbba8acac295fd5606c07c4cb6817d241b",
   "pr_url": null,
   "subtasks": [],
   "children": [],
