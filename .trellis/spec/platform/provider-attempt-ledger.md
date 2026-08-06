@@ -8,8 +8,9 @@ model discovery, attempt diagnostics, or the `ProviderAttemptLedger` Durable
 Object.
 
 The ledger proves which server-selected Provider/offering/model call was
-attempted. It does not normalize token usage, calculate money, enforce budgets,
-accept browser attribution, or make invoice claims.
+attempted and owns the bounded usage, price, cost, and reconciliation evidence
+attached to that call. It does not enforce hard budgets, accept browser
+attribution, or retain raw invoices.
 
 ## 2. Signatures
 
@@ -30,17 +31,23 @@ handle.succeed() | handle.fail(error) | handle.cancel() | handle.timeout()
 
 ```text
 GET /api/admin/provider-attempts?providerId=<configured-id>&limit=<1..100>
+GET /api/admin/provider-finance?providerId=<configured-id>&periodStart=<ms>&limit=<1..100>
+POST /api/admin/provider-finance/prices
+POST /api/admin/provider-finance/reconciliations
 ```
 
 ```text
 Durable Object binding: PROVIDER_ATTEMPT_LEDGER -> ProviderAttemptLedger
 Durable Object shard: providerId
 Worker variable: PROVIDER_ATTEMPT_LEDGER_MODE = required | disabled
-Capture schema: provider-attempt-ledger-v1
+Capture schema: provider-attempt-ledger-v2
 ```
 
-SQLite v1 owns `provider_attempt_schema_migrations`,
-`provider_attempt_events`, and `provider_attempt_projection`.
+SQLite v2 owns `provider_attempt_schema_migrations`,
+`provider_attempt_events`, `provider_attempt_projection`,
+`provider_price_catalog`, `provider_attempt_price_binding`,
+`provider_usage_evidence`, `provider_usage_projection`,
+`provider_cost_evidence`, and `provider_reconciliation_imports`.
 
 ## 3. Contracts
 
@@ -93,6 +100,25 @@ SQLite v1 owns `provider_attempt_schema_migrations`,
 - User-message quota remains one admission per user message. Selector,
   fallback, retry, and continuation attempts add ledger evidence but never
   increment that quota again.
+- Usage evidence is append-only and normalized per token dimension. Cumulative
+  readings are converted to non-negative deltas against the attempt projection;
+  delta readings are accepted as-is; missing/late dimensions remain `null`.
+  A partially known projection is `usageState: "partial"`, never a zero-filled
+  total. A terminal attempt may settle before a usage tail arrives; late usage
+  appends evidence and does not rewrite terminal identity.
+- `ProviderStreamAttempt.usage` and tool-turn usage are provider-local evidence
+  promises. A rejected/truncated usage collector returns unknown dimensions and
+  must not turn an otherwise successful terminal attempt into a failure.
+- Effective-dated price catalogs are immutable. An attempt binds one catalog
+  version at `startedAt`; later price imports never rewrite that binding.
+  Calculated cost evidence uses `estimated`/`reported`/`reconciled` classes;
+  reversal, replacement, and correction events use `corrected` and append a
+  `supersedesEventId` chain. A calculated event may not claim `corrected`.
+- Reconciliation imports contain only fingerprint, period, currency, totals,
+  variance, status, and timestamps. A fingerprint chain accepts strictly newer
+  revisions, retains `supersedesReconciliationId`, and rejects identity or time
+  conflicts. Raw invoice files, credentials, prompts, and Provider responses
+  are never stored or projected.
 - Administrator diagnostics require admin authentication, accept only a
   currently configured Provider shard, default to 25 and cap at 100, and omit
   the idempotency key and complete operation fence. They expose only bounded
@@ -102,7 +128,9 @@ SQLite v1 owns `provider_attempt_schema_migrations`,
   it, user export excludes it, and the first release has no automatic expiry.
   These policies are explicit rather than inferred from missing cleanup code.
 - Capture registers every Provider shard as `authoritative/restore` with schema
-  `provider-attempt-ledger-v1`. Restore accepts it only when the target exposes
+  `provider-attempt-ledger-v2`. Restore accepts it only when the target exposes
+  the exact same ledger schema; a v1-only target rejects a v2 archive before
+  any target mutation. The Worker Durable Object binding remains
   `PROVIDER_ATTEMPT_LEDGER -> ProviderAttemptLedger` at migration tag `v5`.
 
 ## 4. Validation & Error Matrix
@@ -118,6 +146,12 @@ SQLite v1 owns `provider_attempt_schema_migrations`,
 | Required ledger start remains unavailable after retry | Block Provider execution with `ProviderAttemptLedgerError` |
 | Required terminal write remains unavailable | Clean up admission/lease, propagate failure, retain possible `started` evidence |
 | Mode is exact `disabled` | Execute Provider without ledger I/O; preserve all other runtime behavior |
+| Usage has missing or mixed token dimensions | Return `unknown` or `partial` fields (`null` per dimension), never zero-fill |
+| Usage arrives after terminal settlement | Append idempotent late evidence and update usage projection only; preserve terminal event |
+| Price catalog has overlapping/invalid effective dates or no token price | Reject with `provider_price_catalog_invalid`; do not bind an attempt |
+| Cost correction uses calculated/incorrect evidence class, an unknown superseded event, or an older timestamp | Reject with the corresponding cost validation error; preserve prior evidence |
+| Reconciliation fingerprint identity changes or imported time is not newer | `provider_reconciliation_conflict`; preserve the prior revision |
+| Reconciliation payload includes raw invoice/secret fields | `provider_reconciliation_invalid`; store nothing |
 | Automatic Skill reaches five seconds with an active attempt | Record `timed_out/upstream_timeout`, abort Provider work, ignore late result |
 | Stream handoff has no body | Record `failed/provider_protocol_error`, cancel upstream, release lease/admission |
 | Diagnostics are unauthenticated, limit is outside 1..100, or Provider is unconfigured | `401`, `400 invalid_limit`, or `400/404` without opening an arbitrary shard |
@@ -132,10 +166,14 @@ SQLite v1 owns `provider_attempt_schema_migrations`,
   and quota increments once.
 - Base: capture is disabled during rollback; Provider behavior and quota remain
   unchanged and operators make no ledger completeness claim for that interval.
+- Base: terminal evidence is available before a usage tail; the attempt remains
+  settled while its usage/cost state is `unknown` or `provisional` until a later
+  append closes the evidence gap.
 - Bad: trust `turnId`, Provider, model, usage, or cost fields from the browser;
   retry Provider execution after a required ledger-start failure; classify a
-  lingering `started` row as success; or expose operation fences/raw errors in
-  diagnostics or export.
+  lingering `started` row as success; zero-fill missing usage; mutate a prior
+  price/reconciliation row; or expose operation fences/raw errors/invoice data
+  in diagnostics or export.
 
 ## 6. Tests Required
 
@@ -150,8 +188,12 @@ SQLite v1 owns `provider_attempt_schema_migrations`,
   failure and admission/lease cleanup before terminal failure is surfaced.
 - Scan SQL columns, diagnostics, logs, account deletion, and user export for
   prompt/completion/tool/credential/raw metadata/invoice markers.
-- Capture and restore `provider-attempt-ledger-v1`; reject any target whose five
-  exact Durable Object migration tags differ from v1 through v5.
+- Cover cumulative/delta/missing/late usage, partial projections, effective-date
+  price selection, append-only cost corrections, duplicate/revisioned
+  reconciliation imports, and strict finance response decoding.
+- Capture and restore `provider-attempt-ledger-v2`; reject a v2 archive on a
+  v1-only target and any target whose five exact Durable Object migration tags
+  differ from v1 through v5.
 - Run the full local quality gate with fake Providers/MCP only. Never use a live
   model, synthetic production probe, or local production deployment.
 
@@ -161,7 +203,7 @@ SQLite v1 owns `provider_attempt_schema_migrations`,
 
 ```typescript
 const response = await callProvider(route);
-await ledger.put({ ...body, providerId: body.providerId, response });
+await ledger.put({ ...body, providerId: body.providerId, response, usage: 0 });
 ```
 
 This executes before durable attribution, trusts browser identity, and stores
@@ -183,4 +225,4 @@ await attempt.succeed();
 ```
 
 The server-selected execution boundary records immutable content-free identity
-before I/O and appends only a bounded terminal classification afterward.
+before I/O and appends only bounded terminal/usage/cost evidence afterward.

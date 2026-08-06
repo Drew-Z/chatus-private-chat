@@ -3,6 +3,7 @@ import type {
   NormalizedToolCall,
   NormalizedToolDefinition,
 } from "../contracts/capability";
+import { normalizeAnthropicProviderUsage, normalizeOpenAiProviderUsage } from "./provider-usage";
 import type { ChatMessage, ChatPart } from "../contracts/chat";
 import { parseDataImage } from "../contracts/image";
 import type { ResolvedProviderRoute, RouteConfig } from "../contracts/provider";
@@ -318,6 +319,7 @@ function parseOpenAiToolTurn(value: unknown, tools: NormalizedToolDefinition[]):
       content: text || null,
       ...(Array.isArray(message.tool_calls) ? { tool_calls: message.tool_calls } : {}),
     },
+    usage: normalizeOpenAiProviderUsage(value.usage),
   };
 }
 
@@ -364,6 +366,7 @@ function parseAnthropicToolTurn(value: unknown, tools: NormalizedToolDefinition[
     toolCalls,
     finishReason: typeof value.stop_reason === "string" ? value.stop_reason : "",
     providerTurn: { role: "assistant", content: providerContent },
+    usage: normalizeAnthropicProviderUsage(value.usage),
   };
 }
 

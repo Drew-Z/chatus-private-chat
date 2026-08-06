@@ -370,6 +370,13 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .admin-operations-summary dd { grid-row: 1; color: var(--ink); font-size: 20px; font-weight: 800; }
 .admin-operations-summary dt { grid-row: 2; margin-top: 4px; color: var(--muted); font-size: 11px; }
 .admin-operations-grid { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.admin-finance-entry-grid { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.admin-finance-form { min-width: 0; padding: 18px 0 0; border-top: 1px solid #edf1ef; }
+.admin-finance-form-heading { margin-bottom: 14px; }
+.admin-finance-form-heading h3 { margin: 0; font-size: 14px; }
+.admin-finance-form-heading p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.admin-finance-form .primary-button { margin-top: 14px; }
+.admin-finance-form .form-message { margin-top: 12px; }
 .admin-operations-section { min-width: 0; padding-top: 14px; border-top: 1px solid var(--line-strong); }
 .admin-operations-section > header { min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 9px; margin-bottom: 8px; }
 .admin-operations-section > header > span { width: 30px; height: 30px; display: inline-grid; place-items: center; border: 1px solid var(--line); border-radius: 7px; color: var(--accent); background: var(--accent-soft); }
@@ -908,6 +915,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .admin-operations-summary > div:nth-child(odd) { border-left: 0; }
   .admin-operations-summary > div:last-child { grid-column: 1 / -1; border-bottom: 0; }
   .admin-operations-grid { grid-template-columns: 1fr; gap: 20px; }
+  .admin-finance-entry-grid { grid-template-columns: 1fr; gap: 20px; }
   .operations-trend-row { grid-template-columns: 38px minmax(0, 1fr); padding-block: 7px; }
   .operations-trend-row small { grid-column: 2; white-space: normal; }
   .operations-compact-list > div { align-items: flex-start; grid-template-columns: 1fr; gap: 5px; padding-block: 10px; }

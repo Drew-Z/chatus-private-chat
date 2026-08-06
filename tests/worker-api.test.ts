@@ -4518,6 +4518,9 @@ describe("Worker API", () => {
     expect((await exports.default.fetch(new Request(
       "https://example.test/api/admin/provider-attempts?providerId=test",
     ))).status).toBe(401);
+    expect((await exports.default.fetch(new Request(
+      "https://example.test/api/admin/provider-finance",
+    ))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -6273,6 +6276,141 @@ describe("Worker API", () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it("manages immutable Provider prices and content-free reconciliation summaries", async () => {
+    const cookie = await adminLogin();
+    const providerId = "finance-test";
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Finance test provider",
+          type: "openai-chat",
+          baseUrl: "https://finance.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        reasoning: { label: "Reasoning", offerings: [{ providerId, model: "finance-model" }] },
+      },
+      defaults: { defaultRoute: "reasoning", allowedRoutes: ["reasoning"] },
+    }));
+    const base = Date.now() + 1_000;
+    const price = {
+      version: 1,
+      catalogVersionId: "finance-test-v1",
+      providerId,
+      offeringId: `reasoning/${providerId}`,
+      model: "finance-model",
+      currency: "USD",
+      precision: 6,
+      unit: "million_tokens",
+      inputNoCachePriceMicros: 1_000_000,
+      cacheReadInputPriceMicros: 0,
+      cacheWriteInputPriceMicros: 0,
+      outputTextPriceMicros: 2_000_000,
+      reasoningOutputPriceMicros: 0,
+      effectiveFrom: base,
+      effectiveTo: null,
+      approver: "finance-admin",
+      provenance: "provider-published-price-card",
+      createdAt: base,
+    };
+    const createdPrice = await apiRequest("/api/admin/provider-finance/prices", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(price),
+    });
+    expect(createdPrice.status, await createdPrice.clone().text()).toBe(201);
+    const replayedPrice = await apiRequest("/api/admin/provider-finance/prices", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(price),
+    });
+    expect(replayedPrice.status).toBe(200);
+
+    const runtime = createProviderAttemptRuntime({
+      ledger: env.PROVIDER_ATTEMPT_LEDGER,
+      mode: "required",
+      operation: {
+        version: 1,
+        operationId: `finance-test-${crypto.randomUUID()}`,
+        fenceId: crypto.randomUUID(),
+        kind: "provider_turn",
+        startedAt: base,
+      },
+    });
+    const attempt = await runtime.createRun("main_answer").start({
+      logicalRouteId: "reasoning",
+      providerId,
+      model: "finance-model",
+      credentialClass: "managed",
+      fallbackIndex: 0,
+      startedAt: base + 1,
+    });
+    await attempt.recordUsage({
+      source: "ai_sdk_generate",
+      inputNoCacheTokens: 100,
+      cacheReadInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTextTokens: 20,
+      reasoningOutputTokens: 0,
+      observedAt: base + 2,
+    });
+    await attempt.succeed(base + 3);
+
+    const reconciliation = {
+      version: 1,
+      fingerprint: `sha256:${"c".repeat(64)}`,
+      providerId,
+      accountFingerprint: `acct_sha256:${"d".repeat(64)}`,
+      periodStart: base - 1_000,
+      periodEnd: base + 100,
+      currency: "USD",
+      reportedTotalMicros: 200,
+      matchedTotalMicros: 140,
+      status: "partial",
+      importedAt: base + 200,
+    };
+    const imported = await apiRequest("/api/admin/provider-finance/reconciliations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(reconciliation),
+    });
+    expect(imported.status, await imported.clone().text()).toBe(201);
+    await expect(imported.json()).resolves.toMatchObject({
+      reconciliation: { unmatchedVarianceMicros: 60, status: "partial" },
+    });
+
+    const finance = await apiRequest(`/api/admin/provider-finance?periodStart=${base - 1_000}&limit=10`, cookie);
+    expect(finance.status, await finance.clone().text()).toBe(200);
+    const payload = await finance.json() as any;
+    expect(payload).toMatchObject({
+      version: 1,
+      hardBudgetEnforcement: "unsupported",
+      providers: [expect.objectContaining({
+        providerId,
+        label: "Finance test provider",
+        capacity: expect.objectContaining({ calls: 1, unknownUsageAttempts: 0 }),
+        usage: expect.objectContaining({ inputNoCacheTokens: 100, outputTextTokens: 20 }),
+        costs: [expect.objectContaining({ currency: "USD", provisionalMicros: 140, totalMicros: 140 })],
+        attempts: [expect.objectContaining({
+          catalogVersionId: "finance-test-v1",
+          usageState: "reported",
+          costState: "provisional",
+        })],
+        reconciliations: [expect.objectContaining({ status: "partial", unmatchedVarianceMicros: 60 })],
+      })],
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/apiKey|rawInvoice|prompt|completion/i);
+
+    const leaked = await apiRequest("/api/admin/provider-finance/reconciliations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...reconciliation, fingerprint: `sha256:${"e".repeat(64)}`, rawInvoice: "secret" }),
+    });
+    expect(leaked.status).toBe(400);
+    expect((await apiRequest("/api/admin/provider-finance?limit=101", cookie)).status).toBe(400);
   });
 
   it("redacts Provider bodies and endpoints from model discovery failures", async () => {

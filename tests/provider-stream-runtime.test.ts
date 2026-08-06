@@ -121,7 +121,43 @@ describe("provider stream runtime", () => {
       model: "fixture-model",
       messages: [{ role: "user", content: "Hello" }],
       stream: true,
+      stream_options: { include_usage: true },
       temperature: 0.4,
+    });
+  });
+
+  it("captures an OpenAI usage-only tail without exposing or double counting it", async () => {
+    const attempt = await callProviderStream({
+      route: route("openai-chat"),
+      apiKey: "fixture-key",
+      usedUserKey: false,
+      messages: [{ role: "user", content: "Hello" }],
+      temperature: 0.5,
+      defaultMaxTokens: 4096,
+      fetch: async () => new Response(streamFromChunks([
+        openAiEvent("visible"),
+        encoder.encode(`data: ${JSON.stringify({
+          choices: [],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 30,
+            prompt_tokens_details: { cached_tokens: 20 },
+            completion_tokens_details: { reasoning_tokens: 10 },
+          },
+        })}\n\n`),
+        encoder.encode("data: [DONE]\n\n"),
+      ])),
+    });
+    expect(attempt.ok).toBe(true);
+    if (!attempt.ok) throw new Error("expected successful stream attempt");
+
+    await expect(new Response(attempt.body).text()).resolves.toContain("visible");
+    await expect(attempt.usage).resolves.toEqual({
+      inputNoCacheTokens: 100,
+      cacheReadInputTokens: 20,
+      cacheWriteInputTokens: null,
+      outputTextTokens: 20,
+      reasoningOutputTokens: 10,
     });
   });
 
@@ -209,11 +245,25 @@ describe("provider stream runtime", () => {
         capturedHeaders = new Headers(init?.headers);
         capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return new Response(streamFromChunks([
+          anthropicEvent("message_start", {
+            type: "message_start",
+            message: {
+              usage: {
+                input_tokens: 80,
+                cache_read_input_tokens: 12,
+                cache_creation_input_tokens: 4,
+              },
+            },
+          }),
           anthropicEvent("content_block_delta", {
             type: "content_block_delta",
             delta: { type: "text_delta", text: "hello" },
           }),
-          anthropicEvent("message_delta", { type: "message_delta", delta: { stop_reason: "max_tokens" } }),
+          anthropicEvent("message_delta", {
+            type: "message_delta",
+            delta: { stop_reason: "max_tokens" },
+            usage: { output_tokens: 16 },
+          }),
           anthropicEvent("message_stop", { type: "message_stop" }),
         ]));
       },
@@ -235,6 +285,13 @@ describe("provider stream runtime", () => {
     expect(text).toContain('"content":"hello"');
     expect(text).toContain('"finish_reason":"length"');
     expect(text).toContain("data: [DONE]");
+    await expect(attempt.usage).resolves.toEqual({
+      inputNoCacheTokens: 80,
+      cacheReadInputTokens: 12,
+      cacheWriteInputTokens: 4,
+      outputTextTokens: 16,
+      reasoningOutputTokens: null,
+    });
   });
 
   it("fails after visible output without reopening fallback and propagates cancellation", async () => {
@@ -277,6 +334,13 @@ describe("provider stream runtime", () => {
     expect(cancellable.ok).toBe(true);
     if (!cancellable.ok) throw new Error("expected cancellable stream attempt");
     await cancellable.cancelUpstream("stop");
+    await expect(cancellable.usage).resolves.toEqual({
+      inputNoCacheTokens: null,
+      cacheReadInputTokens: null,
+      cacheWriteInputTokens: null,
+      outputTextTokens: null,
+      reasoningOutputTokens: null,
+    });
     expect(explicitCancel).toBe("stop");
     expect(cancelled).toBeUndefined();
   });

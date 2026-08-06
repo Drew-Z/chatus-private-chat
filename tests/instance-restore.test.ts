@@ -41,7 +41,7 @@ describe("isolated restore engine", () => {
     expect(result.drill.status).toBe("passed");
     expect(fixture.manifest.entries).toContainEqual(expect.objectContaining({
       store: "provider_attempt_ledger",
-      schemaVersion: "provider-attempt-ledger-v1",
+      schemaVersion: "provider-attempt-ledger-v2",
       stateClass: "authoritative",
       restoreBehavior: "restore",
     }));
@@ -160,6 +160,27 @@ describe("isolated restore engine", () => {
       adapter: schemaAdapter,
     })).rejects.toMatchObject({ code: "restore_target_schema_incompatible" });
     expect(schemaAdapter.actionOrder).toEqual([]);
+
+    const v1SchemaAdapter = createRecordingRestoreAdapter(fixture, {
+      supportedSchemas: fixture.manifest.entries
+        .filter(({ restoreBehavior }) => restoreBehavior !== "exclude")
+        .map(({ store, schemaVersion }) => ({
+          store,
+          schemaVersion: store === "provider_attempt_ledger"
+            ? "provider-attempt-ledger-v1"
+            : schemaVersion,
+        })),
+    });
+    await expect(restoreIsolatedInstance({
+      operationId: "restore-provider-ledger-v1",
+      archive: fixture.archive,
+      archiveKey: fixture.archiveKey,
+      target: fixture.target,
+      mappings: fixture.mappings,
+      checkpoints: new MemoryRestoreCheckpointStore(),
+      adapter: v1SchemaAdapter,
+    })).rejects.toMatchObject({ code: "restore_target_schema_incompatible" });
+    expect(v1SchemaAdapter.actionOrder).toEqual([]);
 
     const targetAdapter = createRecordingRestoreAdapter(fixture);
     const wrongTarget = { ...fixture.target, workerName: "other-worker" };

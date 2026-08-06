@@ -10,7 +10,8 @@ The module is a protocol adapter. Provider selection, credential resolution, cap
 
 - Module: `src/services/provider-stream-runtime.ts`
 - Provider attempt: `callProviderStream({ route, apiKey, usedUserKey, messages, temperature, defaultMaxTokens, signal?, fetch? })`
-- Successful result: `{ ok: true, body, cancelUpstream }`
+- Successful result: `{ ok: true, body, cancelUpstream, usage }`, where `usage`
+  resolves to normalized `ProviderTokenUsageV1` dimensions (or `null` values)
 - HTTP failure result: `{ ok: false, status, message, terminal }`
 - Protocol failure: `UpstreamRequestError(status, message, "protocol_error")`
 - Preflight limit: `MAX_PROVIDER_STREAM_PREFLIGHT_BYTES`
@@ -30,6 +31,13 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 - The deadline uses the child abort signal for upstream I/O. Parent cancellation keeps `AbortError` semantics and must not fall back; deadline expiry raises `TimeoutError` and remains eligible for the existing pre-output fallback policy.
 - DONE-only, empty, malformed, incomplete, explicit error, and oversized pre-visible streams fail before the Worker commits the provider response.
 - The first non-empty legacy text content commits the attempt and clears only the deadline timer. Parent cancellation propagation stays attached until completion/cancellation, and the 60-second boundary must not end a committed long stream.
+- Usage collection tees the provider body and runs independently of visible
+  stream commitment and terminal settlement. OpenAI `stream_options.include_usage`
+  and Anthropic message usage are normalized into input/cache/output/reasoning
+  dimensions. A missing, truncated, or cancelled usage tail resolves to the
+  dimensions observed so far; unknown dimensions remain `null` and never become
+  zero. The Worker may settle the attempt before this promise resolves and then
+  append the usage evidence idempotently when it arrives.
 - After the first visible output, protocol validation continues on the returned stream. A later protocol failure errors that stream and must not reopen provider fallback.
 - `cancelUpstream` is idempotent and cancels the active normalized reader; Anthropic cancellation propagates to the original provider body.
 - Non-2xx responses use bounded shared error projection. Status 400/422 and user-key 401/403 follow `isTerminalProviderFailure`; other HTTP failures remain eligible for pre-output fallback.
@@ -64,6 +72,7 @@ The runtime owns the child deadline lifecycle. It disposes the timer and parent 
 | Parent request cancels before visible output | Abort/cancel upstream with `AbortError`; never fall back |
 | Invalid SSE arrives after visible content | Error the committed stream; release its lease; do not fall back |
 | Stream remains active past 60 seconds after visible content | Continue normally; the first-visible timer is already cleared |
+| Usage tail is missing, truncated, or arrives after terminal settlement | Preserve terminal result; append `unknown`/`partial` usage evidence without reopening fallback or changing terminal status |
 | Request or response consumer cancels | Propagate cancellation upstream and release the lease once |
 
 ## 6. Tests Required
@@ -74,6 +83,9 @@ The runtime owns the child deadline lifecycle. It disposes the timer and parent 
 - Unit-test Anthropic text, finish, stop, and cancellation conversion.
 - Keep Worker integration tests for HTTP and protocol fallback, post-visible failure, provider lease release, reliability telemetry, and BYOK terminal classification.
 - Assert one ledger attempt per fake stream request, including pre-visible fallback, post-visible failure, cancellation, timeout, and bodyless-response cleanup.
+- Assert usage remains independent from terminal settlement for reported,
+  partial, missing, and late OpenAI/Anthropic usage tails; no missing dimension
+  is rendered as zero.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 
 ## 7. Wrong vs Correct

@@ -3,7 +3,7 @@
   "name": "provider-cost-reconciliation-capacity",
   "title": "Provider cost reconciliation and capacity",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,15 +12,90 @@
   "assignee": "zhang",
   "createdAt": "2026-08-05",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/provider-cost-reconciliation-capacity",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "374e25cbba8acac295fd5606c07c4cb6817d241b",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/51",
   "subtasks": [],
   "children": [],
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite client build and frontend structure checks passed",
+        "at": "2026-08-06T07:54:46.501171+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "45 files and 663 tests passed; local fake Workers pool",
+        "at": "2026-08-06T07:54:47.705050+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed",
+        "at": "2026-08-06T07:54:48.724905+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Dry-run passed with ProviderAttemptLedger and local Queue/R2 bindings; no deploy",
+        "at": "2026-08-06T07:54:49.734117+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors",
+        "at": "2026-08-06T07:54:50.749101+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright 86 passed and 49 expected matrix skips across 135 cases",
+        "at": "2026-08-06T07:54:51.800925+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake Provider Agent Playwright 3 passed",
+        "at": "2026-08-06T07:54:52.869426+00:00"
+      },
+      {
+        "command": "npx vitest run tests/provider-attempt-ledger.test.ts tests/provider-usage.test.ts tests/client-api.test.ts tests/client-admin-operations.test.ts",
+        "status": "passed",
+        "summary": "Focused finance and strict-decoder suite passed: 4 files, 83 tests",
+        "at": "2026-08-06T07:54:53.955652+00:00"
+      },
+      {
+        "command": "npx vitest run tests/worker-api.test.ts tests/provider-stream-runtime.test.ts tests/provider-tool-runtime.test.ts tests/fallback-language-model.test.ts tests/instance-restore.test.ts tests/instance-capture.test.ts",
+        "status": "passed",
+        "summary": "Cross-layer runtime and recovery suite passed: 6 files, 190 tests",
+        "at": "2026-08-06T07:54:55.023105+00:00"
+      }
+    ],
+    "acceptance": {
+      "AC1": "Provider usage tests cover missing, late, cumulative, delta, partial, and idempotent evidence without zero fill.",
+      "AC2": "Ledger tests bind immutable effective-dated catalog versions across the price boundary.",
+      "AC3": "Cost evidence tests retain reversal, replacement, and correction rows and converge to exact totals.",
+      "AC4": "Strict reconciliation revisions cover all statuses, variance, duplicate/conflict handling, and raw-invoice rejection.",
+      "AC5": "Operations API/UI and five-viewport fixtures cover usage/cost states, capacity, pagination, fallback, catalogs, and revision chains.",
+      "AC6": "Finance policy retains instance evidence, excludes user export and raw invoices, and recovery/privacy tests remain green.",
+      "AC7": "Hard budgets, member-visible money claims, and finance feedback remain unsupported and absent.",
+      "AC8": "Pending work commit, PR CI, exact-SHA deployment/acceptance artifacts, and archive checks."
+    },
+    "decisions": {
+      "FIN-02": "Implemented distinct reported, estimated, reconciled, corrected, unknown, and provisional evidence with immutable prices.",
+      "FIN-05": "Implemented content-free purpose-bounded finance projections with explicit retention, deletion, export, and raw-invoice policy."
+    },
+    "deferred": {
+      "FIN-04": "Provider feedback capture, aggregation, and routing remain deferred and unimplemented.",
+      "hardBudgetEnforcement": "unsupported"
+    }
+  }
 }

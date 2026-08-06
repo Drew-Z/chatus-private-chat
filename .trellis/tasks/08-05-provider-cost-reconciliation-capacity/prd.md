@@ -34,19 +34,19 @@ unknown/provisional and keeping hard budgets disabled.
 
 ## Acceptance Criteria
 
-- [ ] AC1. Missing/late/cumulative/delta usage fixtures normalize idempotently and
+- [x] AC1. Missing/late/cumulative/delta usage fixtures normalize idempotently and
       display unknown rather than zero.
-- [ ] AC2. Cross-day price changes preserve attempt-time catalog versions and do
+- [x] AC2. Cross-day price changes preserve attempt-time catalog versions and do
       not rewrite historical totals.
-- [ ] AC3. Correction/reversal/replacement fixtures retain an append-only audit
+- [x] AC3. Correction/reversal/replacement fixtures retain an append-only audit
       trail and converge to the exact reconciled total.
-- [ ] AC4. Matched/partial/disputed/corrected/closed imports expose unmatched
+- [x] AC4. Matched/partial/disputed/corrected/closed imports expose unmatched
       variance without leaking raw invoice or credential material.
-- [ ] AC5. Operator views distinguish provisional, unknown, estimated, reported,
+- [x] AC5. Operator views distinguish provisional, unknown, estimated, reported,
       reconciled and corrected values plus retry/fallback capacity.
-- [ ] AC6. Retention/deletion/export policy and leak scans pass before any
+- [x] AC6. Retention/deletion/export policy and leak scans pass before any
       production capture or member-visible money claim.
-- [ ] AC7. Feedback capture/aggregation/routing and hard budget enforcement remain
+- [x] AC7. Feedback capture/aggregation/routing and hard budget enforcement remain
       absent and explicitly unsupported.
 - [ ] AC8. Full gates, specs, PR/commit/deployment evidence and archive checks pass.
 

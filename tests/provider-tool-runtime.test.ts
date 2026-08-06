@@ -89,6 +89,12 @@ describe("provider tool runtime", () => {
           },
           finish_reason: "tool_calls",
         }],
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 30,
+          prompt_tokens_details: { cached_tokens: 20 },
+          completion_tokens_details: { reasoning_tokens: 10 },
+        },
       }), { headers: { "Content-Type": "application/json" } });
     });
 
@@ -124,6 +130,13 @@ describe("provider tool runtime", () => {
         arguments: { query: "chatus" },
         argumentsValid: true,
       }],
+      usage: {
+        inputNoCacheTokens: 100,
+        cacheReadInputTokens: 20,
+        cacheWriteInputTokens: null,
+        outputTextTokens: 20,
+        reasoningOutputTokens: 10,
+      },
     });
 
     appendProviderTurn(history, turn.providerTurn);
@@ -160,6 +173,12 @@ describe("provider tool runtime", () => {
           { type: "tool_use", id: "call-a", name: "lookup_tool", input: { query: "image" } },
         ],
         stop_reason: "tool_use",
+        usage: {
+          input_tokens: 80,
+          cache_read_input_tokens: 12,
+          cache_creation_input_tokens: 4,
+          output_tokens: 16,
+        },
       }), { headers: { "Content-Type": "application/json" } });
     });
 
@@ -194,6 +213,13 @@ describe("provider tool runtime", () => {
         toolId: "builtin:lookup",
         arguments: { query: "image" },
       }],
+      usage: {
+        inputNoCacheTokens: 80,
+        cacheReadInputTokens: 12,
+        cacheWriteInputTokens: 4,
+        outputTextTokens: 16,
+        reasoningOutputTokens: null,
+      },
     });
 
     appendProviderTurn(history, turn.providerTurn);

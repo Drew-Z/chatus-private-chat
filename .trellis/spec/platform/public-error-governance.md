@@ -46,7 +46,13 @@ Content-free Provider attempt diagnostics are available only at authenticated
 - Passive correlation extends only the existing latest version-2 route/provider record with an optional normalized request ID. It creates no per-request key, active probe, or conversation trace and does not affect ordering/scoring.
 - Exact provider correlation follows the existing chat reliability write through `ProviderReliabilitySample`, the provider-scoped `ProviderCoordinator` reducer, and its KV projection. Do not restore a direct KV read-modify-write path. Automatic Skill selector telemetry remains isolated and does not inherit the answer turn request ID.
 - MCP OAuth audit targets omit the member label. They may retain the bounded server ID, operation, and discovery counts/status required for administration.
-- Provider attempt diagnostics omit prompt/completion/tool data, credentials, raw Provider metadata, invoice data, idempotency keys, and complete operation fences. They may expose opaque turn/run/attempt IDs, exact configured route dimensions, bounded terminal class/timing, credential class, and operation kind. Account deletion retains this instance-level evidence; user export excludes it.
+- Provider attempt and finance diagnostics omit prompt/completion/tool data,
+  credentials, raw Provider metadata, raw invoice data, idempotency keys, and
+  complete operation fences. They may expose opaque turn/run/attempt IDs, exact
+  configured route dimensions, bounded terminal/usage/cost/reconciliation
+  classes, timing, credential class, and operation kind. Account deletion
+  retains this instance-level evidence; user export excludes it and never
+  includes raw invoice material.
 - React shows/copies only a validated request reference. The chat banner renders the local canonical message; the admin reliability table may compact the display but copies the exact value.
 
 ## 4. Validation & Error Matrix

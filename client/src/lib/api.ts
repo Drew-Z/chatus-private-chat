@@ -432,10 +432,132 @@ export type AdminFeedbackEntry = {
   at: string;
 };
 
+export type AdminProviderTokenUsage = {
+  inputNoCacheTokens: number | null;
+  cacheReadInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
+  outputTextTokens: number | null;
+  reasoningOutputTokens: number | null;
+};
+
+export type AdminProviderFinanceCost = {
+  currency: string;
+  provisionalMicros: number;
+  settledMicros: number;
+  correctedMicros: number;
+  totalMicros: number;
+};
+
+export type AdminProviderFinanceAttempt = {
+  attemptId: string;
+  runKind: string;
+  logicalRouteId: string;
+  offeringId: string;
+  model: string;
+  fallbackIndex: number;
+  status: string;
+  errorClass: string;
+  startedAt: number;
+  endedAt: number;
+  latencyMs: number | null;
+  priceResolution: "matched" | "missing";
+  catalogVersionId: string | null;
+  usageState: "unknown" | "partial" | "reported" | "estimated" | "reconciled";
+  usage: AdminProviderTokenUsage;
+  costState: "unknown" | "provisional" | "settled" | "corrected";
+  costs: AdminProviderFinanceCost[];
+};
+
+export type AdminProviderReconciliation = {
+  version: 1;
+  reconciliationId: string;
+  revision: number;
+  supersedesReconciliationId: string | null;
+  fingerprint: string;
+  providerId: string;
+  accountFingerprint: string;
+  periodStart: number;
+  periodEnd: number;
+  currency: string;
+  reportedTotalMicros: number;
+  matchedTotalMicros: number;
+  unmatchedVarianceMicros: number;
+  status: "matched" | "partial" | "disputed" | "corrected" | "closed";
+  importedAt: number;
+};
+
+export type AdminProviderReconciliationInput = Omit<
+  AdminProviderReconciliation,
+  "reconciliationId" | "revision" | "supersedesReconciliationId" | "unmatchedVarianceMicros"
+>;
+
+export type AdminProviderPriceCatalog = {
+  version: 1;
+  catalogVersionId: string;
+  providerId: string;
+  offeringId: string;
+  model: string;
+  currency: string;
+  precision: number;
+  unit: "million_tokens";
+  inputNoCachePriceMicros: number | null;
+  cacheReadInputPriceMicros: number | null;
+  cacheWriteInputPriceMicros: number | null;
+  outputTextPriceMicros: number | null;
+  reasoningOutputPriceMicros: number | null;
+  effectiveFrom: number;
+  effectiveTo: number | null;
+  approver: string;
+  provenance: string;
+  createdAt: number;
+};
+
+export type AdminProviderPriceCatalogResult = {
+  created: boolean;
+  catalog: AdminProviderPriceCatalog;
+};
+
+export type AdminProviderReconciliationResult = {
+  created: boolean;
+  reconciliation: AdminProviderReconciliation;
+};
+
+export type AdminProviderFinanceProvider = {
+  version: 1;
+  providerId: string;
+  label: string;
+  generatedAt: number;
+  periodStart: number;
+  capacity: {
+    calls: number;
+    succeeded: number;
+    failures: number;
+    retries: number;
+    fallbacks: number;
+    averageLatencyMs: number | null;
+    unknownUsageAttempts: number;
+    provisionalCostAttempts: number;
+  };
+  usage: AdminProviderTokenUsage;
+  costs: Array<AdminProviderFinanceCost & { unknownAttempts: number }>;
+  attempts: AdminProviderFinanceAttempt[];
+  reconciliations: AdminProviderReconciliation[];
+  catalogs: AdminProviderPriceCatalog[];
+};
+
+export type AdminProviderFinanceSnapshot = {
+  version: 1;
+  generatedAt: number;
+  periodStart: number;
+  hardBudgetEnforcement: "unsupported";
+  providers: AdminProviderFinanceProvider[];
+};
+
 export type AdminOperationsSnapshot = {
   stats: AdminOperationsStats;
   audit: AdminAuditEntry[];
   feedback: AdminFeedbackEntry[];
+  finance: AdminProviderFinanceSnapshot;
 };
 
 export type AdminSkillConfig = {
@@ -914,10 +1036,11 @@ export async function fetchAdminReliability(): Promise<AdminReliabilitySnapshot>
 }
 
 export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
-  const [stats, audit, feedback] = await Promise.all([
+  const [stats, audit, feedback, finance] = await Promise.all([
     requestJson("/api/admin/stats"),
     requestJson("/api/admin/audit"),
     requestJson("/api/admin/feedback"),
+    requestJson("/api/admin/provider-finance?limit=100"),
   ]);
   if (!isAdminOperationsStats(stats)) {
     throw new ApiError("invalid_admin_stats_response", "运营统计格式无效。", 502);
@@ -928,7 +1051,36 @@ export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
   if (!isAdminFeedbackSnapshot(feedback)) {
     throw new ApiError("invalid_admin_feedback_response", "成员反馈格式无效。", 502);
   }
-  return { stats, audit: audit.entries, feedback: feedback.entries };
+  if (!isAdminProviderFinanceSnapshot(finance)) {
+    throw new ApiError("invalid_admin_provider_finance_response", "服务商成本数据格式无效。", 502);
+  }
+  return { stats, audit: audit.entries, feedback: feedback.entries, finance };
+}
+
+export async function createAdminProviderPriceCatalog(
+  input: AdminProviderPriceCatalog,
+): Promise<AdminProviderPriceCatalogResult> {
+  const data = await requestJson("/api/admin/provider-finance/prices", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!isAdminProviderPriceCatalogResult(data)) {
+    throw new ApiError("invalid_admin_provider_price_response", "价格目录保存结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function importAdminProviderReconciliation(
+  input: AdminProviderReconciliationInput,
+): Promise<AdminProviderReconciliationResult> {
+  const data = await requestJson("/api/admin/provider-finance/reconciliations", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!isAdminProviderReconciliationResult(data)) {
+    throw new ApiError("invalid_admin_provider_reconciliation_response", "Provider 对账导入结果格式无效。", 502);
+  }
+  return data;
 }
 
 export async function fetchAdminMembers(): Promise<AdminMembersSnapshot> {
@@ -1671,6 +1823,185 @@ export function isAdminFeedbackSnapshot(value: unknown): value is { entries: Adm
     return false;
   }
   return new Set(value.entries.map((entry) => entry.id)).size === value.entries.length;
+}
+
+export function isAdminProviderFinanceSnapshot(value: unknown): value is AdminProviderFinanceSnapshot {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["version", "generatedAt", "periodStart", "hardBudgetEnforcement", "providers"])
+    || value.version !== 1
+    || !isNonNegativeInteger(value.generatedAt)
+    || !isNonNegativeInteger(value.periodStart)
+    || value.periodStart > value.generatedAt
+    || value.hardBudgetEnforcement !== "unsupported"
+    || !Array.isArray(value.providers)
+    || value.providers.length > 500
+    || !value.providers.every(isAdminProviderFinanceProvider)) {
+    return false;
+  }
+  return new Set(value.providers.map((provider) => provider.providerId)).size === value.providers.length;
+}
+
+function isAdminProviderFinanceProvider(value: unknown): value is AdminProviderFinanceProvider {
+  return isRecord(value)
+    && hasExactKeys(value, ["version", "providerId", "label", "generatedAt", "periodStart", "capacity", "usage", "costs", "attempts", "reconciliations", "catalogs"])
+    && value.version === 1
+    && isNonEmptyString(value.providerId)
+    && isNonEmptyString(value.label)
+    && isNonNegativeInteger(value.generatedAt)
+    && isNonNegativeInteger(value.periodStart)
+    && value.periodStart <= value.generatedAt
+    && isAdminProviderFinanceCapacity(value.capacity)
+    && isAdminProviderTokenUsage(value.usage)
+    && Array.isArray(value.costs)
+    && value.costs.length <= 32
+    && value.costs.every((cost) => isAdminProviderFinanceCost(cost, true))
+    && Array.isArray(value.attempts)
+    && value.attempts.length <= 100
+    && value.attempts.every(isAdminProviderFinanceAttempt)
+    && Array.isArray(value.reconciliations)
+    && value.reconciliations.length <= 50
+    && value.reconciliations.every(isAdminProviderReconciliation)
+    && Array.isArray(value.catalogs)
+    && value.catalogs.length <= 100
+    && value.catalogs.every(isAdminProviderPriceCatalog);
+}
+
+function isAdminProviderFinanceCapacity(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, ["calls", "succeeded", "failures", "retries", "fallbacks", "averageLatencyMs", "unknownUsageAttempts", "provisionalCostAttempts"])
+    && isNonNegativeInteger(value.calls)
+    && isNonNegativeInteger(value.succeeded)
+    && isNonNegativeInteger(value.failures)
+    && isNonNegativeInteger(value.retries)
+    && isNonNegativeInteger(value.fallbacks)
+    && (value.averageLatencyMs === null || isNonNegativeInteger(value.averageLatencyMs))
+    && isNonNegativeInteger(value.unknownUsageAttempts)
+    && isNonNegativeInteger(value.provisionalCostAttempts)
+    && value.succeeded <= value.calls
+    && value.failures <= value.calls
+    && value.retries <= value.calls
+    && value.fallbacks <= value.calls
+    && value.unknownUsageAttempts <= value.calls
+    && value.provisionalCostAttempts <= value.calls;
+}
+
+function isAdminProviderTokenUsage(value: unknown): value is AdminProviderTokenUsage {
+  return isRecord(value)
+    && hasExactKeys(value, ["inputNoCacheTokens", "cacheReadInputTokens", "cacheWriteInputTokens", "outputTextTokens", "reasoningOutputTokens"])
+    && [
+      value.inputNoCacheTokens,
+      value.cacheReadInputTokens,
+      value.cacheWriteInputTokens,
+      value.outputTextTokens,
+      value.reasoningOutputTokens,
+    ].every((item) => item === null || isNonNegativeInteger(item));
+}
+
+function isAdminProviderFinanceCost(value: unknown, includesUnknown: boolean): boolean {
+  const keys = includesUnknown
+    ? ["currency", "provisionalMicros", "settledMicros", "correctedMicros", "totalMicros", "unknownAttempts"]
+    : ["currency", "provisionalMicros", "settledMicros", "correctedMicros", "totalMicros"];
+  return isRecord(value)
+    && hasExactKeys(value, keys)
+    && typeof value.currency === "string"
+    && /^[A-Z]{3}$/.test(value.currency)
+    && Number.isSafeInteger(value.provisionalMicros)
+    && Number.isSafeInteger(value.settledMicros)
+    && Number.isSafeInteger(value.correctedMicros)
+    && Number.isSafeInteger(value.totalMicros)
+    && value.totalMicros === Number(value.provisionalMicros) + Number(value.settledMicros) + Number(value.correctedMicros)
+    && (!includesUnknown || isNonNegativeInteger(value.unknownAttempts));
+}
+
+function isAdminProviderFinanceAttempt(value: unknown): value is AdminProviderFinanceAttempt {
+  return isRecord(value)
+    && hasExactKeys(value, ["attemptId", "runKind", "logicalRouteId", "offeringId", "model", "fallbackIndex", "status", "errorClass", "startedAt", "endedAt", "latencyMs", "priceResolution", "catalogVersionId", "usageState", "usage", "costState", "costs"])
+    && /^attempt_[0-9a-f-]{36}$/i.test(String(value.attemptId))
+    && isNonEmptyString(value.runKind)
+    && isNonEmptyString(value.logicalRouteId)
+    && isNonEmptyString(value.offeringId)
+    && isNonEmptyString(value.model)
+    && isNonNegativeInteger(value.fallbackIndex)
+    && isNonEmptyString(value.status)
+    && isNonEmptyString(value.errorClass)
+    && isNonNegativeInteger(value.startedAt)
+    && isNonNegativeInteger(value.endedAt)
+    && (value.latencyMs === null || isNonNegativeInteger(value.latencyMs))
+    && (value.priceResolution === "matched" || value.priceResolution === "missing")
+    && (value.catalogVersionId === null || isNonEmptyString(value.catalogVersionId))
+    && (value.usageState === "unknown" || value.usageState === "partial" || value.usageState === "reported" || value.usageState === "estimated" || value.usageState === "reconciled")
+    && isAdminProviderTokenUsage(value.usage)
+    && (value.costState === "unknown" || value.costState === "provisional" || value.costState === "settled" || value.costState === "corrected")
+    && Array.isArray(value.costs)
+    && value.costs.length <= 32
+    && value.costs.every((cost) => isAdminProviderFinanceCost(cost, false));
+}
+
+function isAdminProviderReconciliation(value: unknown): value is AdminProviderReconciliation {
+  return isRecord(value)
+    && hasExactKeys(value, ["version", "reconciliationId", "revision", "supersedesReconciliationId", "fingerprint", "providerId", "accountFingerprint", "periodStart", "periodEnd", "currency", "reportedTotalMicros", "matchedTotalMicros", "unmatchedVarianceMicros", "status", "importedAt"])
+    && value.version === 1
+    && isNonEmptyString(value.reconciliationId)
+    && isBoundedInteger(value.revision, 1, Number.MAX_SAFE_INTEGER)
+    && (value.supersedesReconciliationId === null || isNonEmptyString(value.supersedesReconciliationId))
+    && (value.revision === 1) === (value.supersedesReconciliationId === null)
+    && typeof value.fingerprint === "string"
+    && /^sha256:[0-9a-f]{64}$/.test(value.fingerprint)
+    && isNonEmptyString(value.providerId)
+    && typeof value.accountFingerprint === "string"
+    && /^acct_sha256:[0-9a-f]{64}$/.test(value.accountFingerprint)
+    && isNonNegativeInteger(value.periodStart)
+    && isNonNegativeInteger(value.periodEnd)
+    && value.periodEnd > value.periodStart
+    && typeof value.currency === "string"
+    && /^[A-Z]{3}$/.test(value.currency)
+    && isNonNegativeInteger(value.reportedTotalMicros)
+    && isNonNegativeInteger(value.matchedTotalMicros)
+    && Number.isSafeInteger(value.unmatchedVarianceMicros)
+    && value.unmatchedVarianceMicros === Number(value.reportedTotalMicros) - Number(value.matchedTotalMicros)
+    && (value.status === "matched" || value.status === "partial" || value.status === "disputed" || value.status === "corrected" || value.status === "closed")
+    && isNonNegativeInteger(value.importedAt);
+}
+
+function isAdminProviderPriceCatalog(value: unknown): value is AdminProviderPriceCatalog {
+  return isRecord(value)
+    && hasExactKeys(value, ["version", "catalogVersionId", "providerId", "offeringId", "model", "currency", "precision", "unit", "inputNoCachePriceMicros", "cacheReadInputPriceMicros", "cacheWriteInputPriceMicros", "outputTextPriceMicros", "reasoningOutputPriceMicros", "effectiveFrom", "effectiveTo", "approver", "provenance", "createdAt"])
+    && value.version === 1
+    && isNonEmptyString(value.catalogVersionId)
+    && isNonEmptyString(value.providerId)
+    && isNonEmptyString(value.offeringId)
+    && isNonEmptyString(value.model)
+    && typeof value.currency === "string"
+    && /^[A-Z]{3}$/.test(value.currency)
+    && isBoundedInteger(value.precision, 0, 6)
+    && value.unit === "million_tokens"
+    && [
+      value.inputNoCachePriceMicros,
+      value.cacheReadInputPriceMicros,
+      value.cacheWriteInputPriceMicros,
+      value.outputTextPriceMicros,
+      value.reasoningOutputPriceMicros,
+    ].every((item) => item === null || isNonNegativeInteger(item))
+    && isNonNegativeInteger(value.effectiveFrom)
+    && (value.effectiveTo === null || (isNonNegativeInteger(value.effectiveTo) && value.effectiveTo > value.effectiveFrom))
+    && isNonEmptyString(value.approver)
+    && isNonEmptyString(value.provenance)
+    && isNonNegativeInteger(value.createdAt)
+    && value.createdAt <= value.effectiveFrom;
+}
+
+function isAdminProviderPriceCatalogResult(value: unknown): value is AdminProviderPriceCatalogResult {
+  return isRecord(value)
+    && hasExactKeys(value, ["created", "catalog"])
+    && typeof value.created === "boolean"
+    && isAdminProviderPriceCatalog(value.catalog);
+}
+
+function isAdminProviderReconciliationResult(value: unknown): value is AdminProviderReconciliationResult {
+  return isRecord(value)
+    && hasExactKeys(value, ["created", "reconciliation"])
+    && typeof value.created === "boolean"
+    && isAdminProviderReconciliation(value.reconciliation);
 }
 
 export function isAdminMemberListResponse(

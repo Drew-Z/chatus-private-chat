@@ -323,6 +323,104 @@ const operationFeedback: AdminOperationsSnapshot["feedback"] = Array.from({ leng
   };
 });
 
+const financeUsageStates = ["unknown", "partial", "reported", "estimated", "reconciled"] as const;
+const financeCostStates = ["unknown", "provisional", "settled", "corrected"] as const;
+const operationFinanceAttempts: AdminOperationsSnapshot["finance"]["providers"][number]["attempts"] = Array.from({ length: 21 }, (_, index) => {
+  const position = index + 1;
+  const usageState = financeUsageStates[index % financeUsageStates.length];
+  const costState = financeCostStates[index % financeCostStates.length];
+  const usage = usageState === "unknown"
+    ? {
+        inputNoCacheTokens: null,
+        cacheReadInputTokens: null,
+        cacheWriteInputTokens: null,
+        outputTextTokens: null,
+        reasoningOutputTokens: null,
+      }
+    : usageState === "partial"
+      ? {
+          inputNoCacheTokens: 100 * position,
+          cacheReadInputTokens: null,
+          cacheWriteInputTokens: 0,
+          outputTextTokens: 20 * position,
+          reasoningOutputTokens: null,
+        }
+      : {
+          inputNoCacheTokens: 100 * position,
+          cacheReadInputTokens: 10,
+          cacheWriteInputTokens: 0,
+          outputTextTokens: 20 * position,
+          reasoningOutputTokens: usageState === "reconciled" ? 2 : 0,
+        };
+  return {
+    attemptId: `attempt_00000000-0000-4000-8000-${String(position).padStart(12, "0")}`,
+    runKind: "main_answer",
+    logicalRouteId: position === 21 ? "第 21 条 Provider 尝试" : "reasoning",
+    offeringId: "reasoning/provider-fixture",
+    model: "fixture-model",
+    fallbackIndex: index % 3 === 0 ? 1 : 0,
+    status: position % 5 === 0 ? "failed" : "succeeded",
+    errorClass: position % 5 === 0 ? "upstream_unavailable" : "none",
+    startedAt: 1785030000000 + index * 1000,
+    endedAt: 1785030000400 + index * 1000,
+    latencyMs: 400,
+    priceResolution: position % 4 === 0 ? "missing" : "matched",
+    catalogVersionId: position % 4 === 0 ? null : "fixture-price-v1",
+    usageState,
+    usage,
+    costState,
+    costs: costState === "unknown" ? [] : [{
+      currency: "USD",
+      provisionalMicros: position * 100,
+      settledMicros: costState === "settled" ? position * 100 : 0,
+      correctedMicros: costState === "corrected" ? -10 : 0,
+      totalMicros: costState === "corrected" ? position * 100 - 10 : position * 100,
+    }],
+  };
+});
+
+const operationReconciliations: AdminOperationsSnapshot["finance"]["providers"][number]["reconciliations"] = Array.from({ length: 21 }, (_, index) => {
+  const position = index + 1;
+  return {
+    version: 1,
+    reconciliationId: `reconciliation-${position}`,
+    revision: position,
+    supersedesReconciliationId: position > 1 ? `reconciliation-${position - 1}` : null,
+    fingerprint: `sha256:${position.toString(16).padStart(64, "0")}`,
+    providerId: "provider-fixture",
+    accountFingerprint: `acct_sha256:${position.toString(16).padStart(64, "a")}`,
+    periodStart: 1784930000000,
+    periodEnd: 1785016400000,
+    currency: "USD",
+    reportedTotalMicros: 10_000,
+    matchedTotalMicros: position === 21 ? 9_000 : 10_000,
+    unmatchedVarianceMicros: position === 21 ? 1_000 : 0,
+    status: (["matched", "partial", "disputed", "corrected", "closed"] as const)[index % 5],
+    importedAt: 1785031000000 + index * 1000,
+  };
+});
+
+const operationCatalogs: AdminOperationsSnapshot["finance"]["providers"][number]["catalogs"] = Array.from({ length: 21 }, (_, index) => ({
+  version: 1 as const,
+  catalogVersionId: index === 0 ? "fixture-price-v1" : `fixture-price-v${index + 1}`,
+  providerId: "provider-fixture",
+  offeringId: "reasoning/provider-fixture",
+  model: index === 20 ? "第 21 条价格目录模型" : "fixture-model",
+  currency: "USD",
+  precision: 6,
+  unit: "million_tokens" as const,
+  inputNoCachePriceMicros: 1_000_000 + index * 10_000,
+  cacheReadInputPriceMicros: 500_000,
+  cacheWriteInputPriceMicros: 1_250_000,
+  outputTextPriceMicros: 2_000_000,
+  reasoningOutputPriceMicros: 2_000_000,
+  effectiveFrom: 1782440000000 + index * 86_400_000,
+  effectiveTo: null,
+  approver: "fixture-admin",
+  provenance: "fixture-price-card",
+  createdAt: 1782440000000 + index * 86_400_000,
+}));
+
 const operationsSnapshot: AdminOperationsSnapshot = {
   stats: {
     day: "2026-07-26",
@@ -347,6 +445,47 @@ const operationsSnapshot: AdminOperationsSnapshot = {
   },
   audit: operationAudit,
   feedback: operationFeedback,
+  finance: {
+    version: 1,
+    generatedAt: 1785032000000,
+    periodStart: 1782440000000,
+    hardBudgetEnforcement: "unsupported",
+    providers: [{
+      version: 1,
+      providerId: "provider-fixture",
+      label: "Fixture Provider",
+      generatedAt: 1785032000000,
+      periodStart: 1782440000000,
+      capacity: {
+        calls: 21,
+        succeeded: 17,
+        failures: 4,
+        retries: 7,
+        fallbacks: 7,
+        averageLatencyMs: 400,
+        unknownUsageAttempts: 5,
+        provisionalCostAttempts: 13,
+      },
+      usage: {
+        inputNoCacheTokens: 17_000,
+        cacheReadInputTokens: 160,
+        cacheWriteInputTokens: 0,
+        outputTextTokens: 3_400,
+        reasoningOutputTokens: 0,
+      },
+      costs: [{
+        currency: "USD",
+        provisionalMicros: 17_000,
+        settledMicros: 0,
+        correctedMicros: -30,
+        totalMicros: 16_970,
+        unknownAttempts: 5,
+      }],
+      attempts: operationFinanceAttempts,
+      reconciliations: operationReconciliations,
+      catalogs: operationCatalogs,
+    }],
+  },
 };
 
 const fixturePixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -412,6 +551,8 @@ function WorkspaceFixture() {
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const [logoutState, setLogoutState] = useState(() => readLogoutFixtureState(params.get("logout")));
   const [operationsFilter, setOperationsFilter] = useState("");
+  const [financeFixtureDirty, setFinanceFixtureDirty] = useState(false);
+  const [financeFixtureResult, setFinanceFixtureResult] = useState<{ kind: string; effectiveFrom?: number; createdAt?: number }>({ kind: "" });
   const [adminLoggedOut, setAdminLoggedOut] = useState(false);
   const [mcpNotice, setMcpNotice] = useState<McpConnectionNotice | null>({ kind: "warning", text: "一个连接需要重新授权或管理员重审。" });
   const forcedPhase = readTurnPhase(params.get("phase"));
@@ -488,6 +629,33 @@ function WorkspaceFixture() {
       <main data-visual-fixture="true" style={{ height: "100dvh", overflowX: "hidden", overflowY: "auto", background: "var(--surface)" }}>
         <label className="admin-operations-head">筛选运营数据<input aria-label="筛选运营数据" value={operationsFilter} onChange={(event) => setOperationsFilter(event.target.value)} /></label>
         <AdminOperationsContent snapshot={operationsSnapshot} filter={operationsFilter} />
+      </main>
+    );
+  }
+
+  if (params.get("view") === "operations-finance") {
+    return (
+      <main data-visual-fixture="true" style={{ minHeight: "100dvh", overflowX: "hidden", overflowY: "auto", background: "var(--surface)" }}>
+        <AdminOperationsContent
+          snapshot={operationsSnapshot}
+          financeActions={{
+            createPrice: async (input) => {
+              if (input.catalogVersionId === "fixture-error") throw new Error("合成价格目录失败。");
+              setFinanceFixtureResult({ kind: "price", effectiveFrom: input.effectiveFrom, createdAt: input.createdAt });
+            },
+            importReconciliation: async (input) => {
+              setFinanceFixtureResult({ kind: "reconciliation", effectiveFrom: input.periodStart, createdAt: input.importedAt });
+            },
+            onDirtyChange: setFinanceFixtureDirty,
+          }}
+        />
+        <output
+          data-testid="finance-fixture-result"
+          data-dirty={financeFixtureDirty ? "true" : "false"}
+          data-kind={financeFixtureResult.kind}
+          data-effective-from={financeFixtureResult.effectiveFrom ?? ""}
+          data-created-at={financeFixtureResult.createdAt ?? ""}
+        />
       </main>
     );
   }

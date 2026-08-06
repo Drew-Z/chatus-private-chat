@@ -9,6 +9,14 @@ import {
   type ProviderAttemptTerminalStatus,
 } from "../contracts/provider-attempt";
 import type { ProviderAttemptLedger } from "../provider-attempt-ledger";
+import {
+  PROVIDER_USAGE_TOKEN_FIELDS,
+  type ProviderTokenUsageV1,
+  type ProviderUsageEvidenceClass,
+  type ProviderUsageEvidenceMode,
+  type ProviderUsageEvidenceSource,
+} from "../contracts/provider-finance";
+import { providerUsageEvidenceId } from "./provider-usage";
 import type { InstanceOperationStateV1 } from "./instance-capture";
 
 export type ProviderAttemptLedgerMode = "required" | "disabled";
@@ -43,10 +51,19 @@ export type ProviderAttemptRouteInput = {
 
 export type ProviderAttemptHandle = {
   readonly attemptId?: string;
+  recordUsage(input: ProviderAttemptUsageInput): Promise<void>;
   succeed(endedAt?: number): Promise<void>;
   fail(error: unknown, endedAt?: number): Promise<void>;
   cancel(endedAt?: number): Promise<void>;
   timeout(endedAt?: number): Promise<void>;
+};
+
+export type ProviderAttemptUsageInput = ProviderTokenUsageV1 & {
+  evidenceId?: string;
+  mode?: ProviderUsageEvidenceMode;
+  evidenceClass?: ProviderUsageEvidenceClass;
+  source: ProviderUsageEvidenceSource;
+  observedAt?: number;
 };
 
 export function normalizeProviderAttemptLedgerMode(value: unknown): ProviderAttemptLedgerMode {
@@ -176,6 +193,24 @@ function requiredHandle(
   };
   return {
     attemptId,
+    recordUsage: async (usage) => {
+      const observedAt = usage.observedAt ?? Date.now();
+      const hasKnownUsage = PROVIDER_USAGE_TOKEN_FIELDS.some((field) => usage[field] !== null);
+      await requiredLedgerCall(() => stub.appendUsage({
+        version: 1,
+        evidenceId: usage.evidenceId ?? providerUsageEvidenceId(attemptId, usage.source),
+        attemptId,
+        mode: usage.mode ?? (hasKnownUsage ? "cumulative" : "missing"),
+        evidenceClass: usage.evidenceClass ?? "reported",
+        source: usage.source,
+        observedAt,
+        inputNoCacheTokens: usage.inputNoCacheTokens,
+        cacheReadInputTokens: usage.cacheReadInputTokens,
+        cacheWriteInputTokens: usage.cacheWriteInputTokens,
+        outputTextTokens: usage.outputTextTokens,
+        reasoningOutputTokens: usage.reasoningOutputTokens,
+      }));
+    },
     succeed: (endedAt) => terminal("succeeded", "none", endedAt),
     async fail(error, endedAt) {
       const projected = projectProviderAttemptFailure(error);
@@ -188,6 +223,7 @@ function requiredHandle(
 
 function disabledHandle(): ProviderAttemptHandle {
   return {
+    recordUsage: async () => undefined,
     succeed: async () => undefined,
     fail: async () => undefined,
     cancel: async () => undefined,

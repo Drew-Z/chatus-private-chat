@@ -816,11 +816,22 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "成员反馈" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "管理审计" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "成员用量" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Provider 容量" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "成本证据" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "价格目录" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Provider 尝试" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Provider 对账" })).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "2026-07-26 请求 5" })).toBeVisible();
   await expect(page.getByText("更新配置", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/不准确/).first()).toBeVisible();
   await expect(page.getByText("合成运营成员 01", { exact: true })).toBeVisible();
-  await expect(page.getByText(/当前显示 20 \/ 21/)).toHaveCount(4);
+  await expect(page.getByText(/调用 21 · 失败 4 · 重试 7 · Fallback 7/)).toBeVisible();
+  const providerAttempts = page.locator(".admin-operations-section").filter({ has: page.getByRole("heading", { name: "Provider 尝试" }) });
+  await expect(providerAttempts).toContainText("Provider 上报");
+  await expect(providerAttempts).toContainText("估算");
+  await expect(providerAttempts).toContainText("已对账");
+  await expect(providerAttempts).toContainText("已更正");
+  await expect(page.getByText(/当前显示 20 \/ 21/)).toHaveCount(7);
   await expect(page.getByText("第 21 条逻辑模型", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "逻辑模型结果：下一页" }).click();
@@ -831,6 +842,8 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByText(/第 21 条管理审计/)).toBeVisible();
   await page.getByRole("button", { name: "成员用量：下一页" }).click();
   await expect(page.getByText("第 21 位运营成员", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "价格目录：下一页" }).click();
+  await expect(page.getByText(/第 21 条价格目录模型/)).toBeVisible();
 
   await page.getByLabel("筛选运营数据").fill("第 21 条逻辑模型");
   await expect(page.getByText("当前显示 1 / 1", { exact: true })).toBeVisible();
@@ -859,6 +872,63 @@ test("operations data stays scannable with local table overflow", async ({ page 
   expect(geometry.wrapperFits).toBe(true);
   if (testInfo.project.name === "touch-390") expect(geometry.localOverflow).toBe(true);
   await attachScreenshot(page, testInfo, "operations");
+});
+
+test("finance entry fixture keeps drafts dirty on validation or mutation failure", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "finance entry interaction targets desktop and 390px");
+  await page.goto("/?view=operations-finance");
+
+  const result = page.getByTestId("finance-fixture-result");
+  const priceForm = page.locator("form").filter({ hasText: "新增价格目录" });
+  await priceForm.getByLabel("目录版本 ID").fill("fixture-error");
+  await priceForm.getByLabel("Offering ID").fill("reasoning/provider-fixture");
+  await priceForm.getByLabel("上游模型").fill("fixture-model");
+  await priceForm.getByLabel("输入单价 / 百万 Token").fill("1");
+  await priceForm.getByLabel("审批人").fill("fixture-admin");
+  await priceForm.getByLabel("价格来源").fill("fixture-price-card");
+  await priceForm.getByRole("button", { name: "保存价格目录" }).click();
+  await expect(priceForm.getByRole("alert")).toHaveText("合成价格目录失败。");
+  await expect(result).toHaveAttribute("data-dirty", "true");
+
+  await priceForm.getByLabel("目录版本 ID").fill("fixture-price-new");
+  await priceForm.getByRole("button", { name: "保存价格目录" }).click();
+  await expect(priceForm.getByRole("status")).toHaveText("价格目录已提交，重复版本会保持幂等。");
+  await expect(result).toHaveAttribute("data-kind", "price");
+  const priceTiming = await result.evaluate((element) => ({
+    effectiveFrom: Number(element.getAttribute("data-effective-from")),
+    createdAt: Number(element.getAttribute("data-created-at")),
+  }));
+  expect(priceTiming.createdAt).toBeLessThanOrEqual(priceTiming.effectiveFrom);
+  await expect(result).toHaveAttribute("data-dirty", "false");
+
+  const reconciliationForm = page.locator("form").filter({ hasText: "导入对账摘要" });
+  await reconciliationForm.getByLabel("对账指纹").fill(`sha256:${"1".repeat(64)}`);
+  await reconciliationForm.getByLabel("账户指纹").fill(`acct_sha256:${"2".repeat(64)}`);
+  await reconciliationForm.getByLabel("报告总额").fill("1");
+  await reconciliationForm.getByLabel("已匹配总额").fill("2");
+  await reconciliationForm.getByRole("button", { name: "导入对账摘要" }).click();
+  await expect(reconciliationForm.getByRole("alert")).toHaveText("已匹配总额不能超过报告总额。");
+  await expect(result).toHaveAttribute("data-dirty", "true");
+
+  await reconciliationForm.getByLabel("已匹配总额").fill("0.8");
+  await reconciliationForm.getByRole("button", { name: "导入对账摘要" }).click();
+  await expect(reconciliationForm.getByRole("status")).toHaveText("对账摘要已提交，原始发票不会进入系统。");
+  await expect(result).toHaveAttribute("data-kind", "reconciliation");
+  await expect(result).toHaveAttribute("data-dirty", "false");
+  const geometry = await page.evaluate(() => {
+    const main = document.querySelector<HTMLElement>('main[data-visual-fixture="true"]');
+    const forms = [...document.querySelectorAll<HTMLElement>(".admin-finance-form")];
+    const viewportWidth = document.documentElement.clientWidth;
+    if (!main || forms.length !== 2) throw new Error("missing finance fixture forms");
+    return {
+      documentFits: document.documentElement.scrollWidth <= viewportWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      mainFits: main.getBoundingClientRect().right <= viewportWidth,
+      formsFit: forms.every((form) => form.getBoundingClientRect().right <= viewportWidth),
+    };
+  });
+  expect(geometry).toEqual({ documentFits: true, bodyFits: true, mainFits: true, formsFit: true });
+  await attachScreenshot(page, testInfo, "operations-finance-entry");
 });
 
 test("shared confirmation dialog traps and restores focus while keeping failures retryable", async ({ page }, testInfo) => {
@@ -1207,6 +1277,14 @@ test("operations initial error is distinct from loading and retryable", async ({
           configSource: "kv",
           accessCodeSource: "managed",
         }
+      : url.pathname === "/api/admin/provider-finance"
+        ? {
+            version: 1,
+            generatedAt: 1785032000000,
+            periodStart: 1782440000000,
+            hardBudgetEnforcement: "unsupported",
+            providers: [],
+          }
       : { entries: [] };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });

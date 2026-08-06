@@ -65,6 +65,10 @@ import type {
   RouteConfig,
 } from "./contracts/provider";
 import { createProviderTurnId } from "./contracts/provider-attempt";
+import {
+  decodeProviderPriceCatalogInput,
+  decodeProviderReconciliationImportInput,
+} from "./contracts/provider-finance";
 import type { GuestSession, Session } from "./contracts/session";
 import {
   MAX_WORKSPACE_FILE_BYTES,
@@ -183,6 +187,11 @@ import {
   callProviderStream,
   UpstreamRequestError,
 } from "./services/provider-stream-runtime";
+import {
+  PROVIDER_USAGE_TOKEN_FIELDS,
+  type ProviderTokenUsageV1,
+  type ProviderUsageEvidenceSource,
+} from "./contracts/provider-finance";
 import {
   createFeedbackAuditService,
   isDownFeedbackReason,
@@ -2606,6 +2615,20 @@ async function handleAdminApi(
 
   if (url.pathname === "/api/admin/provider-attempts" && request.method === "GET") {
     return handleAdminProviderAttempts(env, url);
+  }
+
+  if (url.pathname === "/api/admin/provider-finance" && request.method === "GET") {
+    return handleAdminProviderFinance(env, url);
+  }
+
+  if (url.pathname === "/api/admin/provider-finance/prices" && request.method === "POST") {
+    requireInstanceFence(instanceFence);
+    return handleAdminProviderFinancePrice(request, env);
+  }
+
+  if (url.pathname === "/api/admin/provider-finance/reconciliations" && request.method === "POST") {
+    requireInstanceFence(instanceFence);
+    return handleAdminProviderFinanceReconciliation(request, env);
   }
 
   if (url.pathname === "/api/admin/route-models" && request.method === "POST") {
@@ -6584,6 +6607,8 @@ async function handleChat(
         result.response.headers.set("X-Chatus-Route", routeId);
         const response = responseWithProviderLease(result.response, lease, {
           attempt: attemptHandle,
+          usage: result.usage,
+          usageSource: result.usageSource,
           onComplete: async () => {
             await admission.release();
             await recordRouteReliability(env, {
@@ -8498,6 +8523,8 @@ async function callRoute(args: {
 }): Promise<{
   response?: Response;
   cancelUpstream?: (reason?: unknown) => Promise<void>;
+  usage?: Promise<ProviderTokenUsageV1>;
+  usageSource?: Extract<ProviderUsageEvidenceSource, "openai_sse" | "anthropic_sse">;
   error: { routeId: string; status: number; message: string };
   terminal: boolean;
 }> {
@@ -8522,6 +8549,8 @@ async function callRoute(args: {
     return {
       response: new Response(attempt.body, { status: 200, headers }),
       cancelUpstream: attempt.cancelUpstream,
+      usage: attempt.usage,
+      usageSource: route.type === "anthropic-messages" ? "anthropic_sse" : "openai_sse",
       error: { routeId, status: 0, message: "" },
       terminal: false,
     };
@@ -8538,6 +8567,8 @@ async function callRoute(args: {
 
 type ProviderStreamLifecycle = {
   attempt?: ProviderAttemptHandle;
+  usage?: Promise<ProviderTokenUsageV1>;
+  usageSource?: Extract<ProviderUsageEvidenceSource, "openai_sse" | "anthropic_sse">;
   onComplete: () => Promise<void>;
   onError: (error: unknown) => Promise<void>;
   onCancel?: () => Promise<void>;
@@ -8564,7 +8595,10 @@ export function responseWithProviderLease(
     removeAbortHandler();
     let attemptError: unknown;
     try {
-      if (kind === "complete") await lifecycle.attempt?.succeed();
+      if (kind === "complete") {
+        await recordProviderStreamUsage(lifecycle.attempt, lifecycle.usage, lifecycle.usageSource);
+        await lifecycle.attempt?.succeed();
+      }
       else if (kind === "error") await lifecycle.attempt?.fail(error);
       else await lifecycle.attempt?.cancel();
     } catch (caught) {
@@ -8841,6 +8875,7 @@ async function runCapabilityLoopInner(
         signal,
         usedUserKey: route.credential.usedUserKey,
       });
+      await recordProviderToolUsage(startedAttempt, turn);
       await startedAttempt.succeed();
       attemptHandle = undefined;
       selected = {
@@ -9030,6 +9065,7 @@ async function runCapabilityLoopInner(
         signal,
         usedUserKey: selected.usedUserKey,
       });
+      await recordProviderToolUsage(startedAttempt, turn);
       await startedAttempt.succeed();
       continuationAttempt = undefined;
     } catch (error) {
@@ -9056,6 +9092,112 @@ async function runCapabilityLoopInner(
     }
   } finally {
     await selected.lease.release();
+  }
+}
+
+async function recordProviderStreamUsage(
+  attempt: ProviderAttemptHandle | undefined,
+  usagePromise: Promise<ProviderTokenUsageV1> | undefined,
+  source: Extract<ProviderUsageEvidenceSource, "openai_sse" | "anthropic_sse"> | undefined,
+): Promise<void> {
+  if (!attempt || !usagePromise || !source) return;
+  try {
+    const usage = await usagePromise;
+    const hasKnownUsage = PROVIDER_USAGE_TOKEN_FIELDS.some((field) => usage[field] !== null);
+    await attempt.recordUsage({ ...usage, mode: hasKnownUsage ? "cumulative" : "missing", source });
+  } catch {
+    // Usage evidence retries independently and must not change the stream result.
+  }
+}
+
+async function handleAdminProviderFinance(env: Env, url: URL): Promise<Response> {
+  const parsedLimit = Number(url.searchParams.get("limit") || "25");
+  const parsedPeriodStart = Number(url.searchParams.get("periodStart") || `${Date.now() - 30 * 24 * 60 * 60 * 1_000}`);
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+    return jsonResponse({ error: "invalid_limit" }, 400);
+  }
+  if (!Number.isSafeInteger(parsedPeriodStart) || parsedPeriodStart < 0 || parsedPeriodStart > Date.now()) {
+    return jsonResponse({ error: "invalid_period_start" }, 400);
+  }
+  const config = await loadAppConfig(env);
+  const providers = configuredProviderLabels(config);
+  const snapshots = await Promise.all([...providers.entries()].map(async ([providerId, label]) => ({
+    label,
+    ...await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).getFinanceSnapshot({
+      periodStart: parsedPeriodStart,
+      limit: parsedLimit,
+    }),
+  })));
+  const generatedAt = Date.now();
+  return jsonResponse({
+    version: 1,
+    generatedAt,
+    periodStart: parsedPeriodStart,
+    hardBudgetEnforcement: "unsupported",
+    providers: snapshots.sort((left, right) => left.providerId.localeCompare(right.providerId)),
+  });
+}
+
+async function handleAdminProviderFinancePrice(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
+  const input = decodeProviderPriceCatalogInput(body);
+  if (!input) return jsonResponse({ error: "provider_price_catalog_invalid" }, 400);
+  const config = await loadAppConfig(env);
+  if (!configuredProviderLabels(config).has(input.providerId)) {
+    return jsonResponse({ error: "provider_not_found" }, 404);
+  }
+  try {
+    const result = await env.PROVIDER_ATTEMPT_LEDGER.getByName(input.providerId).addPriceCatalog(input);
+    if (result.created) await appendAdminAudit(env, "provider-price.create", input.providerId);
+    return jsonResponse(result, result.created ? 201 : 200);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "provider_price_catalog_unavailable";
+    if (code === "provider_price_catalog_overlap" || code === "provider_price_catalog_conflict") {
+      return jsonResponse({ error: code }, 409);
+    }
+    if (code === "provider_price_catalog_invalid") return jsonResponse({ error: code }, 400);
+    throw error;
+  }
+}
+
+async function handleAdminProviderFinanceReconciliation(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
+  const input = decodeProviderReconciliationImportInput(body);
+  if (!input) return jsonResponse({ error: "provider_reconciliation_invalid" }, 400);
+  const config = await loadAppConfig(env);
+  if (!configuredProviderLabels(config).has(input.providerId)) {
+    return jsonResponse({ error: "provider_not_found" }, 404);
+  }
+  try {
+    const result = await env.PROVIDER_ATTEMPT_LEDGER.getByName(input.providerId).importReconciliation(input);
+    if (result.created) await appendAdminAudit(env, "provider-reconciliation.import", input.providerId);
+    return jsonResponse(result, result.created ? 201 : 200);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "provider_reconciliation_unavailable";
+    if (code === "provider_reconciliation_conflict") return jsonResponse({ error: code }, 409);
+    if (code === "provider_reconciliation_invalid") return jsonResponse({ error: code }, 400);
+    throw error;
+  }
+}
+
+function configuredProviderLabels(config: AppConfig): Map<string, string> {
+  const providers = new Map(Object.entries(config.providers).map(([providerId, provider]) => [
+    providerId,
+    provider.label || providerId,
+  ]));
+  for (const [routeId, route] of Object.entries(config.routes)) {
+    for (const candidate of resolveProviderRouteCandidates(routeId, route, config.providers)) {
+      if (!providers.has(candidate.providerId)) providers.set(candidate.providerId, candidate.label || candidate.providerId);
+    }
+  }
+  return providers;
+}
+
+async function recordProviderToolUsage(attempt: ProviderAttemptHandle, turn: ModelTurn): Promise<void> {
+  try {
+    await attempt.recordUsage({ ...turn.usage, source: "provider_tool" });
+  } catch {
+    // Usage evidence retries independently and must not change the tool turn outcome.
   }
 }
 
