@@ -1558,3 +1558,37 @@ Fixed forward Durable Object schema registration after production acceptance exp
 ### Next Steps
 
 - None - task complete
+
+
+## Session 41: Provider finance delivery and archive
+
+**Date**: 2026-08-06
+**Task**: Provider finance delivery and archive
+**Branch**: `main`
+
+### Summary
+
+Merged PR #51, verified PR CI, exact-SHA production deployment and member acceptance artifacts, recorded AC8 evidence, and archived provider cost reconciliation and capacity.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `374e25cbba8acac295fd5606c07c4cb6817d241b` | (see git log) |
+| `7d58358` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
