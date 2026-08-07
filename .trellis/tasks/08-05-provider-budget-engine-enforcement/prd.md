@@ -155,7 +155,7 @@ These decisions are the only enforcement policy approved by this child:
       denials, alerts, and degraded settlement state without sensitive payloads.
 - [x] AC9. A new soft policy version immediately stops new blocking/reservations
       while preserving history and allowing existing holds to reconcile.
-- [ ] AC10. Schema migration, authoritative capture/restore, frontend fixtures,
+- [x] AC10. Schema migration, authoritative capture/restore, frontend fixtures,
       Workspace Playwright, local fake-Provider Agent tests, full repository
       gates, PR/CI/exact-SHA deployment evidence, spec updates, and archive
       validation all pass.
@@ -179,6 +179,35 @@ These decisions are the only enforcement policy approved by this child:
   files / 688 tests; Workspace Playwright passed 86 with 49 intentionally
   skipped across 135 cases; fake-Provider Agent passed 3/3; typecheck, Wrangler
   dry-run, diff check, spec sync, and repository consistency all passed.
+
+## Remote Delivery Evidence
+
+- Work commit: `961776682a421942fab806e3207f13bb7ca28b3d`.
+- PR [#52](https://github.com/Drew-Z/chatus-private-chat/pull/52) merged
+  head `73b1c5d9255a13be18253acce4cc5c2205fc85a4` into exact main SHA
+  `ae15cad635f3284d4138577d4c7bf4c176f68b56`.
+- PR quality run
+  [31157787566](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31157787566)
+  passed `changes`, `quality`, `agent-browser`, and `workspace-browser` and
+  retained five path/quality/coverage/Agent/Workspace artifacts for the PR
+  head SHA.
+- GitHub Actions deployment run
+  [31158348287](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31158348287)
+  passed stale-SHA guards, repository gates, Worker upload, and production
+  verification for exact main SHA `ae15cad635f3284d4138577d4c7bf4c176f68b56`.
+  Artifact `production-deployment-ae15cad635f3284d4138577d4c7bf4c176f68b56`
+  is retained as ID `8986126720`, digest
+  `sha256:c499a1de1637960574cec0cec6610e0a625d4714aeb92b2b1e4956c2a7556daf`.
+- GitHub Actions production member acceptance run
+  [31158655618](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31158655618)
+  verified the deployed revision, passed temporary-member acceptance/cleanup,
+  and retained artifact
+  `production-acceptance-ae15cad635f3284d4138577d4c7bf4c176f68b56`
+  as ID `8986171619`, digest
+  `sha256:613ee6abd325e52b2b6c4835eeac17b5f6fe645bf1270432b9ccbc84ef8b9473`.
+- No live model/MCP test, synthetic production probe, or local production
+  deployment was used. Final archive validation is run after this evidence is
+  committed so the archive gate can resolve the recorded work commit and PR.
 
 ## Out of Scope
 

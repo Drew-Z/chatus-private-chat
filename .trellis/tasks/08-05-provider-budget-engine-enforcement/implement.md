@@ -47,12 +47,12 @@
       Durable Object recovery, and frontend component/type-safety specs. Review
       quota and delivery governance as unchanged, and record `FIN-03` closure
       with `FIN-02`/`FIN-05` compatibility evidence.
-- [ ] Commit implementation on a `codex/` branch, push, create a PR, and wait for
+- [x] Commit implementation on a `codex/` branch, push, create a PR, and wait for
       all required CI jobs/artifacts. All tests use local deterministic fakes.
-- [ ] After merge, retain exact work/PR/merge SHA, production deployment and
+- [x] After merge, retain exact work/PR/merge SHA, production deployment and
       production acceptance run IDs/artifacts from GitHub Actions. Never deploy
       production locally.
-- [ ] Complete every AC, validation record, work commit, parent/child status,
+- [x] Complete every AC, validation record, work commit, parent/child status,
       archive preflight, archive commit, workspace index validation, and journal
       update with no implicit waiver.
 

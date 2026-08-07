@@ -72,6 +72,43 @@
         "summary": "Repository task tree and workspace index consistency passed.",
         "at": "2026-08-07T07:23:52.216109+00:00"
       }
-    ]
+    ],
+    "delivery": {
+      "workCommit": "961776682a421942fab806e3207f13bb7ca28b3d",
+      "pullRequest": {
+        "number": 52,
+        "url": "https://github.com/Drew-Z/chatus-private-chat/pull/52",
+        "ciRunId": 31157787566,
+        "headSha": "73b1c5d9255a13be18253acce4cc5c2205fc85a4",
+        "artifactRevisionSha": "f38ed321188cd99b087d46f48b152f33bd0b2b35",
+        "status": "success",
+        "artifacts": [
+          "pr-path-classification-f38ed321188cd99b087d46f48b152f33bd0b2b35",
+          "pr-quality-f38ed321188cd99b087d46f48b152f33bd0b2b35",
+          "pr-coverage-f38ed321188cd99b087d46f48b152f33bd0b2b35",
+          "workspace-playwright-f38ed321188cd99b087d46f48b152f33bd0b2b35",
+          "agent-playwright-f38ed321188cd99b087d46f48b152f33bd0b2b35"
+        ]
+      },
+      "merge": {
+        "sha": "ae15cad635f3284d4138577d4c7bf4c176f68b56",
+        "mergedAt": "2026-08-07T07:36:49Z"
+      },
+      "deployment": {
+        "runId": 31158348287,
+        "sha": "ae15cad635f3284d4138577d4c7bf4c176f68b56",
+        "status": "success",
+        "artifacts": [
+          "deployment-paths-ae15cad635f3284d4138577d4c7bf4c176f68b56",
+          "production-deployment-ae15cad635f3284d4138577d4c7bf4c176f68b56"
+        ]
+      },
+      "productionAcceptance": {
+        "runId": 31158655618,
+        "sha": "ae15cad635f3284d4138577d4c7bf4c176f68b56",
+        "status": "success",
+        "artifact": "production-acceptance-ae15cad635f3284d4138577d4c7bf4c176f68b56"
+      }
+    }
   }
 }
