@@ -15,7 +15,7 @@
   "branch": "codex/provider-budget-engine-enforcement",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "961776682a421942fab806e3207f13bb7ca28b3d",
   "pr_url": null,
   "subtasks": [],
   "children": [],
