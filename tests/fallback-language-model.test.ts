@@ -10,6 +10,7 @@ import { createFallbackLanguageModel, type ProviderAttemptEvent } from "../src/s
 import {
   createProviderAttemptRuntime,
   ProviderAttemptLedgerError,
+  ProviderBudgetError,
   type ProviderAttemptRun,
 } from "../src/services/provider-attempt-runtime";
 
@@ -63,6 +64,112 @@ describe("fallback language model", () => {
     await expect(router.doStream(CALL_OPTIONS)).rejects.toBeInstanceOf(ProviderAttemptLedgerError);
     expect(run.start).toHaveBeenCalledOnce();
     expect(primarySpy).not.toHaveBeenCalled();
+    expect(backupSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass a hard budget denial through Provider fallback", async () => {
+    const primary = model({ stream: successfulStream("must not run") });
+    const backup = model({ stream: successfulStream("must not run either") });
+    const primarySpy = vi.spyOn(primary, "doStream");
+    const backupSpy = vi.spyOn(backup, "doStream");
+    const run = {
+      turnId: `turn_${crypto.randomUUID()}`,
+      runId: `run_${crypto.randomUUID()}`,
+      runKind: "main_answer",
+      start: vi.fn().mockRejectedValue(new ProviderBudgetError("provider_budget_exceeded")),
+    } satisfies ProviderAttemptRun;
+    const router = createFallbackLanguageModel([
+      { routeId: "primary", providerId: "primary", usedUserKey: false, model: primary },
+      { routeId: "backup", providerId: "backup", usedUserKey: false, model: backup },
+    ], {}, { createRun: () => run });
+
+    await expect(router.doStream(CALL_OPTIONS)).rejects.toMatchObject({ code: "provider_budget_exceeded" });
+    expect(run.start).toHaveBeenCalledOnce();
+    expect(primarySpy).not.toHaveBeenCalled();
+    expect(backupSpy).not.toHaveBeenCalled();
+  });
+
+  it("waits for failed primary settlement before reserving the fallback", async () => {
+    const primary = model({ generateError: { statusCode: 503 } });
+    const backup = model({ generate: generateResult("fallback after settlement") });
+    const backupSpy = vi.spyOn(backup, "doGenerate");
+    let markSettlementStarted!: () => void;
+    let finishSettlement!: () => void;
+    const settlementStarted = new Promise<void>((resolve) => { markSettlementStarted = resolve; });
+    const settlementFinished = new Promise<void>((resolve) => { finishSettlement = resolve; });
+    const primaryHandle = {
+      attemptId: `attempt_${crypto.randomUUID()}`,
+      recordUsage: vi.fn(async () => undefined),
+      succeed: vi.fn(async () => undefined),
+      fail: vi.fn(async () => {
+        markSettlementStarted();
+        await settlementFinished;
+      }),
+      cancel: vi.fn(async () => undefined),
+      timeout: vi.fn(async () => undefined),
+    };
+    const fallbackHandle = {
+      attemptId: `attempt_${crypto.randomUUID()}`,
+      recordUsage: vi.fn(async () => undefined),
+      succeed: vi.fn(async () => undefined),
+      fail: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+      timeout: vi.fn(async () => undefined),
+    };
+    const run = {
+      turnId: `turn_${crypto.randomUUID()}`,
+      runId: `run_${crypto.randomUUID()}`,
+      runKind: "main_answer",
+      start: vi.fn()
+        .mockResolvedValueOnce(primaryHandle)
+        .mockImplementationOnce(async () => {
+          expect(primaryHandle.fail).toHaveBeenCalledOnce();
+          return fallbackHandle;
+        }),
+    } satisfies ProviderAttemptRun;
+    const router = createFallbackLanguageModel([
+      { routeId: "primary", providerId: "primary", usedUserKey: false, model: primary },
+      { routeId: "backup", providerId: "backup", usedUserKey: false, model: backup },
+    ], {}, { createRun: () => run });
+
+    const result = router.doGenerate(CALL_OPTIONS);
+    await settlementStarted;
+    expect(run.start).toHaveBeenCalledTimes(1);
+    expect(backupSpy).not.toHaveBeenCalled();
+
+    finishSettlement();
+    await expect(result).resolves.toMatchObject({
+      content: [{ type: "text", text: "fallback after settlement" }],
+    });
+    expect(run.start).toHaveBeenCalledTimes(2);
+    expect(backupSpy).toHaveBeenCalledOnce();
+    expect(fallbackHandle.succeed).toHaveBeenCalledOnce();
+  });
+
+  it("does not reserve a fallback when failed primary settlement cannot persist", async () => {
+    const primary = model({ generateError: { statusCode: 503 } });
+    const backup = model({ generate: generateResult("must not run") });
+    const backupSpy = vi.spyOn(backup, "doGenerate");
+    const run = {
+      turnId: `turn_${crypto.randomUUID()}`,
+      runId: `run_${crypto.randomUUID()}`,
+      runKind: "main_answer",
+      start: vi.fn().mockResolvedValue({
+        attemptId: `attempt_${crypto.randomUUID()}`,
+        recordUsage: vi.fn(async () => undefined),
+        succeed: vi.fn(async () => undefined),
+        fail: vi.fn(async () => { throw new ProviderAttemptLedgerError(); }),
+        cancel: vi.fn(async () => undefined),
+        timeout: vi.fn(async () => undefined),
+      }),
+    } satisfies ProviderAttemptRun;
+    const router = createFallbackLanguageModel([
+      { routeId: "primary", providerId: "primary", usedUserKey: false, model: primary },
+      { routeId: "backup", providerId: "backup", usedUserKey: false, model: backup },
+    ], {}, { createRun: () => run });
+
+    await expect(router.doGenerate(CALL_OPTIONS)).rejects.toBeInstanceOf(ProviderAttemptLedgerError);
+    expect(run.start).toHaveBeenCalledOnce();
     expect(backupSpy).not.toHaveBeenCalled();
   });
 

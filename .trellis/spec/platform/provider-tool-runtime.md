@@ -10,8 +10,9 @@ Provider attempt identity also remains outside this adapter. The legacy or
 Agent capability owner starts an attempt before every `callProviderToolTurn`.
 The initial capability call and each continuation use distinct logical runs
 under the same admitted turn; retries/fallbacks inside one run receive distinct
-attempts. Required ledger-start failure blocks the Provider call and is not a
-tool/provider fallback condition.
+attempts. Required attempt-admission failure blocks the Provider call and is not
+a tool/provider fallback condition. Admission failures include ledger
+infrastructure errors, insufficient hard budget, and unknown hard-policy price.
 
 ## 2. Signatures
 
@@ -60,6 +61,8 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 | Anthropic inline image is malformed | Fail conversion before fetch |
 | Request signal aborts | Pass the same signal to fetch; outer capability runtime owns cancellation mapping and lease cleanup |
 | Usage is absent or only partially reported | Return `null` dimensions and append unknown/partial evidence; never synthesize zero tokens |
+| Initial or continuation admission is budget-denied/policy-unknown/unavailable | Make zero Provider calls for that attempt, emit the canonical capability error, and do not consume another message quota unit |
+| A prior billable attempt cannot settle or enter a durable hold | Fail closed before reserving the fallback/continuation attempt |
 
 ## 5. Good / Base / Bad Cases
 
@@ -75,6 +78,9 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 - Assert 400/401/429/5xx and invalid-JSON outcomes retain distinct public classes without exposing the Provider message, response body, or endpoint.
 - Keep Worker integration tests for multi-round OpenAI and Anthropic capability execution, provider lease release, fallback, approval, and MCP execution.
 - Assert initial and continuation fake Provider calls have separate run/attempt IDs, one shared turn ID, and no second user-message quota admission.
+- Assert every continuation performs fresh budget admission, budget denial makes
+  zero additional fake Provider calls, and a prior billable attempt settles or
+  holds before the next reservation.
 - Assert tool-turn usage is normalized and appended independently for complete,
   partial, missing, and late evidence, including a terminal tool error.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.

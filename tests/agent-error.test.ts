@@ -3,6 +3,7 @@ import {
   createAgentErrorEnvelope,
   parseAgentErrorEnvelope,
   projectAgentStreamError,
+  providerBudgetErrorHttpStatus,
   serializeAgentErrorEnvelope,
 } from "../src/contracts/agent-error";
 
@@ -48,6 +49,11 @@ describe("Agent error contract", () => {
   });
 
   it("projects provider failures into actionable public classes", () => {
+    expect(projectAgentStreamError({ name: "ProviderBudgetError", code: "provider_budget_exceeded" }))
+      .toBe("provider_budget_exceeded");
+    expect(projectAgentStreamError({ name: "ProviderBudgetError", code: "provider_budget_policy_unknown" }))
+      .toBe("provider_budget_policy_unknown");
+    expect(projectAgentStreamError(namedError("ProviderAttemptLedgerError"))).toBe("provider_budget_unavailable");
     expect(projectAgentStreamError(namedError("ProviderBusyError"))).toBe("provider_busy");
     expect(projectAgentStreamError(namedError("ProviderProtocolError"))).toBe("provider_protocol_error");
     expect(projectAgentStreamError({ name: "UpstreamRequestError", status: 502, outcome: "protocol_error" }))
@@ -61,6 +67,13 @@ describe("Agent error contract", () => {
     expect(projectAgentStreamError({ statusCode: 503 })).toBe("upstream_unavailable");
     expect(projectAgentStreamError({ name: "AI_APICallError" })).toBe("upstream_unavailable");
     expect(projectAgentStreamError(new Error("unexpected private detail"))).toBe("upstream_error");
+  });
+
+  it("maps public budget errors to stable HTTP statuses", () => {
+    expect(providerBudgetErrorHttpStatus("provider_budget_exceeded")).toBe(429);
+    expect(providerBudgetErrorHttpStatus("provider_budget_policy_unknown")).toBe(503);
+    expect(providerBudgetErrorHttpStatus("provider_budget_unavailable")).toBe(503);
+    expect(providerBudgetErrorHttpStatus("upstream_unavailable")).toBeUndefined();
   });
 });
 

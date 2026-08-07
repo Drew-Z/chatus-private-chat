@@ -52,16 +52,22 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Finance projections distinguish `unknown | partial | reported | estimated |
   reconciled` usage and `unknown | provisional | settled | corrected` cost;
   token/amount dimensions remain visibly incomplete rather than zero-filled.
-  Provider capacity, catalog entries, attempts, and reconciliation revisions
+  Provider capacity, catalog entries, attempts, reconciliation revisions,
+  budget policies, balance/denial/alert projections, and reservations/holds
   each paginate at 20 items with filtered `N / total` counts. Reconciliation
   rows show status, variance, revision, and superseded identity without raw
-  invoice material.
+  invoice material. Budget rows show only bounded mode/window, integer balance
+  totals/counters, settlement health, and review status; they omit member money,
+  credentials, content, raw invoices, and internal ledger identities.
 - Finance entry forms are optional mutation tools on the Operations projection.
   They keep local drafts dirty through validation, network, HTTP, decoder, and
   `401` failures; a successful server mutation refreshes the snapshot before
   clearing dirty state. Price form `createdAt` is never later than
   `effectiveFrom`, and monetary decimal inputs are converted to integer micros
-  before the strict API request.
+  before the strict API request. A budget policy mutation requires the current
+  previous version; the first policy is visibly `shadow`, and hard promotion is
+  a later audited version. Hold actions remain dirty/retryable on validation,
+  conflict, network, HTTP, or decoder failure.
 - Use an unframed, scannable operations layout. Summary metrics form one full-width band; sections use restrained separators rather than nested cards. The eight-column member table scrolls inside its own wrapper on narrow screens and must never widen the admin page.
 - Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model. Finance mutation coverage injects fake actions and asserts no horizontal overflow at both widths.
 
@@ -129,7 +135,7 @@ paginateOperations<T>(items: T[], requestedPage: number, pageSize = 20)
 
 - Worker tests assert successful logout deletes KV and clears the cookie, deletion failure returns `500` with no `Set-Cookie` and preserves the session, and cross-origin logout has no session or cookie side effect.
 - Browser API tests assert network, HTTP, empty/non-JSON, false, and unknown-key logout responses reject; exact `{ ok: true }` succeeds.
-- Workspace browser tests assert loading, ready, initial error, successful retry, fail-closed logout, dialog focus/Tab/Escape/pending/error/retry/fallback focus, and the 20/21 boundary for Operations routes, feedback, audit, member usage, Provider capacity, attempts, catalogs, and reconciliations.
+- Workspace browser tests assert loading, ready, initial error, successful retry, fail-closed logout, dialog focus/Tab/Escape/pending/error/retry/fallback focus, and the 20/21 boundary for Operations routes, feedback, audit, member usage, Provider capacity, attempts, catalogs, reconciliations, budget policies, budget balances, and budget reservations.
 - Pagination helper tests assert empty, 20, 21, and stale-page clamping behavior. Fixtures remain synthetic and must not authenticate, call a model, or contact production.
 
 ### 7. Wrong vs Correct

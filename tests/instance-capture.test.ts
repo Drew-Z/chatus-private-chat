@@ -976,10 +976,23 @@ describe("instance capture contracts", () => {
       fallbackIndex: 0,
     });
     await providerAttempt.succeed();
-    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerLedgerName).captureInstanceState("epoch-provider-ledger"))
-      .resolves.toMatchObject({
-        schemaVersion: `provider-attempt-ledger-v${PROVIDER_ATTEMPT_LEDGER_SCHEMA_VERSION}`,
-      });
+    const providerLedgerSnapshot = await env.PROVIDER_ATTEMPT_LEDGER
+      .getByName(providerLedgerName)
+      .captureInstanceState("epoch-provider-ledger");
+    expect(providerLedgerSnapshot).toMatchObject({
+      schemaVersion: `provider-attempt-ledger-v${PROVIDER_ATTEMPT_LEDGER_SCHEMA_VERSION}`,
+    });
+    const providerLedgerEnvelope = JSON.parse(new TextDecoder().decode(providerLedgerSnapshot.bytes)) as {
+      schemaVersion: string;
+      tables: Array<{ name: string }>;
+    };
+    expect(providerLedgerEnvelope.tables.map(({ name: table }) => table)).toEqual(expect.arrayContaining([
+      "provider_budget_policies",
+      "provider_budget_events",
+      "provider_budget_decisions",
+      "provider_budget_reservations",
+      "provider_budget_projection",
+    ]));
     const registry = await coordinator(INSTANCE_MAINTENANCE_COORDINATOR).listRegisteredObjects();
     expect(registry).toMatchObject({
       ok: true,

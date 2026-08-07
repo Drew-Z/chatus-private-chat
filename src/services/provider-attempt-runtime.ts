@@ -28,6 +28,24 @@ export class ProviderAttemptLedgerError extends Error {
   }
 }
 
+export type ProviderBudgetErrorCode = "provider_budget_exceeded" | "provider_budget_policy_unknown";
+
+export class ProviderBudgetError extends Error {
+  readonly code: ProviderBudgetErrorCode;
+
+  constructor(code: ProviderBudgetErrorCode, options?: { cause?: unknown }) {
+    super(code === "provider_budget_exceeded"
+      ? "Provider budget is exhausted."
+      : "Provider budget policy is unavailable.", options);
+    this.name = "ProviderBudgetError";
+    this.code = code;
+  }
+}
+
+export function isProviderAttemptBlockingError(error: unknown): boolean {
+  return error instanceof ProviderAttemptLedgerError || error instanceof ProviderBudgetError;
+}
+
 export type ProviderAttemptRuntime = {
   readonly turnId: string;
   createRun(runKind: ProviderAttemptRunKind): ProviderAttemptRun;
@@ -75,6 +93,7 @@ export function createProviderAttemptRuntime(input: {
   mode?: unknown;
   operation: InstanceOperationStateV1;
   turnId?: string;
+  waitUntil?: (promise: Promise<unknown>) => void;
 }): ProviderAttemptRuntime {
   const turnId = input.turnId || createProviderTurnId();
   const mode = normalizeProviderAttemptLedgerMode(input.mode);
@@ -88,6 +107,7 @@ export function createProviderAttemptRuntime(input: {
         turnId,
         runId: createProviderRunId(),
         runKind,
+        waitUntil: input.waitUntil,
       });
     },
   };
@@ -139,6 +159,7 @@ function createRun(input: {
   turnId: string;
   runId: string;
   runKind: ProviderAttemptRunKind;
+  waitUntil?: (promise: Promise<unknown>) => void;
 }): ProviderAttemptRun {
   return {
     turnId: input.turnId,
@@ -167,7 +188,7 @@ function createRun(input: {
           operation: input.operation,
           startedAt,
         }));
-      return requiredHandle(stub, result.attempt.attemptId);
+      return requiredHandle(stub, result.attempt.attemptId, input.waitUntil);
     },
   };
 }
@@ -175,12 +196,14 @@ function createRun(input: {
 function requiredHandle(
   stub: DurableObjectStub<ProviderAttemptLedger>,
   attemptId: string,
+  waitUntil?: (promise: Promise<unknown>) => void,
 ): ProviderAttemptHandle {
   let settled: { status: ProviderAttemptTerminalStatus; errorClass: ProviderAttemptErrorClass } | undefined;
   const terminal = async (
     status: ProviderAttemptTerminalStatus,
     errorClass: ProviderAttemptErrorClass,
     endedAt = Date.now(),
+    preserveSuccessfulResponse = false,
   ) => {
     if (settled) {
       if (settled.status !== status || settled.errorClass !== errorClass) {
@@ -188,7 +211,20 @@ function requiredHandle(
       }
       return;
     }
-    await requiredLedgerCall(() => stub.terminal({ version: 1, attemptId, status, errorClass, endedAt }));
+    try {
+      await requiredLedgerCall(() => stub.terminal({ version: 1, attemptId, status, errorClass, endedAt }));
+    } catch (error) {
+      if (
+        preserveSuccessfulResponse
+        && error instanceof ProviderAttemptLedgerError
+        && !isProviderTerminalConsistencyError(error)
+      ) {
+        settled = { status, errorClass };
+        scheduleTerminalRetry(stub, attemptId, status, errorClass, endedAt, waitUntil);
+        return;
+      }
+      throw error;
+    }
     settled = { status, errorClass };
   };
   return {
@@ -211,7 +247,7 @@ function requiredHandle(
         reasoningOutputTokens: usage.reasoningOutputTokens,
       }));
     },
-    succeed: (endedAt) => terminal("succeeded", "none", endedAt),
+    succeed: (endedAt) => terminal("succeeded", "none", endedAt, true),
     async fail(error, endedAt) {
       const projected = projectProviderAttemptFailure(error);
       await terminal(projected.status, projected.errorClass, endedAt);
@@ -247,8 +283,58 @@ async function requiredLedgerCall<T>(call: () => Promise<T>): Promise<T> {
   try {
     return await retryLedgerCall(call);
   } catch (cause) {
+    const budgetCode = providerBudgetErrorCode(cause);
+    if (budgetCode) throw new ProviderBudgetError(budgetCode, { cause });
     throw new ProviderAttemptLedgerError({ cause });
   }
+}
+
+function scheduleTerminalRetry(
+  stub: DurableObjectStub<ProviderAttemptLedger>,
+  attemptId: string,
+  status: ProviderAttemptTerminalStatus,
+  errorClass: ProviderAttemptErrorClass,
+  endedAt: number,
+  waitUntil?: (promise: Promise<unknown>) => void,
+): void {
+  if (!waitUntil) return;
+  const retry = (async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await requiredLedgerCall(() => stub.terminal({ version: 1, attemptId, status, errorClass, endedAt }));
+        return;
+      } catch {
+        // Keep the conservative reservation pending when the bounded retry window closes.
+      }
+    }
+  })();
+  try {
+    waitUntil(retry);
+  } catch {
+    // A missing execution context must not turn a successful Provider response into a failure.
+  }
+}
+
+function providerBudgetErrorCode(error: unknown): ProviderBudgetErrorCode | undefined {
+  for (const item of errorChain(error)) {
+    const message = typeof item.message === "string" ? item.message : "";
+    if (message.includes("provider_budget_exceeded")) return "provider_budget_exceeded";
+    if (message.includes("provider_budget_policy_unknown")) return "provider_budget_policy_unknown";
+  }
+  return undefined;
+}
+
+function isProviderTerminalConsistencyError(error: unknown): boolean {
+  const consistencyCodes = [
+    "provider_attempt_conflict",
+    "provider_attempt_terminal_invalid",
+    "provider_budget_event_conflict",
+    "provider_budget_projection_missing",
+  ];
+  return errorChain(error).some((item) => {
+    const message = typeof item.message === "string" ? item.message : "";
+    return consistencyCodes.some((code) => message.includes(code));
+  });
 }
 
 function errorChain(error: unknown): Record<string, unknown>[] {

@@ -3,7 +3,7 @@
   "name": "provider-budget-engine-enforcement",
   "title": "Provider budget engine and enforcement",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -12,15 +12,66 @@
   "assignee": "zhang",
   "createdAt": "2026-08-05",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/provider-budget-engine-enforcement",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "961776682a421942fab806e3207f13bb7ca28b3d",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/52",
   "subtasks": [],
   "children": [],
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend Vite build and structural checks passed.",
+        "at": "2026-08-07T07:23:43.802866+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "45 test files and 688 tests passed with local deterministic fixtures.",
+        "at": "2026-08-07T07:23:45.004856+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright completed 135 cases: 86 passed and 49 intentionally skipped across required viewports.",
+        "at": "2026-08-07T07:23:46.129504+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-Provider Agent browser suite passed 3 of 3 tests.",
+        "at": "2026-08-07T07:23:47.392761+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture TypeScript checks passed.",
+        "at": "2026-08-07T07:23:48.664292+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaged schema v3 Worker bindings without deploying.",
+        "at": "2026-08-07T07:23:49.867797+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Diff whitespace validation passed; only line-ending conversion notices were emitted.",
+        "at": "2026-08-07T07:23:51.096826+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task tree and workspace index consistency passed.",
+        "at": "2026-08-07T07:23:52.216109+00:00"
+      }
+    ]
+  }
 }

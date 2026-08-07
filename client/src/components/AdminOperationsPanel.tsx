@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Activity, BookOpenText, ChevronLeft, ChevronRight, CircleDollarSign, Gauge, MessageSquareText, ReceiptText, RefreshCw, Route, ScrollText, ThumbsDown, ThumbsUp, Users } from "lucide-react";
+import { Activity, BookOpenText, ChevronLeft, ChevronRight, CircleDollarSign, Gauge, MessageSquareText, ReceiptText, RefreshCw, Route, ScrollText, ShieldCheck, ThumbsDown, ThumbsUp, TriangleAlert, Users } from "lucide-react";
 import {
   ApiError,
+  createAdminProviderBudgetPolicy,
   createAdminProviderPriceCatalog,
   fetchAdminOperations,
   importAdminProviderReconciliation,
+  reconcileAdminProviderBudgetReservation,
   type AdminAuditEntry,
   type AdminFeedbackEntry,
   type AdminOperationsSnapshot,
+  type AdminProviderBudgetOperatorAction,
+  type AdminProviderBudgetPolicyInput,
+  type AdminProviderBudgetReservation,
   type AdminProviderFinanceAttempt,
   type AdminProviderFinanceProvider,
   type AdminProviderPriceCatalog,
@@ -28,12 +33,14 @@ type OperationsViewState =
   | { status: "ready"; snapshot: AdminOperationsSnapshot; refreshing: boolean }
   | { status: "error"; message: string };
 
-type OperationsList = "routes" | "feedback" | "audit" | "users" | "providers" | "catalogs" | "financeAttempts" | "reconciliations";
+type OperationsList = "routes" | "feedback" | "audit" | "users" | "providers" | "catalogs" | "financeAttempts" | "reconciliations" | "budgetPolicies" | "budgetBalances" | "budgetReservations";
 type OperationsPages = Record<OperationsList, number>;
 
 type FinanceActions = {
   createPrice: (input: AdminProviderPriceCatalog) => Promise<void>;
   importReconciliation: (input: AdminProviderReconciliationInput) => Promise<void>;
+  createBudgetPolicy: (input: AdminProviderBudgetPolicyInput) => Promise<void>;
+  reconcileBudgetReservation: (input: AdminProviderBudgetOperatorAction) => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
 };
 
@@ -122,6 +129,14 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
               () => importAdminProviderReconciliation(input),
               "Provider 对账摘要已导入。",
             ),
+            createBudgetPolicy: (input) => runFinanceMutation(
+              () => createAdminProviderBudgetPolicy(input),
+              "Provider 预算策略已保存。",
+            ),
+            reconcileBudgetReservation: (input) => runFinanceMutation(
+              () => reconcileAdminProviderBudgetReservation(input),
+              input.action === "release" ? "Provider 预算占用已人工释放。" : "Provider 预算占用已人工对账。",
+            ),
             onDirtyChange,
           }}
         />
@@ -149,9 +164,14 @@ export function AdminOperationsContent({
     catalogs: 1,
     financeAttempts: 1,
     reconciliations: 1,
+    budgetPolicies: 1,
+    budgetBalances: 1,
+    budgetReservations: 1,
   });
   const [priceDirty, setPriceDirty] = useState(false);
   const [reconciliationDirty, setReconciliationDirty] = useState(false);
+  const [budgetPolicyDirty, setBudgetPolicyDirty] = useState(false);
+  const [budgetActionDirty, setBudgetActionDirty] = useState(false);
   const maxRequests = Math.max(1, ...snapshot.stats.trend.map((item) => item.requests));
   const users = useMemo(() => snapshot.stats.users.filter((user) => matchesQuery(query, user.label, user.displayName, user.defaultRoute)), [query, snapshot.stats.users]);
   const routes = useMemo(() => snapshot.stats.routeStats.filter((route) => matchesQuery(query, route.id, route.label, route.model)), [query, snapshot.stats.routeStats]);
@@ -167,6 +187,15 @@ export function AdminOperationsContent({
   const reconciliations = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.reconciliations
     .filter((entry) => matchesQuery(query, provider.providerId, provider.label, entry.currency, entry.status))
     .map((entry) => ({ provider, entry }))), [query, snapshot.finance.providers]);
+  const budgetPolicies = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.budgetPolicies
+    .filter((policy) => matchesQuery(query, provider.providerId, provider.label, policy.policyId, policy.currency, policy.mode))
+    .map((policy) => ({ provider, policy }))), [query, snapshot.finance.providers]);
+  const budgetBalances = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.budgetBalances
+    .filter((balance) => matchesQuery(query, provider.providerId, provider.label, balance.policyId, balance.currency, balance.mode))
+    .map((balance) => ({ provider, balance }))), [query, snapshot.finance.providers]);
+  const budgetReservations = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.budgetReservations
+    .filter((reservation) => matchesQuery(query, provider.providerId, provider.label, reservation.policyId, reservation.currency, reservation.status))
+    .map((reservation) => ({ provider, reservation }))), [query, snapshot.finance.providers]);
   const routePage = paginateOperations(routes, pages.routes);
   const feedbackPage = paginateOperations(feedback, pages.feedback);
   const auditPage = paginateOperations(audit, pages.audit);
@@ -175,15 +204,18 @@ export function AdminOperationsContent({
   const catalogPage = paginateOperations(catalogs, pages.catalogs);
   const financeAttemptPage = paginateOperations(financeAttempts, pages.financeAttempts);
   const reconciliationPage = paginateOperations(reconciliations, pages.reconciliations);
+  const budgetPolicyPage = paginateOperations(budgetPolicies, pages.budgetPolicies);
+  const budgetBalancePage = paginateOperations(budgetBalances, pages.budgetBalances);
+  const budgetReservationPage = paginateOperations(budgetReservations, pages.budgetReservations);
 
   useEffect(() => {
-    setPages({ routes: 1, feedback: 1, audit: 1, users: 1, providers: 1, catalogs: 1, financeAttempts: 1, reconciliations: 1 });
+    setPages({ routes: 1, feedback: 1, audit: 1, users: 1, providers: 1, catalogs: 1, financeAttempts: 1, reconciliations: 1, budgetPolicies: 1, budgetBalances: 1, budgetReservations: 1 });
   }, [query]);
 
   useEffect(() => {
-    financeActions?.onDirtyChange(priceDirty || reconciliationDirty);
+    financeActions?.onDirtyChange(priceDirty || reconciliationDirty || budgetPolicyDirty || budgetActionDirty);
     return () => financeActions?.onDirtyChange(false);
-  }, [financeActions, priceDirty, reconciliationDirty]);
+  }, [financeActions, priceDirty, reconciliationDirty, budgetPolicyDirty, budgetActionDirty]);
 
   function setPage(list: OperationsList, page: number) {
     setPages((current) => ({ ...current, [list]: page }));
@@ -197,6 +229,8 @@ export function AdminOperationsContent({
     { label: "限流", value: snapshot.stats.totals.rateLimited },
     { label: "Provider 调用", value: snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.calls, 0) },
     { label: "Usage 未知", value: snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.unknownUsageAttempts, 0) },
+    { label: "预算待结算", value: snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.pendingSettlementCount, 0), 0) },
+    { label: "预算待复核", value: snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.reviewRequiredCount, 0), 0) },
   ];
 
   return (
@@ -241,7 +275,7 @@ export function AdminOperationsContent({
           <PaginationControls label="Provider 容量" page={providerPage} onPageChange={(page) => setPage("providers", page)} />
         </OperationsSection>
 
-        <OperationsSection icon={<CircleDollarSign size={17} />} title="成本证据" meta="预算执行未启用">
+        <OperationsSection icon={<CircleDollarSign size={17} />} title="成本证据" meta="Provider 实例级预算 v1">
           <div className="operations-compact-list">
             {financeProviders.flatMap((provider) => provider.costs.map((cost) => (
               <div key={`${provider.providerId}:${cost.currency}`}>
@@ -251,6 +285,32 @@ export function AdminOperationsContent({
             )))}
             {!financeProviders.some((provider) => provider.costs.length) && <p className="typed-admin-empty">尚无可计算成本，缺失值保持未知</p>}
           </div>
+        </OperationsSection>
+
+        <OperationsSection icon={<ShieldCheck size={17} />} title="预算策略" meta={pageCountMeta(budgetPolicyPage)}>
+          <div className="operations-compact-list">
+            {budgetPolicyPage.items.map(({ provider, policy }) => (
+              <div key={`${provider.providerId}:${policy.policyId}:${policy.policyVersion}`}>
+                <span><strong>{provider.label} · {budgetModeLabel(policy.mode)}</strong><small>{policy.policyId} · 版本 {policy.policyVersion} · {policy.currency} · {formatShortDate(policy.periodStart)} 至 {formatShortDate(policy.periodEnd)}</small></span>
+                <em>上限 {formatMicros(policy.limitMicros, policy.currency)} · 单次预留 {formatMicros(policy.maxAttemptReserveMicros, policy.currency)}</em>
+              </div>
+            ))}
+            {!budgetPolicyPage.total && <p className="typed-admin-empty">尚无预算策略，Provider 调用保持 disabled 行为</p>}
+          </div>
+          <PaginationControls label="预算策略" page={budgetPolicyPage} onPageChange={(page) => setPage("budgetPolicies", page)} />
+        </OperationsSection>
+
+        <OperationsSection icon={<TriangleAlert size={17} />} title="预算余额与告警" meta={pageCountMeta(budgetBalancePage)}>
+          <div className="operations-compact-list">
+            {budgetBalancePage.items.map(({ provider, balance }) => (
+              <div key={`${provider.providerId}:${balance.policyId}`}>
+                <span><strong>{provider.label} · 可用 {formatMicros(balance.availableMicros, balance.currency)}</strong><small>{budgetModeLabel(balance.mode)} · 已结算 {formatMicros(balance.settledMicros, balance.currency)} · 已预留 {formatMicros(balance.reservedMicros, balance.currency)} · Hold {formatMicros(balance.heldMicros, balance.currency)}</small></span>
+                <em>拒绝 {balance.denialCount} · 告警 {balance.alertCount} · 待结算 {balance.pendingSettlementCount} · 待复核 {balance.reviewRequiredCount}</em>
+              </div>
+            ))}
+            {!budgetBalancePage.total && <p className="typed-admin-empty">尚无预算余额或告警</p>}
+          </div>
+          <PaginationControls label="预算余额与告警" page={budgetBalancePage} onPageChange={(page) => setPage("budgetBalances", page)} />
         </OperationsSection>
 
         <OperationsSection icon={<BookOpenText size={17} />} title="价格目录" meta={pageCountMeta(catalogPage)}>
@@ -333,6 +393,27 @@ export function AdminOperationsContent({
         <PaginationControls label="Provider 尝试" page={financeAttemptPage} onPageChange={(page) => setPage("financeAttempts", page)} />
       </OperationsSection>
 
+      <OperationsSection icon={<TriangleAlert size={17} />} title="预算占用与复核" meta={pageCountMeta(budgetReservationPage)}>
+        <div className="operations-user-table-wrap">
+          <table className="operations-user-table">
+            <thead><tr><th scope="col">Provider</th><th scope="col">状态</th><th scope="col">预留</th><th scope="col">已结算</th><th scope="col">已释放</th><th scope="col">Hold</th><th scope="col">复核时间</th></tr></thead>
+            <tbody>{budgetReservationPage.items.map(({ provider, reservation }) => (
+              <tr key={reservation.reservationId}>
+                <td><strong>{provider.label}</strong><small>{provider.providerId} · {reservation.policyId} · {reservation.reservationId}</small></td>
+                <td>{budgetReservationStatusLabel(reservation.status)}<small>策略版本 {reservation.policyVersion}</small></td>
+                <td>{formatMicros(reservation.reservedMicros, reservation.currency)}</td>
+                <td>{formatMicros(reservation.settledMicros, reservation.currency)}</td>
+                <td>{formatMicros(reservation.releasedMicros, reservation.currency)}</td>
+                <td>{formatMicros(reservation.heldMicros, reservation.currency)}</td>
+                <td>{formatShortDateTime(reservation.reviewAfter)}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+          {!budgetReservationPage.total && <p className="typed-admin-empty">暂无预算占用</p>}
+        </div>
+        <PaginationControls label="预算占用与复核" page={budgetReservationPage} onPageChange={(page) => setPage("budgetReservations", page)} />
+      </OperationsSection>
+
       <OperationsSection icon={<ReceiptText size={17} />} title="Provider 对账" meta={pageCountMeta(reconciliationPage)}>
         <div className="operations-event-list">
           {reconciliationPage.items.map(({ provider, entry }) => (
@@ -359,6 +440,16 @@ export function AdminOperationsContent({
           }}
           onPriceDirtyChange={setPriceDirty}
           onReconciliationDirtyChange={setReconciliationDirty}
+          onCreateBudgetPolicy={async (input) => {
+            await financeActions.createBudgetPolicy(input);
+            setBudgetPolicyDirty(false);
+          }}
+          onReconcileBudgetReservation={async (input) => {
+            await financeActions.reconcileBudgetReservation(input);
+            setBudgetActionDirty(false);
+          }}
+          onBudgetPolicyDirtyChange={setBudgetPolicyDirty}
+          onBudgetActionDirtyChange={setBudgetActionDirty}
         />
       )}
     </div>
@@ -369,22 +460,196 @@ function AdminFinanceEntryTools({
   providers,
   onCreatePrice,
   onImportReconciliation,
+  onCreateBudgetPolicy,
+  onReconcileBudgetReservation,
   onPriceDirtyChange,
   onReconciliationDirtyChange,
+  onBudgetPolicyDirtyChange,
+  onBudgetActionDirtyChange,
 }: {
   providers: AdminProviderFinanceProvider[];
   onCreatePrice: (input: AdminProviderPriceCatalog) => Promise<void>;
   onImportReconciliation: (input: AdminProviderReconciliationInput) => Promise<void>;
+  onCreateBudgetPolicy: (input: AdminProviderBudgetPolicyInput) => Promise<void>;
+  onReconcileBudgetReservation: (input: AdminProviderBudgetOperatorAction) => Promise<void>;
   onPriceDirtyChange: (dirty: boolean) => void;
   onReconciliationDirtyChange: (dirty: boolean) => void;
+  onBudgetPolicyDirtyChange: (dirty: boolean) => void;
+  onBudgetActionDirtyChange: (dirty: boolean) => void;
 }) {
   return (
-    <OperationsSection icon={<CircleDollarSign size={17} />} title="财务录入" meta="仅摘要、价格和对账指纹">
+    <OperationsSection icon={<CircleDollarSign size={17} />} title="财务与预算操作" meta="版本化、幂等、保留审计">
       <div className="admin-finance-entry-grid">
+        <ProviderBudgetPolicyForm providers={providers} onSubmit={onCreateBudgetPolicy} onDirtyChange={onBudgetPolicyDirtyChange} />
+        <ProviderBudgetReservationForm providers={providers} onSubmit={onReconcileBudgetReservation} onDirtyChange={onBudgetActionDirtyChange} />
         <ProviderPriceCatalogForm providers={providers} onSubmit={onCreatePrice} onDirtyChange={onPriceDirtyChange} />
         <ProviderReconciliationForm providers={providers} onSubmit={onImportReconciliation} onDirtyChange={onReconciliationDirtyChange} />
       </div>
     </OperationsSection>
+  );
+}
+
+type BudgetPolicyDraft = {
+  providerId: string;
+  mode: AdminProviderBudgetPolicyInput["mode"];
+  currency: string;
+  periodStart: string;
+  periodEnd: string;
+  limit: string;
+  maxAttemptReserve: string;
+};
+
+function ProviderBudgetPolicyForm({
+  providers,
+  onSubmit,
+  onDirtyChange,
+}: {
+  providers: AdminProviderFinanceProvider[];
+  onSubmit: (input: AdminProviderBudgetPolicyInput) => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const [draft, setDraft] = useState<BudgetPolicyDraft>(() => emptyBudgetPolicyDraft(providers[0]));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    if (!providers.length) return;
+    if (!providers.some((provider) => provider.providerId === draft.providerId)) {
+      setDraft(emptyBudgetPolicyDraft(providers[0]));
+      onDirtyChange(false);
+    }
+  }, [draft.providerId, onDirtyChange, providers]);
+
+  function update<K extends keyof BudgetPolicyDraft>(key: K, value: BudgetPolicyDraft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+    onDirtyChange(true);
+    setSuccess("");
+  }
+
+  function selectProvider(providerId: string) {
+    const provider = providers.find((entry) => entry.providerId === providerId);
+    setDraft(emptyBudgetPolicyDraft(provider));
+    onDirtyChange(true);
+    setError("");
+    setSuccess("");
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPending(true);
+    setError("");
+    setSuccess("");
+    try {
+      const provider = providers.find((entry) => entry.providerId === draft.providerId);
+      if (!provider) throw new Error("请选择有效的 Provider。");
+      await onSubmit(toBudgetPolicyInput(draft, provider));
+      onDirtyChange(false);
+      setSuccess("预算策略版本已提交。切换到 hard 前应先核对 shadow / soft 证据。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "预算策略提交失败。");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form className="admin-pool-form admin-finance-form" onSubmit={(event) => void submit(event)}>
+      <div className="admin-finance-form-heading"><h3>新增预算策略版本</h3><p>一个 Provider、一个币种、一个 UTC 窗口；soft 可作为 hard 的回滚版本。</p></div>
+      <div className="admin-form-grid two">
+        <label><span>Provider</span><select value={draft.providerId} onChange={(event) => selectProvider(event.target.value)} required><option value="">选择 Provider</option>{providers.map((provider) => <option key={provider.providerId} value={provider.providerId}>{provider.label}（{provider.providerId}）</option>)}</select></label>
+        <label><span>策略模式</span><select value={draft.mode} onChange={(event) => update("mode", event.target.value as BudgetPolicyDraft["mode"])}><option value="disabled">Disabled</option><option value="shadow">Shadow</option><option value="soft">Soft</option><option value="hard">Hard</option></select></label>
+        <label><span>货币</span><input value={draft.currency} maxLength={3} onChange={(event) => update("currency", event.target.value.toUpperCase())} pattern="[A-Z]{3}" required /></label>
+        <label><span>窗口开始</span><input type="datetime-local" value={draft.periodStart} onChange={(event) => update("periodStart", event.target.value)} required /></label>
+        <label><span>窗口结束</span><input type="datetime-local" value={draft.periodEnd} onChange={(event) => update("periodEnd", event.target.value)} required /></label>
+        <label><span>预算上限</span><input inputMode="decimal" value={draft.limit} onChange={(event) => update("limit", event.target.value)} required /></label>
+        <label><span>单次最大预留</span><input inputMode="decimal" value={draft.maxAttemptReserve} onChange={(event) => update("maxAttemptReserve", event.target.value)} required /></label>
+      </div>
+      {(error || success) && <p className={error ? "form-message error" : "form-message"} role={error ? "alert" : "status"}>{error || success}</p>}
+      <button className="primary-button icon-text-button" type="submit" disabled={pending || !providers.length}><ShieldCheck size={15} /><span>{pending ? "保存中..." : "保存预算策略"}</span></button>
+    </form>
+  );
+}
+
+type BudgetReservationOption = {
+  provider: AdminProviderFinanceProvider;
+  reservation: AdminProviderBudgetReservation;
+};
+
+type BudgetReservationDraft = {
+  reservationId: string;
+  action: AdminProviderBudgetOperatorAction["action"];
+  amount: string;
+  reason: string;
+};
+
+function ProviderBudgetReservationForm({
+  providers,
+  onSubmit,
+  onDirtyChange,
+}: {
+  providers: AdminProviderFinanceProvider[];
+  onSubmit: (input: AdminProviderBudgetOperatorAction) => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  const options = useMemo(() => actionableBudgetReservations(providers), [providers]);
+  const [draft, setDraft] = useState<BudgetReservationDraft>(() => emptyBudgetReservationDraft(options[0]));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+    if (options.some((option) => option.reservation.reservationId === draft.reservationId)) return;
+    setDraft(emptyBudgetReservationDraft(options[0]));
+    onDirtyChange(false);
+  }, [draft.reservationId, onDirtyChange, options]);
+
+  function update<K extends keyof BudgetReservationDraft>(key: K, value: BudgetReservationDraft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+    onDirtyChange(true);
+    setSuccess("");
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPending(true);
+    setError("");
+    setSuccess("");
+    try {
+      const selected = options.find((option) => option.reservation.reservationId === draft.reservationId);
+      if (!selected) throw new Error("请选择仍待处理的预算占用。");
+      const reason = draft.reason.trim();
+      if (!reason || reason.length > 320) throw new Error("处理原因必须为 1 至 320 个字符。");
+      const amountMicros = draft.action === "release" ? 0 : parseRequiredMoneyMicros(draft.amount, "对账金额");
+      await onSubmit({
+        version: 1,
+        providerId: selected.provider.providerId,
+        reservationId: selected.reservation.reservationId,
+        action: draft.action,
+        amountMicros,
+        reason,
+      });
+      onDirtyChange(false);
+      setSuccess(draft.action === "release" ? "预算占用已人工释放并保留审计事件。" : "预算占用已人工对账并保留审计事件。");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "预算占用处理失败。");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form className="admin-pool-form admin-finance-form" onSubmit={(event) => void submit(event)}>
+      <div className="admin-finance-form-heading"><h3>处理预算占用</h3><p>仅对 pending、hold 或待复核记录执行幂等的对账或人工释放。</p></div>
+      <div className="admin-form-grid two">
+        <label className="admin-form-wide"><span>预算占用</span><select value={draft.reservationId} onChange={(event) => update("reservationId", event.target.value)} required><option value="">选择预算占用</option>{options.map(({ provider, reservation }) => <option key={reservation.reservationId} value={reservation.reservationId}>{provider.label} · {budgetReservationStatusLabel(reservation.status)} · {formatMicros(reservation.heldMicros || reservation.reservedMicros, reservation.currency)}</option>)}</select></label>
+        <label><span>处理方式</span><select value={draft.action} onChange={(event) => update("action", event.target.value as BudgetReservationDraft["action"])}><option value="reconcile">按实际金额对账</option><option value="release">人工释放</option></select></label>
+        <label><span>对账金额</span><input inputMode="decimal" value={draft.amount} onChange={(event) => update("amount", event.target.value)} disabled={draft.action === "release"} required={draft.action === "reconcile"} /></label>
+        <label className="admin-form-wide"><span>处理原因</span><input value={draft.reason} maxLength={320} onChange={(event) => update("reason", event.target.value)} required /></label>
+      </div>
+      {(error || success) && <p className={error ? "form-message error" : "form-message"} role={error ? "alert" : "status"}>{error || success}</p>}
+      <button className="primary-button icon-text-button" type="submit" disabled={pending || !options.length}><ReceiptText size={15} /><span>{pending ? "处理中..." : "提交预算处理"}</span></button>
+    </form>
   );
 }
 
@@ -546,6 +811,73 @@ function ProviderReconciliationForm({
   );
 }
 
+function emptyBudgetPolicyDraft(provider: AdminProviderFinanceProvider | undefined): BudgetPolicyDraft {
+  const latest = provider?.budgetPolicies.reduce((current, policy) => (
+    !current || policy.policyVersion > current.policyVersion ? policy : current
+  ), undefined as AdminProviderFinanceProvider["budgetPolicies"][number] | undefined);
+  const start = latest?.periodStart ?? Date.now();
+  const end = latest?.periodEnd ?? start + 30 * 24 * 60 * 60 * 1_000;
+  return {
+    providerId: provider?.providerId || "",
+    mode: latest?.mode || "shadow",
+    currency: latest?.currency || "USD",
+    periodStart: formatDateTimeLocal(start),
+    periodEnd: formatDateTimeLocal(end),
+    limit: latest ? formatMoneyInput(latest.limitMicros) : "",
+    maxAttemptReserve: latest ? formatMoneyInput(latest.maxAttemptReserveMicros) : "",
+  };
+}
+
+function emptyBudgetReservationDraft(option: BudgetReservationOption | undefined): BudgetReservationDraft {
+  return {
+    reservationId: option?.reservation.reservationId || "",
+    action: "reconcile",
+    amount: "",
+    reason: "",
+  };
+}
+
+function actionableBudgetReservations(providers: AdminProviderFinanceProvider[]): BudgetReservationOption[] {
+  return providers.flatMap((provider) => provider.budgetReservations
+    .filter((reservation) => reservation.status === "reserved" || reservation.status === "held" || reservation.status === "review_required")
+    .map((reservation) => ({ provider, reservation })));
+}
+
+function toBudgetPolicyInput(
+  draft: BudgetPolicyDraft,
+  provider: AdminProviderFinanceProvider,
+): AdminProviderBudgetPolicyInput {
+  const periodStart = parseDateTime(draft.periodStart, "窗口开始");
+  const periodEnd = parseDateTime(draft.periodEnd, "窗口结束");
+  if (periodEnd <= periodStart) throw new Error("窗口结束必须晚于窗口开始。");
+  if (periodEnd <= Date.now()) throw new Error("窗口结束必须晚于当前时间。");
+  const limitMicros = parseRequiredMoneyMicros(draft.limit, "预算上限");
+  const maxAttemptReserveMicros = parseRequiredMoneyMicros(draft.maxAttemptReserve, "单次最大预留");
+  if (limitMicros <= 0) throw new Error("预算上限必须大于零。");
+  if (maxAttemptReserveMicros <= 0 || maxAttemptReserveMicros > limitMicros) {
+    throw new Error("单次最大预留必须大于零且不超过预算上限。");
+  }
+  const currency = draft.currency.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw new Error("货币必须为三位大写代码。");
+  const matching = provider.budgetPolicies.filter((policy) => (
+    policy.currency === currency
+    && policy.periodStart === periodStart
+    && policy.periodEnd === periodEnd
+  ));
+  const expectedPreviousVersion = matching.reduce((latest, policy) => Math.max(latest, policy.policyVersion), 0);
+  return {
+    version: 1,
+    providerId: provider.providerId,
+    currency,
+    mode: draft.mode,
+    periodStart,
+    periodEnd,
+    limitMicros,
+    maxAttemptReserveMicros,
+    expectedPreviousVersion,
+  };
+}
+
 function emptyPriceDraft(providerId: string): PriceDraft {
   return {
     providerId,
@@ -654,6 +986,16 @@ function parseMoneyMicros(value: string, label: string): number | null {
   return micros;
 }
 
+function parseRequiredMoneyMicros(value: string, label: string): number {
+  const micros = parseMoneyMicros(value, label);
+  if (micros === null) throw new Error(`${label}必须填写。`);
+  return micros;
+}
+
+function formatMoneyInput(value: number): string {
+  return String(value / 1_000_000);
+}
+
 export function paginateOperations<T>(items: T[], requestedPage: number, pageSize = OPERATIONS_PAGE_SIZE) {
   const total = items.length;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
@@ -746,6 +1088,10 @@ function formatShortDate(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(value);
 }
 
+function formatShortDateTime(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(value);
+}
+
 function formatDateTimeLocal(value: number): string {
   const date = new Date(value);
   const pad = (part: number) => String(part).padStart(2, "0");
@@ -754,6 +1100,21 @@ function formatDateTimeLocal(value: number): string {
 
 function reconciliationStatus(status: AdminProviderFinanceProvider["reconciliations"][number]["status"]): string {
   return ({ matched: "已匹配", partial: "部分匹配", disputed: "有争议", corrected: "已更正", closed: "已关闭" } as const)[status];
+}
+
+function budgetModeLabel(mode: AdminProviderBudgetPolicyInput["mode"]): string {
+  return ({ disabled: "Disabled", shadow: "Shadow", soft: "Soft", hard: "Hard" } as const)[mode];
+}
+
+function budgetReservationStatusLabel(status: AdminProviderBudgetReservation["status"]): string {
+  return ({
+    reserved: "待结算",
+    settled: "已结算",
+    held: "Hold",
+    review_required: "待复核",
+    reconciled: "已对账",
+    operator_released: "人工释放",
+  } as const)[status];
 }
 
 function auditAction(entry: AdminAuditEntry): string {

@@ -5,6 +5,8 @@ import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
 import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse } from "../client/src/lib/api";
+import { providerOfferingId } from "../src/contracts/provider-attempt";
+import { PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS } from "../src/contracts/provider-finance";
 import { resolveProviderRouteCandidates } from "../src/services/provider-router";
 import {
   ProviderAttemptLedgerError,
@@ -368,6 +370,54 @@ function setupReadyConfig(options: {
   };
 }
 
+function capabilityBudgetConfig(providerId: string, routeId: string, model: string) {
+  return {
+    providers: {
+      [providerId]: {
+        label: "Capability budget provider",
+        type: "openai-chat",
+        baseUrl: `https://${providerId}.example/v1`,
+        apiKeyRef: "TEST_ROUTE_KEY",
+        supportsTools: true,
+      },
+    },
+    routes: {
+      [routeId]: {
+        label: "Capability budget route",
+        offerings: [{ providerId, model, supportsTools: true }],
+        supportsTools: true,
+      },
+    },
+    defaults: {
+      defaultRoute: routeId,
+      allowedRoutes: [routeId],
+      allowedSkills: ["budget-analyze"],
+      allowedTools: ["builtin:text_stats"],
+    },
+    tools: {
+      "builtin:text_stats": {
+        enabled: true,
+        label: "Text stats",
+        inputSchema: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+          additionalProperties: false,
+        },
+        executor: { type: "builtin", name: "text_stats" },
+      },
+    },
+    skills: {
+      "budget-analyze": {
+        enabled: true,
+        label: "Budget analyze",
+        instructions: "Use text statistics when useful.",
+        toolIds: ["builtin:text_stats"],
+      },
+    },
+  };
+}
+
 async function createGuestSession(source: string, cookie?: string) {
   const headers = new Headers({ "CF-Connecting-IP": source });
   if (cookie) headers.set("Cookie", cookie);
@@ -443,6 +493,87 @@ async function seedProviderAttempt(providerId: string) {
     runId: run.runId,
     attemptId: handle.attemptId!,
   };
+}
+
+async function seedHardProviderBudget(input: {
+  providerId: string;
+  routeId: string;
+  model: string;
+  knownPrice: boolean;
+  exhausted?: boolean;
+}) {
+  const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(input.providerId);
+  const periodStart = Date.now() - 1_000;
+  if (input.knownPrice) {
+    await ledger.addPriceCatalog({
+      version: 1,
+      catalogVersionId: `catalog-${crypto.randomUUID()}`,
+      providerId: input.providerId,
+      offeringId: providerOfferingId(input.routeId, input.providerId),
+      model: input.model,
+      currency: "USD",
+      precision: 6,
+      unit: "million_tokens",
+      inputNoCachePriceMicros: 1_000_000,
+      cacheReadInputPriceMicros: 0,
+      cacheWriteInputPriceMicros: 0,
+      outputTextPriceMicros: 2_000_000,
+      reasoningOutputPriceMicros: 0,
+      effectiveFrom: periodStart,
+      effectiveTo: null,
+      approver: "test-finance-admin",
+      provenance: "local fake Provider price",
+      createdAt: periodStart,
+    });
+  }
+  const policyId = `policy-${crypto.randomUUID()}`;
+  const shadowPolicy = {
+    version: 1,
+    policyId,
+    idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+    providerId: input.providerId,
+    currency: "USD",
+    mode: "shadow" as const,
+    periodStart,
+    periodEnd: periodStart + 24 * 60 * 60 * 1_000,
+    limitMicros: 500,
+    maxAttemptReserveMicros: 500,
+    holdReviewAfterMs: PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
+    allowUnknownPrice: false,
+    approver: "test-finance-admin",
+    createdAt: periodStart,
+    expectedPreviousVersion: 0,
+  };
+  await ledger.addBudgetPolicy(shadowPolicy);
+  await ledger.addBudgetPolicy({
+    ...shadowPolicy,
+    idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+    mode: "hard",
+    createdAt: periodStart + 1,
+    expectedPreviousVersion: 1,
+  });
+  if (input.exhausted) {
+    const runtime = createProviderAttemptRuntime({
+      ledger: env.PROVIDER_ATTEMPT_LEDGER,
+      mode: "required",
+      operation: {
+        version: 1,
+        operationId: `budget-seed-${crypto.randomUUID()}`,
+        fenceId: crypto.randomUUID(),
+        kind: "provider_turn",
+        startedAt: periodStart + 1,
+      },
+    });
+    await runtime.createRun("main_answer").start({
+      logicalRouteId: input.routeId,
+      providerId: input.providerId,
+      model: input.model,
+      credentialClass: "managed",
+      fallbackIndex: 0,
+      startedAt: periodStart + 2,
+    });
+  }
+  return { ledger, periodStart };
 }
 
 describe("Worker API", () => {
@@ -1205,6 +1336,83 @@ describe("Worker API", () => {
     expect(rejected.body).toContain("invalid_image_data");
     expect(fetchSpy).not.toHaveBeenCalled();
     await expect(agent.getConversationMessageCount()).resolves.toBe(0);
+  });
+
+  it("projects Automatic Skill budget denial through the TeamAgent SSE envelope", async () => {
+    const providerId = `agent-budget-${crypto.randomUUID()}`;
+    const endpoint = `https://${providerId}.example/v1`;
+    const routeId = "agent-budget";
+    const model = "agent-budget-model";
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Agent budget provider",
+          type: "openai-chat",
+          baseUrl: endpoint,
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        [routeId]: { label: "Agent budget route", offerings: [{ providerId, model }] },
+      },
+      defaults: {
+        defaultRoute: routeId,
+        allowedRoutes: [routeId],
+        allowedSkills: ["automatic-budget-skill"],
+      },
+      skills: {
+        "automatic-budget-skill": {
+          enabled: true,
+          label: "Automatic budget Skill",
+          description: "Selected only by the local fake selector.",
+          instructions: "Use the selected Skill.",
+          toolIds: [],
+        },
+      },
+      tools: {},
+      mcpServers: {},
+    }));
+    await seedHardProviderBudget({ providerId, routeId, model, knownPrice: false });
+    const label = `agent-budget-member-${crypto.randomUUID()}`;
+    const chatId = `agent-budget-chat-${crypto.randomUUID()}`;
+    const root = await getRootAgent(label);
+    await root.createConversation({
+      id: chatId,
+      title: "Agent budget SSE",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      summary: "",
+      pinned: false,
+      routeId,
+      skillMode: "automatic",
+      skillIds: [],
+    });
+    const agent = await getConversationAgent(label, chatId);
+    await agent.importLegacyMessages([{
+      id: "agent-budget-user",
+      role: "user",
+      parts: [{ type: "text", text: "Select a Skill without calling the Provider." }],
+    }] as UIMessage[]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const requestId = "turn_budget-123";
+    const result = await runInDurableObject(agent, async (instance) => {
+      const response = await instance.onChatMessage(async () => undefined, { requestId });
+      return {
+        status: response.status,
+        requestId: response.headers.get("X-Request-ID"),
+        contentType: response.headers.get("Content-Type"),
+        body: await response.text(),
+      };
+    });
+    expect(result.status).toBe(503);
+    expect(result.requestId).toBe(requestId);
+    expect(result.contentType).toContain("text/event-stream");
+    expect(result.body).toContain("provider_budget_policy_unknown");
+    expect(result.body).toContain("当前 Provider 缺少可验证的价格策略，请联系管理员完成配置。");
+    expect(result.body).not.toContain(providerId);
+    expect(result.body).not.toContain(endpoint);
+    expect(result.body).not.toContain("TEST_ROUTE_KEY");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("rejects cross-origin authenticated mutations before admin or user dispatch", async () => {
@@ -2484,6 +2692,99 @@ describe("Worker API", () => {
     expect(toolAttempts.every(({ status }) => status === "succeeded")).toBe(true);
   });
 
+  it("projects an initial legacy capability budget denial with zero Provider calls", async () => {
+    const providerId = `capability-budget-initial-${crypto.randomUUID()}`;
+    const routeId = "capability-budget-initial";
+    const model = "capability-budget-model";
+    await env.CHAT_STORE.put(
+      ROUTES_CONFIG_KEY,
+      JSON.stringify(capabilityBudgetConfig(providerId, routeId, model)),
+    );
+    await seedHardProviderBudget({ providerId, routeId, model, knownPrice: false });
+    const { cookie } = await login();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId,
+        chatId: "capability-budget-initial-chat",
+        skillIds: ["budget-analyze"],
+        messages: [{ role: "user", content: "Do not exceed the configured budget." }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Chatus-Stream")).toBe("capability-v1");
+    const events = await readCapabilityEvents(response);
+    expect(events).toContainEqual({
+      type: "error",
+      code: "provider_budget_policy_unknown",
+      message: "当前 Provider 缺少可验证的价格策略，请联系管理员完成配置。",
+      retryable: true,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(events)).not.toContain(providerId);
+    expect(JSON.stringify(events)).not.toContain("TEST_ROUTE_KEY");
+  });
+
+  it("blocks a legacy tool continuation after the first attempt consumes the hard budget", async () => {
+    const providerId = `capability-budget-continuation-${crypto.randomUUID()}`;
+    const routeId = "capability-budget-continuation";
+    const model = "capability-budget-model";
+    await env.CHAT_STORE.put(
+      ROUTES_CONFIG_KEY,
+      JSON.stringify(capabilityBudgetConfig(providerId, routeId, model)),
+    );
+    await seedHardProviderBudget({ providerId, routeId, model, knownPrice: true });
+    const { cookie } = await login();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementationOnce(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as any;
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call-budget-continuation",
+              type: "function",
+              function: {
+                name: body.tools[0].function.name,
+                arguments: JSON.stringify({ text: "local continuation" }),
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }), { headers: { "Content-Type": "application/json" } });
+    });
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId,
+        chatId: "capability-budget-continuation-chat",
+        skillIds: ["budget-analyze"],
+        messages: [{ role: "user", content: "Run one local tool and stop before a second Provider call." }],
+      }),
+    });
+    const events = await readCapabilityEvents(response);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool",
+        event: expect.objectContaining({ status: "completed", toolId: "builtin:text_stats" }),
+      }),
+      {
+        type: "error",
+        code: "provider_budget_exceeded",
+        message: "当前 Provider 预算已用尽，请联系管理员调整预算或稍后再试。",
+        retryable: true,
+      },
+    ]));
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(JSON.stringify(events)).not.toContain(providerId);
+    expect(JSON.stringify(events)).not.toContain("TEST_ROUTE_KEY");
+  });
+
   it("completes an Anthropic built-in tool round trip", async () => {
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {
@@ -2724,6 +3025,63 @@ describe("Worker API", () => {
       outcome: "protocol_error",
     });
     await expect(env.PROVIDER_COORDINATOR.getByName(providerId).inspect()).resolves.toMatchObject({ active: 0 });
+  });
+
+  it("projects a required budget-ledger outage before legacy chat Provider execution", async () => {
+    const providerId = `budget-ledger-outage-${crypto.randomUUID()}`;
+    const endpoint = `https://${providerId}.example/v1`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Unavailable budget ledger provider",
+          type: "openai-chat",
+          baseUrl: endpoint,
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        budgeted: {
+          label: "Budgeted route",
+          offerings: [{ providerId, model: "budgeted-model" }],
+        },
+      },
+      defaults: { defaultRoute: "budgeted", allowedRoutes: ["budgeted"] },
+    }));
+    const { cookie } = await login();
+    const startBudgetedAttempt = vi.fn(async () => {
+      throw new Error("PRIVATE_BUDGET_LEDGER_OUTAGE");
+    });
+    const unavailableEnv = new Proxy(env, {
+      get(target, property, receiver) {
+        if (property === "PROVIDER_ATTEMPT_LEDGER") {
+          return { getByName: () => ({ startBudgetedAttempt }) };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await worker.fetch(new Request("https://example.test/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Chatus-Client": "web",
+        Cookie: cookie,
+      },
+      body: JSON.stringify({
+        routeId: "budgeted",
+        messages: [{ role: "user", content: "Do not call the Provider while the budget ledger is unavailable." }],
+      }),
+    }), unavailableEnv);
+    const text = await response.text();
+    expect(response.status, text).toBe(503);
+    expect(JSON.parse(text)).toEqual({
+      error: "provider_budget_unavailable",
+      message: "Provider 预算账本暂时不可用，请稍后重试。",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(text).not.toContain("PRIVATE_BUDGET_LEDGER_OUTAGE");
+    expect(text).not.toContain(providerId);
+    expect(text).not.toContain(endpoint);
   });
 
   it("releases a provider lease when visible stream output fails", async () => {
@@ -4506,6 +4864,59 @@ describe("Worker API", () => {
     expect(JSON.stringify(payload)).not.toContain(summaryMarker);
     expect(JSON.stringify(payload)).not.toContain("test-route-key");
     expect(JSON.stringify(payload)).not.toContain(endpoint);
+  });
+
+  it("projects hard budget policy denial for memory suggestions and summaries without Provider calls", async () => {
+    const providerId = `auxiliary-budget-${crypto.randomUUID()}`;
+    const endpoint = `https://${providerId}.example/v1`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Auxiliary budget provider",
+          type: "openai-chat",
+          baseUrl: endpoint,
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        auxiliary: {
+          label: "Auxiliary budget route",
+          offerings: [{ providerId, model: "auxiliary-budget-model" }],
+        },
+      },
+      defaults: { defaultRoute: "auxiliary", allowedRoutes: ["auxiliary"], dailyMessageLimit: 5 },
+    }));
+    await seedHardProviderBudget({
+      providerId,
+      routeId: "auxiliary",
+      model: "auxiliary-budget-model",
+      knownPrice: false,
+    });
+    const { cookie } = await login();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const request = (path: string) => apiRequest(path, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId: "auxiliary",
+        messages: [{ role: "user", content: "local budget denial" }],
+      }),
+    });
+
+    for (const path of ["/api/memory/suggest", "/api/session-summary"]) {
+      const response = await request(path);
+      const text = await response.text();
+      expect(response.status, text).toBe(503);
+      expect(JSON.parse(text)).toEqual({
+        error: "provider_budget_policy_unknown",
+        message: "当前 Provider 缺少可验证的价格策略，请联系管理员完成配置。",
+        routeId: "auxiliary",
+      });
+      expect(text).not.toContain(providerId);
+      expect(text).not.toContain(endpoint);
+      expect(text).not.toContain("TEST_ROUTE_KEY");
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("requires an admin session for managed route-secret APIs", async () => {
@@ -6387,7 +6798,7 @@ describe("Worker API", () => {
     const payload = await finance.json() as any;
     expect(payload).toMatchObject({
       version: 1,
-      hardBudgetEnforcement: "unsupported",
+      hardBudgetEnforcement: "instance_provider_v1",
       providers: [expect.objectContaining({
         providerId,
         label: "Finance test provider",
@@ -6411,6 +6822,225 @@ describe("Worker API", () => {
     });
     expect(leaked.status).toBe(400);
     expect((await apiRequest("/api/admin/provider-finance?limit=101", cookie)).status).toBe(400);
+  });
+
+  it("enforces fenced audited Provider budget policy and hold mutations", async () => {
+    const cookie = await adminLogin();
+    const providerId = `budget-api-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Budget API provider",
+          type: "openai-chat",
+          baseUrl: "https://budget-api.example/v1",
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {
+        reasoning: { label: "Reasoning", offerings: [{ providerId, model: "budget-model" }] },
+      },
+      defaults: { defaultRoute: "reasoning", allowedRoutes: ["reasoning"] },
+    }));
+    const base = Date.now() + 1_000;
+    await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).addPriceCatalog({
+      version: 1,
+      catalogVersionId: "budget-api-price-v1",
+      providerId,
+      offeringId: `reasoning/${providerId}`,
+      model: "budget-model",
+      currency: "USD",
+      precision: 6,
+      unit: "million_tokens",
+      inputNoCachePriceMicros: 1_000_000,
+      cacheReadInputPriceMicros: 0,
+      cacheWriteInputPriceMicros: 0,
+      outputTextPriceMicros: 1_000_000,
+      reasoningOutputPriceMicros: 0,
+      effectiveFrom: base,
+      effectiveTo: null,
+      approver: "budget-admin",
+      provenance: "local-fixture",
+      createdAt: base,
+    });
+    const policy = {
+      version: 1,
+      providerId,
+      currency: "USD",
+      mode: "shadow",
+      periodStart: base,
+      periodEnd: base + 86_400_000,
+      limitMicros: 1_000,
+      maxAttemptReserveMicros: 500,
+      expectedPreviousVersion: 0,
+    };
+
+    const unauthorized = await exports.default.fetch(new Request(
+      "https://example.test/api/admin/provider-finance/budgets",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(policy) },
+    ));
+    expect(unauthorized.status).toBe(401);
+
+    const unknownProvider = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...policy, providerId: "missing-provider" }),
+    });
+    expect(unknownProvider.status).toBe(404);
+
+    const leaked = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...policy, apiKey: "secret-marker" }),
+    });
+    expect(leaked.status).toBe(400);
+
+    const browserIdentity = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...policy,
+        policyId: "browser-selected-policy",
+        idempotencyKey: "provider-budget-policy:v1:browser-selected-policy",
+      }),
+    });
+    expect(browserIdentity.status).toBe(400);
+
+    const initialHard = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...policy, mode: "hard" }),
+    });
+    expect(initialHard.status).toBe(409);
+    await expect(initialHard.json()).resolves.toEqual({ error: "provider_budget_policy_transition" });
+
+    const created = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(policy),
+    });
+    expect(created.status, await created.clone().text()).toBe(201);
+    await expect(created.json()).resolves.toMatchObject({ created: true, policy: { policyVersion: 1, mode: "shadow" } });
+    const replay = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(policy),
+    });
+    expect(replay.status).toBe(200);
+
+    const conflictingReplay = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...policy, mode: "soft" }),
+    });
+    expect(conflictingReplay.status).toBe(409);
+    const stale = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...policy, mode: "soft" }),
+    });
+    expect(stale.status).toBe(409);
+
+    const soft = {
+      ...policy,
+      mode: "soft",
+      expectedPreviousVersion: 1,
+    };
+    const softResponse = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(soft),
+    });
+    expect(softResponse.status, await softResponse.clone().text()).toBe(201);
+    await expect(softResponse.json()).resolves.toMatchObject({ policy: { policyVersion: 2, mode: "soft" } });
+
+    const hard = {
+      ...policy,
+      mode: "hard",
+      expectedPreviousVersion: 2,
+    };
+    const hardResponse = await apiRequest("/api/admin/provider-finance/budgets", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hard),
+    });
+    expect(hardResponse.status, await hardResponse.clone().text()).toBe(201);
+
+    const runtime = createProviderAttemptRuntime({
+      ledger: env.PROVIDER_ATTEMPT_LEDGER,
+      mode: "required",
+      operation: {
+        version: 1,
+        operationId: `budget-api-operation-${crypto.randomUUID()}`,
+        fenceId: crypto.randomUUID(),
+        kind: "provider_turn",
+        startedAt: base + 3,
+      },
+    });
+    const attempt = await runtime.createRun("main_answer").start({
+      logicalRouteId: "reasoning",
+      providerId,
+      model: "budget-model",
+      credentialClass: "managed",
+      fallbackIndex: 0,
+      startedAt: base + 4,
+    });
+    await attempt.fail(new Error("local fake Provider failure"), base + 5);
+
+    const beforeAction = await apiRequest(`/api/admin/provider-finance?periodStart=${base - 2_000}&limit=100`, cookie);
+    expect(beforeAction.status, await beforeAction.clone().text()).toBe(200);
+    const beforePayload = await beforeAction.json() as any;
+    const provider = beforePayload.providers.find((entry: any) => entry.providerId === providerId);
+    expect(provider).toMatchObject({
+      budgetPolicies: [
+        expect.objectContaining({ policyVersion: 3, mode: "hard" }),
+        expect.objectContaining({ policyVersion: 2, mode: "soft" }),
+        expect.objectContaining({ policyVersion: 1, mode: "shadow" }),
+      ],
+      budgetBalances: [expect.objectContaining({ reservedMicros: 0, heldMicros: 500, pendingSettlementCount: 0 })],
+      budgetReservations: [expect.objectContaining({ status: "held", heldMicros: 500 })],
+    });
+    const reservation = provider.budgetReservations[0];
+    const action = {
+      version: 1,
+      providerId,
+      reservationId: reservation.reservationId,
+      action: "release",
+      amountMicros: 0,
+      reason: "operator verified local fake failure is non-billable",
+    };
+    const actionLeak = await apiRequest(`/api/admin/provider-finance/budget-reservations/${reservation.reservationId}/reconcile`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...action, rawInvoice: "secret-marker" }),
+    });
+    expect(actionLeak.status).toBe(400);
+    const mismatch = await apiRequest("/api/admin/provider-finance/budget-reservations/reservation_00000000-0000-4000-8000-000000000000/reconcile", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action),
+    });
+    expect(mismatch.status).toBe(400);
+    const released = await apiRequest(`/api/admin/provider-finance/budget-reservations/${reservation.reservationId}/reconcile`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action),
+    });
+    expect(released.status, await released.clone().text()).toBe(200);
+    await expect(released.json()).resolves.toMatchObject({ updated: true, reservation: { status: "operator_released", heldMicros: 0 } });
+    const releasedReplay = await apiRequest(`/api/admin/provider-finance/budget-reservations/${reservation.reservationId}/reconcile`, cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action),
+    });
+    await expect(releasedReplay.json()).resolves.toMatchObject({ updated: false });
+
+    const audit = await apiRequest("/api/admin/audit", cookie).then((response) => response.json()) as any;
+    expect(audit.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "provider-budget-policy.create", target: providerId }),
+      expect.objectContaining({ action: "provider-budget.release", target: providerId }),
+    ]));
+    const serialized = JSON.stringify({ beforePayload, audit });
+    expect(serialized).not.toMatch(/secret-marker|apiKey|rawInvoice|prompt|completion/i);
   });
 
   it("redacts Provider bodies and endpoints from model discovery failures", async () => {
@@ -6447,6 +7077,47 @@ describe("Worker API", () => {
     expect(text).not.toContain(providerBodyMarker);
     expect(text).not.toContain(endpoint);
     expect(text).not.toContain("private-model-discovery.example");
+  });
+
+  it("projects exhausted model-discovery budget before the Provider request", async () => {
+    const cookie = await adminLogin();
+    const providerId = `model-discovery-budget-${crypto.randomUUID()}`;
+    const endpoint = `https://${providerId}.example/v1`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Budgeted model discovery",
+          type: "openai-chat",
+          baseUrl: endpoint,
+          apiKeyRef: "TEST_ROUTE_KEY",
+        },
+      },
+      routes: {},
+      defaults: {},
+    }));
+    await seedHardProviderBudget({
+      providerId,
+      routeId: "model-discovery",
+      model: "model-list",
+      knownPrice: true,
+      exhausted: true,
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await apiRequest("/api/admin/route-models", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId }),
+    });
+    const text = await response.text();
+    expect(response.status, text).toBe(429);
+    expect(JSON.parse(text)).toEqual({
+      error: "provider_budget_exceeded",
+      message: "当前 Provider 预算已用尽，请联系管理员调整预算或稍后再试。",
+    });
+    expect(text).not.toContain(providerId);
+    expect(text).not.toContain(endpoint);
+    expect(text).not.toContain("TEST_ROUTE_KEY");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("classifies invalid model discovery JSON as a redacted protocol error", async () => {

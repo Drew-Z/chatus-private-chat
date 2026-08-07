@@ -42,7 +42,10 @@ The plan runtime does not issue Provider attempt identity. After preparation, th
 caller creates a run through `provider-attempt-runtime`, uses the prepared
 candidate's exact logical route, Provider, model, credential source, and
 `planIndex` as the immutable attempt attribution, then starts the ledger before
-Provider I/O. Browser attribution fields never enter this boundary.
+Provider I/O. Planning never reads or reserves a budget. The attempt start is
+the atomic budget admission boundary; budget denial, unknown policy/price, or
+ledger infrastructure failure blocks the candidate and must not advance to the
+next candidate. Browser attribution fields never enter this boundary.
 
 The plan runtime never retries an attempted provider and never observes visible stream output. The rule that fallback cannot cross the first-visible-output boundary remains in the protocol and response lifecycle layers.
 
@@ -62,6 +65,7 @@ The plan runtime never retries an attempted provider and never observes visible 
 | Credential is missing and user key is required | Stop with `userKeyRequiredRouteId` |
 | Earlier candidate is unusable | Preserve the later candidate's filtered-plan index |
 | Automatic Skill selector requests a plan | Pass only the selected logical route; offering fallback is allowed, logical-route fallback is forbidden |
+| Prepared candidate is rejected by budget admission | Make zero Provider calls and do not continue to another candidate |
 | Bounded caller dependency ignores abort | Caller hard deadline returns its fallback and rejects any late result |
 | Route has offerings plus a legacy transport shadow | Resolve only the offerings; removing the shadow leaves the candidate plan unchanged |
 
@@ -74,6 +78,9 @@ The plan runtime never retries an attempted provider and never observes visible 
 - Unit-test provider-backed routes with stale legacy shadows before and after shadow removal, including endpoint/model/auth/header/limit/capability equivalence.
 - Keep Worker and Team Agent integration tests for streaming, tool loops, fallback, leases, quotas, telemetry, and cancellation.
 - Assert prepared `planIndex` and exact server-selected route dimensions reach the Provider attempt ledger, including credential-unavailable candidates skipped before execution.
+- Assert planning performs no budget RPC and every prepared physical attempt
+  passes the atomic budget gateway before network I/O; budget-blocking errors do
+  not select another candidate.
 - For Automatic Skill selection, assert offering fallback works, no configured logical fallback is contacted, and a late successful Provider result is ignored after five seconds.
 - Run `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check`.
 

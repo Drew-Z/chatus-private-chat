@@ -51,6 +51,7 @@ import {
   createAgentErrorEnvelope,
   normalizeAgentRequestId,
   projectAgentStreamError,
+  providerBudgetErrorHttpStatus,
   serializeAgentErrorEnvelope,
   type AgentErrorCode,
 } from "../contracts/agent-error";
@@ -2615,11 +2616,15 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         workspaceContext,
         requestId,
         abortSignal: options?.abortSignal,
+        waitUntil: (promise) => this.ctx.waitUntil(promise),
         turnId: providerTurnId,
         operation: instanceFence.operation,
       });
-    } catch {
+    } catch (error) {
       await instanceFence.release().catch(() => undefined);
+      const projected = projectAgentStreamError(error);
+      const budgetStatus = providerBudgetErrorHttpStatus(projected);
+      if (budgetStatus) return fail(projected, budgetStatus, "prepare");
       return fail("agent_runtime_error", 503, "prepare");
     }
 

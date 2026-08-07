@@ -1,9 +1,11 @@
+import type { LanguageModelV3CallOptions } from "@ai-sdk/provider";
 import { env, exports } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { getAgentByName } from "agents";
 import { stepCountIs, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
+import { PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS } from "../src/contracts/provider-finance";
 import { createAgentToolSet } from "../src/services/agent-tools";
 import {
   loadProviderRouteReliability,
@@ -551,6 +553,104 @@ describe("prepared TeamAgent turn", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("denies Automatic Skill before Provider I/O without consuming another message quota unit", async () => {
+    const label = `agent-auto-budget-${crypto.randomUUID()}`;
+    const providerId = `selector-budget-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Selector",
+          type: "openai-chat",
+          baseUrl: "https://selector-budget.example/v1",
+          apiKey: "selector-test-key",
+        },
+      },
+      routes: {
+        primary: {
+          label: "Primary",
+          offerings: [{ providerId, model: "selector-model" }],
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+      users: { [label]: { allowedSkills: ["analysis"] } },
+      skills: {
+        analysis: {
+          enabled: true,
+          label: "Analysis",
+          description: "Inspect evidence",
+          instructions: "Analyze evidence.",
+        },
+      },
+      tools: {},
+    }));
+    const periodStart = Date.now() - 1_000;
+    const automaticBudgetPolicy = hardBudgetPolicy(
+      providerId,
+      `policy-auto-${crypto.randomUUID()}`,
+      periodStart,
+    );
+    const automaticBudgetLedger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    await automaticBudgetLedger.addBudgetPolicy({ ...automaticBudgetPolicy, mode: "shadow" });
+    await automaticBudgetLedger.addBudgetPolicy({
+      ...automaticBudgetPolicy,
+      idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+      expectedPreviousVersion: 1,
+      createdAt: periodStart + 1,
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      openAiCompletionResponse('{"skillIds":["analysis"]}'),
+    );
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+    const context = turnContext();
+
+    await expect(prepareTeamAgentTurn(env, session, {
+      ...context,
+      messages: [{ role: "user", content: "Select a Skill without overspending" }],
+      skillMode: "automatic",
+      skillIds: [],
+    })).rejects.toMatchObject({ code: "provider_budget_policy_unknown" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent()).resolves.toEqual([]);
+
+    const continuation = await prepareTeamAgentTurn(env, session, {
+      ...context,
+      messages: [{ role: "user", content: "Continue the admitted turn" }],
+      skillMode: "manual",
+      skillIds: [],
+      continuation: true,
+    });
+    expect(continuation.ok).toBe(true);
+    if (continuation.ok) await Promise.allSettled([continuation.closeTools(), continuation.releaseTurn()]);
+
+    const nextTurn = await prepareTeamAgentTurn(env, session, {
+      ...turnContext(),
+      messages: [{ role: "user", content: "This is a new message" }],
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(nextTurn).toMatchObject({ ok: false, error: "rate_limited", status: 429 });
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).getFinanceSnapshot({
+      periodStart,
+      limit: 10,
+    })).resolves.toMatchObject({
+      capacity: { calls: 0 },
+      budgetBalances: [expect.objectContaining({ denialCount: 1, reservedMicros: 0 })],
+    });
+  });
+
   it("does not charge a turn that is cancelled before automatic admission", async () => {
     const label = `agent-auto-pre-abort-${crypto.randomUUID()}`;
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
@@ -754,6 +854,91 @@ describe("prepared TeamAgent turn", () => {
       skillIds: [],
     });
     expect(nextTurn).toMatchObject({ ok: false, error: "rate_limited", status: 429 });
+  });
+
+  it("denies a tool continuation before issuing its Provider request", async () => {
+    const label = `agent-tool-budget-${crypto.randomUUID()}`;
+    const providerId = `tool-budget-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Tool Provider",
+          type: "openai-chat",
+          baseUrl: "https://tool-budget.example/v1",
+          apiKey: "tool-test-key",
+          supportsTools: true,
+        },
+      },
+      routes: {
+        primary: {
+          label: "Primary",
+          offerings: [{ providerId, model: "tool-model" }],
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: "primary",
+        allowedRoutes: ["primary"],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+      tools: {},
+    }));
+    const periodStart = Date.now() - 1_000;
+    const toolBudgetPolicy = hardBudgetPolicy(
+      providerId,
+      `policy-tool-${crypto.randomUUID()}`,
+      periodStart,
+    );
+    const toolBudgetLedger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    await toolBudgetLedger.addBudgetPolicy({ ...toolBudgetPolicy, mode: "shadow" });
+    await toolBudgetLedger.addBudgetPolicy({
+      ...toolBudgetPolicy,
+      idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+      expectedPreviousVersion: 1,
+      createdAt: periodStart + 1,
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(openAiStreamResponse("must not run"));
+    const now = Date.now();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      label,
+      kind: "member",
+      createdAt: now,
+      lastSeen: now,
+      expiresAt: now + 60_000,
+    };
+    const context = turnContext();
+    const initial = await prepareTeamAgentTurn(env, session, {
+      ...context,
+      messages: [{ role: "user", content: "Start a tool turn" }],
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(initial.ok).toBe(true);
+    if (initial.ok) await Promise.allSettled([initial.closeTools(), initial.releaseTurn()]);
+
+    const continuation = await prepareTeamAgentTurn(env, session, {
+      ...context,
+      messages: [{ role: "user", content: "Continue after the tool result" }],
+      skillMode: "manual",
+      skillIds: [],
+      continuation: true,
+    });
+    expect(continuation.ok).toBe(true);
+    if (!continuation.ok) return;
+    await expect(continuation.model.doStream({ prompt: [] } as unknown as LanguageModelV3CallOptions))
+      .rejects.toMatchObject({ code: "provider_budget_policy_unknown" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent()).resolves.toEqual([]);
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).getFinanceSnapshot({
+      periodStart,
+      limit: 10,
+    })).resolves.toMatchObject({
+      capacity: { calls: 0 },
+      budgetBalances: [expect.objectContaining({ denialCount: 1, reservedMicros: 0 })],
+    });
+    await Promise.allSettled([continuation.closeTools(), continuation.releaseTurn()]);
   });
 
   it("falls back from malformed automatic selection to the revalidated last success", async () => {
@@ -1227,6 +1412,26 @@ function openAiCompletionResponse(text: string): Response {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function hardBudgetPolicy(providerId: string, policyId: string, periodStart: number) {
+  return {
+    version: 1 as const,
+    policyId,
+    idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+    providerId,
+    currency: "USD",
+    mode: "hard" as const,
+    periodStart,
+    periodEnd: periodStart + 24 * 60 * 60 * 1_000,
+    limitMicros: 1_000,
+    maxAttemptReserveMicros: 500,
+    holdReviewAfterMs: PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
+    allowUnknownPrice: false as const,
+    approver: "test-finance-admin",
+    createdAt: periodStart,
+    expectedPreviousVersion: 0,
+  };
 }
 
 function openAiSseChunk(delta: Record<string, unknown>): string {

@@ -818,8 +818,11 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "成员用量" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider 容量" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "成本证据" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "预算策略" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "预算余额与告警" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "价格目录" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider 尝试" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "预算占用与复核" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider 对账" })).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "2026-07-26 请求 5" })).toBeVisible();
   await expect(page.getByText("更新配置", { exact: true }).first()).toBeVisible();
@@ -831,7 +834,7 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(providerAttempts).toContainText("估算");
   await expect(providerAttempts).toContainText("已对账");
   await expect(providerAttempts).toContainText("已更正");
-  await expect(page.getByText(/当前显示 20 \/ 21/)).toHaveCount(7);
+  await expect(page.getByText(/当前显示 20 \/ 21/)).toHaveCount(8);
   await expect(page.getByText("第 21 条逻辑模型", { exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "逻辑模型结果：下一页" }).click();
@@ -844,6 +847,8 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByText("第 21 位运营成员", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "价格目录：下一页" }).click();
   await expect(page.getByText(/第 21 条价格目录模型/)).toBeVisible();
+  await page.getByRole("button", { name: "预算占用与复核：下一页" }).click();
+  await expect(page.getByText(/reservation_00000000-0000-4000-8000-000000000021/)).toBeVisible();
 
   await page.getByLabel("筛选运营数据").fill("第 21 条逻辑模型");
   await expect(page.getByText("当前显示 1 / 1", { exact: true })).toBeVisible();
@@ -915,11 +920,26 @@ test("finance entry fixture keeps drafts dirty on validation or mutation failure
   await expect(reconciliationForm.getByRole("status")).toHaveText("对账摘要已提交，原始发票不会进入系统。");
   await expect(result).toHaveAttribute("data-kind", "reconciliation");
   await expect(result).toHaveAttribute("data-dirty", "false");
+
+  const budgetPolicyForm = page.locator("form").filter({ hasText: "新增预算策略版本" });
+  await budgetPolicyForm.getByLabel("策略模式").selectOption("soft");
+  await budgetPolicyForm.getByRole("button", { name: "保存预算策略" }).click();
+  await expect(budgetPolicyForm.getByRole("status")).toContainText("预算策略版本已提交");
+  await expect(result).toHaveAttribute("data-kind", "budget-policy");
+  await expect(result).toHaveAttribute("data-dirty", "false");
+
+  const budgetActionForm = page.locator("form").filter({ hasText: "处理预算占用" });
+  await budgetActionForm.getByLabel("处理方式").selectOption("release");
+  await budgetActionForm.getByLabel("处理原因").fill("fixture operator release");
+  await budgetActionForm.getByRole("button", { name: "提交预算处理" }).click();
+  await expect(budgetActionForm.getByRole("status")).toContainText("预算占用已人工释放");
+  await expect(result).toHaveAttribute("data-kind", "budget-release");
+  await expect(result).toHaveAttribute("data-dirty", "false");
   const geometry = await page.evaluate(() => {
     const main = document.querySelector<HTMLElement>('main[data-visual-fixture="true"]');
     const forms = [...document.querySelectorAll<HTMLElement>(".admin-finance-form")];
     const viewportWidth = document.documentElement.clientWidth;
-    if (!main || forms.length !== 2) throw new Error("missing finance fixture forms");
+    if (!main || forms.length !== 4) throw new Error("missing finance fixture forms");
     return {
       documentFits: document.documentElement.scrollWidth <= viewportWidth,
       bodyFits: document.body.scrollWidth <= document.body.clientWidth,
@@ -1282,7 +1302,7 @@ test("operations initial error is distinct from loading and retryable", async ({
             version: 1,
             generatedAt: 1785032000000,
             periodStart: 1782440000000,
-            hardBudgetEnforcement: "unsupported",
+            hardBudgetEnforcement: "instance_provider_v1",
             providers: [],
           }
       : { entries: [] };

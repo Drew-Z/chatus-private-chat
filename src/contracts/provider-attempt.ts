@@ -1,5 +1,6 @@
 import type { ProviderCredentialSource } from "./provider";
 import type { InstanceOperationStateV1 } from "../services/instance-capture";
+import type { ProviderBudgetDecisionV1 } from "./provider-finance";
 
 export const PROVIDER_ATTEMPT_SCHEMA_VERSION = 1 as const;
 
@@ -90,6 +91,7 @@ export type ProviderAttemptDiagnosticV1 = Omit<
 export type ProviderAttemptStartResultV1 = {
   created: boolean;
   attempt: ProviderAttemptProjectionV1;
+  budgetDecision?: ProviderBudgetDecisionV1;
 };
 
 export type ProviderAttemptTerminalResultV1 = {

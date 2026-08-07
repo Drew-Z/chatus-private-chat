@@ -41,6 +41,9 @@ const AGENT_ERROR_MESSAGES = {
   rate_limited: "当前额度已用完，请稍后再试或联系管理员调整额度。",
   concurrent_turn: "当前会话已有任务正在运行，请等待完成或先停止当前任务。",
   provider_busy: "当前模型的可用线路都在忙，请稍后重试或切换模型。",
+  provider_budget_exceeded: "当前 Provider 预算已用尽，请联系管理员调整预算或稍后再试。",
+  provider_budget_policy_unknown: "当前 Provider 缺少可验证的价格策略，请联系管理员完成配置。",
+  provider_budget_unavailable: "Provider 预算账本暂时不可用，请稍后重试。",
   upstream_timeout: "模型线路响应超时，请稍后重试或切换模型。",
   upstream_rate_limited: "上游模型暂时限流，请稍后重试或切换模型。",
   upstream_authentication_failed: "模型线路凭据不可用，请切换模型或联系管理员。",
@@ -117,6 +120,9 @@ export function parseAgentErrorEnvelope(value: string): AgentErrorEnvelope | und
 
 export function projectAgentStreamError(error: unknown): AgentErrorCode {
   const chain = errorChain(error);
+  if (chain.some((item) => item.code === "provider_budget_exceeded")) return "provider_budget_exceeded";
+  if (chain.some((item) => item.code === "provider_budget_policy_unknown")) return "provider_budget_policy_unknown";
+  if (hasName(chain, "ProviderAttemptLedgerError")) return "provider_budget_unavailable";
   if (hasName(chain, "ProviderBusyError")) return "provider_busy";
   if (
     hasName(chain, "ProviderProtocolError")
@@ -144,6 +150,12 @@ export function projectAgentStreamError(error: unknown): AgentErrorCode {
   if (status !== undefined && status >= 500) return "upstream_unavailable";
   if (hasName(chain, "AI_APICallError") || hasName(chain, "TypeError")) return "upstream_unavailable";
   return "upstream_error";
+}
+
+export function providerBudgetErrorHttpStatus(error: AgentErrorCode): 429 | 503 | undefined {
+  if (error === "provider_budget_exceeded") return 429;
+  if (error === "provider_budget_policy_unknown" || error === "provider_budget_unavailable") return 503;
+  return undefined;
 }
 
 export function normalizeAgentRequestId(value: unknown): string | undefined {
