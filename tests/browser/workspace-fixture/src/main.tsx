@@ -323,6 +323,44 @@ const operationFeedback: AdminOperationsSnapshot["feedback"] = Array.from({ leng
   };
 });
 
+const legacySurfaceManifestDigest = "a".repeat(64);
+const operationLegacySurfaces: AdminOperationsSnapshot["legacySurfaces"]["surfaces"] = Array.from(
+  { length: 21 },
+  (_, index) => {
+    const position = index + 1;
+    const phase = index === 0 ? "shadowing" as const : index === 1 ? "read_disabled" as const : "discovered" as const;
+    const readControl = index === 1 ? "disabled" as const : "enabled" as const;
+    const writeControl = index === 1 ? "disabled" as const : "enabled" as const;
+    return {
+      version: 1,
+      surfaceId: `legacy.surface-${String(position).padStart(2, "0")}`,
+      revision: position,
+      manifestVersion: 1,
+      manifestDigest: legacySurfaceManifestDigest,
+      phase,
+      readControl,
+      writeControl,
+      owner: index < 2 ? "operations" as const : "unassigned" as const,
+      blockerCodes: index < 2 ? [] : ["maximum_phase_reached" as const, "owner_unassigned" as const],
+      observationStartedAt: index < 2 ? 1785030000000 : 0,
+      observationRequiredUntil: index < 2 ? 1785033600000 : 0,
+      lastTransitionAt: index < 2 ? 1785030000000 : 0,
+      lastDeploymentSha: index < 2 ? "b".repeat(40) : "",
+      evidence: index < 2
+        ? { required: 3, present: 3, complete: true }
+        : { required: 0, present: 0, complete: true },
+      allowedActions: index === 0
+        ? [{ kind: "advance" as const, targetPhase: "write_disabled" as const }]
+        : index === 1
+          ? [
+              { kind: "rollback" as const, scope: "read" as const, targetPhase: "recovery_proven" as const },
+              { kind: "rollback" as const, scope: "write" as const, targetPhase: "shadowing" as const },
+            ]
+          : [],
+    };
+  },
+);
+
 const financeUsageStates = ["unknown", "partial", "reported", "estimated", "reconciled"] as const;
 const financeCostStates = ["unknown", "provisional", "settled", "corrected"] as const;
 const operationFinanceAttempts: AdminOperationsSnapshot["finance"]["providers"][number]["attempts"] = Array.from({ length: 21 }, (_, index) => {
@@ -543,6 +581,13 @@ const operationsSnapshot: AdminOperationsSnapshot = {
       budgetReservations: operationBudgetReservations,
     }],
   },
+  legacySurfaces: {
+    version: 1,
+    manifestDigest: legacySurfaceManifestDigest,
+    generatedAt: 1785032000000,
+    total: operationLegacySurfaces.length,
+    surfaces: operationLegacySurfaces,
+  },
 };
 
 const fixturePixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -608,6 +653,10 @@ function WorkspaceFixture() {
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const [logoutState, setLogoutState] = useState(() => readLogoutFixtureState(params.get("logout")));
   const [operationsFilter, setOperationsFilter] = useState("");
+  const [operationsFixtureSnapshot, setOperationsFixtureSnapshot] = useState(operationsSnapshot);
+  const [legacySurfaceFixtureDirty, setLegacySurfaceFixtureDirty] = useState(false);
+  const [legacySurfaceMutationAttempts, setLegacySurfaceMutationAttempts] = useState(0);
+  const [legacySurfaceFixtureResult, setLegacySurfaceFixtureResult] = useState({ kind: "", operationId: "", requestedAt: 0 });
   const [financeFixtureDirty, setFinanceFixtureDirty] = useState(false);
   const [financeFixtureResult, setFinanceFixtureResult] = useState<{ kind: string; effectiveFrom?: number; createdAt?: number }>({ kind: "" });
   const [adminLoggedOut, setAdminLoggedOut] = useState(false);
@@ -685,7 +734,71 @@ function WorkspaceFixture() {
     return (
       <main data-visual-fixture="true" style={{ height: "100dvh", overflowX: "hidden", overflowY: "auto", background: "var(--surface)" }}>
         <label className="admin-operations-head">筛选运营数据<input aria-label="筛选运营数据" value={operationsFilter} onChange={(event) => setOperationsFilter(event.target.value)} /></label>
-        <AdminOperationsContent snapshot={operationsSnapshot} filter={operationsFilter} />
+        <AdminOperationsContent
+          snapshot={operationsFixtureSnapshot}
+          filter={operationsFilter}
+          legacySurfaceActions={{
+            advance: async (input) => {
+              setLegacySurfaceFixtureResult({ kind: "advance-attempt", operationId: input.operationId, requestedAt: input.requestedAt });
+              await new Promise((resolve) => window.setTimeout(resolve, 150));
+              if (legacySurfaceMutationAttempts === 0) {
+                setLegacySurfaceMutationAttempts(1);
+                throw new Error("合成治理提交失败，请使用同一草稿重试。");
+              }
+              setOperationsFixtureSnapshot((current) => ({
+                ...current,
+                legacySurfaces: {
+                  ...current.legacySurfaces,
+                  generatedAt: input.requestedAt,
+                  surfaces: current.legacySurfaces.surfaces.map((surface) => surface.surfaceId === input.surfaceId ? {
+                    ...surface,
+                    revision: surface.revision + 1,
+                    phase: input.targetPhase,
+                    readControl: "enabled",
+                    writeControl: input.targetPhase === "write_disabled" || input.targetPhase === "write_observing" ? "disabled" : "enabled",
+                    blockerCodes: [],
+                    lastTransitionAt: input.requestedAt,
+                    lastDeploymentSha: input.evidence.find(({ kind }) => kind === "deployment")?.deploymentSha || input.evidence[0]?.deploymentSha || "",
+                    evidence: { required: input.evidence.length, present: input.evidence.length, complete: true },
+                    allowedActions: [],
+                  } : surface),
+                },
+              }));
+              setLegacySurfaceFixtureResult({ kind: "advance", operationId: input.operationId, requestedAt: input.requestedAt });
+            },
+            rollback: async (input) => {
+              await new Promise((resolve) => window.setTimeout(resolve, 150));
+              setOperationsFixtureSnapshot((current) => ({
+                ...current,
+                legacySurfaces: {
+                  ...current.legacySurfaces,
+                  generatedAt: input.requestedAt,
+                  surfaces: current.legacySurfaces.surfaces.map((surface) => surface.surfaceId === input.surfaceId ? {
+                    ...surface,
+                    revision: surface.revision + 1,
+                    phase: input.scope === "read" ? "recovery_proven" : "shadowing",
+                    readControl: "enabled",
+                    writeControl: input.scope === "read" ? "disabled" : "enabled",
+                    blockerCodes: [],
+                    lastTransitionAt: input.requestedAt,
+                    lastDeploymentSha: input.evidence[0]?.deploymentSha || "",
+                    evidence: { required: input.evidence.length, present: input.evidence.length, complete: true },
+                    allowedActions: [],
+                  } : surface),
+                },
+              }));
+              setLegacySurfaceFixtureResult({ kind: `rollback-${input.scope}`, operationId: input.operationId, requestedAt: input.requestedAt });
+            },
+            onDirtyChange: setLegacySurfaceFixtureDirty,
+          }}
+        />
+        <output
+          data-testid="legacy-surface-fixture-result"
+          data-dirty={legacySurfaceFixtureDirty ? "true" : "false"}
+          data-kind={legacySurfaceFixtureResult.kind}
+          data-operation-id={legacySurfaceFixtureResult.operationId}
+          data-requested-at={legacySurfaceFixtureResult.requestedAt || ""}
+        />
       </main>
     );
   }

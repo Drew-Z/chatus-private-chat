@@ -14,6 +14,15 @@ import {
   decodeDurableObjectCaptureValue,
   DurableObjectRestoreError,
 } from "./durable-object-restore";
+import {
+  LEGACY_SURFACE_MANIFEST,
+  LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+  legacySurfaceManifestDigest,
+  legacySurfaceObjectName,
+  validateLegacySurfaceRegistryCaptureDigest,
+  type LegacySurfaceRegistryCaptureV1,
+} from "../contracts/legacy-surface";
+import type { InstanceCoordinator } from "../instance-coordinator";
 
 export const INSTANCE_RESTORE_SCHEMA_VERSION = 1 as const;
 export const INSTANCE_RESTORE_PHASES = [
@@ -150,6 +159,13 @@ export type RestoreEntryInputV1 = {
   bytes: Uint8Array;
 };
 
+export type RestoreLegacySurfaceRegistryEntryV1 = RestoreEntryInputV1 & {
+  store: "legacy_surface_registry";
+  schemaVersion: typeof LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION;
+  stateClass: "authoritative";
+  restoreBehavior: "restore";
+};
+
 export type RestoreQueueAction = "enqueue" | "retain_failed" | "retain_dlq" | "none";
 
 export type RestoreQueueItemV1 = {
@@ -257,6 +273,8 @@ export interface IsolatedRestoreTargetAdapter {
   restoreEntries(input: RestoreAdapterBaseInput & {
     phase: "durable_stores" | "user_state" | "root_agent" | "conversation_agents" | "workspace_files";
     entries: RestoreEntryInputV1[];
+    /** The prevalidated registry entry that the durable-stores target action must apply. */
+    legacySurfaceRegistry: RestoreLegacySurfaceRegistryEntryV1 | null;
   }): Promise<unknown>;
   regenerateQueue(input: RestoreAdapterBaseInput & { items: RestoreQueueItemV1[] }): Promise<unknown>;
   reconcile(input: RestoreAdapterBaseInput & {
@@ -337,6 +355,7 @@ export async function restoreIsolatedInstance(
   validatePreflight(manifest, target, inspection, resumed);
 
   const entries = decrypted.payloads.map(({ entry, bytes }) => toRestoreEntry(entry, bytes, target, mappings));
+  const legacySurfaceRegistry = requireLegacySurfaceRegistryRestoreEntry(entries);
   const queueItems = await buildQueueItems(decrypted.payloads, mappings);
   const now = input.now || Date.now;
   const checkpoints: RestoreCheckpointV1[] = [];
@@ -385,7 +404,13 @@ export async function restoreIsolatedInstance(
       entry.restoreBehavior === "restore" && restorePhaseForStore(entry.store) === phase
     ));
     await execute(phase, phaseEntries.map(entryDigestProjection), async (inputDigest) => callTarget(
-      () => input.adapter.restoreEntries({ ...base, inputDigest, phase, entries: phaseEntries }),
+      () => input.adapter.restoreEntries({
+        ...base,
+        inputDigest,
+        phase,
+        entries: phaseEntries,
+        legacySurfaceRegistry: phase === "durable_stores" ? legacySurfaceRegistry : null,
+      }),
     ));
   }
 
@@ -819,6 +844,9 @@ async function validateKnownPayloads(
       } else if (entry.store === "instance_object_registry") {
         const value = parseRegistrySnapshot(payload);
         if (value.objects.length !== entry.itemCount) throw new InstanceRestoreError("restore_payload_count_mismatch");
+      } else if (entry.store === "legacy_surface_registry") {
+        const value = await parseLegacySurfaceRegistryCapture(bytes);
+        if (value.itemCount !== entry.itemCount) throw new InstanceRestoreError("restore_payload_count_mismatch");
       }
     }
   } catch (error) {
@@ -866,6 +894,12 @@ function targetIdentityForEntry(
   }
   if (entry.store === "instance_object_registry") {
     return `instance-registry:${INSTANCE_MAINTENANCE_COORDINATOR}`;
+  }
+  if (entry.store === "legacy_surface_registry") {
+    const binding = target.bindings.find(({ bindingName }) => bindingName === "INSTANCE_COORDINATOR");
+    return binding
+      ? `target:${binding.kind}:${binding.physicalId}:legacy_surface_registry`
+      : "target:legacy_surface_registry";
   }
   const binding = targetBindingForStore(target, entry.store);
   return binding ? `target:${binding.kind}:${binding.physicalId}:${entry.store}` : `target:${entry.store}`;
@@ -964,6 +998,19 @@ function restorePhaseForStore(store: string): Exclude<InstanceRestorePhase,
   if (store === "conversation_team_agent") return "conversation_agents";
   if (store === "workspace_files") return "workspace_files";
   return "durable_stores";
+}
+
+function requireLegacySurfaceRegistryRestoreEntry(
+  entries: RestoreEntryInputV1[],
+): RestoreLegacySurfaceRegistryEntryV1 {
+  const matches = entries.filter((entry): entry is RestoreLegacySurfaceRegistryEntryV1 => (
+    entry.store === "legacy_surface_registry"
+    && entry.schemaVersion === LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION
+    && entry.stateClass === "authoritative"
+    && entry.restoreBehavior === "restore"
+  ));
+  if (matches.length !== 1) throw new InstanceRestoreError("restore_legacy_surface_registry_invalid");
+  return matches[0]!;
 }
 
 function entryDigestProjection(entry: RestoreEntryInputV1): Omit<RestoreEntryInputV1, "bytes"> {
@@ -1471,6 +1518,51 @@ function parseStableJsonBytes(bytes: Uint8Array): unknown {
   }
   if (stableJson(value) !== text) throw new InstanceRestoreError("restore_payload_noncanonical");
   return value;
+}
+
+export async function parseLegacySurfaceRegistryCapture(
+  bytes: Uint8Array,
+): Promise<LegacySurfaceRegistryCaptureV1> {
+  const value = parseStableJsonBytes(bytes);
+  const capture = await validateLegacySurfaceRegistryCaptureDigest(value);
+  const manifestDigest = await legacySurfaceManifestDigest();
+  if (
+    !capture || capture.schemaVersion !== LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION
+    || capture.manifestDigest !== manifestDigest
+    || capture.surfaces.length !== LEGACY_SURFACE_MANIFEST.length
+  ) throw new InstanceRestoreError("restore_legacy_surface_registry_invalid");
+  for (let index = 0; index < LEGACY_SURFACE_MANIFEST.length; index += 1) {
+    const expected = LEGACY_SURFACE_MANIFEST[index]!;
+    const surface = capture.surfaces[index]!;
+    if (
+      surface.manifest.surfaceId !== expected.surfaceId
+      || stableJson(surface.manifest) !== stableJson(expected)
+      || surface.coordinatorName !== legacySurfaceObjectName(expected.surfaceId)
+    ) throw new InstanceRestoreError("restore_legacy_surface_registry_invalid");
+  }
+  return capture;
+}
+
+export async function applyLegacySurfaceRegistryRestore(
+  namespace: DurableObjectNamespace<InstanceCoordinator>,
+  bytes: Uint8Array,
+): Promise<{ itemCount: number; restoredSurfaces: number }> {
+  const capture = await parseLegacySurfaceRegistryCapture(bytes);
+  for (const snapshot of capture.surfaces) {
+    const stub = namespace.getByName(snapshot.coordinatorName);
+    const result = await stub.restoreLegacySurfaceState({ version: 1, snapshot });
+    if (!result.ok) throw new InstanceRestoreError(result.error);
+    const verified = await stub.captureLegacySurfaceState({
+      version: 1,
+      surfaceId: snapshot.manifest.surfaceId,
+      captureEpoch: capture.captureEpoch,
+      manifestDigest: capture.manifestDigest,
+    });
+    if (verified.snapshotDigest !== snapshot.snapshotDigest) {
+      throw new InstanceRestoreError("restore_legacy_surface_registry_diverged");
+    }
+  }
+  return { itemCount: capture.itemCount, restoredSurfaces: capture.surfaces.length };
 }
 
 function findSinglePayload(

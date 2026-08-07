@@ -17,6 +17,7 @@ import {
   type RestoreAcceptanceV1,
   type RestoreCheckpointV1,
   type RestoreEntryInputV1,
+  type RestoreLegacySurfaceRegistryEntryV1,
   type RestoreObjectMappingV1,
   type RestorePhaseEvidenceV1,
   type RestorePhaseResultV1,
@@ -26,6 +27,16 @@ import {
   type RestoreTargetInspectionV1,
   type RestoreTargetPhaseReceiptV1,
 } from "../../src/services/instance-restore";
+import {
+  LEGACY_SURFACE_MANIFEST,
+  LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+  legacySurfaceCaptureSnapshotDigest,
+  legacySurfaceManifestDigest,
+  legacySurfaceObjectName,
+  legacySurfaceRegistryCaptureDigest,
+  type LegacySurfaceCaptureSnapshotV1,
+  type LegacySurfaceRegistryCaptureV1,
+} from "../../src/contracts/legacy-surface";
 
 const FIXED_NOW = new Date("2026-08-05T12:00:00.000Z");
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -60,6 +71,7 @@ export type RecordingRestoreAdapter = IsolatedRestoreTargetAdapter & {
   actionOrder: InstanceRestorePhase[];
   receipts: Map<string, RestoreTargetPhaseReceiptV1>;
   restoredEntries: Array<{ phase: InstanceRestorePhase; entries: RestoreEntryInputV1[] }>;
+  restoredLegacySurfaceRegistries: RestoreLegacySurfaceRegistryEntryV1[];
   queueItems: RestoreQueueItemV1[];
   writesOpened: boolean;
   discarded: boolean;
@@ -142,12 +154,14 @@ export function createRecordingRestoreAdapter(
     inspection?: Partial<Omit<RestoreTargetInspectionV1, "version" | "target" | "supportedSchemas">>;
     supportedSchemas?: RestoreTargetInspectionV1["supportedSchemas"];
     failAfterCommitOnceForPhase?: InstanceRestorePhase;
+    restoreLegacySurfaceRegistry?: (entry: RestoreLegacySurfaceRegistryEntryV1) => Promise<void>;
   } = {},
 ): RecordingRestoreAdapter {
   const calls = new Map<InstanceRestorePhase | "inspect" | "discard", number>();
   const actionOrder: InstanceRestorePhase[] = [];
   const receipts = new Map<string, RestoreTargetPhaseReceiptV1>();
   const restoredEntries: RecordingRestoreAdapter["restoredEntries"] = [];
+  const restoredLegacySurfaceRegistries: RestoreLegacySurfaceRegistryEntryV1[] = [];
   const queueItems: RestoreQueueItemV1[] = [];
   let failAfterCommit = options.failAfterCommitOnceForPhase;
   let nonEmpty = options.inspection?.empty === false;
@@ -200,6 +214,7 @@ export function createRecordingRestoreAdapter(
     actionOrder,
     receipts,
     restoredEntries,
+    restoredLegacySurfaceRegistries,
     queueItems,
     get writesOpened() { return writesOpened; },
     get discarded() { return discarded; },
@@ -230,6 +245,10 @@ export function createRecordingRestoreAdapter(
     },
     async restoreEntries(input) {
       restoredEntries.push({ phase: input.phase, entries: structuredClone(input.entries) });
+      if (input.legacySurfaceRegistry) {
+        restoredLegacySurfaceRegistries.push(structuredClone(input.legacySurfaceRegistry));
+        await options.restoreLegacySurfaceRegistry?.(input.legacySurfaceRegistry);
+      }
       const itemCount = input.entries.reduce((total, entry) => total + entry.itemCount, 0);
       const sizeBytes = input.entries.reduce((total, entry) => total + entry.sizeBytes, 0);
       return commit(input.phase, input, await phaseResult(input.phase, itemCount, sizeBytes,
@@ -361,6 +380,7 @@ function fixtureCaptureAdapters(
         registryDigest: "a".repeat(64),
         objects,
       }), objects.length),
+    legacySurfaceFixtureAdapter(),
     captureAdapter("instance_coordinator_runtime", "coordinator:source", "runtime-v1", "transitional", "restore",
       stableBytes({ version: 1, maintenance: "released" }), 1),
   ];
@@ -378,6 +398,69 @@ function fixtureCaptureAdapters(
   adapters.push(captureAdapter("ephemeral_state", "sessions-and-leases", "ephemeral-v1", "excluded", "exclude",
     new Uint8Array(), 0, "ephemeral_reauthenticate"));
   return adapters;
+}
+
+function legacySurfaceFixtureAdapter(): CaptureStoreAdapter {
+  return {
+    store: "legacy_surface_registry",
+    async capture(captureEpoch) {
+      const manifestDigest = await legacySurfaceManifestDigest();
+      const surfaces: LegacySurfaceCaptureSnapshotV1[] = [];
+      for (const manifest of LEGACY_SURFACE_MANIFEST) {
+        const base: Omit<LegacySurfaceCaptureSnapshotV1, "snapshotDigest"> = {
+          version: 1,
+          schemaVersion: LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+          captureEpoch,
+          coordinatorName: legacySurfaceObjectName(manifest.surfaceId),
+          manifest,
+          state: {
+            version: 1,
+            surfaceId: manifest.surfaceId,
+            revision: 0,
+            phase: "discovered",
+            readControl: "enabled",
+            writeControl: "enabled",
+            manifestVersion: manifest.manifestVersion,
+            manifestDigest,
+            observationStartedAt: 0,
+            observationRequiredUntil: 0,
+            lastTransitionAt: 0,
+            lastDeploymentSha: "",
+          },
+          events: [],
+          operations: [],
+          daily: [],
+          itemCount: 2,
+        };
+        surfaces.push({ ...base, snapshotDigest: await legacySurfaceCaptureSnapshotDigest(base) });
+      }
+      const base: Omit<LegacySurfaceRegistryCaptureV1, "registryDigest"> = {
+        version: 1,
+        schemaVersion: LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+        captureEpoch,
+        coordinatorBinding: "INSTANCE_COORDINATOR",
+        manifestDigest,
+        surfaces,
+        itemCount: surfaces.reduce((total, surface) => total + surface.itemCount, 0),
+      };
+      const registry: LegacySurfaceRegistryCaptureV1 = {
+        ...base,
+        registryDigest: await legacySurfaceRegistryCaptureDigest(base),
+      };
+      return {
+        captureEpoch,
+        sourceIdentity: "legacy-surface-registry:source",
+        schemaVersion: LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+        generation: captureEpoch,
+        stateClass: "authoritative",
+        restoreBehavior: "restore",
+        itemCount: registry.itemCount,
+        bytes: stableBytes(registry),
+        unresolvedReferences: 0,
+        references: [],
+      };
+    },
+  };
 }
 
 function captureAdapter(

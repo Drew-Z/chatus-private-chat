@@ -68,6 +68,17 @@ Examples in `public/app.js` include the session list, model picker, settings dia
   previous version; the first policy is visibly `shadow`, and hard promotion is
   a later audited version. Hold actions remain dirty/retryable on validation,
   conflict, network, HTTP, or decoder failure.
+- Legacy-surface governance is another bounded Operations projection. Filter
+  before 20-item pagination, show current/filtered total, and render only the
+  surface ID, phase, read/write controls, owner enum, blocker codes, observation
+  bounds, deployment SHA, revision, and evidence completeness. The server-owned
+  `allowedActions` array is the only source for displayed transition commands.
+- A legacy-surface transition keeps one local evidence draft dirty through
+  validation, network, HTTP, exact-response decoding, and post-mutation refresh
+  failure. Confirm the exact surface and target through `ConfirmDialog`; a retry
+  reuses the same operation ID and request timestamp. Clear the draft only after
+  the authoritative Operations snapshot refreshes successfully. Read rollback
+  must project `recovery_proven`; write rollback must project `shadowing`.
 - Use an unframed, scannable operations layout. Summary metrics form one full-width band; sections use restrained separators rather than nested cards. The eight-column member table scrolls inside its own wrapper on narrow screens and must never widen the admin page.
 - Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model. Finance mutation coverage injects fake actions and asserts no horizontal overflow at both widths.
 

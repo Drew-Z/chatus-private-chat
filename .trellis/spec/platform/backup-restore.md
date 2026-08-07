@@ -58,6 +58,13 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
 - Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
 - Provider attempt shards are authoritative instance-level operational evidence. Each `provider_attempt_ledger` object captures as `provider-attempt-ledger-v3` with `restoreBehavior: "restore"`; it includes content-free attempt identity, usage, price, cost, reconciliation, versioned budget policies/events/decisions, current reservations, and balance projections. It is retained by member account deletion and excluded from user export. Budget state is never rebuilt or reset during restore; raw invoices and Provider responses are never captured.
+- The legacy-surface control plane captures as exactly one authoritative/restore
+  `legacy_surface_registry` payload with schema
+  `legacy-surface-registry-v1`. It contains the code-owned manifest digest plus
+  every deterministic surface object's current projection, append-only events,
+  operation receipts, and bounded daily counters. It is content-free, retained
+  by member deletion, and restored only to the existing
+  `INSTANCE_COORDINATOR/InstanceCoordinator/v4` namespace.
 - Member OAuth MCP token rows in `UserState.mcp_oauth_tokens` and their owner binding are required durable security state. Token values are AES-GCM ciphertext whose AAD binds member, server, and schema v1; the original `ROUTE_KEYS_MASTER_KEY` remains external key material. A future manifest may record only the table/class, schema version, row count, and an explicit `ciphertextOnly: true` inventory marker. The manifest must not contain `encrypted_record`, IV, ciphertext, access/refresh token, member label, server endpoint, authorization code, state, verifier, or session fingerprint.
 - External key material required to decrypt archived ciphertext. In particular, the original `ROUTE_KEYS_MASTER_KEY` must be retained outside the application data archive under operator control.
 
@@ -344,6 +351,12 @@ IsolatedRestoreTargetAdapter.readPhaseReceipt({
 
 - Decrypt and validate every manifest/payload, registry, schema, binding, mapping,
   Queue state, and canonical JSON value before `inspectTarget()` or any target write.
+- Require exactly one prevalidated `legacy_surface_registry` restore entry. Its
+  schema/class/behavior, current bundled manifest/digest/count/order, deterministic
+  coordinator names, events, operation receipts, counters, and snapshot digests
+  must all validate before target inspection. Pass that exact entry explicitly
+  to the `durable_stores` adapter; a generic phase entry list is not sufficient
+  proof that the registry reached its per-surface targets.
 - The approved order is `preflight`, `provision`, `durable_stores`, `user_state`,
   `root_agent`, `conversation_agents`, `workspace_files`, `queue_regeneration`,
   `reconciliation`, `acceptance`, `eligible_for_cutover`.
@@ -374,6 +387,8 @@ IsolatedRestoreTargetAdapter.readPhaseReceipt({
 | Target action commits then process/central checkpoint fails | Retry reads the exact target receipt; action count remains one |
 | Target receipt is absent after an action or has extra/secret fields | Fail closed with receipt error; keep writes closed |
 | Queue status/error/attempt combination is impossible | `restore_queue_evidence_invalid` before target inspection |
+| Legacy registry entry is missing/duplicated, has the wrong schema/digest/count/order/coordinator, or contains a conflicting event | `restore_legacy_surface_registry_invalid` before target mutation |
+| A restored surface snapshot differs when re-read | `restore_legacy_surface_registry_diverged`; keep writes closed |
 | Reconciliation reports unresolved references or writes open | Reject and do not mark eligible |
 | Drill evidence includes a label, object key, content, ciphertext, or credential | Reject evidence artifact |
 
@@ -397,6 +412,10 @@ IsolatedRestoreTargetAdapter.readPhaseReceipt({
   ambiguity; assert one logical action per phase and identical convergence on retry.
 - Cover `queued`, `extracting`, ordinary `failed`, DLQ, `ready`, and `deleted` plus
   invalid combinations; assert no duplicate Queue operation keys.
+- Restore the full current legacy manifest into deterministic isolated
+  `InstanceCoordinator` targets and assert all 13 projections remain
+  `discovered`. Inject central-checkpoint failure after the target receipt and
+  prove retry does not apply the registry twice.
 - Assert source-before/source-after digest equality, writes closed, deletion/auth/
   isolation canaries, zero unresolved references, and absence of sensitive evidence fields.
 - Run `scripts/run-isolated-restore-drill.mjs` with the current 40-character worktree

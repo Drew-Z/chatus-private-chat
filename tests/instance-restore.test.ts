@@ -60,6 +60,13 @@ describe("isolated restore engine", () => {
       .toBe(false);
     expect(adapter.restoredEntries.flatMap(({ entries }) => entries).some(({ restoreBehavior }) => restoreBehavior === "exclude"))
       .toBe(false);
+    expect(adapter.restoredLegacySurfaceRegistries).toHaveLength(1);
+    expect(adapter.restoredLegacySurfaceRegistries[0]).toMatchObject({
+      store: "legacy_surface_registry",
+      schemaVersion: "legacy-surface-registry-v1",
+      stateClass: "authoritative",
+      restoreBehavior: "restore",
+    });
     expect(adapter.queueItems.map(({ status, action }) => `${status}:${action}`).sort()).toEqual([
       "deleted:none",
       "extracting:enqueue",

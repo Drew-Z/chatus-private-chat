@@ -13,6 +13,18 @@ import {
   type DurableObjectCaptureResultV1,
 } from "./durable-object-capture";
 import type { Env } from "../worker";
+import {
+  LEGACY_SURFACE_MANIFEST,
+  LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+  legacySurfaceManifestDigest,
+  legacySurfaceObjectName,
+  legacySurfaceRegistryCaptureDigest,
+  stableJson as stableLegacySurfaceJson,
+  validateLegacySurfaceCaptureSnapshotDigest,
+  type LegacySurfaceCaptureSnapshotV1,
+  type LegacySurfaceRegistryCaptureV1,
+} from "../contracts/legacy-surface";
+import { acquireInstanceOperationFence } from "./instance-capture";
 
 type KvCaptureClass = "authoritative" | "transitional" | "excluded";
 
@@ -137,7 +149,8 @@ export async function createRegisteredDurableObjectCaptureAdapters(
     }
   };
 
-  const adapters: CaptureStoreAdapter[] = [{
+  const legacySurfaceAdapter = await createLegacySurfaceRegistryCaptureAdapter(env, coordinatorName);
+  const adapters: CaptureStoreAdapter[] = [legacySurfaceAdapter, {
     store: "instance_object_registry",
     capture: async (captureEpoch) => {
       await assertRegistryUnchanged();
@@ -223,6 +236,91 @@ export async function createRegisteredDurableObjectCaptureAdapters(
     adapters.push(emptyInventoryAdapter("document_ingest_queue", "instance-registry:empty:document-ingest"));
   }
   return adapters;
+}
+
+export async function createLegacySurfaceRegistryCaptureAdapter(
+  env: Pick<Env, "INSTANCE_COORDINATOR">,
+  coordinatorName: string,
+): Promise<CaptureStoreAdapter> {
+  const manifestDigest = await legacySurfaceManifestDigest();
+  const coordinator = env.INSTANCE_COORDINATOR.getByName(coordinatorName);
+  const fence = await acquireInstanceOperationFence(coordinator, {
+    version: 1,
+    operationId: `legacy-surface-manifest-sync:${manifestDigest}`,
+    kind: "http_mutation",
+    startedAt: Date.now(),
+  });
+  if (!fence) throw new InstanceCaptureError("legacy_surface_registry_unavailable");
+  try {
+    for (const manifest of LEGACY_SURFACE_MANIFEST) {
+      const synced = await env.INSTANCE_COORDINATOR
+        .getByName(legacySurfaceObjectName(manifest.surfaceId))
+        .syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest });
+      if (!synced.ok) throw new InstanceCaptureError(synced.error);
+    }
+  } finally {
+    await fence.release();
+  }
+
+  return {
+    store: "legacy_surface_registry",
+    async capture(captureEpoch) {
+      const first = await captureLegacySurfaceSnapshots(env, captureEpoch, manifestDigest);
+      const second = await captureLegacySurfaceSnapshots(env, captureEpoch, manifestDigest);
+      if (first.some((snapshot, index) => snapshot.snapshotDigest !== second[index]?.snapshotDigest)) {
+        throw new InstanceCaptureError("capture_legacy_surface_registry_changed");
+      }
+      const base: Omit<LegacySurfaceRegistryCaptureV1, "registryDigest"> = {
+        version: 1,
+        schemaVersion: LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+        captureEpoch,
+        coordinatorBinding: "INSTANCE_COORDINATOR",
+        manifestDigest,
+        surfaces: first,
+        itemCount: first.reduce((total, snapshot) => total + snapshot.itemCount, 0),
+      };
+      const registry: LegacySurfaceRegistryCaptureV1 = {
+        ...base,
+        registryDigest: await legacySurfaceRegistryCaptureDigest(base),
+      };
+      return {
+        captureEpoch,
+        sourceIdentity: `legacy-surface-registry:${coordinatorName}`,
+        schemaVersion: LEGACY_SURFACE_REGISTRY_SCHEMA_VERSION,
+        generation: captureEpoch,
+        stateClass: "authoritative",
+        restoreBehavior: "restore",
+        itemCount: registry.itemCount,
+        bytes: new TextEncoder().encode(stableLegacySurfaceJson(registry)),
+        unresolvedReferences: 0,
+        references: [],
+      };
+    },
+  };
+}
+
+async function captureLegacySurfaceSnapshots(
+  env: Pick<Env, "INSTANCE_COORDINATOR">,
+  captureEpoch: string,
+  manifestDigest: string,
+): Promise<LegacySurfaceCaptureSnapshotV1[]> {
+  const snapshots: LegacySurfaceCaptureSnapshotV1[] = [];
+  for (const manifest of LEGACY_SURFACE_MANIFEST) {
+    const raw = await env.INSTANCE_COORDINATOR
+      .getByName(legacySurfaceObjectName(manifest.surfaceId))
+      .captureLegacySurfaceState({
+        version: 1,
+        surfaceId: manifest.surfaceId,
+        captureEpoch,
+        manifestDigest,
+      });
+    const snapshot = await validateLegacySurfaceCaptureSnapshotDigest(raw);
+    if (!snapshot || stableLegacySurfaceJson(snapshot.manifest) !== stableLegacySurfaceJson(manifest)) {
+      throw new InstanceCaptureError("capture_legacy_surface_registry_invalid");
+    }
+    snapshots.push(snapshot);
+  }
+  return snapshots;
 }
 
 function createRegistryObjectAdapter(

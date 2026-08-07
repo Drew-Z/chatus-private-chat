@@ -12,6 +12,7 @@ export const INSTANCE_CAPTURE_REQUIRED_STORES = [
   "provider_coordinator",
   "provider_attempt_ledger",
   "instance_object_registry",
+  "legacy_surface_registry",
   "instance_coordinator_runtime",
 ] as const;
 
