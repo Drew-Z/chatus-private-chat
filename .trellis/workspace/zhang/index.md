@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 41
-- **Last Active**: 2026-08-06
+- **Total Sessions**: 42
+- **Last Active**: 2026-08-07
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1594 | Active |
+| `journal-1.md` | ~1628 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 42 | 2026-08-07 | Provider budget enforcement delivered and archived | `961776682a421942fab806e3207f13bb7ca28b3d`, `003395218318eaa2cb25da130e028b81ba517d5d` | `main` |
 | 41 | 2026-08-06 | Provider finance delivery and archive | `374e25cbba8acac295fd5606c07c4cb6817d241b`, `7d58358` | `main` |
 | 40 | 2026-08-06 | Provider schema registration recovery | `c7469679a47b5f6b70be40476f93dd8f98ebd2dd`, `1d19919` | `main` |
 | 39 | 2026-08-05 | DR isolated restore drill delivery | `4a63d7a`, `f7dc3c1`, `0ead97a`, `fbb816d` | `main` |
