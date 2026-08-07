@@ -12,6 +12,20 @@ and recovery before disabling reads. Preserve all legacy data in this task.
 - Each surface's replacement must have deterministic parity evidence before that
   surface enters stop-write or disable-read stages.
 
+## Planning Status
+
+Repository census is recorded in `research/legacy-surface-census.md`. It confirms
+that this task is currently an umbrella over multiple independently owned
+surfaces, while the approved source design and `DR-06` require one task and one
+observation window per surface. It also confirms that no whole Durable Object
+namespace is currently eligible for read-disable.
+
+This task must not be activated as one implementation unit. The recommended
+correction is to retain it as a coordinating parent, create a registry/control-
+plane foundation child, freeze the machine-readable inventory there, and then
+create independent rollout children for the exact surface records. The later
+destructive-cleanup program remains separate and requires new approval.
+
 ## Applicable Decisions and Risks
 
 - `DR-06`: destructive or premature retirement can remove active callers/data or
@@ -55,3 +69,10 @@ and recovery before disabling reads. Preserve all legacy data in this task.
 
 - Physical deletion, migration-tag removal, source archive destruction, or
   bundling multiple unproven surfaces behind one umbrella approval.
+
+## Planning Decision Record
+
+- On 2026-08-07 the user approved retaining this umbrella as a coordinating
+  parent and creating `08-07-legacy-surface-registry-control-plane` as the first
+  foundation child. Exact rollout children are created only after the registry
+  freezes their independent surface boundaries.

@@ -1,7 +1,12 @@
 # Legacy surface disable and observation implementation plan
 
-- [ ] Run `trellis-before-dev`; perform a repository-wide surface/caller/data
-      census and bind exact paths/symbols to registry entries.
+- [x] Perform a repository-wide planning census and persist exact surface,
+      caller, data, recovery, and blocker evidence in
+      `research/legacy-surface-census.md`.
+- [x] Obtain explicit approval to retain this task as a coordinating parent and
+      create the registry/control-plane foundation child.
+- [ ] In that child, run `trellis-before-dev` and bind exact paths/symbols to the
+      initial registry entries before editing runtime code.
 - [ ] Define the strict versioned surface registry/state/evidence contracts.
 - [ ] Add bounded instrumentation and deterministic census checks.
 - [ ] Implement per-surface parity, dual-read/shadow and stop-write controls.
@@ -15,6 +20,10 @@
 - [ ] Update legacy, recovery, compatibility and delivery specs; append per-
       surface `DR-06` evidence and retained residual risks.
 - [ ] Commit, PR, exact-head/exact-main evidence, validations and archive checks.
+
+The implementation checklist after the planning split belongs to the foundation
+and per-surface rollout children. This umbrella must not ship one global legacy
+disable switch or claim aggregate observation evidence.
 
 ## Rollback Point
 
