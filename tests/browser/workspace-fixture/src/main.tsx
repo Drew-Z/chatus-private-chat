@@ -421,6 +421,41 @@ const operationCatalogs: AdminOperationsSnapshot["finance"]["providers"][number]
   createdAt: 1782440000000 + index * 86_400_000,
 }));
 
+const operationBudgetPolicies: AdminOperationsSnapshot["finance"]["providers"][number]["budgetPolicies"] = [{
+  version: 1,
+  policyId: "fixture-budget",
+  providerId: "provider-fixture",
+  currency: "USD",
+  mode: "hard",
+  periodStart: 1782440000000,
+  periodEnd: 1787632000000,
+  limitMicros: 100_000_000,
+  maxAttemptReserveMicros: 1_000_000,
+  holdReviewAfterMs: 259200000,
+  allowUnknownPrice: false,
+  approver: "fixture-admin",
+  createdAt: 1782440000000,
+  expectedPreviousVersion: 0,
+  policyVersion: 1,
+}];
+
+const operationBudgetReservations: AdminOperationsSnapshot["finance"]["providers"][number]["budgetReservations"] = Array.from({ length: 21 }, (_, index) => ({
+  version: 1 as const,
+  reservationId: `reservation_00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+  attemptId: `attempt_00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+  policyId: "fixture-budget",
+  policyVersion: 1,
+  currency: "USD",
+  status: index === 0 ? "review_required" as const : "reserved" as const,
+  reservedMicros: 1_000_000,
+  settledMicros: 0,
+  releasedMicros: 0,
+  heldMicros: index === 0 ? 1_000_000 : 0,
+  createdAt: 1782440000000 + index * 60_000,
+  updatedAt: 1782700000000 + index * 60_000,
+  reviewAfter: 1782699200000 + index * 60_000,
+}));
+
 const operationsSnapshot: AdminOperationsSnapshot = {
   stats: {
     day: "2026-07-26",
@@ -449,7 +484,7 @@ const operationsSnapshot: AdminOperationsSnapshot = {
     version: 1,
     generatedAt: 1785032000000,
     periodStart: 1782440000000,
-    hardBudgetEnforcement: "unsupported",
+    hardBudgetEnforcement: "instance_provider_v1",
     providers: [{
       version: 1,
       providerId: "provider-fixture",
@@ -484,6 +519,28 @@ const operationsSnapshot: AdminOperationsSnapshot = {
       attempts: operationFinanceAttempts,
       reconciliations: operationReconciliations,
       catalogs: operationCatalogs,
+      budgetPolicies: operationBudgetPolicies,
+      budgetBalances: [{
+        version: 1,
+        policyId: "fixture-budget",
+        policyVersion: 1,
+        providerId: "provider-fixture",
+        currency: "USD",
+        mode: "hard",
+        periodStart: 1782440000000,
+        periodEnd: 1787632000000,
+        limitMicros: 100_000_000,
+        settledMicros: 0,
+        reservedMicros: 20_000_000,
+        heldMicros: 1_000_000,
+        availableMicros: 79_000_000,
+        denialCount: 3,
+        alertCount: 2,
+        pendingSettlementCount: 20,
+        reviewRequiredCount: 1,
+        updatedAt: 1785032000000,
+      }],
+      budgetReservations: operationBudgetReservations,
     }],
   },
 };
@@ -645,6 +702,12 @@ function WorkspaceFixture() {
             },
             importReconciliation: async (input) => {
               setFinanceFixtureResult({ kind: "reconciliation", effectiveFrom: input.periodStart, createdAt: input.importedAt });
+            },
+            createBudgetPolicy: async (input) => {
+              setFinanceFixtureResult({ kind: "budget-policy", effectiveFrom: input.periodStart, createdAt: Date.now() });
+            },
+            reconcileBudgetReservation: async (input) => {
+              setFinanceFixtureResult({ kind: `budget-${input.action}`, createdAt: Date.now() });
             },
             onDirtyChange: setFinanceFixtureDirty,
           }}

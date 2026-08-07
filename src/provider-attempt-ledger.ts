@@ -12,6 +12,8 @@ import {
 import {
   PROVIDER_USAGE_TOKEN_FIELDS,
   calculateProviderCostMicros,
+  decodeProviderBudgetOperatorActionInput,
+  decodeProviderBudgetPolicyInput,
   decodeProviderCostEvidenceInput,
   decodeProviderPriceCatalogInput,
   decodeProviderReconciliationImportInput,
@@ -20,6 +22,17 @@ import {
   sameProviderTokenUsage,
   type ProviderCostEvidenceInputV1,
   type ProviderCostEvidenceResultV1,
+  type ProviderBudgetBalanceProjectionV1,
+  type ProviderBudgetDecisionReason,
+  type ProviderBudgetDecisionStatus,
+  type ProviderBudgetDecisionV1,
+  type ProviderBudgetMode,
+  type ProviderBudgetOperatorActionResultV1,
+  type ProviderBudgetPolicyInputV1,
+  type ProviderBudgetPolicyProjectionV1,
+  type ProviderBudgetPolicyResultV1,
+  type ProviderBudgetReservationProjectionV1,
+  type ProviderBudgetReservationStatus,
   type ProviderFinanceAttemptProjectionV1,
   type ProviderFinanceSnapshotV1,
   type ProviderPriceCatalogInputV1,
@@ -35,7 +48,7 @@ import type { InstanceCoordinator } from "./instance-coordinator";
 import { captureDurableObjectState } from "./services/durable-object-capture";
 import { INSTANCE_MAINTENANCE_COORDINATOR } from "./services/instance-capture";
 
-export const PROVIDER_ATTEMPT_LEDGER_SCHEMA_VERSION = 2;
+export const PROVIDER_ATTEMPT_LEDGER_SCHEMA_VERSION = 3;
 const PROVIDER_ATTEMPT_LEDGER_TABLES = new Set([
   "provider_attempt_schema_migrations",
   "provider_attempt_events",
@@ -46,6 +59,11 @@ const PROVIDER_ATTEMPT_LEDGER_TABLES = new Set([
   "provider_usage_projection",
   "provider_cost_evidence",
   "provider_reconciliation_imports",
+  "provider_budget_policies",
+  "provider_budget_events",
+  "provider_budget_decisions",
+  "provider_budget_reservations",
+  "provider_budget_projection",
 ]);
 
 type ProviderAttemptLedgerEnv = {
@@ -196,6 +214,81 @@ type ProviderReconciliationRow = {
   imported_at: number;
 };
 
+type ProviderBudgetPolicyRow = {
+  policy_id: string;
+  policy_version: number;
+  idempotency_key: string;
+  provider_id: string;
+  currency: string;
+  mode: ProviderBudgetMode;
+  period_start: number;
+  period_end: number;
+  limit_micros: number;
+  max_attempt_reserve_micros: number;
+  hold_review_after_ms: number;
+  allow_unknown_price: number;
+  approver: string;
+  created_at: number;
+};
+
+type ProviderBudgetDecisionRow = {
+  idempotency_key: string;
+  attempt_id: string | null;
+  turn_id: string;
+  run_id: string;
+  run_kind: ProviderAttemptProjectionV1["runKind"];
+  logical_route_id: string;
+  provider_id: string;
+  offering_id: string;
+  model: string;
+  fallback_index: number;
+  credential_class: ProviderAttemptProjectionV1["credentialClass"];
+  operation_id: string;
+  fence_id: string;
+  operation_kind: ProviderAttemptProjectionV1["operation"]["kind"];
+  operation_started_at: number;
+  started_at: number;
+  policy_id: string | null;
+  policy_version: number | null;
+  status: ProviderBudgetDecisionStatus;
+  reason: ProviderBudgetDecisionReason;
+  requested_micros: number;
+  reservation_id: string | null;
+};
+
+type ProviderBudgetReservationRow = {
+  reservation_id: string;
+  attempt_id: string;
+  policy_id: string;
+  policy_version: number;
+  currency: string;
+  status: ProviderBudgetReservationStatus;
+  reserved_micros: number;
+  settled_micros: number;
+  released_micros: number;
+  held_micros: number;
+  created_at: number;
+  updated_at: number;
+  review_after: number;
+};
+
+type ProviderBudgetProjectionRow = {
+  policy_id: string;
+  policy_version: number;
+  provider_id: string;
+  currency: string;
+  mode: ProviderBudgetMode;
+  period_start: number;
+  period_end: number;
+  limit_micros: number;
+  settled_micros: number;
+  reserved_micros: number;
+  held_micros: number;
+  denial_count: number;
+  alert_count: number;
+  updated_at: number;
+};
+
 export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEnv> {
   private readonly providerId: string;
 
@@ -215,11 +308,265 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
       throw new Error("provider_attempt_start_invalid");
     }
     await this.registerObject();
+    const result = this.ctx.storage.transactionSync(() => this.startNormalized(normalized));
+    if (result.denied) {
+      throw new Error(result.reason === "price_unknown"
+        ? "provider_budget_policy_unknown"
+        : "provider_budget_exceeded");
+    }
+    return result.result;
+  }
+
+  async addBudgetPolicy(input: unknown): Promise<ProviderBudgetPolicyResultV1> {
+    const normalized = decodeProviderBudgetPolicyInput(input);
+    if (!normalized || normalized.providerId !== this.providerId) {
+      throw new Error("provider_budget_policy_invalid");
+    }
+    await this.registerObject();
     return this.ctx.storage.transactionSync(() => {
+      const replay = this.readBudgetPolicyByIdempotencyKey(normalized.idempotencyKey);
+      if (replay) {
+        const policy = budgetPolicyFromRow(replay);
+        if (!sameBudgetPolicyInput(replay, normalized)) throw new Error("provider_budget_policy_conflict");
+        return { created: false, policy };
+      }
+      const latest = this.readLatestBudgetPolicy(normalized.policyId);
+      const latestVersion = latest?.policy_version ?? 0;
+      if (latestVersion !== normalized.expectedPreviousVersion) {
+        throw new Error("provider_budget_policy_conflict");
+      }
+      if (!latest && normalized.mode !== "shadow") {
+        throw new Error("provider_budget_policy_transition");
+      }
+      const overlap = this.ctx.storage.sql.exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM provider_budget_policies
+         WHERE provider_id = ? AND currency = ? AND policy_id <> ?
+           AND period_start < ? AND period_end > ?`,
+        this.providerId,
+        normalized.currency,
+        normalized.policyId,
+        normalized.periodEnd,
+        normalized.periodStart,
+      ).one().count;
+      if (overlap > 0) throw new Error("provider_budget_policy_overlap");
+      if (latest && (
+        latest.provider_id !== normalized.providerId
+        || latest.currency !== normalized.currency
+        || latest.period_start !== normalized.periodStart
+        || latest.period_end !== normalized.periodEnd
+      )) throw new Error("provider_budget_policy_conflict");
+
+      const policyVersion = latestVersion + 1;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO provider_budget_policies(
+          policy_id, policy_version, idempotency_key, provider_id, currency, mode,
+          period_start, period_end, limit_micros, max_attempt_reserve_micros,
+          hold_review_after_ms, allow_unknown_price, approver, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        normalized.policyId,
+        policyVersion,
+        normalized.idempotencyKey,
+        normalized.providerId,
+        normalized.currency,
+        normalized.mode,
+        normalized.periodStart,
+        normalized.periodEnd,
+        normalized.limitMicros,
+        normalized.maxAttemptReserveMicros,
+        normalized.holdReviewAfterMs,
+        normalized.approver,
+        normalized.createdAt,
+      );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO provider_budget_projection(
+          policy_id, policy_version, provider_id, currency, mode, period_start,
+          period_end, limit_micros, settled_micros, reserved_micros, held_micros,
+          denial_count, alert_count, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, ?)
+        ON CONFLICT(policy_id) DO UPDATE SET
+          policy_version = excluded.policy_version,
+          mode = excluded.mode,
+          limit_micros = excluded.limit_micros,
+          updated_at = excluded.updated_at`,
+        normalized.policyId,
+        policyVersion,
+        normalized.providerId,
+        normalized.currency,
+        normalized.mode,
+        normalized.periodStart,
+        normalized.periodEnd,
+        normalized.limitMicros,
+        normalized.createdAt,
+      );
+      return {
+        created: true,
+        policy: budgetPolicyProjectionFromInput(normalized, policyVersion),
+      };
+    });
+  }
+
+  reconcileBudgetReservation(input: unknown): ProviderBudgetOperatorActionResultV1 {
+    const normalized = decodeProviderBudgetOperatorActionInput(input);
+    if (!normalized || normalized.providerId !== this.providerId) {
+      throw new Error("provider_budget_action_invalid");
+    }
+    return this.ctx.storage.transactionSync(() => this.applyBudgetOperatorAction(normalized));
+  }
+
+  private startNormalized(
+    normalized: NonNullable<ReturnType<typeof decodeProviderAttemptStartInput>>,
+  ): { denied: true; reason: ProviderBudgetDecisionReason } | {
+    denied: false;
+    result: ProviderAttemptStartResultV1;
+  } {
+    const replayDecision = this.readBudgetDecision(normalized.idempotencyKey);
+    if (replayDecision) {
+      if (!sameBudgetDecisionIdentity(replayDecision, normalized)) throw new Error("provider_attempt_conflict");
+      if (replayDecision.status === "denied") {
+        return { denied: true, reason: replayDecision.reason };
+      }
+      const replayAttempt = this.readProjectionByIdempotencyKey(normalized.idempotencyKey);
+      if (!replayAttempt || !sameStartIdentity(replayAttempt, normalized)) {
+        throw new Error("provider_attempt_conflict");
+      }
+      return {
+        denied: false,
+        result: {
+          created: false,
+          attempt: replayAttempt,
+          budgetDecision: budgetDecisionFromRow(replayDecision),
+        },
+      };
+    }
+
+    const existing = this.readProjectionByIdempotencyKey(normalized.idempotencyKey);
+    if (existing) {
+      if (!sameStartIdentity(existing, normalized)) throw new Error("provider_attempt_conflict");
+      return { denied: false, result: { created: false, attempt: existing } };
+    }
+
+    const policyRow = this.readActiveBudgetPolicy(normalized.startedAt);
+    if (!policyRow || policyRow.mode === "disabled") {
+      return { denied: false, result: { created: true, attempt: this.insertAttempt(normalized) } };
+    }
+    const policy = budgetPolicyFromRow(policyRow);
+    const requestedMicros = policy.maxAttemptReserveMicros;
+    const balance = this.requireBudgetProjection(policy.policyId);
+    const availableMicros = budgetAvailableMicros(balance);
+    const price = this.resolveAttemptPrice(normalized.offeringId, normalized.model, normalized.startedAt);
+    const excluded = normalized.credentialClass === "user";
+    const reason: ProviderBudgetDecisionReason = excluded
+      ? "byok_excluded"
+      : !price
+        ? "price_unknown"
+        : availableMicros < requestedMicros
+          ? "insufficient_balance"
+          : "within_limit";
+    const status: ProviderBudgetDecisionStatus = excluded
+      ? "excluded"
+      : policy.mode === "hard"
+        ? reason === "within_limit" ? "reserved" : "denied"
+        : reason === "within_limit" ? "observed" : "would_deny";
+    const reservationId = status === "reserved" ? `reservation_${crypto.randomUUID()}` : null;
+
+    if (status === "denied") {
+      this.insertBudgetDecision(normalized, policy, status, reason, requestedMicros, null, null);
+      this.appendBudgetEvent(
+        policy,
+        null,
+        null,
+        status,
+        requestedMicros,
+        reason,
+        normalized.startedAt,
+        `budget-decision:${normalized.idempotencyKey}`,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE provider_budget_projection
+         SET denial_count = denial_count + 1, updated_at = ? WHERE policy_id = ?`,
+        normalized.startedAt,
+        policy.policyId,
+      );
+      return { denied: true, reason };
+    }
+
+    const attempt = this.insertAttempt(normalized);
+    if (reservationId) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO provider_budget_reservations(
+          reservation_id, attempt_id, policy_id, policy_version, currency, status,
+          reserved_micros, settled_micros, released_micros, held_micros,
+          created_at, updated_at, review_after
+        ) VALUES (?, ?, ?, ?, ?, 'reserved', ?, 0, 0, 0, ?, ?, ?)`,
+        reservationId,
+        attempt.attemptId,
+        policy.policyId,
+        policy.policyVersion,
+        policy.currency,
+        requestedMicros,
+        normalized.startedAt,
+        normalized.startedAt,
+        normalized.startedAt + policy.holdReviewAfterMs,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE provider_budget_projection
+         SET reserved_micros = reserved_micros + ?, updated_at = ? WHERE policy_id = ?`,
+        requestedMicros,
+        normalized.startedAt,
+        policy.policyId,
+      );
+    } else if (status === "would_deny" && policy.mode === "soft") {
+      this.ctx.storage.sql.exec(
+        `UPDATE provider_budget_projection
+         SET alert_count = alert_count + 1, updated_at = ? WHERE policy_id = ?`,
+        normalized.startedAt,
+        policy.policyId,
+      );
+    }
+    this.insertBudgetDecision(
+      normalized,
+      policy,
+      status,
+      reason,
+      requestedMicros,
+      reservationId,
+      attempt.attemptId,
+    );
+    this.appendBudgetEvent(
+      policy,
+      attempt.attemptId,
+      reservationId,
+      status,
+      requestedMicros,
+      reason,
+      normalized.startedAt,
+      `budget-decision:${normalized.idempotencyKey}`,
+    );
+    return {
+      denied: false,
+      result: {
+        created: true,
+        attempt,
+        budgetDecision: {
+          version: 1,
+          policyId: policy.policyId,
+          policyVersion: policy.policyVersion,
+          status,
+          reason,
+          requestedMicros,
+          reservationId,
+        },
+      },
+    };
+  }
+
+  private insertAttempt(
+    normalized: NonNullable<ReturnType<typeof decodeProviderAttemptStartInput>>,
+  ): ProviderAttemptProjectionV1 {
       const existing = this.readProjectionByIdempotencyKey(normalized.idempotencyKey);
       if (existing) {
         if (!sameStartIdentity(existing, normalized)) throw new Error("provider_attempt_conflict");
-        return { created: false, attempt: existing };
+        return existing;
       }
 
       const attemptId = createProviderAttemptId();
@@ -249,8 +596,7 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
       );
       this.bindAttemptPrice(attemptId, normalized.offeringId, normalized.model, normalized.startedAt);
       this.insertEvent(this.readProjectionByAttemptId(attemptId), "started", normalized.startedAt);
-      return { created: true, attempt: this.requireProjection(attemptId) };
-    });
+      return this.requireProjection(attemptId);
   }
 
   terminal(input: unknown): ProviderAttemptTerminalResultV1 {
@@ -279,6 +625,7 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
       );
       const updated = this.requireProjection(normalized.attemptId);
       this.insertEvent(updated, "terminal", normalized.endedAt);
+      this.settleBudgetReservation(normalized.attemptId, normalized.endedAt);
       return { updated: true, attempt: updated };
     });
   }
@@ -392,6 +739,7 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
       );
       this.writeUsageProjection(normalized, projection, effectiveDelta);
       this.appendCalculatedCost(normalized, effectiveDelta);
+      this.reconcileBudgetReservationFromEvidence(normalized.attemptId, normalized.observedAt);
       return { created: true, evidenceId: normalized.evidenceId, effectiveDelta };
     });
   }
@@ -399,7 +747,11 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
   appendCostEvidence(input: unknown): ProviderCostEvidenceResultV1 {
     const normalized = decodeProviderCostEvidenceInput(input);
     if (!normalized) throw new Error("provider_cost_evidence_invalid");
-    return this.ctx.storage.transactionSync(() => this.appendCostEvidenceNormalized(normalized));
+    return this.ctx.storage.transactionSync(() => {
+      const result = this.appendCostEvidenceNormalized(normalized);
+      this.reconcileBudgetReservationFromEvidence(normalized.attemptId, normalized.observedAt);
+      return result;
+    });
   }
 
   async importReconciliation(input: unknown): Promise<ProviderReconciliationImportResultV1> {
@@ -469,6 +821,7 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
 
   getFinanceSnapshot(input: { periodStart?: number; limit?: number } = {}): ProviderFinanceSnapshotV1 {
     const generatedAt = Date.now();
+    this.ctx.storage.transactionSync(() => this.promoteDueBudgetHolds(generatedAt));
     const periodStart = isNonNegativeSafeInteger(input.periodStart)
       ? Math.min(input.periodStart, generatedAt)
       : Math.max(0, generatedAt - 30 * 24 * 60 * 60 * 1_000);
@@ -521,6 +874,15 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
       catalogs: this.ctx.storage.sql.exec<ProviderPriceCatalogRow>(
         "SELECT * FROM provider_price_catalog ORDER BY effective_from DESC, catalog_version_id DESC LIMIT 100",
       ).toArray().map(priceCatalogFromRow),
+      budgetPolicies: this.ctx.storage.sql.exec<ProviderBudgetPolicyRow>(
+        `SELECT * FROM provider_budget_policies
+         ORDER BY created_at DESC, policy_id DESC, policy_version DESC LIMIT 100`,
+      ).toArray().map(budgetPolicyFromRow),
+      budgetBalances: this.readBudgetBalances(),
+      budgetReservations: this.ctx.storage.sql.exec<ProviderBudgetReservationRow>(
+        `SELECT * FROM provider_budget_reservations
+         ORDER BY updated_at DESC, reservation_id DESC LIMIT 100`,
+      ).toArray().map(budgetReservationFromRow),
     };
   }
 
@@ -682,7 +1044,23 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
   }
 
   private bindAttemptPrice(attemptId: string, offeringId: string, model: string, startedAt: number): void {
-    const catalog = this.ctx.storage.sql.exec<ProviderPriceCatalogRow>(
+    const catalog = this.resolveAttemptPrice(offeringId, model, startedAt);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO provider_attempt_price_binding(attempt_id, catalog_version_id, resolution, bound_at)
+       VALUES (?, ?, ?, ?)`,
+      attemptId,
+      catalog?.catalog_version_id ?? null,
+      catalog ? "matched" : "missing",
+      startedAt,
+    );
+  }
+
+  private resolveAttemptPrice(
+    offeringId: string,
+    model: string,
+    startedAt: number,
+  ): ProviderPriceCatalogRow | undefined {
+    return this.ctx.storage.sql.exec<ProviderPriceCatalogRow>(
       `SELECT * FROM provider_price_catalog
        WHERE provider_id = ? AND offering_id = ? AND model = ?
          AND effective_from <= ? AND (effective_to IS NULL OR effective_to > ?)
@@ -693,14 +1071,460 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
       startedAt,
       startedAt,
     ).toArray()[0];
+  }
+
+  private readBudgetPolicyByIdempotencyKey(idempotencyKey: string): ProviderBudgetPolicyRow | undefined {
+    return this.ctx.storage.sql.exec<ProviderBudgetPolicyRow>(
+      "SELECT * FROM provider_budget_policies WHERE idempotency_key = ? LIMIT 1",
+      idempotencyKey,
+    ).toArray()[0];
+  }
+
+  private readLatestBudgetPolicy(policyId: string): ProviderBudgetPolicyRow | undefined {
+    return this.ctx.storage.sql.exec<ProviderBudgetPolicyRow>(
+      `SELECT * FROM provider_budget_policies
+       WHERE policy_id = ? ORDER BY policy_version DESC LIMIT 1`,
+      policyId,
+    ).toArray()[0];
+  }
+
+  private readActiveBudgetPolicy(at: number): ProviderBudgetPolicyRow | undefined {
+    return this.ctx.storage.sql.exec<ProviderBudgetPolicyRow>(
+      `SELECT * FROM provider_budget_policies
+       WHERE provider_id = ? AND period_start <= ? AND period_end > ?
+       ORDER BY created_at DESC, policy_version DESC LIMIT 1`,
+      this.providerId,
+      at,
+      at,
+    ).toArray()[0];
+  }
+
+  private readBudgetDecision(idempotencyKey: string): ProviderBudgetDecisionRow | undefined {
+    return this.ctx.storage.sql.exec<ProviderBudgetDecisionRow>(
+      "SELECT * FROM provider_budget_decisions WHERE idempotency_key = ? LIMIT 1",
+      idempotencyKey,
+    ).toArray()[0];
+  }
+
+  private insertBudgetDecision(
+    attempt: NonNullable<ReturnType<typeof decodeProviderAttemptStartInput>>,
+    policy: ProviderBudgetPolicyProjectionV1,
+    status: ProviderBudgetDecisionStatus,
+    reason: ProviderBudgetDecisionReason,
+    requestedMicros: number,
+    reservationId: string | null,
+    attemptId: string | null,
+  ): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO provider_attempt_price_binding(attempt_id, catalog_version_id, resolution, bound_at)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO provider_budget_decisions(
+        idempotency_key, attempt_id, turn_id, run_id, run_kind, logical_route_id,
+        provider_id, offering_id, model, fallback_index, credential_class,
+        operation_id, fence_id, operation_kind, operation_started_at, started_at,
+        policy_id, policy_version, status, reason, requested_micros, reservation_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      attempt.idempotencyKey,
       attemptId,
-      catalog?.catalog_version_id ?? null,
-      catalog ? "matched" : "missing",
-      startedAt,
+      attempt.turnId,
+      attempt.runId,
+      attempt.runKind,
+      attempt.logicalRouteId,
+      attempt.providerId,
+      attempt.offeringId,
+      attempt.model,
+      attempt.fallbackIndex,
+      attempt.credentialClass,
+      attempt.operation.operationId,
+      attempt.operation.fenceId,
+      attempt.operation.kind,
+      attempt.operation.startedAt,
+      attempt.startedAt,
+      policy.policyId,
+      policy.policyVersion,
+      status,
+      reason,
+      requestedMicros,
+      reservationId,
     );
+  }
+
+  private appendBudgetEvent(
+    policy: Pick<ProviderBudgetPolicyProjectionV1, "policyId" | "policyVersion">,
+    attemptId: string | null,
+    reservationId: string | null,
+    kind: ProviderBudgetDecisionStatus | "settled" | "released" | "held" | "review_required"
+      | "reconciled" | "operator_released" | "alerted",
+    amountMicros: number,
+    reason: string,
+    at: number,
+    idempotencyKey: string,
+  ): boolean {
+    const existing = this.ctx.storage.sql.exec<{
+      policy_id: string;
+      policy_version: number;
+      attempt_id: string | null;
+      reservation_id: string | null;
+      event_kind: string;
+      amount_micros: number;
+      reason: string;
+      at: number;
+    }>(
+      "SELECT * FROM provider_budget_events WHERE idempotency_key = ? LIMIT 1",
+      idempotencyKey,
+    ).toArray()[0];
+    if (existing) {
+      if (
+        existing.policy_id !== policy.policyId
+        || existing.policy_version !== policy.policyVersion
+        || existing.attempt_id !== attemptId
+        || existing.reservation_id !== reservationId
+        || existing.event_kind !== kind
+        || existing.amount_micros !== amountMicros
+        || existing.reason !== reason
+      ) throw new Error("provider_budget_event_conflict");
+      return false;
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO provider_budget_events(
+        event_id, idempotency_key, policy_id, policy_version, attempt_id,
+        reservation_id, event_kind, amount_micros, reason, at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `budget_event_${crypto.randomUUID()}`,
+      idempotencyKey,
+      policy.policyId,
+      policy.policyVersion,
+      attemptId,
+      reservationId,
+      kind,
+      amountMicros,
+      reason,
+      at,
+    );
+    return true;
+  }
+
+  private readBudgetReservationByAttempt(attemptId: string): ProviderBudgetReservationRow | undefined {
+    return this.ctx.storage.sql.exec<ProviderBudgetReservationRow>(
+      "SELECT * FROM provider_budget_reservations WHERE attempt_id = ? LIMIT 1",
+      attemptId,
+    ).toArray()[0];
+  }
+
+  private readBudgetReservation(reservationId: string): ProviderBudgetReservationRow | undefined {
+    return this.ctx.storage.sql.exec<ProviderBudgetReservationRow>(
+      "SELECT * FROM provider_budget_reservations WHERE reservation_id = ? LIMIT 1",
+      reservationId,
+    ).toArray()[0];
+  }
+
+  private requireBudgetProjection(policyId: string): ProviderBudgetProjectionRow {
+    const row = this.ctx.storage.sql.exec<ProviderBudgetProjectionRow>(
+      "SELECT * FROM provider_budget_projection WHERE policy_id = ? LIMIT 1",
+      policyId,
+    ).toArray()[0];
+    if (!row) throw new Error("provider_budget_projection_missing");
+    return row;
+  }
+
+  private readKnownBudgetCost(attemptId: string, currency: string): number | undefined {
+    const usage = this.readUsageProjection(attemptId);
+    if (!usage || [
+      usage.input_no_cache_tokens,
+      usage.cache_read_input_tokens,
+      usage.cache_write_input_tokens,
+      usage.output_text_tokens,
+      usage.reasoning_output_tokens,
+    ].some((value) => value === null)) return undefined;
+    const binding = this.ctx.storage.sql.exec<{
+      catalog_version_id: string | null;
+      resolution: "matched" | "missing";
+    }>(
+      "SELECT catalog_version_id, resolution FROM provider_attempt_price_binding WHERE attempt_id = ? LIMIT 1",
+      attemptId,
+    ).toArray()[0];
+    if (!binding || binding.resolution !== "matched" || !binding.catalog_version_id) return undefined;
+    const aggregate = this.ctx.storage.sql.exec<{ count: number; amount: number | null }>(
+      `SELECT COUNT(*) AS count, SUM(amount_micros) AS amount
+       FROM provider_cost_evidence WHERE attempt_id = ? AND currency = ?`,
+      attemptId,
+      currency,
+    ).one();
+    if (aggregate.count < 1 || aggregate.amount === null) return undefined;
+    return Math.max(0, requireSafeAggregate(aggregate.amount));
+  }
+
+  private settleBudgetReservation(attemptId: string, at: number): void {
+    const reservation = this.readBudgetReservationByAttempt(attemptId);
+    if (!reservation || reservation.status !== "reserved") return;
+    const amount = this.readKnownBudgetCost(attemptId, reservation.currency);
+    if (amount !== undefined) {
+      this.finalizeBudgetReservation(reservation, amount, "settled", "terminal_cost", at);
+      return;
+    }
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_reservations
+       SET status = 'held', held_micros = reserved_micros, updated_at = ?
+       WHERE reservation_id = ? AND status = 'reserved'`,
+      at,
+      reservation.reservation_id,
+    );
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_projection
+       SET reserved_micros = reserved_micros - ?, held_micros = held_micros + ?, updated_at = ?
+       WHERE policy_id = ?`,
+      reservation.reserved_micros,
+      reservation.reserved_micros,
+      at,
+      reservation.policy_id,
+    );
+    this.appendBudgetEvent(
+      { policyId: reservation.policy_id, policyVersion: reservation.policy_version },
+      reservation.attempt_id,
+      reservation.reservation_id,
+      "held",
+      reservation.reserved_micros,
+      "cost_unknown",
+      at,
+      `budget-transition:${reservation.reservation_id}:held`,
+    );
+  }
+
+  private reconcileBudgetReservationFromEvidence(attemptId: string, at: number): void {
+    const attempt = this.requireProjection(attemptId);
+    if (attempt.status === "started") return;
+    const reservation = this.readBudgetReservationByAttempt(attemptId);
+    if (!reservation || reservation.status === "operator_released") return;
+    const amount = this.readKnownBudgetCost(attemptId, reservation.currency);
+    if (amount === undefined) return;
+    if (reservation.status === "settled" || reservation.status === "reconciled") {
+      if (amount === reservation.settled_micros) return;
+      this.adjustFinalizedBudgetReservation(reservation, amount, at);
+      return;
+    }
+    this.finalizeBudgetReservation(
+      reservation,
+      amount,
+      reservation.status === "reserved" ? "settled" : "reconciled",
+      "late_cost_evidence",
+      at,
+    );
+  }
+
+  private adjustFinalizedBudgetReservation(
+    reservation: ProviderBudgetReservationRow,
+    amountMicros: number,
+    at: number,
+  ): void {
+    const delta = amountMicros - reservation.settled_micros;
+    const releasedMicros = Math.max(0, reservation.reserved_micros - amountMicros);
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_projection SET
+        settled_micros = settled_micros + ?,
+        alert_count = alert_count + ?,
+        updated_at = ?
+       WHERE policy_id = ?`,
+      delta,
+      amountMicros > reservation.reserved_micros ? 1 : 0,
+      at,
+      reservation.policy_id,
+    );
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_reservations SET
+        status = 'reconciled', settled_micros = ?, released_micros = ?, updated_at = ?
+       WHERE reservation_id = ?`,
+      amountMicros,
+      releasedMicros,
+      at,
+      reservation.reservation_id,
+    );
+    this.appendBudgetEvent(
+      { policyId: reservation.policy_id, policyVersion: reservation.policy_version },
+      reservation.attempt_id,
+      reservation.reservation_id,
+      "reconciled",
+      delta,
+      "corrected_cost_evidence",
+      at,
+      `budget-transition:${reservation.reservation_id}:reconciled:${at}:${amountMicros}`,
+    );
+  }
+
+  private finalizeBudgetReservation(
+    reservation: ProviderBudgetReservationRow,
+    amountMicros: number,
+    status: "settled" | "reconciled" | "operator_released",
+    reason: string,
+    at: number,
+  ): void {
+    const reservedToRemove = reservation.status === "reserved" ? reservation.reserved_micros : 0;
+    const heldToRemove = reservation.status === "held" || reservation.status === "review_required"
+      ? reservation.held_micros
+      : 0;
+    const releasedMicros = Math.max(0, reservation.reserved_micros - amountMicros);
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_projection SET
+        reserved_micros = reserved_micros - ?,
+        held_micros = held_micros - ?,
+        settled_micros = settled_micros + ?,
+        alert_count = alert_count + ?,
+        updated_at = ?
+       WHERE policy_id = ?`,
+      reservedToRemove,
+      heldToRemove,
+      amountMicros,
+      amountMicros > reservation.reserved_micros ? 1 : 0,
+      at,
+      reservation.policy_id,
+    );
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_reservations SET
+        status = ?, settled_micros = ?, released_micros = ?, held_micros = 0, updated_at = ?
+       WHERE reservation_id = ?`,
+      status,
+      amountMicros,
+      releasedMicros,
+      at,
+      reservation.reservation_id,
+    );
+    this.appendBudgetEvent(
+      { policyId: reservation.policy_id, policyVersion: reservation.policy_version },
+      reservation.attempt_id,
+      reservation.reservation_id,
+      status,
+      amountMicros,
+      reason,
+      at,
+      `budget-transition:${reservation.reservation_id}:${status}`,
+    );
+    if (releasedMicros > 0) {
+      this.appendBudgetEvent(
+        { policyId: reservation.policy_id, policyVersion: reservation.policy_version },
+        reservation.attempt_id,
+        reservation.reservation_id,
+        "released",
+        releasedMicros,
+        reason,
+        at,
+        `budget-transition:${reservation.reservation_id}:${status}:released`,
+      );
+    }
+  }
+
+  private promoteDueBudgetHolds(at: number): void {
+    const due = this.ctx.storage.sql.exec<ProviderBudgetReservationRow>(
+      `SELECT * FROM provider_budget_reservations
+       WHERE status = 'held' AND review_after <= ?
+       ORDER BY review_after, reservation_id LIMIT 100`,
+      at,
+    ).toArray();
+    for (const reservation of due) {
+      this.ctx.storage.sql.exec(
+        `UPDATE provider_budget_reservations SET status = 'review_required', updated_at = ?
+         WHERE reservation_id = ? AND status = 'held'`,
+        at,
+        reservation.reservation_id,
+      );
+      this.appendBudgetEvent(
+        { policyId: reservation.policy_id, policyVersion: reservation.policy_version },
+        reservation.attempt_id,
+        reservation.reservation_id,
+        "review_required",
+        reservation.held_micros,
+        "hold_review_due",
+        at,
+        `budget-transition:${reservation.reservation_id}:review_required`,
+      );
+    }
+  }
+
+  private applyBudgetOperatorAction(
+    input: NonNullable<ReturnType<typeof decodeProviderBudgetOperatorActionInput>>,
+  ): ProviderBudgetOperatorActionResultV1 {
+    const kind = input.action === "release" ? "operator_released" : "reconciled";
+    const existing = this.ctx.storage.sql.exec<{
+      reservation_id: string | null;
+      event_kind: string;
+      amount_micros: number;
+      reason: string;
+      at: number;
+    }>(
+      "SELECT * FROM provider_budget_events WHERE idempotency_key = ? LIMIT 1",
+      input.idempotencyKey,
+    ).toArray()[0];
+    if (existing) {
+      if (
+        existing.reservation_id !== input.reservationId
+        || existing.event_kind !== kind
+        || existing.amount_micros !== input.amountMicros
+        || existing.reason !== input.reason
+      ) throw new Error("provider_budget_action_conflict");
+      const replay = this.readBudgetReservation(input.reservationId);
+      if (!replay) throw new Error("provider_budget_reservation_missing");
+      return { updated: false, reservation: budgetReservationFromRow(replay) };
+    }
+    const reservation = this.readBudgetReservation(input.reservationId);
+    if (!reservation) throw new Error("provider_budget_reservation_missing");
+    if (reservation.status !== "reserved"
+      && reservation.status !== "held"
+      && reservation.status !== "review_required") {
+      throw new Error("provider_budget_action_conflict");
+    }
+    const reservedToRemove = reservation.status === "reserved" ? reservation.reserved_micros : 0;
+    const heldToRemove = reservation.status === "held" || reservation.status === "review_required"
+      ? reservation.held_micros
+      : 0;
+    const releasedMicros = Math.max(0, reservation.reserved_micros - input.amountMicros);
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_projection SET
+        reserved_micros = reserved_micros - ?, held_micros = held_micros - ?,
+        settled_micros = settled_micros + ?, alert_count = alert_count + ?, updated_at = ?
+       WHERE policy_id = ?`,
+      reservedToRemove,
+      heldToRemove,
+      input.amountMicros,
+      input.amountMicros > reservation.reserved_micros ? 1 : 0,
+      input.at,
+      reservation.policy_id,
+    );
+    this.ctx.storage.sql.exec(
+      `UPDATE provider_budget_reservations SET
+        status = ?, settled_micros = ?, released_micros = ?, held_micros = 0, updated_at = ?
+       WHERE reservation_id = ?`,
+      kind,
+      input.amountMicros,
+      releasedMicros,
+      input.at,
+      input.reservationId,
+    );
+    this.appendBudgetEvent(
+      { policyId: reservation.policy_id, policyVersion: reservation.policy_version },
+      reservation.attempt_id,
+      reservation.reservation_id,
+      kind,
+      input.amountMicros,
+      input.reason,
+      input.at,
+      input.idempotencyKey,
+    );
+    const updated = this.readBudgetReservation(input.reservationId);
+    if (!updated) throw new Error("provider_budget_reservation_missing");
+    return { updated: true, reservation: budgetReservationFromRow(updated) };
+  }
+
+  private readBudgetBalances(): ProviderBudgetBalanceProjectionV1[] {
+    const counts = this.ctx.storage.sql.exec<{
+      policy_id: string;
+      pending_count: number;
+      review_count: number;
+    }>(
+      `SELECT policy_id,
+         SUM(CASE WHEN status = 'reserved' THEN 1 ELSE 0 END) AS pending_count,
+         SUM(CASE WHEN status = 'review_required' THEN 1 ELSE 0 END) AS review_count
+       FROM provider_budget_reservations GROUP BY policy_id`,
+    ).toArray();
+    const byPolicy = new Map(counts.map((row) => [row.policy_id, row]));
+    return this.ctx.storage.sql.exec<ProviderBudgetProjectionRow>(
+      "SELECT * FROM provider_budget_projection ORDER BY updated_at DESC, policy_id DESC LIMIT 100",
+    ).toArray().map((row) => budgetBalanceFromRow(row, byPolicy.get(row.policy_id)));
   }
 
   private readPriceCatalog(catalogVersionId: string): ProviderPriceCatalogInputV1 | undefined {
@@ -1128,6 +1952,115 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
           Date.now(),
         );
       }
+      if (current < 3) {
+        this.ctx.storage.sql.exec(`
+          CREATE TABLE provider_budget_policies(
+            policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            provider_id TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK(mode IN ('disabled', 'shadow', 'soft', 'hard')),
+            period_start INTEGER NOT NULL,
+            period_end INTEGER NOT NULL,
+            limit_micros INTEGER NOT NULL,
+            max_attempt_reserve_micros INTEGER NOT NULL,
+            hold_review_after_ms INTEGER NOT NULL,
+            allow_unknown_price INTEGER NOT NULL CHECK(allow_unknown_price = 0),
+            approver TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(policy_id, policy_version)
+          );
+          CREATE INDEX provider_budget_policies_active_idx
+            ON provider_budget_policies(provider_id, period_start, period_end, policy_version DESC);
+          CREATE TABLE provider_budget_events(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            attempt_id TEXT,
+            reservation_id TEXT,
+            event_kind TEXT NOT NULL CHECK(event_kind IN (
+              'excluded', 'observed', 'would_deny', 'reserved', 'denied',
+              'settled', 'released', 'held', 'review_required',
+              'reconciled', 'operator_released', 'alerted'
+            )),
+            amount_micros INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            at INTEGER NOT NULL
+          );
+          CREATE INDEX provider_budget_events_policy_idx
+            ON provider_budget_events(policy_id, seq);
+          CREATE TABLE provider_budget_decisions(
+            idempotency_key TEXT PRIMARY KEY,
+            attempt_id TEXT UNIQUE,
+            turn_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            run_kind TEXT NOT NULL,
+            logical_route_id TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            offering_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            fallback_index INTEGER NOT NULL,
+            credential_class TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            fence_id TEXT NOT NULL,
+            operation_kind TEXT NOT NULL,
+            operation_started_at INTEGER NOT NULL,
+            started_at INTEGER NOT NULL,
+            policy_id TEXT,
+            policy_version INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('excluded', 'observed', 'would_deny', 'reserved', 'denied')),
+            reason TEXT NOT NULL CHECK(reason IN (
+              'byok_excluded', 'budget_disabled', 'within_limit',
+              'insufficient_balance', 'price_unknown'
+            )),
+            requested_micros INTEGER NOT NULL,
+            reservation_id TEXT UNIQUE
+          );
+          CREATE TABLE provider_budget_reservations(
+            reservation_id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL UNIQUE,
+            policy_id TEXT NOT NULL,
+            policy_version INTEGER NOT NULL,
+            currency TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+              'reserved', 'settled', 'held', 'review_required',
+              'reconciled', 'operator_released'
+            )),
+            reserved_micros INTEGER NOT NULL,
+            settled_micros INTEGER NOT NULL,
+            released_micros INTEGER NOT NULL,
+            held_micros INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            review_after INTEGER NOT NULL
+          );
+          CREATE INDEX provider_budget_reservations_status_idx
+            ON provider_budget_reservations(status, review_after, updated_at);
+          CREATE TABLE provider_budget_projection(
+            policy_id TEXT PRIMARY KEY,
+            policy_version INTEGER NOT NULL,
+            provider_id TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK(mode IN ('disabled', 'shadow', 'soft', 'hard')),
+            period_start INTEGER NOT NULL,
+            period_end INTEGER NOT NULL,
+            limit_micros INTEGER NOT NULL,
+            settled_micros INTEGER NOT NULL,
+            reserved_micros INTEGER NOT NULL,
+            held_micros INTEGER NOT NULL,
+            denial_count INTEGER NOT NULL,
+            alert_count INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          );
+        `);
+        this.ctx.storage.sql.exec(
+          "INSERT INTO provider_attempt_schema_migrations(version, applied_at) VALUES (3, ?)",
+          Date.now(),
+        );
+      }
     });
   }
 
@@ -1450,6 +2383,134 @@ function sameReconciliationState(
     && left.reportedTotalMicros === right.reportedTotalMicros
     && left.matchedTotalMicros === right.matchedTotalMicros
     && left.status === right.status;
+}
+
+function budgetPolicyFromRow(row: ProviderBudgetPolicyRow): ProviderBudgetPolicyProjectionV1 {
+  return {
+    version: 1,
+    policyId: row.policy_id,
+    policyVersion: row.policy_version,
+    providerId: row.provider_id,
+    currency: row.currency,
+    mode: row.mode,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    limitMicros: row.limit_micros,
+    maxAttemptReserveMicros: row.max_attempt_reserve_micros,
+    holdReviewAfterMs: row.hold_review_after_ms as ProviderBudgetPolicyProjectionV1["holdReviewAfterMs"],
+    allowUnknownPrice: false,
+    approver: row.approver,
+    createdAt: row.created_at,
+    expectedPreviousVersion: row.policy_version - 1,
+  };
+}
+
+function budgetPolicyProjectionFromInput(
+  input: ProviderBudgetPolicyInputV1,
+  policyVersion: number,
+): ProviderBudgetPolicyProjectionV1 {
+  const { idempotencyKey: _idempotencyKey, ...projection } = input;
+  return { ...projection, policyVersion };
+}
+
+function sameBudgetPolicyInput(
+  left: ProviderBudgetPolicyRow,
+  right: ProviderBudgetPolicyInputV1,
+): boolean {
+  return left.policy_id === right.policyId
+    && left.idempotency_key === right.idempotencyKey
+    && left.provider_id === right.providerId
+    && left.currency === right.currency
+    && left.mode === right.mode
+    && left.period_start === right.periodStart
+    && left.period_end === right.periodEnd
+    && left.limit_micros === right.limitMicros
+    && left.max_attempt_reserve_micros === right.maxAttemptReserveMicros
+    && left.hold_review_after_ms === right.holdReviewAfterMs
+    && right.allowUnknownPrice === false
+    && left.approver === right.approver
+    && left.policy_version - 1 === right.expectedPreviousVersion;
+}
+
+function sameBudgetDecisionIdentity(
+  row: ProviderBudgetDecisionRow,
+  input: NonNullable<ReturnType<typeof decodeProviderAttemptStartInput>>,
+): boolean {
+  return row.idempotency_key === input.idempotencyKey
+    && row.turn_id === input.turnId
+    && row.run_id === input.runId
+    && row.run_kind === input.runKind
+    && row.logical_route_id === input.logicalRouteId
+    && row.provider_id === input.providerId
+    && row.offering_id === input.offeringId
+    && row.model === input.model
+    && row.fallback_index === input.fallbackIndex
+    && row.credential_class === input.credentialClass
+    && row.operation_id === input.operation.operationId
+    && row.fence_id === input.operation.fenceId
+    && row.operation_kind === input.operation.kind
+    && row.operation_started_at === input.operation.startedAt;
+}
+
+function budgetDecisionFromRow(row: ProviderBudgetDecisionRow): ProviderBudgetDecisionV1 {
+  return {
+    version: 1,
+    policyId: row.policy_id,
+    policyVersion: row.policy_version,
+    status: row.status,
+    reason: row.reason,
+    requestedMicros: row.requested_micros,
+    reservationId: row.reservation_id,
+  };
+}
+
+function budgetReservationFromRow(row: ProviderBudgetReservationRow): ProviderBudgetReservationProjectionV1 {
+  return {
+    version: 1,
+    reservationId: row.reservation_id,
+    attemptId: row.attempt_id,
+    policyId: row.policy_id,
+    policyVersion: row.policy_version,
+    currency: row.currency,
+    status: row.status,
+    reservedMicros: row.reserved_micros,
+    settledMicros: row.settled_micros,
+    releasedMicros: row.released_micros,
+    heldMicros: row.held_micros,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    reviewAfter: row.review_after,
+  };
+}
+
+function budgetAvailableMicros(row: ProviderBudgetProjectionRow): number {
+  return Math.max(0, row.limit_micros - row.settled_micros - row.reserved_micros - row.held_micros);
+}
+
+function budgetBalanceFromRow(
+  row: ProviderBudgetProjectionRow,
+  counts?: { pending_count: number; review_count: number },
+): ProviderBudgetBalanceProjectionV1 {
+  return {
+    version: 1,
+    policyId: row.policy_id,
+    policyVersion: row.policy_version,
+    providerId: row.provider_id,
+    currency: row.currency,
+    mode: row.mode,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    limitMicros: requireNonNegativeAggregate(row.limit_micros),
+    settledMicros: requireNonNegativeAggregate(row.settled_micros),
+    reservedMicros: requireNonNegativeAggregate(row.reserved_micros),
+    heldMicros: requireNonNegativeAggregate(row.held_micros),
+    availableMicros: budgetAvailableMicros(row),
+    denialCount: requireNonNegativeAggregate(row.denial_count),
+    alertCount: requireNonNegativeAggregate(row.alert_count),
+    pendingSettlementCount: requireNonNegativeAggregate(counts?.pending_count ?? 0),
+    reviewRequiredCount: requireNonNegativeAggregate(counts?.review_count ?? 0),
+    updatedAt: row.updated_at,
+  };
 }
 
 function maxUsageEvidenceClass(

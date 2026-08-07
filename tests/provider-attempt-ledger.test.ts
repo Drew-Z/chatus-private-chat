@@ -1,5 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { ProviderAttemptLedger } from "../src/provider-attempt-ledger";
 import {
   PROVIDER_ATTEMPT_DATA_POLICY,
   createProviderRunId,
@@ -8,8 +9,13 @@ import {
   providerOfferingId,
   type ProviderAttemptStartInputV1,
 } from "../src/contracts/provider-attempt";
-import { PROVIDER_FINANCE_DATA_POLICY } from "../src/contracts/provider-finance";
 import {
+  PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
+  PROVIDER_FINANCE_DATA_POLICY,
+} from "../src/contracts/provider-finance";
+import {
+  ProviderAttemptLedgerError,
+  ProviderBudgetError,
   createProviderAttemptRuntime,
   projectProviderAttemptFailure,
 } from "../src/services/provider-attempt-runtime";
@@ -157,7 +163,7 @@ describe("ProviderAttemptLedger", () => {
       instanceName: providerId,
       stateClass: "authoritative",
       restoreBehavior: "restore",
-      schemaVersion: "provider-attempt-ledger-v2",
+      schemaVersion: "provider-attempt-ledger-v3",
     }));
   });
 
@@ -414,6 +420,337 @@ describe("ProviderAttemptLedger", () => {
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.revision).sort()).toEqual([1, 2]);
   });
+
+  it("upgrades an existing provider ledger registration from schema v2 to v3", async () => {
+    const providerId = uniqueId("capture-upgrade");
+    const coordinator = env.INSTANCE_COORDINATOR.getByName("$instance-maintenance");
+    await expect(coordinator.registerObject({
+      version: 1,
+      kind: "provider_attempt_ledger",
+      instanceName: providerId,
+      rootInstanceName: "",
+      schemaVersion: "provider-attempt-ledger-v2",
+      stateClass: "authoritative",
+      restoreBehavior: "restore",
+      registeredAt: Date.now(),
+    })).resolves.toMatchObject({ ok: true });
+
+    await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).start(startInput(providerId));
+    const registry = await coordinator.listRegisteredObjects();
+    expect(registry).toMatchObject({
+      ok: true,
+      objects: expect.arrayContaining([
+        expect.objectContaining({ instanceName: providerId, schemaVersion: "provider-attempt-ledger-v3" }),
+      ]),
+    });
+  });
+
+  it("requires a shadow first policy before a versioned hard promotion", async () => {
+    const providerId = uniqueId("budget-policy-transition");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() + 1_000;
+    const hard = budgetPolicyInput(providerId, "budget-policy-transition", base);
+    await expect(runInDurableObject(ledger, (instance) => instance.addBudgetPolicy(hard)))
+      .rejects.toThrow("provider_budget_policy_transition");
+
+    const promoted = await addHardBudgetPolicy(ledger, hard);
+    const snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(promoted).toMatchObject({ mode: "hard", expectedPreviousVersion: 1 });
+    expect(snapshot.budgetPolicies).toEqual([
+      expect.objectContaining({ policyVersion: 2, mode: "hard" }),
+      expect.objectContaining({ policyVersion: 1, mode: "shadow" }),
+    ]);
+  });
+
+  it("atomically denies concurrent hard reservations before creating another attempt", async () => {
+    const providerId = uniqueId("budget-concurrent");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() + 1_000;
+    await ledger.addPriceCatalog(priceInput(providerId, "catalog-budget-concurrent", base, null, 1_000_000));
+    await addHardBudgetPolicy(ledger, budgetPolicyInput(providerId, "budget-concurrent", base, {
+      limitMicros: 100,
+      maxAttemptReserveMicros: 100,
+    }));
+
+    const outcomes = await Promise.allSettled([
+      ledger.start(startInput(providerId, base + 10)),
+      ledger.start(startInput(providerId, base + 11)),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(outcomes.find((outcome) => outcome.status === "rejected")).toMatchObject({
+      reason: expect.objectContaining({ message: expect.stringContaining("provider_budget_exceeded") }),
+    });
+
+    const snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.capacity.calls).toBe(1);
+    expect(snapshot.budgetBalances).toEqual([
+      expect.objectContaining({
+        policyId: "budget-concurrent",
+        mode: "hard",
+        limitMicros: 100,
+        reservedMicros: 100,
+        availableMicros: 0,
+        denialCount: 1,
+        pendingSettlementCount: 1,
+      }),
+    ]);
+  });
+
+  it("denies unknown price in hard mode without an attempt and excludes BYOK from the balance", async () => {
+    const providerId = uniqueId("budget-price-byok");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() + 1_000;
+    await addHardBudgetPolicy(ledger, budgetPolicyInput(providerId, "budget-price-byok", base));
+    await expect(runInDurableObject(ledger, (instance) => instance.start(startInput(providerId, base + 10))))
+      .rejects.toThrow("provider_budget_policy_unknown");
+
+    await ledger.addPriceCatalog(priceInput(providerId, "catalog-budget-byok", base, null, 1_000_000));
+    const byok = startInput(providerId, base + 11);
+    byok.credentialClass = "user";
+    await expect(ledger.start(byok)).resolves.toMatchObject({
+      created: true,
+      budgetDecision: {
+        status: "excluded",
+        reason: "byok_excluded",
+        reservationId: null,
+      },
+    });
+    const snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.capacity.calls).toBe(1);
+    expect(snapshot.budgetBalances[0]).toMatchObject({
+      reservedMicros: 0,
+      settledMicros: 0,
+      heldMicros: 0,
+      denialCount: 1,
+    });
+    expect(snapshot.budgetReservations).toEqual([]);
+  });
+
+  it("settles exact known cost, releases the remainder, and follows corrections", async () => {
+    const providerId = uniqueId("budget-settle");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() + 1_000;
+    await ledger.addPriceCatalog(priceInput(providerId, "catalog-budget-settle", base, null, 1_000_000));
+    await addHardBudgetPolicy(ledger, budgetPolicyInput(providerId, "budget-settle", base, {
+      limitMicros: 1_000,
+      maxAttemptReserveMicros: 500,
+    }));
+    const start = startInput(providerId, base + 10);
+    const started = await ledger.start(start);
+    await expect(ledger.start({ ...start, startedAt: base + 20 })).resolves.toMatchObject({
+      created: false,
+      attempt: { attemptId: started.attempt.attemptId },
+      budgetDecision: { reservationId: started.budgetDecision?.reservationId },
+    });
+    const usage = usageInput(started.attempt.attemptId, "usage:budget:settle", base + 11, {
+      inputNoCacheTokens: 100,
+      cacheReadInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTextTokens: 0,
+      reasoningOutputTokens: 0,
+    });
+    await expect(ledger.appendUsage(usage)).resolves.toMatchObject({ created: true });
+    await expect(ledger.appendUsage(usage)).resolves.toMatchObject({ created: false });
+    const terminal = {
+      version: 1,
+      attemptId: started.attempt.attemptId,
+      status: "succeeded" as const,
+      errorClass: "none" as const,
+      endedAt: base + 12,
+    };
+    await expect(ledger.terminal(terminal)).resolves.toMatchObject({ updated: true });
+    await expect(ledger.terminal({ ...terminal, endedAt: base + 21 })).resolves.toMatchObject({ updated: false });
+    let snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.budgetBalances[0]).toMatchObject({
+      settledMicros: 100,
+      reservedMicros: 0,
+      heldMicros: 0,
+      availableMicros: 900,
+    });
+    expect(snapshot.budgetReservations[0]).toMatchObject({
+      status: "settled",
+      settledMicros: 100,
+      releasedMicros: 400,
+    });
+
+    await ledger.appendCostEvidence(costInput(
+      started.attempt.attemptId,
+      "cost:budget:reversal",
+      -100,
+      "reversal",
+      "cost:auto:usage:budget:settle",
+      base + 13,
+    ));
+    await ledger.appendCostEvidence(costInput(
+      started.attempt.attemptId,
+      "cost:budget:replacement",
+      80,
+      "replacement",
+      "cost:budget:reversal",
+      base + 14,
+    ));
+    snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.budgetBalances[0]).toMatchObject({ settledMicros: 80, availableMicros: 920 });
+    expect(snapshot.budgetReservations[0]).toMatchObject({
+      status: "reconciled",
+      settledMicros: 80,
+      releasedMicros: 420,
+    });
+  });
+
+  it("settles known billable failure, cancellation, and timeout to exact balances", async () => {
+    const providerId = uniqueId("budget-terminal-balances");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() + 1_000;
+    await ledger.addPriceCatalog(priceInput(providerId, "catalog-budget-terminal-balances", base, null, 1_000_000));
+    await addHardBudgetPolicy(ledger, budgetPolicyInput(providerId, "budget-terminal-balances", base, {
+      limitMicros: 300,
+      maxAttemptReserveMicros: 100,
+    }));
+    const terminalCases = [
+      { status: "failed", errorClass: "upstream_error", inputTokens: 10 },
+      { status: "cancelled", errorClass: "request_cancelled", inputTokens: 20 },
+      { status: "timed_out", errorClass: "upstream_timeout", inputTokens: 30 },
+    ] as const;
+
+    for (const [index, terminalCase] of terminalCases.entries()) {
+      const started = await ledger.start(startInput(providerId, base + 10 + index));
+      await ledger.appendUsage(usageInput(
+        started.attempt.attemptId,
+        `usage:budget:terminal:${index}`,
+        base + 20 + index,
+        {
+          inputNoCacheTokens: terminalCase.inputTokens,
+          cacheReadInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTextTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+      ));
+      await ledger.terminal({
+        version: 1,
+        attemptId: started.attempt.attemptId,
+        status: terminalCase.status,
+        errorClass: terminalCase.errorClass,
+        endedAt: base + 30 + index,
+      });
+    }
+
+    const snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.budgetBalances[0]).toMatchObject({
+      settledMicros: 60,
+      reservedMicros: 0,
+      heldMicros: 0,
+      availableMicros: 240,
+      pendingSettlementCount: 0,
+    });
+    expect(snapshot.budgetReservations.map((reservation) => ({
+      status: reservation.status,
+      settledMicros: reservation.settledMicros,
+      releasedMicros: reservation.releasedMicros,
+    }))).toEqual(expect.arrayContaining([
+      { status: "settled", settledMicros: 10, releasedMicros: 90 },
+      { status: "settled", settledMicros: 20, releasedMicros: 80 },
+      { status: "settled", settledMicros: 30, releasedMicros: 70 },
+    ]));
+  });
+
+  it("retains unknown cost, promotes it for review after 72 hours, and releases only by audited action", async () => {
+    const providerId = uniqueId("budget-hold");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() - PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS - 10_000;
+    await ledger.addPriceCatalog(priceInput(providerId, "catalog-budget-hold", base, null, 1_000_000));
+    await addHardBudgetPolicy(ledger, budgetPolicyInput(providerId, "budget-hold", base, {
+      periodEnd: Date.now() + 60_000,
+    }));
+    const started = await ledger.start(startInput(providerId, base + 10));
+    await ledger.terminal({
+      version: 1,
+      attemptId: started.attempt.attemptId,
+      status: "failed",
+      errorClass: "upstream_unavailable",
+      endedAt: base + 20,
+    });
+
+    let snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    const held = snapshot.budgetReservations[0];
+    expect(held).toMatchObject({ status: "review_required", heldMicros: 500 });
+    expect(snapshot.budgetBalances[0]).toMatchObject({
+      heldMicros: 500,
+      availableMicros: 500,
+      reviewRequiredCount: 1,
+    });
+
+    const action = {
+      version: 1 as const,
+      idempotencyKey: `provider-budget-action:v1:${crypto.randomUUID()}`,
+      providerId,
+      reservationId: held.reservationId,
+      action: "release" as const,
+      amountMicros: 0,
+      reason: "operator verified non-billable failure",
+      at: Date.now(),
+    };
+    await expect(ledger.reconcileBudgetReservation(action)).resolves.toMatchObject({ updated: true });
+    await expect(ledger.reconcileBudgetReservation(action)).resolves.toMatchObject({ updated: false });
+    snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.budgetReservations[0]).toMatchObject({
+      status: "operator_released",
+      settledMicros: 0,
+      heldMicros: 0,
+      releasedMicros: 500,
+    });
+    expect(snapshot.budgetBalances[0]).toMatchObject({ heldMicros: 0, availableMicros: 1_000 });
+  });
+
+  it("rolls hard policy back to soft without dropping existing holds", async () => {
+    const providerId = uniqueId("budget-soft-rollback");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() + 1_000;
+    await ledger.addPriceCatalog(priceInput(providerId, "catalog-budget-soft-rollback", base, null, 1_000_000));
+    const hard = await addHardBudgetPolicy(ledger, budgetPolicyInput(providerId, "budget-soft-rollback", base, {
+      limitMicros: 500,
+      maxAttemptReserveMicros: 500,
+    }));
+    const reserved = await ledger.start(startInput(providerId, base + 10));
+    await ledger.terminal({
+      version: 1,
+      attemptId: reserved.attempt.attemptId,
+      status: "failed",
+      errorClass: "upstream_unavailable",
+      endedAt: base + 11,
+    });
+
+    await ledger.addBudgetPolicy({
+      ...hard,
+      idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+      mode: "soft",
+      createdAt: base + 12,
+      expectedPreviousVersion: 2,
+    });
+    const softAttempt = await ledger.start(startInput(providerId, base + 13));
+    expect(softAttempt.budgetDecision).toMatchObject({
+      status: "would_deny",
+      reason: "insufficient_balance",
+      reservationId: null,
+    });
+    let snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.budgetReservations).toHaveLength(1);
+    expect(snapshot.budgetReservations[0]).toMatchObject({ status: "held", heldMicros: 500 });
+    expect(snapshot.budgetBalances[0]).toMatchObject({ mode: "soft", heldMicros: 500, availableMicros: 0 });
+
+    await ledger.appendUsage(usageInput(reserved.attempt.attemptId, "usage:budget:soft-rollback", base + 14, {
+      inputNoCacheTokens: 100,
+      cacheReadInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTextTokens: 0,
+      reasoningOutputTokens: 0,
+    }));
+    snapshot = await ledger.getFinanceSnapshot({ periodStart: base, limit: 10 });
+    expect(snapshot.budgetReservations[0]).toMatchObject({ status: "reconciled", settledMicros: 100, heldMicros: 0 });
+    expect(snapshot.budgetBalances[0]).toMatchObject({ mode: "soft", settledMicros: 100, availableMicros: 400 });
+  });
 });
 
 describe("provider attempt runtime", () => {
@@ -478,6 +815,148 @@ describe("provider attempt runtime", () => {
     await expect(handle.succeed()).resolves.toBeUndefined();
   });
 
+  it("preserves stable budget denial instead of projecting it as a ledger outage", async () => {
+    const providerId = uniqueId("runtime-budget");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const base = Date.now() + 1_000;
+    await ledger.addPriceCatalog(priceInput(providerId, "catalog-runtime-budget", base, null, 1_000_000));
+    await addHardBudgetPolicy(ledger, budgetPolicyInput(providerId, "runtime-budget", base, {
+      limitMicros: 100,
+      maxAttemptReserveMicros: 100,
+    }));
+    const operation = operationState(base);
+    const runtime = createProviderAttemptRuntime({
+      ledger: env.PROVIDER_ATTEMPT_LEDGER,
+      mode: "required",
+      operation,
+    });
+    const route = {
+      logicalRouteId: "reasoning",
+      providerId,
+      model: "fake-model",
+      credentialClass: "managed" as const,
+      fallbackIndex: 0,
+      startedAt: base + 1,
+    };
+    await runtime.createRun("main_answer").start(route);
+    const denied = runtime.createRun("automatic_skill").start({ ...route, startedAt: base + 2 });
+    await expect(denied).rejects.toBeInstanceOf(ProviderBudgetError);
+    await expect(denied).rejects.toMatchObject({ code: "provider_budget_exceeded" });
+  });
+
+  it("preserves successful Provider output on terminal availability failure but not on consistency failure", async () => {
+    const attemptId = `attempt_${crypto.randomUUID()}`;
+    const terminal = vi.fn().mockRejectedValue(new Error("temporary storage outage"));
+    const stub = {
+      start: vi.fn().mockResolvedValue({ created: true, attempt: { attemptId } }),
+      terminal,
+      appendUsage: vi.fn(),
+    };
+    const namespace = {
+      getByName: vi.fn().mockReturnValue(stub),
+    } as unknown as DurableObjectNamespace<ProviderAttemptLedger>;
+    const runtime = createProviderAttemptRuntime({
+      ledger: namespace,
+      mode: "required",
+      operation: operationState(),
+    });
+    const handle = await runtime.createRun("main_answer").start({
+      logicalRouteId: "reasoning",
+      providerId: "provider-a",
+      model: "fake-model",
+      credentialClass: "managed",
+      fallbackIndex: 0,
+    });
+
+    await expect(handle.succeed()).resolves.toBeUndefined();
+    expect(terminal).toHaveBeenCalledTimes(2);
+
+    const conflictTerminal = vi.fn().mockRejectedValue(new Error("provider_attempt_conflict"));
+    const conflictHandle = await createProviderAttemptRuntime({
+      ledger: {
+        getByName: vi.fn().mockReturnValue({
+          start: vi.fn().mockResolvedValue({
+            created: true,
+            attempt: { attemptId: `attempt_${crypto.randomUUID()}` },
+          }),
+          terminal: conflictTerminal,
+          appendUsage: vi.fn(),
+        }),
+      } as unknown as DurableObjectNamespace<ProviderAttemptLedger>,
+      mode: "required",
+      operation: operationState(),
+    }).createRun("main_answer").start({
+      logicalRouteId: "reasoning",
+      providerId: "provider-a",
+      model: "fake-model",
+      credentialClass: "managed",
+      fallbackIndex: 0,
+    });
+    await expect(conflictHandle.succeed()).rejects.toBeInstanceOf(ProviderAttemptLedgerError);
+    expect(conflictTerminal).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps failure settlement fail-closed when the terminal ledger is unavailable", async () => {
+    const attemptId = `attempt_${crypto.randomUUID()}`;
+    const terminal = vi.fn().mockRejectedValue(new Error("temporary storage outage"));
+    const namespace = {
+      getByName: vi.fn().mockReturnValue({
+        start: vi.fn().mockResolvedValue({ created: true, attempt: { attemptId } }),
+        terminal,
+      }),
+    } as unknown as DurableObjectNamespace<ProviderAttemptLedger>;
+    const handle = await createProviderAttemptRuntime({
+      ledger: namespace,
+      mode: "required",
+      operation: operationState(),
+    }).createRun("main_answer").start({
+      logicalRouteId: "reasoning",
+      providerId: "provider-a",
+      model: "fake-model",
+      credentialClass: "managed",
+      fallbackIndex: 0,
+    });
+
+    await expect(handle.fail(new Error("provider failed"))).rejects.toBeInstanceOf(ProviderAttemptLedgerError);
+    expect(terminal).toHaveBeenCalledTimes(2);
+  });
+
+  it("schedules successful terminal retry without changing the preserved response", async () => {
+    const attemptId = `attempt_${crypto.randomUUID()}`;
+    const terminal = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary storage outage"))
+      .mockRejectedValueOnce(new Error("temporary storage outage"))
+      .mockRejectedValueOnce(new Error("temporary storage outage"))
+      .mockRejectedValueOnce(new Error("temporary storage outage"))
+      .mockResolvedValueOnce({ updated: true });
+    const waitUntil = vi.fn((promise: Promise<unknown>) => promise);
+    const namespace = {
+      getByName: vi.fn().mockReturnValue({
+        start: vi.fn().mockResolvedValue({ created: true, attempt: { attemptId } }),
+        terminal,
+        appendUsage: vi.fn(),
+      }),
+    } as unknown as DurableObjectNamespace<ProviderAttemptLedger>;
+    const handle = await createProviderAttemptRuntime({
+      ledger: namespace,
+      mode: "required",
+      operation: operationState(),
+      waitUntil,
+    }).createRun("main_answer").start({
+      logicalRouteId: "reasoning",
+      providerId: "provider-a",
+      model: "fake-model",
+      credentialClass: "managed",
+      fallbackIndex: 0,
+    });
+
+    await expect(handle.succeed()).resolves.toBeUndefined();
+    expect(waitUntil).toHaveBeenCalledOnce();
+    await expect(waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+    expect(terminal).toHaveBeenCalledTimes(5);
+    await expect(handle.succeed()).resolves.toBeUndefined();
+  });
+
   it("classifies cancellation, protocol, status and unknown failures without raw messages", () => {
     const cancelled = new Error("secret cancellation detail");
     cancelled.name = "AbortError";
@@ -511,13 +990,13 @@ describe("provider attempt runtime", () => {
       retention: "no_automatic_expiry",
       rawInvoice: "excluded",
       memberVisibleMoney: "unsupported",
-      hardBudgetEnforcement: "unsupported",
+      hardBudgetEnforcement: "instance_provider_v1",
     });
   });
 });
 
 function startInput(providerId: string, startedAt?: number): ProviderAttemptStartInputV1 {
-  const operation = operationState();
+  const operation = operationState(startedAt === undefined ? undefined : Math.max(0, startedAt - 1));
   const runId = createProviderRunId();
   return {
     version: 1,
@@ -616,14 +1095,65 @@ function costInput(
   };
 }
 
-function operationState() {
+function operationState(startedAt = Date.now()) {
   return {
     version: 1 as const,
     operationId: uniqueId("provider-turn"),
     fenceId: crypto.randomUUID(),
     kind: "provider_turn" as const,
-    startedAt: Date.now(),
+    startedAt,
   };
+}
+
+function budgetPolicyInput(
+  providerId: string,
+  policyId: string,
+  periodStart: number,
+  overrides: Partial<{
+    mode: "disabled" | "shadow" | "soft" | "hard";
+    periodEnd: number;
+    limitMicros: number;
+    maxAttemptReserveMicros: number;
+    expectedPreviousVersion: number;
+  }> = {},
+) {
+  return {
+    version: 1 as const,
+    policyId,
+    idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+    providerId,
+    currency: "USD",
+    mode: overrides.mode ?? "hard",
+    periodStart,
+    periodEnd: overrides.periodEnd ?? periodStart + 24 * 60 * 60 * 1_000,
+    limitMicros: overrides.limitMicros ?? 1_000,
+    maxAttemptReserveMicros: overrides.maxAttemptReserveMicros ?? 500,
+    holdReviewAfterMs: PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
+    allowUnknownPrice: false as const,
+    approver: "finance-admin",
+    createdAt: periodStart,
+    expectedPreviousVersion: overrides.expectedPreviousVersion ?? 0,
+  };
+}
+
+async function addHardBudgetPolicy(
+  ledger: DurableObjectStub<ProviderAttemptLedger>,
+  input: ReturnType<typeof budgetPolicyInput>,
+): Promise<ReturnType<typeof budgetPolicyInput>> {
+  await ledger.addBudgetPolicy({
+    ...input,
+    mode: "shadow",
+    expectedPreviousVersion: 0,
+  });
+  const hard = {
+    ...input,
+    idempotencyKey: `provider-budget-policy:v1:${crypto.randomUUID()}`,
+    mode: "hard" as const,
+    createdAt: input.createdAt + 1,
+    expectedPreviousVersion: 1,
+  };
+  await ledger.addBudgetPolicy(hard);
+  return hard;
 }
 
 function uniqueId(prefix: string): string {

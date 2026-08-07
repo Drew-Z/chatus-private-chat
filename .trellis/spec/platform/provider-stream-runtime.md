@@ -44,14 +44,24 @@ The optional `fetch` dependency exists for deterministic adapter tests. Producti
 
 ## 4. Ownership And Fallback Boundary
 
-The Worker owns the attempt loop. It may try another eligible provider only when `callProviderStream` returns an HTTP failure or throws before returning `{ ok: true }`.
+The Worker owns the attempt loop. It may try another eligible provider only when
+`callProviderStream` returns an eligible HTTP/protocol failure or throws before
+returning `{ ok: true }`. Failure before the adapter is entered is not
+automatically fallback-eligible.
 
 Before calling this adapter, the Worker starts one attempt through the required
 Provider attempt runtime. The response/lease wrapper appends success, failure,
 or cancellation exactly once. A successful response with no body is a protocol
 failure: cancel upstream, settle the ledger, release Provider/admission
-resources, and surface any terminal ledger failure. A
-`ProviderAttemptLedgerError` is infrastructure failure and never opens fallback.
+resources, and apply the attempt terminal policy. `ProviderAttemptLedgerError`
+and `ProviderBudgetError` are blocking admission failures and never open
+fallback. This includes `provider_budget_exceeded`,
+`provider_budget_policy_unknown`, and `provider_budget_unavailable`.
+
+When a successful response has already completed, an infrastructure-only
+terminal ledger failure preserves that response and schedules bounded retry.
+Retry exhaustion leaves the conservative reservation pending. Consistency
+errors and non-success terminal failures still surface to the caller.
 
 Once `{ ok: true }` is returned, the Worker wraps the body with the provider lease lifecycle. Completion records success; stream failure records the protocol or upstream error; cancellation releases capacity without recording a synthetic success or failure. None of these post-return paths may re-enter provider selection.
 
@@ -70,10 +80,12 @@ The runtime owns the child deadline lifecycle. It disposes the timer and parent 
 | Stream ends or leaves an incomplete event before content | Cancel upstream and throw a protocol error before handoff |
 | Fetch or pre-visible read has no visible output for 60 seconds | Abort/cancel upstream and throw `TimeoutError`; Worker may try an eligible fallback |
 | Parent request cancels before visible output | Abort/cancel upstream with `AbortError`; never fall back |
+| Attempt start is budget-denied, policy-unknown, or ledger-unavailable | Make zero Provider calls and never fall back to another candidate |
 | Invalid SSE arrives after visible content | Error the committed stream; release its lease; do not fall back |
 | Stream remains active past 60 seconds after visible content | Continue normally; the first-visible timer is already cleared |
 | Usage tail is missing, truncated, or arrives after terminal settlement | Preserve terminal result; append `unknown`/`partial` usage evidence without reopening fallback or changing terminal status |
 | Request or response consumer cancels | Propagate cancellation upstream and release the lease once |
+| Successful response terminal write has infrastructure failure | Preserve the response, schedule bounded retry, and retain pending reservation if retry exhausts |
 
 ## 6. Tests Required
 
@@ -83,6 +95,9 @@ The runtime owns the child deadline lifecycle. It disposes the timer and parent 
 - Unit-test Anthropic text, finish, stop, and cancellation conversion.
 - Keep Worker integration tests for HTTP and protocol fallback, post-visible failure, provider lease release, reliability telemetry, and BYOK terminal classification.
 - Assert one ledger attempt per fake stream request, including pre-visible fallback, post-visible failure, cancellation, timeout, and bodyless-response cleanup.
+- Assert budget admission errors make zero fake Provider calls, never advance
+  fallback, expose only canonical public errors, and keep a successful response
+  when only deferred terminal settlement is unavailable.
 - Assert usage remains independent from terminal settlement for reported,
   partial, missing, and late OpenAI/Anthropic usage tails; no missing dimension
   is rendered as zero.

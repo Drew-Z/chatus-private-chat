@@ -522,6 +522,86 @@ export type AdminProviderReconciliationResult = {
   reconciliation: AdminProviderReconciliation;
 };
 
+export type AdminProviderBudgetMode = "disabled" | "shadow" | "soft" | "hard";
+
+export type AdminProviderBudgetPolicyInput = {
+  version: 1;
+  providerId: string;
+  currency: string;
+  mode: AdminProviderBudgetMode;
+  periodStart: number;
+  periodEnd: number;
+  limitMicros: number;
+  maxAttemptReserveMicros: number;
+  expectedPreviousVersion: number;
+};
+
+export type AdminProviderBudgetPolicy = AdminProviderBudgetPolicyInput & {
+  policyId: string;
+  holdReviewAfterMs: 259200000;
+  allowUnknownPrice: false;
+  approver: string;
+  createdAt: number;
+  policyVersion: number;
+};
+
+export type AdminProviderBudgetBalance = {
+  version: 1;
+  policyId: string;
+  policyVersion: number;
+  providerId: string;
+  currency: string;
+  mode: AdminProviderBudgetMode;
+  periodStart: number;
+  periodEnd: number;
+  limitMicros: number;
+  settledMicros: number;
+  reservedMicros: number;
+  heldMicros: number;
+  availableMicros: number;
+  denialCount: number;
+  alertCount: number;
+  pendingSettlementCount: number;
+  reviewRequiredCount: number;
+  updatedAt: number;
+};
+
+export type AdminProviderBudgetReservation = {
+  version: 1;
+  reservationId: string;
+  attemptId: string;
+  policyId: string;
+  policyVersion: number;
+  currency: string;
+  status: "reserved" | "settled" | "held" | "review_required" | "reconciled" | "operator_released";
+  reservedMicros: number;
+  settledMicros: number;
+  releasedMicros: number;
+  heldMicros: number;
+  createdAt: number;
+  updatedAt: number;
+  reviewAfter: number;
+};
+
+export type AdminProviderBudgetPolicyResult = {
+  created: boolean;
+  policy: AdminProviderBudgetPolicy;
+};
+
+export type AdminProviderBudgetOperatorAction = {
+  version: 1;
+  providerId: string;
+  reservationId: string;
+  action: "reconcile" | "release";
+  amountMicros: number;
+  reason: string;
+};
+
+export type AdminProviderBudgetOperatorActionResult = {
+  updated: boolean;
+  reservation: AdminProviderBudgetReservation;
+};
+
 export type AdminProviderFinanceProvider = {
   version: 1;
   providerId: string;
@@ -543,13 +623,16 @@ export type AdminProviderFinanceProvider = {
   attempts: AdminProviderFinanceAttempt[];
   reconciliations: AdminProviderReconciliation[];
   catalogs: AdminProviderPriceCatalog[];
+  budgetPolicies: AdminProviderBudgetPolicy[];
+  budgetBalances: AdminProviderBudgetBalance[];
+  budgetReservations: AdminProviderBudgetReservation[];
 };
 
 export type AdminProviderFinanceSnapshot = {
   version: 1;
   generatedAt: number;
   periodStart: number;
-  hardBudgetEnforcement: "unsupported";
+  hardBudgetEnforcement: "instance_provider_v1";
   providers: AdminProviderFinanceProvider[];
 };
 
@@ -1079,6 +1162,32 @@ export async function importAdminProviderReconciliation(
   });
   if (!isAdminProviderReconciliationResult(data)) {
     throw new ApiError("invalid_admin_provider_reconciliation_response", "Provider 对账导入结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function createAdminProviderBudgetPolicy(
+  input: AdminProviderBudgetPolicyInput,
+): Promise<AdminProviderBudgetPolicyResult> {
+  const data = await requestJson("/api/admin/provider-finance/budgets", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!isAdminProviderBudgetPolicyResult(data)) {
+    throw new ApiError("invalid_admin_provider_budget_policy_response", "Provider 预算策略保存结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function reconcileAdminProviderBudgetReservation(
+  input: AdminProviderBudgetOperatorAction,
+): Promise<AdminProviderBudgetOperatorActionResult> {
+  const data = await requestJson(
+    `/api/admin/provider-finance/budget-reservations/${encodeURIComponent(input.reservationId)}/reconcile`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+  if (!isAdminProviderBudgetOperatorActionResult(data)) {
+    throw new ApiError("invalid_admin_provider_budget_action_response", "Provider 预算处理结果格式无效。", 502);
   }
   return data;
 }
@@ -1832,7 +1941,7 @@ export function isAdminProviderFinanceSnapshot(value: unknown): value is AdminPr
     || !isNonNegativeInteger(value.generatedAt)
     || !isNonNegativeInteger(value.periodStart)
     || value.periodStart > value.generatedAt
-    || value.hardBudgetEnforcement !== "unsupported"
+    || value.hardBudgetEnforcement !== "instance_provider_v1"
     || !Array.isArray(value.providers)
     || value.providers.length > 500
     || !value.providers.every(isAdminProviderFinanceProvider)) {
@@ -1843,7 +1952,7 @@ export function isAdminProviderFinanceSnapshot(value: unknown): value is AdminPr
 
 function isAdminProviderFinanceProvider(value: unknown): value is AdminProviderFinanceProvider {
   return isRecord(value)
-    && hasExactKeys(value, ["version", "providerId", "label", "generatedAt", "periodStart", "capacity", "usage", "costs", "attempts", "reconciliations", "catalogs"])
+    && hasExactKeys(value, ["version", "providerId", "label", "generatedAt", "periodStart", "capacity", "usage", "costs", "attempts", "reconciliations", "catalogs", "budgetPolicies", "budgetBalances", "budgetReservations"])
     && value.version === 1
     && isNonEmptyString(value.providerId)
     && isNonEmptyString(value.label)
@@ -1863,7 +1972,16 @@ function isAdminProviderFinanceProvider(value: unknown): value is AdminProviderF
     && value.reconciliations.every(isAdminProviderReconciliation)
     && Array.isArray(value.catalogs)
     && value.catalogs.length <= 100
-    && value.catalogs.every(isAdminProviderPriceCatalog);
+    && value.catalogs.every(isAdminProviderPriceCatalog)
+    && Array.isArray(value.budgetPolicies)
+    && value.budgetPolicies.length <= 100
+    && value.budgetPolicies.every(isAdminProviderBudgetPolicy)
+    && Array.isArray(value.budgetBalances)
+    && value.budgetBalances.length <= 100
+    && value.budgetBalances.every(isAdminProviderBudgetBalance)
+    && Array.isArray(value.budgetReservations)
+    && value.budgetReservations.length <= 100
+    && value.budgetReservations.every(isAdminProviderBudgetReservation);
 }
 
 function isAdminProviderFinanceCapacity(value: unknown): boolean {
@@ -2002,6 +2120,143 @@ function isAdminProviderReconciliationResult(value: unknown): value is AdminProv
     && hasExactKeys(value, ["created", "reconciliation"])
     && typeof value.created === "boolean"
     && isAdminProviderReconciliation(value.reconciliation);
+}
+
+function isAdminProviderBudgetPolicy(value: unknown): value is AdminProviderBudgetPolicy {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      "version", "policyId", "providerId", "currency", "mode",
+      "periodStart", "periodEnd", "limitMicros", "maxAttemptReserveMicros",
+      "holdReviewAfterMs", "allowUnknownPrice", "approver", "createdAt",
+      "expectedPreviousVersion", "policyVersion",
+    ])
+    && value.version === 1
+    && isNonEmptyString(value.policyId)
+    && isNonEmptyString(value.providerId)
+    && typeof value.currency === "string"
+    && /^[A-Z]{3}$/.test(value.currency)
+    && isAdminProviderBudgetMode(value.mode)
+    && isNonNegativeInteger(value.periodStart)
+    && isNonNegativeInteger(value.periodEnd)
+    && value.periodEnd > value.periodStart
+    && isNonNegativeInteger(value.limitMicros)
+    && isNonNegativeInteger(value.maxAttemptReserveMicros)
+    && value.maxAttemptReserveMicros > 0
+    && value.maxAttemptReserveMicros <= value.limitMicros
+    && value.holdReviewAfterMs === 259200000
+    && value.allowUnknownPrice === false
+    && isNonEmptyString(value.approver)
+    && isNonNegativeInteger(value.createdAt)
+    && value.createdAt <= value.periodEnd
+    && isNonNegativeInteger(value.expectedPreviousVersion)
+    && isBoundedInteger(value.policyVersion, 1, Number.MAX_SAFE_INTEGER)
+    && value.expectedPreviousVersion === Number(value.policyVersion) - 1;
+}
+
+function isAdminProviderBudgetBalance(value: unknown): value is AdminProviderBudgetBalance {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
+      "version", "policyId", "policyVersion", "providerId", "currency", "mode",
+      "periodStart", "periodEnd", "limitMicros", "settledMicros", "reservedMicros",
+      "heldMicros", "availableMicros", "denialCount", "alertCount",
+      "pendingSettlementCount", "reviewRequiredCount", "updatedAt",
+    ])
+    || value.version !== 1
+    || !isNonEmptyString(value.policyId)
+    || !isBoundedInteger(value.policyVersion, 1, Number.MAX_SAFE_INTEGER)
+    || !isNonEmptyString(value.providerId)
+    || typeof value.currency !== "string"
+    || !/^[A-Z]{3}$/.test(value.currency)
+    || !isAdminProviderBudgetMode(value.mode)
+    || !isNonNegativeInteger(value.periodStart)
+    || !isNonNegativeInteger(value.periodEnd)
+    || value.periodEnd <= value.periodStart
+    || ![
+      value.limitMicros,
+      value.settledMicros,
+      value.reservedMicros,
+      value.heldMicros,
+      value.availableMicros,
+      value.denialCount,
+      value.alertCount,
+      value.pendingSettlementCount,
+      value.reviewRequiredCount,
+      value.updatedAt,
+    ].every(isNonNegativeInteger)) return false;
+  const available = Math.max(
+    0,
+    Number(value.limitMicros) - Number(value.settledMicros) - Number(value.reservedMicros) - Number(value.heldMicros),
+  );
+  return value.availableMicros === available;
+}
+
+function isAdminProviderBudgetReservation(value: unknown): value is AdminProviderBudgetReservation {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
+      "version", "reservationId", "attemptId", "policyId", "policyVersion", "currency",
+      "status", "reservedMicros", "settledMicros", "releasedMicros", "heldMicros",
+      "createdAt", "updatedAt", "reviewAfter",
+    ])
+    || value.version !== 1
+    || typeof value.reservationId !== "string"
+    || !/^reservation_[0-9a-f-]{36}$/i.test(value.reservationId)
+    || typeof value.attemptId !== "string"
+    || !/^attempt_[0-9a-f-]{36}$/i.test(value.attemptId)
+    || !isNonEmptyString(value.policyId)
+    || !isBoundedInteger(value.policyVersion, 1, Number.MAX_SAFE_INTEGER)
+    || typeof value.currency !== "string"
+    || !/^[A-Z]{3}$/.test(value.currency)
+    || !isAdminProviderBudgetReservationStatus(value.status)
+    || ![
+      value.reservedMicros,
+      value.settledMicros,
+      value.releasedMicros,
+      value.heldMicros,
+    ].every(isNonNegativeInteger)
+    || !isNonNegativeInteger(value.createdAt)
+    || !isNonNegativeInteger(value.updatedAt)
+    || !isNonNegativeInteger(value.reviewAfter)
+    || value.updatedAt < value.createdAt
+    || value.reviewAfter < value.createdAt) return false;
+  if (value.status === "reserved") {
+    return value.settledMicros === 0 && value.releasedMicros === 0 && value.heldMicros === 0;
+  }
+  if (value.status === "held" || value.status === "review_required") {
+    return value.settledMicros === 0 && value.releasedMicros === 0 && value.heldMicros === value.reservedMicros;
+  }
+  return value.heldMicros === 0
+    && value.releasedMicros === Math.max(0, Number(value.reservedMicros) - Number(value.settledMicros));
+}
+
+function isAdminProviderBudgetMode(value: unknown): value is AdminProviderBudgetMode {
+  return value === "disabled" || value === "shadow" || value === "soft" || value === "hard";
+}
+
+function isAdminProviderBudgetReservationStatus(
+  value: unknown,
+): value is AdminProviderBudgetReservation["status"] {
+  return value === "reserved"
+    || value === "settled"
+    || value === "held"
+    || value === "review_required"
+    || value === "reconciled"
+    || value === "operator_released";
+}
+
+function isAdminProviderBudgetPolicyResult(value: unknown): value is AdminProviderBudgetPolicyResult {
+  return isRecord(value)
+    && hasExactKeys(value, ["created", "policy"])
+    && typeof value.created === "boolean"
+    && isAdminProviderBudgetPolicy(value.policy);
+}
+
+function isAdminProviderBudgetOperatorActionResult(
+  value: unknown,
+): value is AdminProviderBudgetOperatorActionResult {
+  return isRecord(value)
+    && hasExactKeys(value, ["updated", "reservation"])
+    && typeof value.updated === "boolean"
+    && isAdminProviderBudgetReservation(value.reservation);
 }
 
 export function isAdminMemberListResponse(

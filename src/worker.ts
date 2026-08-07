@@ -25,6 +25,7 @@ import {
   agentErrorMessage,
   createAgentErrorEnvelope,
   projectAgentStreamError,
+  providerBudgetErrorHttpStatus,
   type AgentErrorCode,
 } from "./contracts/agent-error";
 import type {
@@ -66,8 +67,16 @@ import type {
 } from "./contracts/provider";
 import { createProviderTurnId } from "./contracts/provider-attempt";
 import {
+  PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
+  decodeProviderBudgetOperatorActionRequest,
+  decodeProviderBudgetPolicyMutationInput,
   decodeProviderPriceCatalogInput,
   decodeProviderReconciliationImportInput,
+} from "./contracts/provider-finance";
+import type {
+  ProviderBudgetOperatorActionInputV1,
+  ProviderBudgetPolicyInputV1,
+  ProviderBudgetPolicyMutationInputV1,
 } from "./contracts/provider-finance";
 import type { GuestSession, Session } from "./contracts/session";
 import {
@@ -178,7 +187,7 @@ import {
 } from "./services/provider-plan-runtime";
 import {
   createProviderAttemptRuntime,
-  ProviderAttemptLedgerError,
+  isProviderAttemptBlockingError,
   type ProviderAttemptHandle,
   type ProviderAttemptRun,
   type ProviderAttemptRuntime,
@@ -258,7 +267,7 @@ type AdminSetupStatusProjection = {
   };
 };
 
-type CapabilityChatRpcArgs = Omit<CapabilityChatArgs, "env" | "requestSignal"> & { chatId: string };
+type CapabilityChatRpcArgs = Omit<CapabilityChatArgs, "env" | "requestSignal" | "waitUntil"> & { chatId: string };
 
 type PendingToolApproval = {
   callId: string;
@@ -1181,7 +1190,7 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
     const active: ActiveCapabilityRun = { chatId, controller };
     this.activeCapabilityRuns.set(runId, active);
     return createCapabilityChatResponse(
-      { ...args, env: this.runtimeEnv },
+      { ...args, env: this.runtimeEnv, waitUntil: (promise) => this.ctx.waitUntil(promise) },
       {
         runId,
         controller,
@@ -1647,9 +1656,13 @@ export default {
         path: url.pathname,
         error: error instanceof Error ? error.name : "UnknownError",
       }));
-      const response = url.pathname.startsWith("/api/") || url.pathname === "/healthz" || url.pathname.startsWith("/agent")
-        ? jsonResponse({ error: "internal_error", requestId }, 500)
-        : textResponse("Internal server error", 500, "text/plain");
+      const budgetResponse = url.pathname.startsWith("/api/")
+        ? providerBudgetJsonResponse(error)
+        : undefined;
+      const response = budgetResponse
+        || (url.pathname.startsWith("/api/") || url.pathname === "/healthz" || url.pathname.startsWith("/agent")
+          ? jsonResponse({ error: "internal_error", requestId }, 500)
+          : textResponse("Internal server error", 500, "text/plain"));
       return withRequestId(response, requestId);
     }
   },
@@ -2113,7 +2126,7 @@ async function handleApi(
   request: Request,
   env: Env,
   url: URL,
-  ctx: ExecutionContext | undefined,
+  executionContext: ExecutionContext | undefined,
   requestId: string,
   instanceFence?: InstanceOperationFence,
 ): Promise<Response> {
@@ -2127,7 +2140,7 @@ async function handleApi(
   if (maintenance.blocked && isBlockedMaintenanceRequest(request, url)) {
     return instanceMaintenanceResponse(maintenance);
   }
-  if (!maintenance.blocked) await scheduleGuestCleanupDrain(env, ctx, requestId);
+  if (!maintenance.blocked) await scheduleGuestCleanupDrain(env, executionContext, requestId);
 
   if (url.pathname === "/api/admin/login" && request.method === "POST") {
     return handleAdminLogin(request, env, url);
@@ -2142,7 +2155,7 @@ async function handleApi(
     if (!admin) {
       return jsonResponse({ error: "unauthorized" }, 401);
     }
-    return handleAdminApi(request, env, url, instanceFence);
+    return handleAdminApi(request, env, url, instanceFence, executionContext);
   }
 
   if (url.pathname === "/api/login" && request.method === "POST") {
@@ -2186,7 +2199,7 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/chat" && request.method === "POST") {
-    return handleChat(request, env, session, requireInstanceFence(instanceFence));
+    return handleChat(request, env, session, requireInstanceFence(instanceFence), executionContext);
   }
   if (url.pathname === "/api/tool-approvals" && request.method === "POST") {
     return handleToolApproval(request, env, session);
@@ -2269,11 +2282,11 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/memory/suggest" && request.method === "POST") {
-    return handleMemorySuggest(request, env, session, requireInstanceFence(instanceFence));
+    return handleMemorySuggest(request, env, session, requireInstanceFence(instanceFence), executionContext);
   }
 
   if (url.pathname === "/api/session-summary" && request.method === "POST") {
-    return handleSessionSummary(request, env, session, requireInstanceFence(instanceFence));
+    return handleSessionSummary(request, env, session, requireInstanceFence(instanceFence), executionContext);
   }
 
   if (url.pathname === "/api/chats" && request.method === "GET") {
@@ -2463,6 +2476,7 @@ async function handleAdminApi(
   env: Env,
   url: URL,
   instanceFence?: InstanceOperationFence,
+  executionContext?: ExecutionContext,
 ): Promise<Response> {
   if (url.pathname === "/api/admin/session" && request.method === "GET") {
     return jsonResponse({ authenticated: true });
@@ -2631,8 +2645,20 @@ async function handleAdminApi(
     return handleAdminProviderFinanceReconciliation(request, env);
   }
 
+  if (url.pathname === "/api/admin/provider-finance/budgets" && request.method === "POST") {
+    requireInstanceFence(instanceFence);
+    return handleAdminProviderBudgetPolicy(request, env);
+  }
+
+  const budgetReservationMatch = /^\/api\/admin\/provider-finance\/budget-reservations\/([^/]+)\/reconcile$/
+    .exec(url.pathname);
+  if (budgetReservationMatch && request.method === "POST") {
+    requireInstanceFence(instanceFence);
+    return handleAdminProviderBudgetReconciliation(request, env, budgetReservationMatch[1]);
+  }
+
   if (url.pathname === "/api/admin/route-models" && request.method === "POST") {
-    return handleAdminRouteModels(request, env, requireInstanceFence(instanceFence));
+    return handleAdminRouteModels(request, env, requireInstanceFence(instanceFence), executionContext);
   }
 
   if (url.pathname === "/api/admin/mcp-discovery" && request.method === "POST") {
@@ -4154,6 +4180,7 @@ async function handleMemorySuggest(
   env: Env,
   session: Session,
   instanceFence: InstanceOperationFence,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   if (request.headers.get("x-chatus-client") !== "web") {
     return jsonResponse({ error: "forbidden" }, 403);
@@ -4198,6 +4225,7 @@ async function handleMemorySuggest(
       mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
       operation: instanceFence.operation,
       turnId: createProviderTurnId(),
+      waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined,
     }).createRun("memory_suggestion"),
   });
   if (!result.ok) {
@@ -4213,6 +4241,7 @@ async function handleSessionSummary(
   env: Env,
   session: Session,
   instanceFence: InstanceOperationFence,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   if (request.headers.get("x-chatus-client") !== "web") {
     return jsonResponse({ error: "forbidden" }, 403);
@@ -4263,6 +4292,7 @@ async function handleSessionSummary(
       mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
       operation: instanceFence.operation,
       turnId: createProviderTurnId(),
+      waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined,
     }).createRun("conversation_summary"),
   });
   if (!result.ok) {
@@ -5556,6 +5586,7 @@ async function handleAdminRouteModels(
   request: Request,
   env: Env,
   instanceFence: InstanceOperationFence,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const body = await readJson<{
     providerId?: unknown;
@@ -5640,6 +5671,7 @@ async function handleAdminRouteModels(
     mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
     operation: instanceFence.operation,
     turnId: createProviderTurnId(),
+    waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined,
   }).createRun("model_discovery");
   let attemptHandle: ProviderAttemptHandle | undefined;
   try {
@@ -5697,7 +5729,8 @@ async function handleAdminRouteModels(
     attemptHandle = undefined;
     return jsonResponse({ models, count: models.length, endpoint });
   } catch (error) {
-    if (error instanceof ProviderAttemptLedgerError) throw error;
+    const budgetResponse = providerBudgetJsonResponse(error);
+    if (budgetResponse) return budgetResponse;
     await attemptHandle?.fail(error);
     const projected = projectAgentStreamError(error);
     return jsonResponse(
@@ -6412,6 +6445,7 @@ async function handleChat(
   env: Env,
   session: Session,
   instanceFence: InstanceOperationFence,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const length = Number(request.headers.get("content-length") || "0");
   if (length > MAX_REQUEST_BYTES) {
@@ -6505,6 +6539,7 @@ async function handleChat(
     mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
     operation: instanceFence.operation,
     turnId: createProviderTurnId(),
+    waitUntil: ctx ? (promise) => ctx.waitUntil(promise) : undefined,
   });
 
   const userApiKey = typeof body.userApiKey === "string" ? body.userApiKey.trim() : "";
@@ -6658,9 +6693,12 @@ async function handleChat(
       await recordChatMetric(env, { kind: "route_error", label: session.label, routeId });
       if (result.terminal) break;
     } catch (error) {
-      if (error instanceof ProviderAttemptLedgerError) {
+      if (isProviderAttemptBlockingError(error)) {
         await admission.release();
-        throw error;
+        return providerBudgetJsonResponse(error) || jsonResponse({
+          error: "provider_budget_unavailable",
+          message: agentErrorMessage("provider_budget_unavailable"),
+        }, 503);
       }
       try {
         await attemptHandle?.fail(error);
@@ -6730,6 +6768,7 @@ export type TeamAgentTurnInput = {
   workspaceContext?: string;
   requestId?: string;
   abortSignal?: AbortSignal;
+  waitUntil?: (promise: Promise<unknown>) => void;
   turnId: string;
   operation: InstanceOperationStateV1;
 };
@@ -6765,6 +6804,7 @@ export async function prepareTeamAgentTurn(
     mode: env.PROVIDER_ATTEMPT_LEDGER_MODE,
     operation: input.operation,
     turnId: input.turnId,
+    waitUntil: input.waitUntil,
   });
   if ((await inspectInstanceMaintenance(env)).blocked) {
     return {
@@ -7116,7 +7156,7 @@ async function runAutomaticSkillSelector(
     },
   )
     .catch((error): AutomaticSkillSelectorAttempt => {
-      if (error instanceof ProviderAttemptLedgerError) throw error;
+      if (isProviderAttemptBlockingError(error)) throw error;
       return { reason: controller.signal.aborted ? "timeout" : "provider_error" };
     });
 
@@ -7245,7 +7285,7 @@ async function runAutomaticSkillSelectorAttempt(
         startedAt,
       });
     } catch (error) {
-      if (error instanceof ProviderAttemptLedgerError) throw error;
+      if (isProviderAttemptBlockingError(error)) throw error;
       const settledHandle = attemptHandle;
       await settledHandle?.fail(error);
       if (settledHandle) attemptLifecycle.settled(settledHandle);
@@ -8392,7 +8432,8 @@ async function completeWithUserRoute(
       lastError = "empty completion";
       lastRouteId = routeId;
     } catch (error) {
-      if (error instanceof ProviderAttemptLedgerError) throw error;
+      const budgetError = providerBudgetResult(error, routeId);
+      if (budgetError) return budgetError;
       await attemptHandle?.fail(error);
       await recordRouteReliability(env, {
         routeId,
@@ -8695,6 +8736,7 @@ type CapabilityChatArgs = {
   turnId: string;
   operation: InstanceOperationStateV1;
   requestSignal?: AbortSignal;
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
 type CapabilityCoordination = {
@@ -8806,6 +8848,7 @@ async function runCapabilityLoopInner(
     mode: args.env.PROVIDER_ATTEMPT_LEDGER_MODE,
     operation: args.operation,
     turnId: args.turnId,
+    waitUntil: args.waitUntil,
   });
   const initialProviderRun = providerAttempts.createRun("legacy_capability");
   const aliasMap = new Map(args.tools.map((tool) => [tool.providerName, tool]));
@@ -8892,7 +8935,7 @@ async function runCapabilityLoopInner(
       handedOff = true;
       break;
     } catch (error) {
-      if (error instanceof ProviderAttemptLedgerError) throw error;
+      if (isProviderAttemptBlockingError(error)) throw error;
       await attemptHandle?.fail(error);
       lastError = error instanceof ProviderToolError
         ? error
@@ -9069,7 +9112,7 @@ async function runCapabilityLoopInner(
       await startedAttempt.succeed();
       continuationAttempt = undefined;
     } catch (error) {
-      if (error instanceof ProviderAttemptLedgerError) throw error;
+      if (isProviderAttemptBlockingError(error)) throw error;
       await continuationAttempt?.fail(error);
       await recordRouteReliability(args.env, {
         routeId: selected.routeId,
@@ -9133,7 +9176,7 @@ async function handleAdminProviderFinance(env: Env, url: URL): Promise<Response>
     version: 1,
     generatedAt,
     periodStart: parsedPeriodStart,
-    hardBudgetEnforcement: "unsupported",
+    hardBudgetEnforcement: "instance_provider_v1",
     providers: snapshots.sort((left, right) => left.providerId.localeCompare(right.providerId)),
   });
 }
@@ -9178,6 +9221,90 @@ async function handleAdminProviderFinanceReconciliation(request: Request, env: E
     if (code === "provider_reconciliation_invalid") return jsonResponse({ error: code }, 400);
     throw error;
   }
+}
+
+async function handleAdminProviderBudgetPolicy(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
+  const requestInput = decodeProviderBudgetPolicyMutationInput(body);
+  if (!requestInput) return jsonResponse({ error: "provider_budget_policy_invalid" }, 400);
+  const config = await loadAppConfig(env);
+  if (!configuredProviderLabels(config).has(requestInput.providerId)) {
+    return jsonResponse({ error: "provider_not_found" }, 404);
+  }
+  const input = await createServerProviderBudgetPolicyInput(requestInput);
+  try {
+    const result = await env.PROVIDER_ATTEMPT_LEDGER.getByName(input.providerId).addBudgetPolicy(input);
+    if (result.created) await appendAdminAudit(env, "provider-budget-policy.create", input.providerId);
+    return jsonResponse(result, result.created ? 201 : 200);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "provider_budget_policy_unavailable";
+    if (
+      code === "provider_budget_policy_conflict"
+      || code === "provider_budget_policy_overlap"
+      || code === "provider_budget_policy_transition"
+    ) {
+      return jsonResponse({ error: code }, 409);
+    }
+    if (code === "provider_budget_policy_invalid") return jsonResponse({ error: code }, 400);
+    throw error;
+  }
+}
+
+async function handleAdminProviderBudgetReconciliation(
+  request: Request,
+  env: Env,
+  reservationId: string,
+): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
+  const requestInput = decodeProviderBudgetOperatorActionRequest(body);
+  if (!requestInput || requestInput.reservationId !== reservationId) {
+    return jsonResponse({ error: "provider_budget_action_invalid" }, 400);
+  }
+  const config = await loadAppConfig(env);
+  if (!configuredProviderLabels(config).has(requestInput.providerId)) {
+    return jsonResponse({ error: "provider_not_found" }, 404);
+  }
+  const input: ProviderBudgetOperatorActionInputV1 = {
+    ...requestInput,
+    idempotencyKey: `provider-budget-action:v1:${requestInput.reservationId}:${requestInput.action}`,
+    at: Date.now(),
+  };
+  try {
+    const result = await env.PROVIDER_ATTEMPT_LEDGER
+      .getByName(input.providerId)
+      .reconcileBudgetReservation(input);
+    if (result.updated) await appendAdminAudit(env, `provider-budget.${input.action}`, input.providerId);
+    return jsonResponse(result);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "provider_budget_action_unavailable";
+    if (code === "provider_budget_action_conflict") return jsonResponse({ error: code }, 409);
+    if (code === "provider_budget_reservation_missing") return jsonResponse({ error: code }, 404);
+    if (code === "provider_budget_action_invalid") return jsonResponse({ error: code }, 400);
+    throw error;
+  }
+}
+
+async function createServerProviderBudgetPolicyInput(
+  requestInput: ProviderBudgetPolicyMutationInputV1,
+): Promise<ProviderBudgetPolicyInputV1> {
+  const identitySource = new TextEncoder().encode(JSON.stringify([
+    requestInput.providerId,
+    requestInput.currency,
+    requestInput.periodStart,
+    requestInput.periodEnd,
+  ]));
+  const identity = (await sha256HexBytes(identitySource)).slice(0, 32);
+  const policyId = `policy_${identity}`;
+  const policyVersion = requestInput.expectedPreviousVersion + 1;
+  return {
+    ...requestInput,
+    policyId,
+    idempotencyKey: `provider-budget-policy:v1:${policyId}:v${policyVersion}`,
+    holdReviewAfterMs: PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
+    allowUnknownPrice: false,
+    approver: "authenticated-admin",
+    createdAt: Date.now(),
+  };
 }
 
 function configuredProviderLabels(config: AppConfig): Map<string, string> {
@@ -9389,10 +9516,32 @@ function toCapabilityError(error: unknown): CapabilityError {
   } else if (error instanceof DOMException && error.name === "AbortError") {
     code = "request_cancelled";
   } else {
-    code = "tool_execution_failed";
+    const projected = projectAgentStreamError(error);
+    code = providerBudgetErrorHttpStatus(projected) ? projected : "tool_execution_failed";
   }
   const envelope = createAgentErrorEnvelope(code);
   return new CapabilityError(envelope.error, envelope.message, retryable);
+}
+
+function providerBudgetResult(
+  error: unknown,
+  routeId?: string,
+): { ok: false; error: AgentErrorCode; message: string; status: number; routeId?: string } | undefined {
+  const projected = projectAgentStreamError(error);
+  const status = providerBudgetErrorHttpStatus(projected);
+  if (!status) return undefined;
+  return {
+    ok: false,
+    error: projected,
+    message: agentErrorMessage(projected),
+    status,
+    ...(routeId ? { routeId } : {}),
+  };
+}
+
+function providerBudgetJsonResponse(error: unknown): Response | undefined {
+  const result = providerBudgetResult(error);
+  return result ? jsonResponse({ error: result.error, message: result.message }, result.status) : undefined;
 }
 
 function providerErrorStatus(error: unknown): number | undefined {

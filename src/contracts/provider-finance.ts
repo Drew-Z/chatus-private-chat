@@ -7,8 +7,127 @@ export const PROVIDER_FINANCE_DATA_POLICY = {
   retention: "no_automatic_expiry",
   rawInvoice: "excluded",
   memberVisibleMoney: "unsupported",
-  hardBudgetEnforcement: "unsupported",
+  hardBudgetEnforcement: "instance_provider_v1",
 } as const;
+
+export const PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS = 72 * 60 * 60 * 1_000;
+
+export type ProviderBudgetMode = "disabled" | "shadow" | "soft" | "hard";
+export type ProviderBudgetDecisionStatus = "excluded" | "observed" | "would_deny" | "reserved" | "denied";
+export type ProviderBudgetDecisionReason =
+  | "byok_excluded"
+  | "budget_disabled"
+  | "within_limit"
+  | "insufficient_balance"
+  | "price_unknown";
+export type ProviderBudgetReservationStatus =
+  | "reserved"
+  | "settled"
+  | "held"
+  | "review_required"
+  | "reconciled"
+  | "operator_released";
+
+export type ProviderBudgetPolicyInputV1 = {
+  version: 1;
+  policyId: string;
+  idempotencyKey: string;
+  providerId: string;
+  currency: string;
+  mode: ProviderBudgetMode;
+  periodStart: number;
+  periodEnd: number;
+  limitMicros: number;
+  maxAttemptReserveMicros: number;
+  holdReviewAfterMs: typeof PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS;
+  allowUnknownPrice: false;
+  approver: string;
+  createdAt: number;
+  expectedPreviousVersion: number;
+};
+
+export type ProviderBudgetPolicyMutationInputV1 = Omit<
+  ProviderBudgetPolicyInputV1,
+  "policyId" | "idempotencyKey" | "holdReviewAfterMs" | "allowUnknownPrice" | "approver" | "createdAt"
+>;
+
+export type ProviderBudgetPolicyProjectionV1 = Omit<ProviderBudgetPolicyInputV1, "idempotencyKey"> & {
+  policyVersion: number;
+};
+
+export type ProviderBudgetPolicyResultV1 = {
+  created: boolean;
+  policy: ProviderBudgetPolicyProjectionV1;
+};
+
+export type ProviderBudgetDecisionV1 = {
+  version: 1;
+  policyId: string | null;
+  policyVersion: number | null;
+  status: ProviderBudgetDecisionStatus;
+  reason: ProviderBudgetDecisionReason;
+  requestedMicros: number;
+  reservationId: string | null;
+};
+
+export type ProviderBudgetReservationProjectionV1 = {
+  version: 1;
+  reservationId: string;
+  attemptId: string;
+  policyId: string;
+  policyVersion: number;
+  currency: string;
+  status: ProviderBudgetReservationStatus;
+  reservedMicros: number;
+  settledMicros: number;
+  releasedMicros: number;
+  heldMicros: number;
+  createdAt: number;
+  updatedAt: number;
+  reviewAfter: number;
+};
+
+export type ProviderBudgetBalanceProjectionV1 = {
+  version: 1;
+  policyId: string;
+  policyVersion: number;
+  providerId: string;
+  currency: string;
+  mode: ProviderBudgetMode;
+  periodStart: number;
+  periodEnd: number;
+  limitMicros: number;
+  settledMicros: number;
+  reservedMicros: number;
+  heldMicros: number;
+  availableMicros: number;
+  denialCount: number;
+  alertCount: number;
+  pendingSettlementCount: number;
+  reviewRequiredCount: number;
+  updatedAt: number;
+};
+
+export type ProviderBudgetOperatorActionInputV1 = {
+  version: 1;
+  idempotencyKey: string;
+  providerId: string;
+  reservationId: string;
+  action: "reconcile" | "release";
+  amountMicros: number;
+  reason: string;
+  at: number;
+};
+
+export type ProviderBudgetOperatorActionRequestV1 = Omit<
+  ProviderBudgetOperatorActionInputV1,
+  "idempotencyKey" | "at"
+>;
+
+export type ProviderBudgetOperatorActionResultV1 = {
+  updated: boolean;
+  reservation: ProviderBudgetReservationProjectionV1;
+};
 
 export const PROVIDER_USAGE_TOKEN_FIELDS = [
   "inputNoCacheTokens",
@@ -175,6 +294,9 @@ export type ProviderFinanceSnapshotV1 = {
   attempts: ProviderFinanceAttemptProjectionV1[];
   reconciliations: ProviderReconciliationProjectionV1[];
   catalogs: ProviderPriceCatalogInputV1[];
+  budgetPolicies: ProviderBudgetPolicyProjectionV1[];
+  budgetBalances: ProviderBudgetBalanceProjectionV1[];
+  budgetReservations: ProviderBudgetReservationProjectionV1[];
 };
 
 const USAGE_KEYS = [
@@ -232,8 +354,57 @@ const RECONCILIATION_KEYS = [
   "status",
   "importedAt",
 ] as const;
+const BUDGET_POLICY_KEYS = [
+  "version",
+  "policyId",
+  "idempotencyKey",
+  "providerId",
+  "currency",
+  "mode",
+  "periodStart",
+  "periodEnd",
+  "limitMicros",
+  "maxAttemptReserveMicros",
+  "holdReviewAfterMs",
+  "allowUnknownPrice",
+  "approver",
+  "createdAt",
+  "expectedPreviousVersion",
+] as const;
+const BUDGET_POLICY_MUTATION_KEYS = [
+  "version",
+  "providerId",
+  "currency",
+  "mode",
+  "periodStart",
+  "periodEnd",
+  "limitMicros",
+  "maxAttemptReserveMicros",
+  "expectedPreviousVersion",
+] as const;
+const BUDGET_OPERATOR_ACTION_KEYS = [
+  "version",
+  "idempotencyKey",
+  "providerId",
+  "reservationId",
+  "action",
+  "amountMicros",
+  "reason",
+  "at",
+] as const;
+const BUDGET_OPERATOR_ACTION_REQUEST_KEYS = [
+  "version",
+  "providerId",
+  "reservationId",
+  "action",
+  "amountMicros",
+  "reason",
+] as const;
 const OPAQUE_ATTEMPT_ID = /^attempt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const OPAQUE_RESERVATION_ID = /^reservation_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BOUNDED_ID = /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,159}$/;
+const BUDGET_POLICY_IDEMPOTENCY_KEY = /^provider-budget-policy:v1:[A-Za-z0-9][A-Za-z0-9:._/-]{0,159}$/;
+const BUDGET_ACTION_IDEMPOTENCY_KEY = /^provider-budget-action:v1:[A-Za-z0-9][A-Za-z0-9:._/-]{0,159}$/;
 const CURRENCY = /^[A-Z]{3}$/;
 const FINGERPRINT = /^sha256:[0-9a-f]{64}$/;
 const ACCOUNT_FINGERPRINT = /^acct_sha256:[0-9a-f]{64}$/;
@@ -379,6 +550,93 @@ export function decodeProviderReconciliationImportInput(
   return { ...(value as unknown as ProviderReconciliationImportInputV1) };
 }
 
+export function decodeProviderBudgetPolicyInput(value: unknown): ProviderBudgetPolicyInputV1 | undefined {
+  if (!isExactRecord(value, BUDGET_POLICY_KEYS)) return undefined;
+  if (
+    value.version !== 1
+    || !isBoundedId(value.policyId)
+    || typeof value.idempotencyKey !== "string"
+    || !BUDGET_POLICY_IDEMPOTENCY_KEY.test(value.idempotencyKey)
+    || !isBoundedId(value.providerId)
+    || typeof value.currency !== "string"
+    || !CURRENCY.test(value.currency)
+    || !isBudgetMode(value.mode)
+    || !isTimestamp(value.periodStart)
+    || !isTimestamp(value.periodEnd)
+    || value.periodEnd <= value.periodStart
+    || !isNonNegativeSafeInteger(value.limitMicros)
+    || !isNonNegativeSafeInteger(value.maxAttemptReserveMicros)
+    || value.maxAttemptReserveMicros <= 0
+    || value.maxAttemptReserveMicros > value.limitMicros
+    || value.holdReviewAfterMs !== PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS
+    || value.allowUnknownPrice !== false
+    || !isBoundedText(value.approver, 160)
+    || !isTimestamp(value.createdAt)
+    || value.createdAt > value.periodEnd
+    || !isNonNegativeSafeInteger(value.expectedPreviousVersion)
+  ) return undefined;
+  return { ...(value as unknown as ProviderBudgetPolicyInputV1) };
+}
+
+export function decodeProviderBudgetPolicyMutationInput(
+  value: unknown,
+): ProviderBudgetPolicyMutationInputV1 | undefined {
+  if (!isExactRecord(value, BUDGET_POLICY_MUTATION_KEYS)) return undefined;
+  if (
+    value.version !== 1
+    || !isBoundedId(value.providerId)
+    || typeof value.currency !== "string"
+    || !CURRENCY.test(value.currency)
+    || !isBudgetMode(value.mode)
+    || !isTimestamp(value.periodStart)
+    || !isTimestamp(value.periodEnd)
+    || value.periodEnd <= value.periodStart
+    || !isNonNegativeSafeInteger(value.limitMicros)
+    || !isNonNegativeSafeInteger(value.maxAttemptReserveMicros)
+    || value.maxAttemptReserveMicros <= 0
+    || value.maxAttemptReserveMicros > value.limitMicros
+    || !isNonNegativeSafeInteger(value.expectedPreviousVersion)
+  ) return undefined;
+  return { ...(value as unknown as ProviderBudgetPolicyMutationInputV1) };
+}
+
+export function decodeProviderBudgetOperatorActionInput(
+  value: unknown,
+): ProviderBudgetOperatorActionInputV1 | undefined {
+  if (!isExactRecord(value, BUDGET_OPERATOR_ACTION_KEYS)) return undefined;
+  if (
+    value.version !== 1
+    || typeof value.idempotencyKey !== "string"
+    || !BUDGET_ACTION_IDEMPOTENCY_KEY.test(value.idempotencyKey)
+    || !isBoundedId(value.providerId)
+    || typeof value.reservationId !== "string"
+    || !OPAQUE_RESERVATION_ID.test(value.reservationId)
+    || (value.action !== "reconcile" && value.action !== "release")
+    || !isNonNegativeSafeInteger(value.amountMicros)
+    || (value.action === "release" && value.amountMicros !== 0)
+    || !isBoundedText(value.reason, 320)
+    || !isTimestamp(value.at)
+  ) return undefined;
+  return { ...(value as unknown as ProviderBudgetOperatorActionInputV1) };
+}
+
+export function decodeProviderBudgetOperatorActionRequest(
+  value: unknown,
+): ProviderBudgetOperatorActionRequestV1 | undefined {
+  if (!isExactRecord(value, BUDGET_OPERATOR_ACTION_REQUEST_KEYS)) return undefined;
+  if (
+    value.version !== 1
+    || !isBoundedId(value.providerId)
+    || typeof value.reservationId !== "string"
+    || !OPAQUE_RESERVATION_ID.test(value.reservationId)
+    || (value.action !== "reconcile" && value.action !== "release")
+    || !isNonNegativeSafeInteger(value.amountMicros)
+    || (value.action === "release" && value.amountMicros !== 0)
+    || !isBoundedText(value.reason, 320)
+  ) return undefined;
+  return { ...(value as unknown as ProviderBudgetOperatorActionRequestV1) };
+}
+
 export function calculateProviderCostMicros(
   usage: ProviderTokenUsageV1,
   catalog: ProviderPriceCatalogInputV1,
@@ -453,6 +711,10 @@ function isCostEvidenceClass(value: unknown): value is ProviderCostEvidenceClass
 
 function isReconciliationStatus(value: unknown): value is ProviderReconciliationStatus {
   return value === "matched" || value === "partial" || value === "disputed" || value === "corrected" || value === "closed";
+}
+
+function isBudgetMode(value: unknown): value is ProviderBudgetMode {
+  return value === "disabled" || value === "shadow" || value === "soft" || value === "hard";
 }
 
 function isBoundedId(value: unknown): value is string {

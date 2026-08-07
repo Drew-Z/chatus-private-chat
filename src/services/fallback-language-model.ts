@@ -19,7 +19,7 @@ import {
   type ProviderFirstVisibleDeadline,
 } from "./provider-first-visible-deadline";
 import {
-  ProviderAttemptLedgerError,
+  isProviderAttemptBlockingError,
   type ProviderAttemptHandle,
   type ProviderAttemptRun,
 } from "./provider-attempt-runtime";
@@ -94,7 +94,7 @@ export function createFallbackLanguageModel(
           await notify(callbacks.onSuccess, attemptEvent(candidate, fallback, startedAt, false));
           return result;
         } catch (error) {
-          if (error instanceof ProviderAttemptLedgerError) throw error;
+          if (isProviderAttemptBlockingError(error)) throw error;
           await attempt?.fail(error);
           lastError = error;
           await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, error));
@@ -159,7 +159,7 @@ export function createFallbackLanguageModel(
             }),
           };
         } catch (error) {
-          if (error instanceof ProviderAttemptLedgerError) throw error;
+          if (isProviderAttemptBlockingError(error)) throw error;
           if (error === lastError) throw error;
           await attempt?.fail(error);
           lastError = error;
@@ -347,7 +347,7 @@ function isVisibleTextDelta(part: LanguageModelV3StreamPart): boolean {
 }
 
 function canFallback(error: unknown, usedUserKey: boolean, options: LanguageModelV3CallOptions): boolean {
-  if (error instanceof ProviderAttemptLedgerError) return false;
+  if (isProviderAttemptBlockingError(error)) return false;
   if (options.abortSignal?.aborted) return false;
   const status = providerErrorStatus(error);
   return status === undefined || !isTerminalProviderFailure(status, usedUserKey);

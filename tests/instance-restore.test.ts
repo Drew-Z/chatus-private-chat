@@ -41,7 +41,7 @@ describe("isolated restore engine", () => {
     expect(result.drill.status).toBe("passed");
     expect(fixture.manifest.entries).toContainEqual(expect.objectContaining({
       store: "provider_attempt_ledger",
-      schemaVersion: "provider-attempt-ledger-v2",
+      schemaVersion: "provider-attempt-ledger-v3",
       stateClass: "authoritative",
       restoreBehavior: "restore",
     }));
