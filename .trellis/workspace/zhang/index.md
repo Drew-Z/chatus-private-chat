@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 44
-- **Last Active**: 2026-08-09
+- **Total Sessions**: 45
+- **Last Active**: 2026-08-10
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1696 | Active |
+| `journal-1.md` | ~1732 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 45 | 2026-08-10 | Legacy admin alias instrumentation deployment | `b3937166a65cde86b7570bb952a6a2c2d42d5968`, `57f45fd`, `dd37d84`, `59528d3` | `codex/legacy-browser-admin-alias-rollout` |
 | 44 | 2026-08-09 | Bound Provider fallback turns | `39ae56906e557ddf9b5634f40e9e146f488ed6ac` | `main` |
 | 43 | 2026-08-09 | Legacy surface control plane delivered and archived | `39aee8e738a871e89343290cfff652fa78bf1565`, `cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54`, `926d2a31848c4a17b91eb8b46cdc49865228db8b` | `main` |
 | 42 | 2026-08-07 | Provider budget enforcement delivered and archived | `961776682a421942fab806e3207f13bb7ca28b3d`, `003395218318eaa2cb25da130e028b81ba517d5d` | `main` |

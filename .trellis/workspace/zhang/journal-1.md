@@ -1694,3 +1694,39 @@ Added a single 90-second pre-visible Provider run deadline, secret-free ephemera
 ### Next Steps
 
 - None - task complete
+
+
+## Session 45: Legacy admin alias instrumentation deployment
+
+**Date**: 2026-08-10
+**Task**: Legacy admin alias instrumentation deployment
+**Branch**: `codex/legacy-browser-admin-alias-rollout`
+
+### Summary
+
+Instrumented /admin.html usage, merged PR #56, deployed exact main SHA c6f6b380070e48dc3d9ea16729e33e68bb6b1608 via GitHub Actions, and left the task active for the required 7-day write and 7-day read observation gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b3937166a65cde86b7570bb952a6a2c2d42d5968` | (see git log) |
+| `57f45fd` | (see git log) |
+| `dd37d84` | (see git log) |
+| `59528d3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
