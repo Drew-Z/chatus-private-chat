@@ -740,7 +740,9 @@ function WorkspaceFixture() {
           legacySurfaceActions={{
             advance: async (input) => {
               setLegacySurfaceFixtureResult({ kind: "advance-attempt", operationId: input.operationId, requestedAt: input.requestedAt });
-              await new Promise((resolve) => window.setTimeout(resolve, 150));
+              await new Promise<void>((resolve) => {
+                window.addEventListener("chatus:fixture:legacy-surface-transition-release", () => resolve(), { once: true });
+              });
               if (legacySurfaceMutationAttempts === 0) {
                 setLegacySurfaceMutationAttempts(1);
                 throw new Error("合成治理提交失败，请使用同一草稿重试。");

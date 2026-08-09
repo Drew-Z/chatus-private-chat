@@ -914,7 +914,9 @@ test("legacy surface transition keeps evidence retryable and refreshes authority
   await expect(dialog).toContainText("写入已停用");
   await expect(dialog.getByRole("button", { name: "取消" })).toBeFocused();
   await dialog.getByRole("button", { name: "确认推进" }).click();
+  await expect(result).toHaveAttribute("data-kind", "advance-attempt");
   await expect(dialog.getByRole("button", { name: "正在提交..." })).toBeDisabled();
+  await releaseLegacySurfaceTransition(page);
   await expect(dialog.getByRole("alert")).toHaveText("合成治理提交失败，请使用同一草稿重试。");
   await expect(dialog).toBeVisible();
   await expect(form.getByLabel("证据 ID").first()).toHaveValue("fixture:evidence:1");
@@ -954,6 +956,8 @@ test("legacy surface transition keeps evidence retryable and refreshes authority
   await attachScreenshot(page, testInfo, "legacy-surface-transition-error");
 
   await dialog.getByRole("button", { name: "确认推进" }).click();
+  await expect(dialog.getByRole("button", { name: "正在提交..." })).toBeDisabled();
+  await releaseLegacySurfaceTransition(page);
   await expect(dialog).toHaveCount(0);
   await expect(result).toHaveAttribute("data-kind", "advance");
   await expect(result).toHaveAttribute("data-operation-id", firstAttempt.operationId!);
@@ -1788,6 +1792,12 @@ test("mobile drawer and delete confirmation preserve focus", async ({ page }, te
   await expect(opener).toBeFocused();
   await attachScreenshot(page, testInfo, "drawer-closed");
 });
+
+async function releaseLegacySurfaceTransition(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("chatus:fixture:legacy-surface-transition-release"));
+  });
+}
 
 async function attachScreenshot(page: Page, testInfo: TestInfo, name: string) {
   const path = testInfo.outputPath(`${name}-${testInfo.project.name}.png`);
