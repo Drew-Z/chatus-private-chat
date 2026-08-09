@@ -43,3 +43,20 @@ and reset the affected observation window before another advance.
   seven-day write/read observation windows require an exact merged-main
   GitHub-Actions deployment and retained artifacts before any disable or
   cleanup decision.
+
+## Delivery evidence
+
+- Work commit `b3937166a65cde86b7570bb952a6a2c2d42d5968` was delivered through
+  PR #56. PR CI run `31329698513` passed `changes`, `quality`,
+  `agent-browser`, and `workspace-browser` on head
+  `dd37d84f05880498f188e4482e92b33d27114d8e`.
+- PR #56 merged as exact main SHA
+  `c6f6b380070e48dc3d9ea16729e33e68bb6b1608` at
+  2026-08-09T18:51:21Z. Deploy run `31330106196` passed exact-main guards,
+  repository checks, Worker deployment, and production verification.
+- Production deployment artifact `9042714932` is retained through
+  2026-11-07; deployment-path artifact `9042663835` is retained through
+  2026-09-08. Both are named with the exact main SHA.
+- The instrumented production observation baseline began after `Verify
+  production` passed at 2026-08-09T18:55:31Z. This timestamp starts evidence
+  collection only; it does not satisfy either seven-day observation gate.

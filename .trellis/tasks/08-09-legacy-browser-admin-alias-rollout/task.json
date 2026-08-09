@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/legacy-browser-admin-alias-rollout",
   "base_branch": "main",
   "worktree_path": null,
   "commit": "b3937166a65cde86b7570bb952a6a2c2d42d5968",
@@ -65,6 +65,24 @@
         "status": "passed",
         "summary": "3 fake-Provider Agent browser tests passed.",
         "at": "2026-08-09T18:36:32.098104+00:00"
+      },
+      {
+        "command": "gh pr view 56 --json state,mergeCommit,statusCheckRollup",
+        "status": "passed",
+        "summary": "PR #56 merged; all changes, quality, agent-browser, and workspace-browser checks passed.",
+        "at": "2026-08-09T18:57:38.268494+00:00"
+      },
+      {
+        "command": "gh run view 31330106196 --json headSha,conclusion,jobs",
+        "status": "passed",
+        "summary": "GitHub Actions deploy passed on exact main SHA c6f6b380070e48dc3d9ea16729e33e68bb6b1608; production Verify production passed.",
+        "at": "2026-08-09T18:57:39.326767+00:00"
+      },
+      {
+        "command": "gh api repos/Drew-Z/chatus-private-chat/actions/runs/31330106196/artifacts",
+        "status": "passed",
+        "summary": "Retained deployment-paths and production-deployment artifacts for the exact main SHA.",
+        "at": "2026-08-09T18:57:40.223282+00:00"
       }
     ]
   }
