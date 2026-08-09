@@ -1626,3 +1626,38 @@ Delivered atomic Provider budget admission and operations visibility through PR 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 43: Legacy surface control plane delivered and archived
+
+**Date**: 2026-08-09
+**Task**: Legacy surface control plane delivered and archived
+**Branch**: `main`
+
+### Summary
+
+Delivered the 13-record content-free legacy-surface registry and admin control plane through PR 53, replaced a transient Playwright timer with a test-controlled release, retained exact-head CI and exact-main production deployment evidence, verified docs-only deployment skip, and archived the completed child after consistency checks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `39aee8e738a871e89343290cfff652fa78bf1565` | (see git log) |
+| `cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54` | (see git log) |
+| `926d2a31848c4a17b91eb8b46cdc49865228db8b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
