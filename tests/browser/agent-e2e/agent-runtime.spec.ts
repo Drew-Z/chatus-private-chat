@@ -145,7 +145,18 @@ test("direct entries remain contained and the legacy image picker is keyboard op
   await expect(page.getByLabel("管理员 Token")).toBeVisible();
   await expectDocumentContained(page);
 
-  const redirect = await request.get("/admin.html", { maxRedirects: 0 });
+  await page.goto("/admin.html?source=browser");
+  await expect(page.getByLabel("管理员 Token")).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe("/react-chat/admin");
+  expect(new URL(page.url()).search).toBe("?source=browser");
+  await expectDocumentContained(page);
+
+  const redirect = await request.get("/admin.html", {
+    maxRedirects: 0,
+    headers: {
+      "x-chatus-legacy-caller": "test",
+    },
+  });
   expect(redirect.status()).toBe(308);
   expect(new URL(redirect.headers().location || "", page.url()).pathname).toBe("/react-chat/admin");
 });

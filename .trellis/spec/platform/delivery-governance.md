@@ -49,6 +49,15 @@ main SHA through GitHub Actions; local tests never mutate a production registry.
 
 Main deployment preserves the early and late remote-main SHA guards and the non-canceling production-mutation concurrency group. Both guards call `scripts/assert-main-tip.mjs`, which accepts only a lowercase 40-character `GITHUB_SHA`, requires exactly one valid `refs/heads/main` result, compares by exact equality, and emits bounded errors without command output. The early guard runs after Node setup but before provisioning or secret preparation; the late guard is the step immediately before `Deploy Worker`. The deploy job checks out full history before comparing `GITHUB_SHA^` to `GITHUB_SHA`; the default one-commit checkout makes the parent revision ambiguous and must not be used with this gate. Documentation/Trellis-record-only commits publish explicit path-classification evidence and a skip summary. A real deploy and manual production acceptance each retain an exact-SHA manifest.
 
+Deployment preparation must copy the GitHub Actions `GITHUB_SHA` into the
+server-only `DEPLOYMENT_SHA` Worker variable. The preparation script rejects an
+empty, uppercase, abbreviated, or otherwise non-40-character SHA. Runtime
+observation code may read that variable or the release asset's server-generated
+`commit`, but it must never accept a client header as deployment identity. The
+production smoke check follows the `/admin.html` compatibility redirect with
+`redirect: "manual"` and marks its caller as `deployment`, so a 308 response and
+the exact merged SHA are both auditable.
+
 Trellis archive validates before any state or directory mutation. A code task requires checked acceptance criteria with no `TBD`, passed records for the five baseline commands, task-required impact-path browser/fake-runtime evidence named in its PRD or implementation plan, a resolving `task.json.commit`, a valid HTTPS `task.json.pr_url`, completed children, a free archive destination, repository-wide parent/child consistency, and a current workspace root index. The browser evidence may be enforced by the checked AC/implementation checklist when it is narrower than the repository-wide machine gate; it cannot be replaced by a live Provider, production probe, or local production deploy.
 
 A parent task's final integration review must also reconcile the exact `task.json.children` set with every child count/list stated in `prd.md`, `design.md`, and `implement.md`. For each child, record its archived status, checked AC set, resolving work commit, PR evidence, and completed delivery checklist. `validate-all` proves the machine-readable graph and workspace projection; it cannot prove that prose still says the right child count or that an archived child's human execution checklist was fully closed.
@@ -87,6 +96,8 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 | One surface rollout cites another surface's evidence | Reject the rollout/archive; per-surface evidence is not transferable |
 | Deploy checkout cannot resolve `GITHUB_SHA^` | Deployment stops before preparing secrets or mutating production |
 | Browser suite fails | Upload retained trace/screenshot output without runtime secrets |
+| Deployment SHA is absent, malformed, or client-supplied | Fail preparation or ignore the client value; never record forged deployment evidence |
+| Legacy alias smoke follows redirects automatically | Gate fails; retain the manual 308 response and deployment caller marker |
 | Coverage suite completes or fails after producing a summary | Retain only `coverage/coverage-summary.json`; never upload HTML/source views |
 | Task has unchecked AC or `TBD` | Archive rejects before mutation |
 | Validation command is missing or failed | Archive rejects unless the exact `validation` gate has a valid waiver |

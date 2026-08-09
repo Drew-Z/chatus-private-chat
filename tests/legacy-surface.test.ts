@@ -51,7 +51,15 @@ describe("legacy surface contract", () => {
       "legacy.user-state.chat-projection",
     ]);
     expect(new Set(LEGACY_SURFACE_MANIFEST.map(({ surfaceId }) => surfaceId)).size).toBe(13);
-    expect(LEGACY_SURFACE_MANIFEST.every((record) => (
+    const adminAlias = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.browser.admin-alias");
+    expect(adminAlias).toMatchObject({
+      owner: "frontend",
+      manifestVersion: 2,
+      writeObservationMs: 7 * 24 * 60 * 60 * 1_000,
+      readObservationMs: 7 * 24 * 60 * 60 * 1_000,
+      maximumSupportedPhase: "instrumented",
+    });
+    expect(LEGACY_SURFACE_MANIFEST.filter(({ surfaceId }) => surfaceId !== "legacy.browser.admin-alias").every((record) => (
       record.owner === "unassigned"
       && record.manifestVersion === 1
       && record.maximumSupportedPhase === "discovered"
@@ -187,8 +195,10 @@ describe("InstanceCoordinator legacy surface state", () => {
           phase: "discovered",
           readControl: "enabled",
           writeControl: "enabled",
-          owner: "unassigned",
-          allowedActions: [],
+          owner: manifest.surfaceId === "legacy.browser.admin-alias" ? "frontend" : "unassigned",
+          allowedActions: manifest.surfaceId === "legacy.browser.admin-alias"
+            ? [{ kind: "advance", targetPhase: "instrumented" }]
+            : [],
         }),
       });
     }

@@ -30,6 +30,11 @@ async function main() {
   validateCloudflareCredentials(process.env);
   const workerSecrets = collectWorkerSecrets(process.env);
   const deploymentConfig = buildDeploymentConfig(await readBaseConfig(), instance);
+  const deploymentSha = process.env.GITHUB_SHA?.trim() || "";
+  if (!/^[a-f0-9]{40}$/.test(deploymentSha)) {
+    throw new Error("GITHUB_SHA must be a 40-character lowercase Git SHA");
+  }
+  deploymentConfig.vars.DEPLOYMENT_SHA = deploymentSha;
 
   await mkdir(dirname(deploymentConfigPath), { recursive: true });
   await writeFile(deploymentConfigPath, `${JSON.stringify(deploymentConfig, null, 2)}\n`, "utf8");

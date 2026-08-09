@@ -3906,9 +3906,51 @@ describe("Worker API", () => {
     expect(typedAdminSlash.status).toBe(200);
     expect(await typedAdminSlash.text()).toContain('id="root"');
 
-    const fullAdmin = await exports.default.fetch(new Request("https://example.test/admin.html", { redirect: "manual" }));
+    const adminAlias = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.browser.admin-alias");
+    if (!adminAlias) throw new Error("missing_admin_alias_manifest");
+    const adminAliasStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(adminAlias.surfaceId));
+    await runInDurableObject(adminAliasStub, async (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+    });
+    const fullAdmin = await exports.default.fetch(new Request("https://example.test/admin.html", {
+      redirect: "manual",
+      headers: {
+        "x-chatus-legacy-caller": "test",
+      },
+    }));
     expect(fullAdmin.status).toBe(308);
     expect(fullAdmin.headers.get("Location")).toBe("https://example.test/react-chat/admin");
+    const queriedAdmin = await exports.default.fetch(new Request("https://example.test/admin.html?return=setup", {
+      redirect: "manual",
+      headers: {
+        "x-chatus-legacy-caller": "test",
+      },
+    }));
+    expect(queriedAdmin.status).toBe(308);
+    expect(queriedAdmin.headers.get("Location")).toBe("https://example.test/react-chat/admin?return=setup");
+    const unclassifiedAdmin = await exports.default.fetch(new Request("https://example.test/admin.html", {
+      redirect: "manual",
+      headers: { "x-chatus-legacy-caller": "not-declared" },
+    }));
+    expect(unclassifiedAdmin.status).toBe(308);
+    await expect(runInDurableObject(adminAliasStub, async (_instance, state) => (
+      state.storage.sql.exec<{ caller_class: string; access: string; count: number; deployment_sha: string }>(
+        "SELECT caller_class, access, count, deployment_sha FROM legacy_surface_daily ORDER BY caller_class",
+      ).toArray()
+    ))).resolves.toEqual([
+      {
+        caller_class: "test",
+        access: "read",
+        count: 2,
+        deployment_sha: "0".repeat(40),
+      },
+      {
+        caller_class: "worker_api",
+        access: "read",
+        count: 1,
+        deployment_sha: "0".repeat(40),
+      },
+    ]);
   });
 
   it("resets both current-day usage stores and records a bounded admin audit entry", async () => {
@@ -4997,8 +5039,10 @@ describe("Worker API", () => {
         phase: "discovered",
         readControl: "enabled",
         writeControl: "enabled",
-        owner: "unassigned",
-        allowedActions: [],
+        owner: surface.surfaceId === "legacy.browser.admin-alias" ? "frontend" : "unassigned",
+        allowedActions: surface.surfaceId === "legacy.browser.admin-alias"
+          ? [{ kind: "advance", targetPhase: "instrumented" }]
+          : [],
       });
       expect(surface.manifestDigest).toBe(snapshot.manifestDigest);
     }

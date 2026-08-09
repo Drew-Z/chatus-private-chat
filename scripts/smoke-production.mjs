@@ -76,7 +76,12 @@ async function runChecks() {
   assert(adminHtml.includes('id="root"'), "admin: React root missing");
   assert(adminHtml.includes('/react-chat/assets/'), "admin: React assets missing");
   if (expectedCommit) assert(adminHtml.includes(`name="chatus-release" content="${expectedCommit}"`), "admin: release meta does not match deployment");
-  const retiredAdmin = await request(`/admin.html?smoke=${marker}`, { redirect: "manual" });
+  const retiredAdmin = await request(`/admin.html?smoke=${marker}`, {
+    redirect: "manual",
+    headers: {
+      "x-chatus-legacy-caller": "deployment",
+    },
+  });
   assert(retiredAdmin.status === 308, `retired admin: expected 308, got ${retiredAdmin.status}`);
   assert(new URL(retiredAdmin.headers.get("location") || "", baseUrl).pathname === "/react-chat/admin", "retired admin: redirect target mismatch");
 

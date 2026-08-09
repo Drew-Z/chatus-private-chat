@@ -389,6 +389,11 @@ const INITIAL_MANIFEST: LegacySurfaceManifestRecordV1[] = [
     replacement: "react-admin-route",
     rollbackRoute: "routing_switch",
     recoveryClass: "code_only",
+    manifestVersion: 2,
+    owner: "frontend",
+    writeObservationMs: 7 * 24 * 60 * 60 * 1_000,
+    readObservationMs: 7 * 24 * 60 * 60 * 1_000,
+    maximumSupportedPhase: "instrumented",
   }),
   manifestRecord({
     surfaceId: "legacy.browser.shell",
@@ -540,8 +545,8 @@ export function decodeLegacySurfaceManifestRecord(value: unknown): LegacySurface
     || !isNonNegativeSafeInteger(value.writeObservationMs)
     || !isNonNegativeSafeInteger(value.readObservationMs)
     || !maximumPhase
-    || (legacySurfacePhaseIndex(maximumPhase) >= legacySurfacePhaseIndex("write_observing")) !== (value.writeObservationMs > 0)
-    || (legacySurfacePhaseIndex(maximumPhase) >= legacySurfacePhaseIndex("read_observing")) !== (value.readObservationMs > 0)
+    || (legacySurfacePhaseIndex(maximumPhase) >= legacySurfacePhaseIndex("write_observing") && value.writeObservationMs <= 0)
+    || (legacySurfacePhaseIndex(maximumPhase) >= legacySurfacePhaseIndex("read_observing") && value.readObservationMs <= 0)
     || (maximumPhase !== "discovered" && value.owner === "unassigned")
   ) return undefined;
   return {
@@ -1018,7 +1023,10 @@ function manifestRecord(input: Omit<
   | "writeObservationMs"
   | "readObservationMs"
   | "maximumSupportedPhase"
->): LegacySurfaceManifestRecordV1 {
+> & Partial<Pick<
+  LegacySurfaceManifestRecordV1,
+  "manifestVersion" | "owner" | "writeObservationMs" | "readObservationMs" | "maximumSupportedPhase"
+>>): LegacySurfaceManifestRecordV1 {
   return {
     schemaVersion: 1,
     manifestVersion: 1,

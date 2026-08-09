@@ -1,0 +1,71 @@
+{
+  "id": "legacy-browser-admin-alias-rollout",
+  "name": "legacy-browser-admin-alias-rollout",
+  "title": "Legacy browser admin alias rollout",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-09",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-05-legacy-surface-disable-observation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structural checks passed.",
+        "at": "2026-08-09T18:36:26.164365+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "48 test files and 728 tests passed.",
+        "at": "2026-08-09T18:36:27.282384+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-09T18:36:28.173235+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaged bindings without deploying.",
+        "at": "2026-08-09T18:36:29.152839+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Working-tree diff has no whitespace errors.",
+        "at": "2026-08-09T18:36:30.222778+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "90 tests passed; 55 viewport-inapplicable cases skipped.",
+        "at": "2026-08-09T18:36:31.125817+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 fake-Provider Agent browser tests passed.",
+        "at": "2026-08-09T18:36:32.098104+00:00"
+      }
+    ]
+  }
+}

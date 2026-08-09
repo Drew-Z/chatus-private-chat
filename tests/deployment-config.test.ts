@@ -9,6 +9,7 @@ import deployWorkflow from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflow from "../.github/workflows/production-acceptance.yml?raw";
 import acceptanceCleanupSource from "../scripts/production-acceptance-cleanup.mjs?raw";
 import acceptanceProductionSource from "../scripts/acceptance-production.mjs?raw";
+import prepareDeploymentSource from "../scripts/prepare-deployment.mjs?raw";
 import localEnvironmentExample from "../.env.example?raw";
 import packageSource from "../package.json?raw";
 import wranglerSource from "../wrangler.jsonc?raw";
@@ -433,6 +434,9 @@ describe("repository deployment contract", () => {
     expect(deployWorkflow).not.toContain("cancel-in-progress: true");
     expect(acceptanceWorkflow).not.toContain("cancel-in-progress: true");
     expect(deployWorkflow).toContain("npm run prepare:deployment");
+    expect(prepareDeploymentSource).toContain("process.env.GITHUB_SHA");
+    expect(prepareDeploymentSource).toContain("deploymentConfig.vars.DEPLOYMENT_SHA = deploymentSha");
+    expect(prepareDeploymentSource).toContain("GITHUB_SHA must be a 40-character lowercase Git SHA");
     expect(deployWorkflow).toContain("Provision workspace R2 bucket");
     expect(deployWorkflow).toContain("node scripts/provision-r2-bucket.mjs");
     expect(deployWorkflow).toContain("Provision document ingest Queues");
