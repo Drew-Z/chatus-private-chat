@@ -66,6 +66,102 @@ git diff --check
 
 - Run `npm run check:frontend` before `npm test`, not concurrently. The Vite build replaces generated files under `public/react-chat/` while Worker asset tests read that directory; parallel execution can create transient legacy-shell or missing-fingerprinted-asset failures.
 
+## Scenario: Deterministic Product-Direction Browser Validation
+
+### 1. Scope / Trigger
+
+Use this contract when adding or changing the owner-to-member product journey
+that validates setup, project work, file-backed analysis, Skill operations, and
+Provider recovery across the real local Worker and React client.
+
+### 2. Signatures
+
+```text
+npm run test:browser:product-validation
+node scripts/run-product-validation.mjs
+```
+
+The runner accepts `CHATUS_VALIDATION_ARTIFACT_DIR` and passes these runtime
+values to the Playwright process: `CHATUS_VALIDATION_BASE_URL`,
+`CHATUS_VALIDATION_ADMIN_TOKEN`, `CHATUS_VALIDATION_PRIMARY_PROVIDER_URL`,
+`CHATUS_VALIDATION_SECONDARY_PROVIDER_URL`,
+`CHATUS_VALIDATION_PRIMARY_PROVIDER_KEY`,
+`CHATUS_VALIDATION_SECONDARY_PROVIDER_KEY`,
+`CHATUS_VALIDATION_EVIDENCE_DIR`, and `CHATUS_VALIDATION_OUTPUT_DIR`.
+
+### 3. Contracts
+
+- The runner starts a loopback-only Wrangler Worker with isolated persistence
+  and two deterministic fake Providers. Credentials are generated per run,
+  held in process memory, and redacted from child-process output and errors.
+- The browser follows visible owner setup and member workflow controls; direct
+  mutation APIs cannot replace the acceptance sequence.
+- A successful run writes `evidence/run.json`, `evidence/steps.jsonl`,
+  secret-safe observations, and retained screenshots under the configured
+  artifact directory. The Playwright config uses `preserveOutput: "always"`,
+  `trace: "off"`, and `video: "off"` because broad captures may retain
+  credentials or private content.
+- Evidence records the exact commit, dirty-worktree fingerprint, runtime
+  versions, fake-service scenario, elapsed steps, bounded Provider counters,
+  and pass/friction/blocked/invalid status. It must not record access codes,
+  API keys, OAuth tokens, raw prompts, conversation exports, R2 keys, or
+  parser internals.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| A live model, remote MCP endpoint, production origin, or remote Wrangler binding is contacted | Fail the run and retain no contaminated evidence |
+| A generated secret appears in output, screenshot, or evidence | Mark the run invalid, remove temporary state, and do not accept the baseline |
+| Setup or a workflow cannot complete because of a safety or authorization violation | Stop and record a P0/P1 finding with the visible step and bounded evidence |
+| A recoverable UX defect occurs | Continue the remaining ordered workflows and record a P2/P3 finding |
+| A fake Provider response fails before visible output | Assert bounded fallback, one quota charge, and no leaked internals |
+| A Provider fails after visible output | Assert partial output remains intact and no second Provider response is spliced into it |
+
+### 5. Good / Base / Bad Cases
+
+- Good: one deterministic command completes the visible owner sequence and all
+  three authenticated member workflows against local fake services, with
+  desktop and 390px screenshots and secret scans.
+- Base: focused Vitest contracts cover hidden OAuth/MCP, ingestion, and
+  persistence invariants while the ordered browser run records only user-
+  observable outcomes.
+- Bad: bypass the UI with internal mutations, call a live Provider/MCP service,
+  enable trace/video capture, or keep generated credentials in artifacts.
+
+### 6. Tests Required
+
+- Run `npm run test:browser:product-validation` after any runner or journey
+  change and assert the owner-to-member order, setup timing, model/Provider
+  clarity, file-version behavior, recovery, logout, and mobile containment.
+- Keep OAuth/MCP and other hidden invariants in focused local fake-service
+  Vitest suites; do not weaken SSRF or token-custody policy for browser tests.
+- Scan retained evidence and process output for known generated prefixes and
+  deployment secret names; inspect screenshots rather than accepting geometry
+  assertions alone.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```text
+Start a browser test with a production-like token in a checked-in .env file,
+call an external model, and retain a Playwright trace for debugging.
+```
+
+This makes the product baseline non-reproducible and can leak credentials or
+private conversation data.
+
+#### Correct
+
+```text
+npm run test:browser:product-validation
+```
+
+The command creates runtime-only credentials, uses isolated loopback fakes,
+redacts child output, retains only bounded evidence, and cleans up temporary
+Worker/browser state before returning the result.
+
 ## Scenario: Serial Workers Vitest And Istanbul Coverage
 
 ### 1. Scope / Trigger
