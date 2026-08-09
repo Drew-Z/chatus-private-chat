@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "product-direction-validation",
+  "status": "passed",
+  "failureCode": null,
+  "startedAt": "2026-08-09T14:59:08.240Z",
+  "completedAt": "2026-08-09T14:59:29.781Z",
+  "commit": "ab57c5ca7ba56d35c995773a683f94e74adc5f40",
+  "branch": "main",
+  "dirty": true,
+  "dirtyChangeCount": 28,
+  "dirtyFingerprint": "486b977237a2b17782a808ea48437c6a79b5965160e71574433462715f419043",
+  "nodeVersion": "v24.14.0",
+  "scenarioIds": [
+    "owner-setup",
+    "project-collaboration",
+    "file-analysis",
+    "skill-operations",
+    "provider-fallback"
+  ],
+  "providerCounters": {
+    "primary": {
+      "requests": 8,
+      "selectorRequests": 4,
+      "projectRequests": 1,
+      "workspaceRequests": 1,
+      "operationsRequests": 1,
+      "preOutputFailures": 1,
+      "postVisibleFailures": 0,
+      "fallbackSuccesses": 0
+    },
+    "secondary": {
+      "requests": 3,
+      "selectorRequests": 1,
+      "projectRequests": 0,
+      "workspaceRequests": 0,
+      "operationsRequests": 0,
+      "preOutputFailures": 0,
+      "postVisibleFailures": 1,
+      "fallbackSuccesses": 1
+    }
+  }
+}

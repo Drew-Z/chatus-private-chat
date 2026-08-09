@@ -1,0 +1,89 @@
+{
+  "id": "product-direction-validation",
+  "name": "product-direction-validation",
+  "title": "Product direction validation",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-09",
+  "completedAt": null,
+  "branch": "codex/product-direction-validation",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "a2d6a8657e0fd677c27b812fddf71492431d3227",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structure checks passed.",
+        "at": "2026-08-09T15:41:53.152012+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "48 test files and 728 tests passed.",
+        "at": "2026-08-09T15:41:54.034375+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-09T15:41:55.011677+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 packaged assets and validated bindings without deployment.",
+        "at": "2026-08-09T15:41:55.910710+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "90 passed and 55 configured skips across 145 cases.",
+        "at": "2026-08-09T15:41:56.832779+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 real local Worker Agent browser tests passed.",
+        "at": "2026-08-09T15:41:57.801606+00:00"
+      },
+      {
+        "command": "npm run test:browser:product-validation",
+        "status": "passed",
+        "summary": "1 ordered owner-to-member validation passed in 16.9 seconds.",
+        "at": "2026-08-09T15:41:58.715725+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency OK.",
+        "at": "2026-08-09T15:41:59.637629+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Passed with existing line-ending conversion warnings only.",
+        "at": "2026-08-09T15:42:00.518247+00:00"
+      },
+      {
+        "command": "npm test -- tests/document-ingest-state.test.ts tests/document-ingest-queue.test.ts tests/client-workspace-files.test.ts tests/client-provider-admin.test.ts tests/client-mcp-oauth.test.ts tests/client-admin-members.test.ts tests/client-admin-capabilities.test.ts tests/capability-registry.test.ts tests/workspace-file.test.ts tests/worker-api.test.ts tests/team-agent-turn.test.ts tests/mcp-runtime.test.ts tests/mcp-oauth.test.ts",
+        "status": "passed",
+        "summary": "13 focused test files and 228 tests passed.",
+        "at": "2026-08-09T15:42:58.760709+00:00"
+      }
+    ]
+  }
+}
