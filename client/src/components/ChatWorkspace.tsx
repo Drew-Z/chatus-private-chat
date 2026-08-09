@@ -52,6 +52,12 @@ import { MemberLogoutNotice } from "./MemberLogoutNotice";
 import { AgentErrorBanner } from "./AgentErrorBanner";
 import type { UIMessage } from "ai";
 import type { McpOAuthCallbackResult } from "../lib/mcp-oauth";
+import type { ProviderTurnProgressV1 } from "../../../src/contracts/provider-turn-progress";
+import {
+  decodeProviderTurnProgressMessage,
+  providerTurnProgressText,
+  selectNewestProviderTurnProgress,
+} from "../lib/provider-turn-progress";
 
 type LogoutState =
   | { status: "idle" }
@@ -546,7 +552,8 @@ function ConversationChat({
     draftGeneration: number;
   } | null>(null);
   const [settledSubmission, setSettledSubmission] = useState(0);
-  const [waitingElapsed, setWaitingElapsed] = useState(0);
+  const [providerProgress, setProviderProgress] = useState<ProviderTurnProgressV1 | null>(null);
+  const [progressNow, setProgressNow] = useState(() => Date.now());
   const [messageActionError, setMessageActionError] = useState("");
   const [retryBusy, setRetryBusy] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
@@ -561,6 +568,7 @@ function ConversationChat({
   const attachmentsRef = useRef(attachments);
   const pendingSubmissionRef = useRef(pendingSubmission);
   const lastSubmittedAttachmentsRef = useRef(lastSubmittedAttachments);
+  const localTurnStartedAtRef = useRef(0);
   attachmentsRef.current = attachments;
   pendingSubmissionRef.current = pendingSubmission;
   lastSubmittedAttachmentsRef.current = lastSubmittedAttachments;
@@ -589,6 +597,8 @@ function ConversationChat({
   });
   const busy = isActiveTurnPhase(turnPhase);
   const waitingFirstOutput = turnPhase === "submitted" || turnPhase === "waiting-first-output";
+  const waitingFirstOutputRef = useRef(waitingFirstOutput);
+  waitingFirstOutputRef.current = waitingFirstOutput;
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = Boolean(selectedRoute);
@@ -625,16 +635,31 @@ function ConversationChat({
   }, [connectionState, onConnectionStateChange]);
 
   useEffect(() => {
-    if (!waitingFirstOutput) {
-      setWaitingElapsed(0);
+    const onMessage = (event: MessageEvent<unknown>) => {
+      const next = decodeProviderTurnProgressMessage(event.data);
+      if (!next || (!waitingFirstOutputRef.current && localTurnStartedAtRef.current === 0)) return;
+      setProviderProgress((current) => selectNewestProviderTurnProgress(
+        current,
+        next,
+        localTurnStartedAtRef.current,
+      ));
+    };
+    agent.addEventListener("message", onMessage);
+    return () => agent.removeEventListener("message", onMessage);
+  }, [agent, conversation.id]);
+
+  useEffect(() => {
+    if (!waitingFirstOutput || connectionState !== "ready") {
+      setProviderProgress(null);
+      setProgressNow(Date.now());
+      if (!waitingFirstOutput) localTurnStartedAtRef.current = 0;
       return;
     }
-    const started = Date.now();
-    const timer = window.setInterval(() => {
-      setWaitingElapsed(Math.max(0, Math.floor((Date.now() - started) / 1_000)));
-    }, 1_000);
+    setProgressNow(Date.now());
+    if (!providerProgress) return;
+    const timer = window.setInterval(() => setProgressNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [waitingFirstOutput]);
+  }, [connectionState, providerProgress, waitingFirstOutput]);
 
   useEffect(() => {
     const key = conversationDraftKey(session.user, conversation.id);
@@ -758,6 +783,9 @@ function ConversationChat({
     const submittedDraftGeneration = draftGeneration.current;
     const submissionId = submissionGeneration.current + 1;
     submissionGeneration.current = submissionId;
+    localTurnStartedAtRef.current = Date.now();
+    setProviderProgress(null);
+    setProgressNow(localTurnStartedAtRef.current);
     setStopRequested(false);
     chat.clearError();
     setLastSubmittedText("");
@@ -842,6 +870,8 @@ function ConversationChat({
 
   const stop = () => {
     setStopRequested(true);
+    localTurnStartedAtRef.current = 0;
+    setProviderProgress(null);
     chat.stop();
   };
 
@@ -891,7 +921,9 @@ function ConversationChat({
           {waitingFirstOutput && (
             <div className="thinking-row" role="status" aria-live="polite">
               <span className="thinking-indicator" aria-hidden="true" />
-              <span>{waitingElapsed >= 3 ? `正在等待首字输出 · ${waitingElapsed}s` : "正在准备响应"}</span>
+              <span>{providerProgress
+                ? providerTurnProgressText(providerProgress, progressNow)
+                : turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出"}</span>
             </div>
           )}
           {turnPhase === "streaming" && <div className="stream-note">正在生成响应...</div>}

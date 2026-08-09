@@ -20,6 +20,7 @@ import {
 } from "../../../../client/src/lib/state";
 import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
 import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
+import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
 import {
   addDraftAttachmentFiles,
   readDraftAttachment,
@@ -664,6 +665,32 @@ function WorkspaceFixture() {
   const forcedPhase = readTurnPhase(params.get("phase"));
   const turnPhase = forcedPhase || (busy ? "waiting-first-output" : "completed");
   const turnBusy = isActiveTurnPhase(turnPhase);
+  const progressMode = params.get("progress");
+  const progressText = progressMode === "fallback"
+    ? providerTurnProgressText({
+        type: "chatus_provider_turn_progress",
+        version: 1,
+        requestId: "fixture-progress-1234",
+        sequence: 4,
+        phase: "fallback",
+        attempt: 2,
+        candidateCount: 3,
+        startedAt: now - 30_000,
+        deadlineAt: now + 60_000,
+      }, now)
+    : progressMode === "primary"
+      ? providerTurnProgressText({
+          type: "chatus_provider_turn_progress",
+          version: 1,
+          requestId: "fixture-progress-1234",
+          sequence: 2,
+          phase: "attempting",
+          attempt: 1,
+          candidateCount: 3,
+          startedAt: now - 30_000,
+          deadlineAt: now + 60_000,
+        }, now)
+      : null;
   const online = params.get("online") !== "0";
   const routeAvailable = params.get("route") !== "0";
   const blocked = params.get("blocked") === "1";
@@ -964,7 +991,7 @@ function WorkspaceFixture() {
                     })}
                   />
                 ))}
-                {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>正在等待首字输出 · 4s</span></div>}
+                {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>{progressText || (turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出")}</span></div>}
               </div>
             </div>
             <MessageComposer

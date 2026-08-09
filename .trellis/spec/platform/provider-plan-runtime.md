@@ -49,7 +49,7 @@ next candidate. Browser attribution fields never enter this boundary.
 
 The plan runtime never retries an attempted provider and never observes visible stream output. The rule that fallback cannot cross the first-visible-output boundary remains in the protocol and response lifecycle layers.
 
-`preparePlan()` has no abort/deadline contract and may await passive-quality or credential dependencies. A bounded auxiliary caller such as Automatic Skill selection must race the entire pipeline, including `preparePlan()`, leases, Provider I/O, telemetry, and release, against its own hard deadline. Passing an abort signal only to the later Provider request is insufficient.
+`preparePlan()` has no abort/deadline contract and may await passive-quality or credential dependencies. A bounded caller must race the entire pipeline rather than pass an abort signal only to the later Provider request. Automatic Skill selection applies its independent five-second boundary; `prepareTeamAgentTurn()` applies the main answer's 90-second absolute run boundary immediately before calling `preparePlan()` and transfers the remainder to the first AI SDK Provider invocation. Late planning results are observed only for rejection handling and can never start Provider I/O.
 
 ## 5. Validation & Error Matrix
 

@@ -196,6 +196,36 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   await attachScreenshot(page, testInfo, "workspace");
 });
 
+test("bounded Provider progress stays neutral and contained", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "Provider progress targets desktop and 390px");
+
+  await page.goto("/?phase=waiting-first-output&progress=primary");
+  const status = page.getByRole("status").filter({ hasText: "正在尝试可用线路" });
+  await expect(status).toContainText("1/3");
+  await expect(status).toContainText("最多还需 60s");
+  await expect(status).not.toContainText(/Provider|model|endpoint|primary/);
+
+  await page.goto("/?phase=waiting-first-output&progress=fallback");
+  const fallback = page.getByRole("status").filter({ hasText: "正在尝试备用线路" });
+  await expect(fallback).toContainText("2/3");
+  await expect(fallback).toContainText("最多还需 60s");
+  const geometry = await fallback.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      viewport: document.documentElement.clientWidth,
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewport);
+  expect(geometry.documentFits).toBe(true);
+
+  await page.goto("/?phase=waiting-first-output");
+  await expect(page.getByRole("status").filter({ hasText: "正在等待首字输出" })).toBeVisible();
+});
+
 test("member logout keeps pending and retry recovery accessible and contained", async ({ page }, testInfo) => {
   test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "member logout coverage targets desktop and 390px");
 

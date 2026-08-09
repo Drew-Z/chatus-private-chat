@@ -24,10 +24,15 @@ import {
 import {
   agentErrorMessage,
   createAgentErrorEnvelope,
+  normalizeAgentRequestId,
   projectAgentStreamError,
   providerBudgetErrorHttpStatus,
   type AgentErrorCode,
 } from "./contracts/agent-error";
+import {
+  PROVIDER_TURN_RUN_DEADLINE_MS,
+  type ProviderTurnProgressV1,
+} from "./contracts/provider-turn-progress";
 import type {
   CapabilityAssignment,
   CapabilityToolExecutionResult,
@@ -127,6 +132,10 @@ import {
   createFallbackLanguageModel,
   type FallbackModelCandidate,
 } from "./services/fallback-language-model";
+import {
+  createProviderFirstVisibleDeadline,
+  raceWithAbort,
+} from "./services/provider-first-visible-deadline";
 import {
   isRecentRouteReliability,
   isRecentProviderRouteReliability,
@@ -6985,6 +6994,7 @@ export type TeamAgentTurnInput = {
   longTermMemory?: string;
   workspaceContext?: string;
   requestId?: string;
+  onProviderProgress?: (progress: ProviderTurnProgressV1) => void;
   abortSignal?: AbortSignal;
   waitUntil?: (promise: Promise<unknown>) => void;
   turnId: string;
@@ -7180,17 +7190,64 @@ export async function prepareTeamAgentTurn(
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
   const userApiKey = input.userApiKey?.trim() || "";
   const hasImages = messagesContainImages(normalized);
-  const prepared = await providerPlanRuntime(env, config).preparePlan({
-    routeIds,
-    accessRoutes: access.routes,
-    userApiKey,
-    accepts: (route, publicRoute) => (
-      (!hasImages || (publicRoute.supportsImages && route.supportsImages))
-      && (!(toolDefinitions.length || memoryToolEnabled) || route.supportsTools)
-    ),
+  const initialRunDeadline = createProviderFirstVisibleDeadline(input.abortSignal, {
+    timeoutMs: PROVIDER_TURN_RUN_DEADLINE_MS,
   });
-  if (input.abortSignal?.aborted) return cancelTurn();
+  const progressRequestId = normalizeAgentRequestId(input.requestId);
+  let progressSequence = 0;
+  const emitProviderProgress = progressRequestId && input.onProviderProgress
+    ? (progress: Omit<ProviderTurnProgressV1, "type" | "version" | "requestId" | "sequence">) => {
+        try {
+          input.onProviderProgress?.({
+            type: "chatus_provider_turn_progress",
+            version: 1,
+            requestId: progressRequestId,
+            sequence: ++progressSequence,
+            ...progress,
+          });
+        } catch {
+          // Ephemeral progress must never change Provider routing.
+        }
+      }
+    : undefined;
+  emitProviderProgress?.({
+    phase: "planning",
+    attempt: 0,
+    candidateCount: 0,
+    startedAt: initialRunDeadline.startedAt,
+    deadlineAt: initialRunDeadline.deadlineAt,
+  });
+  const rejectRunDeadline = async (): Promise<PreparedTeamAgentTurn> => {
+    initialRunDeadline.dispose();
+    if (input.abortSignal?.aborted) return cancelTurn();
+    if (admission?.ok) await admission.release().catch(() => undefined);
+    await recordChatMetric(env, { kind: "failure", label: session.label });
+    return {
+      ok: false,
+      error: "upstream_timeout",
+      message: agentErrorMessage("upstream_timeout"),
+      status: 504,
+    };
+  };
+  let prepared: Awaited<ReturnType<ReturnType<typeof providerPlanRuntime>["preparePlan"]>>;
+  try {
+    prepared = await raceWithAbort(providerPlanRuntime(env, config).preparePlan({
+      routeIds,
+      accessRoutes: access.routes,
+      userApiKey,
+      accepts: (route, publicRoute) => (
+        (!hasImages || (publicRoute.supportsImages && route.supportsImages))
+        && (!(toolDefinitions.length || memoryToolEnabled) || route.supportsTools)
+      ),
+    }), initialRunDeadline.signal);
+  } catch (error) {
+    if (initialRunDeadline.signal.aborted) return rejectRunDeadline();
+    initialRunDeadline.dispose();
+    throw error;
+  }
+  if (initialRunDeadline.signal.aborted) return rejectRunDeadline();
   if (prepared.userKeyRequiredRouteId) {
+    initialRunDeadline.dispose();
     if (admission?.ok) await admission.release();
     return {
       ok: false,
@@ -7223,6 +7280,7 @@ export async function prepareTeamAgentTurn(
   }
 
   if (!candidates.length) {
+    initialRunDeadline.dispose();
     if (admission?.ok) await admission.release();
     await recordChatMetric(env, { kind: "failure", label: session.label });
     return {
@@ -7234,10 +7292,26 @@ export async function prepareTeamAgentTurn(
     };
   }
 
-  if (input.abortSignal?.aborted) return cancelTurn();
-  const turnAdmission = await admitOnce();
-  if (!turnAdmission.ok) return rejectAdmission(turnAdmission);
-  if (input.abortSignal?.aborted) return cancelTurn();
+  if (initialRunDeadline.signal.aborted) return rejectRunDeadline();
+  const admissionPromise = admitOnce();
+  let turnAdmission: TurnAdmission;
+  try {
+    turnAdmission = await raceWithAbort(admissionPromise, initialRunDeadline.signal);
+  } catch (error) {
+    if (initialRunDeadline.signal.aborted) {
+      void admissionPromise.then(async (lateAdmission) => {
+        if (lateAdmission.ok) await lateAdmission.release();
+      }).catch(() => undefined);
+      return rejectRunDeadline();
+    }
+    initialRunDeadline.dispose();
+    throw error;
+  }
+  if (!turnAdmission.ok) {
+    initialRunDeadline.dispose();
+    return rejectAdmission(turnAdmission);
+  }
+  if (initialRunDeadline.signal.aborted) return rejectRunDeadline();
 
   let streamFailureRecorded = false;
   const recordStreamFailure = async () => {
@@ -7292,6 +7366,8 @@ export async function prepareTeamAgentTurn(
     createRun: () => providerAttempts.createRun(
       providerRunIndex++ === 0 && input.continuation !== true ? "main_answer" : "tool_continuation"
     ),
+    initialRunDeadline,
+    onProgress: (progress) => emitProviderProgress?.(progress),
   });
   const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env, session.label);
 
@@ -7311,7 +7387,10 @@ export async function prepareTeamAgentTurn(
     skillSelection,
     skillSnapshotIds,
     recordStreamFailure,
-    releaseTurn: turnAdmission.release,
+    releaseTurn: async () => {
+      initialRunDeadline.dispose();
+      await turnAdmission.release();
+    },
   };
 }
 

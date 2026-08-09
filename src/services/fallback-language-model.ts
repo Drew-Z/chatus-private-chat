@@ -7,6 +7,10 @@ import type {
 } from "@ai-sdk/provider";
 import type { ProviderStreamShape } from "../contracts/provider";
 import type { ProviderAttemptCredentialClass } from "../contracts/provider-attempt";
+import {
+  PROVIDER_TURN_RUN_DEADLINE_MS,
+  type ProviderTurnProgressPhase,
+} from "../contracts/provider-turn-progress";
 import { isTerminalProviderFailure } from "./provider-router";
 import {
   acquireFirstAvailableLease,
@@ -15,6 +19,7 @@ import {
 } from "./provider-lease";
 import {
   createProviderFirstVisibleDeadline,
+  PROVIDER_FIRST_VISIBLE_DEADLINE_MS,
   raceWithAbort,
   type ProviderFirstVisibleDeadline,
 } from "./provider-first-visible-deadline";
@@ -58,6 +63,16 @@ export type FallbackLanguageModelCallbacks = {
 
 export type FallbackLanguageModelAttemptOptions = {
   createRun: () => ProviderAttemptRun;
+  initialRunDeadline?: ProviderFirstVisibleDeadline;
+  onProgress?: (event: ProviderRunProgressEvent) => void;
+};
+
+export type ProviderRunProgressEvent = {
+  phase: ProviderTurnProgressPhase;
+  attempt: number;
+  candidateCount: number;
+  startedAt: number;
+  deadlineAt: number;
 };
 
 export function createFallbackLanguageModel(
@@ -67,6 +82,14 @@ export function createFallbackLanguageModel(
 ): LanguageModelV3 {
   if (!candidates.length) throw new Error("At least one provider candidate is required.");
   const primary = candidates[0].model;
+  let transferredRunDeadline = attempts?.initialRunDeadline;
+  const takeRunDeadline = (parentSignal?: AbortSignal) => {
+    const transferred = transferredRunDeadline;
+    transferredRunDeadline = undefined;
+    return transferred || createProviderFirstVisibleDeadline(parentSignal, {
+      timeoutMs: PROVIDER_TURN_RUN_DEADLINE_MS,
+    });
+  };
 
   return {
     specificationVersion: "v3",
@@ -74,113 +97,212 @@ export function createFallbackLanguageModel(
     modelId: primary.modelId,
     supportedUrls: primary.supportedUrls,
     async doGenerate(options): Promise<LanguageModelV3GenerateResult> {
+      const runDeadline = takeRunDeadline(options.abortSignal);
       const attemptRun = attempts?.createRun();
       let lastError: unknown;
       const remaining = [...candidates];
       let attemptIndex = 0;
-      while (remaining.length) {
-        const selected = await acquireNextCandidate(remaining, options.abortSignal);
-        if (!selected) throw providerBusyError();
-        const { candidate, lease } = selected;
-        remaining.splice(remaining.indexOf(candidate), 1);
-        const startedAt = Date.now();
-        const fallback = isFallbackAttempt(candidates, candidate, attemptIndex);
-        let attempt: ProviderAttemptHandle | undefined;
-        try {
-          attempt = await startProviderAttempt(attemptRun, candidate, candidates.indexOf(candidate), startedAt);
-          const result = await candidate.model.doGenerate({ ...options, ...candidate.settings });
-          await captureAttemptUsage(attempt, result.usage, "ai_sdk_generate");
-          await attempt?.succeed();
-          await notify(callbacks.onSuccess, attemptEvent(candidate, fallback, startedAt, false));
-          return result;
-        } catch (error) {
-          if (isProviderAttemptBlockingError(error)) throw error;
-          await attempt?.fail(error);
-          lastError = error;
-          await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, error));
-          if (!canFallback(error, candidate.usedUserKey, options) || !remaining.length) throw error;
-        } finally {
-          await releaseLease(lease);
-        }
-        attemptIndex += 1;
-      }
-      throw lastError;
-    },
-    async doStream(options): Promise<LanguageModelV3StreamResult> {
-      const attemptRun = attempts?.createRun();
-      let lastError: unknown;
-      const remaining = [...candidates];
-      let attemptIndex = 0;
-      while (remaining.length) {
-        const selected = await acquireNextCandidate(remaining, options.abortSignal);
-        if (!selected) throw providerBusyError();
-        const { candidate, lease } = selected;
-        remaining.splice(remaining.indexOf(candidate), 1);
-        const startedAt = Date.now();
-        const fallback = isFallbackAttempt(candidates, candidate, attemptIndex);
-        let handedOff = false;
-        const deadline = createProviderFirstVisibleDeadline(options.abortSignal);
-        let attempt: ProviderAttemptHandle | undefined;
-        try {
-          attempt = await startProviderAttempt(attemptRun, candidate, candidates.indexOf(candidate), startedAt);
-          const result = await raceWithAbort(
-            candidate.model.doStream({
+      try {
+        while (remaining.length) {
+          throwIfAborted(runDeadline.signal);
+          emitProgress(attempts?.onProgress, runDeadline, "waiting_capacity", 0, candidates.length);
+          const selected = await acquireNextCandidateWithinDeadline(remaining, runDeadline.signal);
+          if (!selected) throw providerBusyError();
+          const { candidate, lease } = selected;
+          remaining.splice(remaining.indexOf(candidate), 1);
+          const startedAt = Date.now();
+          const fallback = isFallbackAttempt(candidates, candidate, attemptIndex);
+          const attemptOrdinal = attemptIndex + 1;
+          const attemptDeadline = createAttemptDeadline(runDeadline);
+          let attempt: ProviderAttemptHandle | undefined;
+          let terminalStarted = false;
+          let providerCalled = false;
+          try {
+            throwIfAborted(runDeadline.signal);
+            emitProgress(
+              attempts?.onProgress,
+              runDeadline,
+              attemptOrdinal > 1 ? "fallback" : "attempting",
+              attemptOrdinal,
+              candidates.length,
+            );
+            attempt = await startProviderAttemptWithinDeadline(
+              attemptRun,
+              candidate,
+              candidates.indexOf(candidate),
+              startedAt,
+              runDeadline.signal,
+            );
+            throwIfAborted(runDeadline.signal);
+            providerCalled = true;
+            const result = await raceWithAbort(candidate.model.doGenerate({
               ...options,
               ...candidate.settings,
-              abortSignal: deadline.signal,
-            }),
-            deadline.signal,
-          );
-          const primed = await primeProviderStream(result.stream, deadline);
-          if (!primed.ok) {
-            lastError = primed.error;
-            await attempt?.fail(primed.error);
-            await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, primed.error));
-            if (canFallback(primed.error, candidate.usedUserKey, options) && remaining.length) {
-              attemptIndex += 1;
-              continue;
+              abortSignal: attemptDeadline.signal,
+            }), attemptDeadline.signal);
+            attemptDeadline.commit();
+            runDeadline.commit();
+            await raceWithAbort(captureAttemptUsage(attempt, result.usage, "ai_sdk_generate"), runDeadline.signal);
+            terminalStarted = true;
+            await raceWithAbort(attempt?.succeed() || Promise.resolve(), runDeadline.signal);
+            await notifyWithinDeadline(
+              callbacks.onSuccess,
+              attemptEvent(candidate, fallback, startedAt, false),
+              runDeadline.signal,
+            );
+            return result;
+          } catch (error) {
+            if (isProviderAttemptBlockingError(error)) throw error;
+            let effectiveError = error;
+            if (attempt && !terminalStarted) {
+              terminalStarted = true;
+              try {
+                await settleAttemptWithinDeadline(attempt, error, runDeadline);
+              } catch (settlementError) {
+                if (isProviderAttemptBlockingError(settlementError)) throw settlementError;
+                effectiveError = settlementError;
+              }
             }
-            throw primed.error;
+            lastError = effectiveError;
+            if (providerCalled || attempt) {
+              try {
+                await notifyWithinDeadline(
+                  callbacks.onFailure,
+                  attemptEvent(candidate, fallback, startedAt, false, effectiveError),
+                  runDeadline.signal,
+                );
+              } catch (progressError) {
+                effectiveError = progressError;
+                lastError = progressError;
+              }
+            }
+            if (!canFallback(effectiveError, candidate.usedUserKey, options, runDeadline.signal) || !remaining.length) {
+              throw effectiveError;
+            }
+          } finally {
+            attemptDeadline.dispose();
+            await releaseLeaseWithinDeadline(lease, runDeadline.signal);
           }
-          handedOff = true;
-          return {
-            ...result,
-            stream: monitorCommittedStream({
-              candidate,
-              fallback,
-              startedAt,
-              buffered: primed.buffered,
-              firstTextDeltaAt: primed.firstTextDeltaAt,
-              reader: primed.reader,
-              callbacks,
-              attempt,
-              lease,
-              deadline,
-            }),
-          };
-        } catch (error) {
-          if (isProviderAttemptBlockingError(error)) throw error;
-          if (error === lastError) throw error;
-          await attempt?.fail(error);
-          lastError = error;
-          await notify(callbacks.onFailure, attemptEvent(candidate, fallback, startedAt, false, error));
-          if (!canFallback(error, candidate.usedUserKey, options) || !remaining.length) throw error;
-        } finally {
-          if (!handedOff) {
-            deadline.dispose();
-            await releaseLease(lease);
-          }
+          attemptIndex += 1;
         }
-        attemptIndex += 1;
+        throw lastError;
+      } finally {
+        runDeadline.dispose();
       }
-      throw lastError;
+    },
+    async doStream(options): Promise<LanguageModelV3StreamResult> {
+      const runDeadline = takeRunDeadline(options.abortSignal);
+      const attemptRun = attempts?.createRun();
+      let lastError: unknown;
+      const remaining = [...candidates];
+      let attemptIndex = 0;
+      let streamHandedOff = false;
+      try {
+        while (remaining.length) {
+          throwIfAborted(runDeadline.signal);
+          emitProgress(attempts?.onProgress, runDeadline, "waiting_capacity", 0, candidates.length);
+          const selected = await acquireNextCandidateWithinDeadline(remaining, runDeadline.signal);
+          if (!selected) throw providerBusyError();
+          const { candidate, lease } = selected;
+          remaining.splice(remaining.indexOf(candidate), 1);
+          const startedAt = Date.now();
+          const fallback = isFallbackAttempt(candidates, candidate, attemptIndex);
+          const attemptOrdinal = attemptIndex + 1;
+          const attemptDeadline = createAttemptDeadline(runDeadline);
+          let attemptHandedOff = false;
+          let attempt: ProviderAttemptHandle | undefined;
+          let terminalStarted = false;
+          let providerCalled = false;
+          try {
+            throwIfAborted(runDeadline.signal);
+            emitProgress(
+              attempts?.onProgress,
+              runDeadline,
+              attemptOrdinal > 1 ? "fallback" : "attempting",
+              attemptOrdinal,
+              candidates.length,
+            );
+            attempt = await startProviderAttemptWithinDeadline(
+              attemptRun,
+              candidate,
+              candidates.indexOf(candidate),
+              startedAt,
+              runDeadline.signal,
+            );
+            throwIfAborted(runDeadline.signal);
+            providerCalled = true;
+            const result = await streamResultWithinDeadline(candidate.model.doStream({
+              ...options,
+              ...candidate.settings,
+              abortSignal: attemptDeadline.signal,
+            }), attemptDeadline.signal);
+            const primed = await primeProviderStream(result.stream, attemptDeadline, runDeadline);
+            if (!primed.ok) throw primed.error;
+            attemptHandedOff = true;
+            streamHandedOff = true;
+            return {
+              ...result,
+              stream: monitorCommittedStream({
+                candidate,
+                fallback,
+                startedAt,
+                buffered: primed.buffered,
+                firstTextDeltaAt: primed.firstTextDeltaAt,
+                reader: primed.reader,
+                callbacks,
+                attempt,
+                lease,
+                deadlines: [attemptDeadline, runDeadline],
+              }),
+            };
+          } catch (error) {
+            if (isProviderAttemptBlockingError(error)) throw error;
+            let effectiveError = error;
+            if (attempt && !terminalStarted) {
+              terminalStarted = true;
+              try {
+                await settleAttemptWithinDeadline(attempt, error, runDeadline);
+              } catch (settlementError) {
+                if (isProviderAttemptBlockingError(settlementError)) throw settlementError;
+                effectiveError = settlementError;
+              }
+            }
+            lastError = effectiveError;
+            if (providerCalled || attempt) {
+              try {
+                await notifyWithinDeadline(
+                  callbacks.onFailure,
+                  attemptEvent(candidate, fallback, startedAt, false, effectiveError),
+                  runDeadline.signal,
+                );
+              } catch (progressError) {
+                effectiveError = progressError;
+                lastError = progressError;
+              }
+            }
+            if (!canFallback(effectiveError, candidate.usedUserKey, options, runDeadline.signal) || !remaining.length) {
+              throw effectiveError;
+            }
+          } finally {
+            if (!attemptHandedOff) {
+              attemptDeadline.dispose();
+              await releaseLeaseWithinDeadline(lease, runDeadline.signal);
+            }
+          }
+          attemptIndex += 1;
+        }
+        throw lastError;
+      } finally {
+        if (!streamHandedOff) runDeadline.dispose();
+      }
     },
   };
 }
 
 async function primeProviderStream(
   stream: ReadableStream<LanguageModelV3StreamPart>,
-  deadline: ProviderFirstVisibleDeadline,
+  attemptDeadline: ProviderFirstVisibleDeadline,
+  runDeadline: ProviderFirstVisibleDeadline,
 ): Promise<
   | {
       ok: true;
@@ -194,7 +316,7 @@ async function primeProviderStream(
   const buffered: LanguageModelV3StreamPart[] = [];
   try {
     while (true) {
-      const next = await raceWithAbort(reader.read(), deadline.signal);
+      const next = await raceWithAbort(reader.read(), attemptDeadline.signal);
       if (next.done) {
         await reader.cancel().catch(() => undefined);
         return { ok: false, error: providerProtocolError("Provider stream ended before visible output.") };
@@ -210,7 +332,8 @@ async function primeProviderStream(
       }
       buffered.push(part);
       if (isVisibleStreamPart(part)) {
-        deadline.commit();
+        attemptDeadline.commit();
+        runDeadline.commit();
         return {
           ok: true,
           buffered,
@@ -235,7 +358,7 @@ function monitorCommittedStream(args: {
   callbacks: FallbackLanguageModelCallbacks;
   attempt?: ProviderAttemptHandle;
   lease: ProviderCandidateLease;
-  deadline: ProviderFirstVisibleDeadline;
+  deadlines: ProviderFirstVisibleDeadline[];
 }): ReadableStream<LanguageModelV3StreamPart> {
   let bufferIndex = 0;
   let settled = false;
@@ -258,7 +381,7 @@ function monitorCommittedStream(args: {
         streamEvidence(args.startedAt, firstTextDeltaAt, visibleTextDeltaCount),
       ));
     } finally {
-      args.deadline.dispose();
+      args.deadlines.forEach((deadline) => deadline.dispose());
       await releaseLease(args.lease);
     }
   };
@@ -275,7 +398,7 @@ function monitorCommittedStream(args: {
         error,
       ));
     } finally {
-      args.deadline.dispose();
+      args.deadlines.forEach((deadline) => deadline.dispose());
       await releaseLease(args.lease);
     }
   };
@@ -285,7 +408,7 @@ function monitorCommittedStream(args: {
     try {
       await args.attempt?.cancel();
     } finally {
-      args.deadline.dispose();
+      args.deadlines.forEach((deadline) => deadline.dispose());
       await releaseLease(args.lease);
     }
   };
@@ -346,9 +469,148 @@ function isVisibleTextDelta(part: LanguageModelV3StreamPart): boolean {
   return (part.type === "text-delta" || part.type === "reasoning-delta") && Boolean(part.delta);
 }
 
-function canFallback(error: unknown, usedUserKey: boolean, options: LanguageModelV3CallOptions): boolean {
+function createAttemptDeadline(runDeadline: ProviderFirstVisibleDeadline): ProviderFirstVisibleDeadline {
+  return createProviderFirstVisibleDeadline(runDeadline.signal, {
+    deadlineAt: Math.min(runDeadline.deadlineAt, Date.now() + PROVIDER_FIRST_VISIBLE_DEADLINE_MS),
+  });
+}
+
+function emitProgress(
+  callback: ((event: ProviderRunProgressEvent) => void) | undefined,
+  deadline: ProviderFirstVisibleDeadline,
+  phase: ProviderTurnProgressPhase,
+  attempt: number,
+  candidateCount: number,
+): void {
+  if (!callback) return;
+  try {
+    callback({
+      phase,
+      attempt,
+      candidateCount,
+      startedAt: deadline.startedAt,
+      deadlineAt: deadline.deadlineAt,
+    });
+  } catch {
+    // Ephemeral progress must never change Provider routing.
+  }
+}
+
+async function acquireNextCandidateWithinDeadline(
+  candidates: FallbackModelCandidate[],
+  signal: AbortSignal,
+): Promise<{ candidate: FallbackModelCandidate; lease: ProviderCandidateLease } | null> {
+  const pending = acquireNextCandidate(candidates, signal);
+  try {
+    return await raceWithAbort(pending, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      void pending.then(async (selected) => {
+        if (selected) await releaseLease(selected.lease);
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function startProviderAttemptWithinDeadline(
+  run: ProviderAttemptRun | undefined,
+  candidate: FallbackModelCandidate,
+  fallbackIndex: number,
+  startedAt: number,
+  signal: AbortSignal,
+): Promise<ProviderAttemptHandle | undefined> {
+  const pending = startProviderAttempt(run, candidate, fallbackIndex, startedAt);
+  try {
+    return await raceWithAbort(pending, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      const reason = signal.reason || error;
+      void pending.then(async (attempt) => {
+        if (attempt) await settleAttempt(attempt, reason, Date.now());
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function streamResultWithinDeadline(
+  pendingValue: PromiseLike<LanguageModelV3StreamResult>,
+  signal: AbortSignal,
+): Promise<LanguageModelV3StreamResult> {
+  const pending = Promise.resolve(pendingValue);
+  try {
+    return await raceWithAbort(pending, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      void pending.then(async (result) => {
+        await result.stream.cancel(signal.reason).catch(() => undefined);
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function settleAttemptWithinDeadline(
+  attempt: ProviderAttemptHandle,
+  error: unknown,
+  deadline: ProviderFirstVisibleDeadline,
+): Promise<void> {
+  const pending = settleAttempt(attempt, error, Math.min(Date.now(), deadline.deadlineAt));
+  await raceWithAbort(pending, deadline.signal);
+}
+
+function settleAttempt(
+  attempt: ProviderAttemptHandle,
+  error: unknown,
+  endedAt: number,
+): Promise<void> {
+  const name = error instanceof Error ? error.name : "";
+  if (name === "TimeoutError") return attempt.timeout(endedAt);
+  if (name === "AbortError") return attempt.cancel(endedAt);
+  return attempt.fail(error, endedAt);
+}
+
+async function notifyWithinDeadline(
+  callback: ((event: ProviderAttemptEvent) => void | Promise<void>) | undefined,
+  event: ProviderAttemptEvent,
+  signal: AbortSignal,
+): Promise<void> {
+  await raceWithAbort(notify(callback, event), signal);
+}
+
+async function releaseLeaseWithinDeadline(
+  lease: ProviderCandidateLease,
+  signal: AbortSignal,
+): Promise<void> {
+  const pending = releaseLease(lease);
+  if (signal.aborted) {
+    void pending.catch(() => undefined);
+    return;
+  }
+  try {
+    await raceWithAbort(pending, signal);
+  } catch {
+    void pending.catch(() => undefined);
+  }
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  if (signal.reason) throw signal.reason;
+  const error = new Error("The provider request was cancelled.");
+  error.name = "AbortError";
+  throw error;
+}
+
+function canFallback(
+  error: unknown,
+  usedUserKey: boolean,
+  options: LanguageModelV3CallOptions,
+  runSignal: AbortSignal,
+): boolean {
   if (isProviderAttemptBlockingError(error)) return false;
-  if (options.abortSignal?.aborted) return false;
+  if (options.abortSignal?.aborted || runSignal.aborted) return false;
   const status = providerErrorStatus(error);
   return status === undefined || !isTerminalProviderFailure(status, usedUserKey);
 }

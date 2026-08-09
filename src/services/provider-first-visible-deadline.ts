@@ -2,14 +2,26 @@ export const PROVIDER_FIRST_VISIBLE_DEADLINE_MS = 60_000;
 
 export type ProviderFirstVisibleDeadline = {
   signal: AbortSignal;
+  startedAt: number;
+  deadlineAt: number;
   commit: () => void;
   dispose: () => void;
 };
 
+export type ProviderFirstVisibleDeadlineOptions = {
+  timeoutMs?: number;
+  deadlineAt?: number;
+  startedAt?: number;
+};
+
 export function createProviderFirstVisibleDeadline(
   parentSignal?: AbortSignal,
+  options: ProviderFirstVisibleDeadlineOptions = {},
 ): ProviderFirstVisibleDeadline {
   const controller = new AbortController();
+  const startedAt = options.startedAt ?? Date.now();
+  const deadlineAt = options.deadlineAt
+    ?? startedAt + normalizeTimeoutMs(options.timeoutMs, PROVIDER_FIRST_VISIBLE_DEADLINE_MS);
   let committed = false;
   let disposed = false;
   const abortFromParent = () => {
@@ -20,10 +32,12 @@ export function createProviderFirstVisibleDeadline(
 
   const timer = setTimeout(() => {
     if (!controller.signal.aborted) controller.abort(timeoutError());
-  }, PROVIDER_FIRST_VISIBLE_DEADLINE_MS);
+  }, Math.max(0, deadlineAt - Date.now()));
 
   return {
     signal: controller.signal,
+    startedAt,
+    deadlineAt,
     commit: () => {
       if (disposed || committed) return;
       committed = true;
@@ -36,6 +50,12 @@ export function createProviderFirstVisibleDeadline(
       parentSignal?.removeEventListener("abort", abortFromParent);
     },
   };
+}
+
+function normalizeTimeoutMs(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && Number.isSafeInteger(value) && (value as number) >= 0
+    ? value as number
+    : fallback;
 }
 
 export function timeoutError(): Error {

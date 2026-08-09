@@ -381,6 +381,133 @@ messages: await convertToModelMessages(this.messages, { tools })
 - HTTP `400`/`422` and BYOK `401`/`403` are terminal. Retryable upstream, timeout, protocol-before-output, and network failures may advance to an allowed configured fallback.
 - Preserve candidates by exact `(logicalRouteId, providerId)` pair. The same provider may appear again for a different logical fallback model because a failure can be model-specific; do not globally deduplicate the fallback plan by provider ID.
 
+## Scenario: Ephemeral Provider turn progress
+
+### 1. Scope / Trigger
+
+Use this contract when changing the custom pre-visible Provider progress frame,
+its TeamAgent WebSocket broadcast, the typed browser decoder, or the waiting row
+shown before the first visible AI SDK output.
+
+### 2. Signatures
+
+```typescript
+type ProviderTurnProgressV1 = {
+  type: "chatus_provider_turn_progress";
+  version: 1;
+  requestId: string;
+  sequence: number;
+  phase: "planning" | "waiting_capacity" | "attempting" | "fallback";
+  attempt: number;
+  candidateCount: number;
+  startedAt: number;
+  deadlineAt: number;
+};
+
+decodeProviderTurnProgressV1(value: unknown): ProviderTurnProgressV1 | undefined
+decodeProviderTurnProgressMessage(data: unknown): ProviderTurnProgressV1 | undefined
+selectNewestProviderTurnProgress(current, next, localTurnStartedAt): ProviderTurnProgressV1 | null
+providerTurnProgressText(progress, now): string
+```
+
+### 3. Contracts
+
+- `src/contracts/provider-turn-progress.ts` is the single owner of the versioned
+  frame, phase registry, exact decoder, 90-second duration constant, and bounded
+  candidate-count limit.
+- The decoder accepts exactly the nine declared keys. Request IDs use the shared
+  Agent request normalizer; sequence is a positive safe integer; counts and
+  timestamps are non-negative safe integers; `deadlineAt - startedAt` must equal
+  90 seconds.
+- `planning` requires attempt/count `0/0`; `waiting_capacity` requires attempt
+  zero and at least one candidate; `attempting` uses `1..candidateCount`; and
+  `fallback` uses `2..candidateCount`.
+- TeamAgent broadcasts `JSON.stringify(frame)` through the existing conversation
+  Agent connection. Broadcast failure is swallowed. The frame is not a UIMessage
+  part or stream chunk and must not enter Agent SQLite, transcript export,
+  localStorage, prompts, logs, or Provider attempt evidence.
+- The frame contains no Provider ID, logical route, model, endpoint, credential,
+  error, prompt, completion, tool payload, member label, or conversation content.
+- React observes raw Agent messages in addition to `useAgentChat()`. While the
+  local turn waits for first output it keeps only the newest server timestamp and
+  sequence, rejects frames older than the current local send boundary, and never
+  lets a stale sequence replace current progress.
+- Progress clears when first visible output arrives, the turn becomes idle or
+  failed, the member cancels, the connection is not ready, the conversation
+  unmounts, or the Agent changes. Missing/reconnect-lost frames fall back to the
+  existing generic preparation/waiting text.
+- Remaining seconds are presentation-only and clamp to `0..90` so browser/server
+  clock skew cannot produce a negative or expanded deadline. The text is neutral
+  and may show only attempt ordinal/count plus the bounded time.
+- The waiting row remains a polite live status, wraps within the chat column, and
+  preserves desktop and touch-width containment.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Non-string Agent message or malformed JSON | Ignore without changing chat state |
+| Unknown key/type/version/phase or malformed request ID/count/timestamp | Reject the whole frame |
+| Planning/capacity/attempt/fallback ordinal contradicts its phase | Reject the whole frame |
+| Same request ID with stale sequence or timestamp | Keep current progress |
+| Different request ID with an older server start | Keep current progress |
+| Frame predates the active local send boundary | Ignore it |
+| Progress frame is missed during reconnect | Show generic waiting state; AIChat recovery continues |
+| Browser clock is before/after the server clock | Render a remaining value clamped to `0..90` |
+| Broadcast callback throws | Provider routing and result remain unchanged |
+| First output, error, cancellation, disconnect, or unmount | Clear progress and stop its one-second display timer |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the member sees planning, `1/3`, then backup `2/3`; first output removes
+  the row and no frame appears in localStorage or the transcript.
+- Base: no custom frame arrives, so the existing generic “preparing/waiting for
+  first output” state remains accurate.
+- Bad: encode Provider/model names or raw exceptions in the frame, persist it as
+  a UIMessage, or accept unknown fields for forward compatibility.
+- Bad: let an old request's late frame replace the active request or leave a
+  countdown interval running after the turn settles.
+
+### 6. Tests Required
+
+- Unit-test exact decoding, every phase/count invariant, request-ID validation,
+  unknown-key rejection, altered deadline duration, malformed JSON, stale
+  sequence/timestamp handling, and clamped presentation text.
+- TeamAgent tests assert the frame reuses the same normalized request reference
+  as passive reliability and broadcast callback failure cannot alter success.
+- Workspace Playwright tests cover generic and evidence-backed waiting text,
+  clearing on first output, desktop and touch-enabled 390px containment, and no
+  Provider/model/endpoint leakage.
+- Local fake-Provider Agent Playwright acceptance must observe a real raw
+  broadcast, render the expected ordinal/time, clear it after first output, and
+  assert no localStorage value contains the protocol type.
+- All tests use local fake Provider/Agent inputs. Never contact a live model or
+  add a synthetic production probe for progress.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+setStatus(JSON.parse(event.data).message);
+localStorage.setItem("provider-progress", event.data);
+```
+
+This trusts unversioned Provider-controlled text and persists an ephemeral
+transport frame in browser state.
+
+#### Correct
+
+```typescript
+const next = decodeProviderTurnProgressMessage(event.data);
+if (!next) return;
+setProviderProgress((current) =>
+  selectNewestProviderTurnProgress(current, next, localTurnStartedAtRef.current));
+```
+
+The exact shared decoder and monotonic selector keep progress secret-free,
+request-scoped, and ephemeral without changing AIChat persistence.
+
 ## Scenario: Turn Admission, Provider Capacity, And Reliability Authority
 
 ### 1. Scope / Trigger
