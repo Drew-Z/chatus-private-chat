@@ -15,7 +15,7 @@
   "branch": "codex/provider-turn-deadline-fallback-progress",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "a00d405dba23848b39a8eaba31eb027f77af55ad",
   "pr_url": null,
   "subtasks": [],
   "children": [],
