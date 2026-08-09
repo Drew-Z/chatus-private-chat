@@ -56,6 +56,11 @@ scripts/
 ## Module Organization
 
 - Keep the typed Agent client under `client/`; use React components for product views and runtime-validated helpers for HTTP projections and pure state recovery.
+- Keep `/admin.html` as a compatibility-only same-origin 308 redirect to
+  `/react-chat/admin`; preserve its query string and instrument only bounded,
+  content-free read observations for the declared caller classes. Do not add
+  new administrator UI or navigation links to the alias, and keep the route
+  source available for an independently reversible routing switch.
 - Build the typed client to `public/react-chat/` with Vite. Treat that directory as generated output: ignore it in Git and regenerate it through `npm run build:client` or `npm run check:frontend` before deployment.
 - Serve the React shell at `/` and `/react-chat/`; serve an independent generated copy of the framework-free chat shell at `/legacy/`. `DEFAULT_CLIENT=legacy` is the emergency root rollback switch.
 - Keep legacy chat DOM orchestration in `public/app.js`; administrator behavior belongs in the typed React workspace.

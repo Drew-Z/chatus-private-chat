@@ -72,6 +72,7 @@ import {
   legacySurfaceObjectName,
   type LegacySurfaceAdvanceInputV1,
   type LegacySurfaceAdminSnapshotV1,
+  type LegacySurfaceCallerClass,
   type LegacySurfaceManifestRecordV1,
   type LegacySurfaceProjectionV1,
   type LegacySurfaceRollbackInputV1,
@@ -470,6 +471,7 @@ export type Env = {
   SESSION_TTL_SECONDS?: string;
   DEFAULT_MAX_TOKENS?: string;
   DEFAULT_CLIENT?: string;
+  DEPLOYMENT_SHA?: string;
   DOCUMENT_INGEST_QUEUE_NAME?: string;
   DOCUMENT_INGEST_DLQ_NAME?: string;
   PROVIDER_ATTEMPT_LEDGER_MODE?: string;
@@ -546,6 +548,9 @@ const MAX_PENDING_MCP_OAUTH_STATES = 8;
 const MCP_OAUTH_REFRESH_SKEW_MS = 60_000;
 const WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS = 60_000;
 const MAX_TOOL_RESULT_BYTES = 32 * 1024;
+const LEGACY_ADMIN_ALIAS_SURFACE_ID = "legacy.browser.admin-alias";
+const LEGACY_SURFACE_CALLER_HEADER = "x-chatus-legacy-caller";
+const LEGACY_SURFACE_DEPLOYMENT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 const TOOL_SCHEMA_VALIDATOR = new CfWorkerJsonSchemaValidator({ draft: "2020-12", shortcircuit: false });
 
 class CapabilityError extends Error {
@@ -1865,7 +1870,10 @@ async function handleRequest(
     return fetchRewrittenAsset(request, env, url, "/legacy/");
   }
   if (request.method === "GET" && url.pathname === "/admin.html") {
-    return Response.redirect(new URL("/react-chat/admin", url).toString(), 308);
+    await recordLegacyAdminAliasUse(request, env, url);
+    const target = new URL("/react-chat/admin", url);
+    target.search = url.search;
+    return Response.redirect(target.toString(), 308);
   }
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
     const shellPath = env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html";
@@ -1873,6 +1881,71 @@ async function handleRequest(
   }
   const assetResponse = await env.ASSETS.fetch(request);
   return withAssetCacheHeaders(assetResponse, url);
+}
+
+type LegacyAdminAliasCallerClass = Extract<
+  LegacySurfaceCallerClass,
+  "browser" | "deployment" | "test" | "worker_api"
+>;
+
+async function recordLegacyAdminAliasUse(request: Request, env: Env, url: URL): Promise<void> {
+  const callerClass = classifyLegacyAdminAliasCaller(request);
+  const deploymentSha = await resolveLegacySurfaceDeploymentSha(env, url);
+  if (!deploymentSha) return;
+  const manifest = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === LEGACY_ADMIN_ALIAS_SURFACE_ID);
+  if (!manifest) return;
+
+  try {
+    const manifestDigest = await legacySurfaceManifestDigest();
+    const coordinator = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(manifest.surfaceId));
+    const synchronized = await coordinator.syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest });
+    if (!synchronized.ok) return;
+    await coordinator.recordLegacySurfaceUse({
+      version: 1,
+      surfaceId: manifest.surfaceId,
+      callerClass,
+      access: "read",
+      occurredAt: Date.now(),
+      deploymentSha,
+    });
+  } catch {
+    // Compatibility redirects remain available when the observation store is unavailable.
+  }
+}
+
+function classifyLegacyAdminAliasCaller(request: Request): LegacyAdminAliasCallerClass {
+  const declared = request.headers.get(LEGACY_SURFACE_CALLER_HEADER);
+  if (declared !== null) {
+    return declared === "browser" || declared === "deployment" || declared === "test" || declared === "worker_api"
+      ? declared
+      : "worker_api";
+  }
+  const fetchMode = request.headers.get("sec-fetch-mode")?.toLowerCase();
+  const fetchDestination = request.headers.get("sec-fetch-dest")?.toLowerCase();
+  const acceptsHtml = request.headers.get("accept")?.toLowerCase().includes("text/html") === true;
+  if (fetchMode === "navigate" || fetchDestination === "document" || acceptsHtml) return "browser";
+  return "worker_api";
+}
+
+async function resolveLegacySurfaceDeploymentSha(
+  env: Env,
+  url: URL,
+): Promise<string | undefined> {
+  const candidates = [
+    env.DEPLOYMENT_SHA,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && LEGACY_SURFACE_DEPLOYMENT_SHA_PATTERN.test(candidate)) return candidate;
+  }
+  try {
+    const release = await env.ASSETS.fetch(new Request(new URL("/release.json", url)));
+    if (!release.ok) return undefined;
+    const body: unknown = await release.json();
+    const commit = isRecord(body) && typeof body.commit === "string" ? body.commit : "";
+    return LEGACY_SURFACE_DEPLOYMENT_SHA_PATTERN.test(commit) ? commit : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function inspectInstanceMaintenance(env: Env): Promise<InstanceMaintenanceInspection> {

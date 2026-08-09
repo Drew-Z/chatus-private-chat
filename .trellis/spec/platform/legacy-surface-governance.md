@@ -7,10 +7,12 @@ per-surface `InstanceCoordinator` state machine, surface-use recording,
 administrator legacy-surface APIs or Operations UI, capture/restore behavior, or
 a later rollout that instruments or disables one exact legacy surface.
 
-The shared control plane is implemented, but it does not disable a caller or
-prove that a surface is unused. All 13 initial records are code-owned,
-`owner: "unassigned"`, and capped at `maximumSupportedPhase: "discovered"`.
-Raising one ceiling requires a separately approved rollout task with that
+The shared control plane is implemented, but it does not by itself disable a
+caller or prove that a surface is unused. Twelve records remain code-owned with
+`owner: "unassigned"` and `maximumSupportedPhase: "discovered"`.
+`legacy.browser.admin-alias` is the only current rollout-owned exception: its
+owner is `frontend`, manifest version is 2, and ceiling is `instrumented`.
+Raising any ceiling requires a separately approved rollout task with that
 surface's caller, parity, recovery, observation, owner, and rollback evidence.
 
 ## 2. Signatures
@@ -152,6 +154,104 @@ daily record, and every per-surface snapshot digest before target mutation. The
 prevalidated entry is passed explicitly to the `durable_stores` adapter action.
 Target receipts and central checkpoints make retry idempotent.
 
+## Scenario: `legacy.browser.admin-alias`
+
+### 1. Scope / Trigger
+
+- Trigger: instrument and roll out the exact read-only `/admin.html` browser
+  compatibility alias while keeping `/react-chat/admin` authoritative.
+- Ownership: `frontend`; no other legacy surface may inherit this rollout's
+  version, owner, phase ceiling, or observation evidence.
+- Current ceiling: `instrumented`; the route remains recoverable and is not
+  disabled by this change.
+
+### 2. Signatures
+
+```text
+GET /admin.html[?query] -> 308 Location: /react-chat/admin[?query]
+```
+
+```typescript
+recordLegacyAdminAliasUse(request, env, url): Promise<void>
+classifyLegacyAdminAliasCaller(request):
+  "browser" | "deployment" | "test" | "worker_api"
+resolveLegacySurfaceDeploymentSha(env, url): Promise<LowercaseSha | undefined>
+```
+
+### 3. Contracts
+
+- Every admitted alias hit records `{ access: "read", callerClass,
+  occurredAt, deploymentSha }` against `legacy.browser.admin-alias`.
+- Declared callers are `browser`, `deployment`, `test`, and `worker_api`.
+  Missing or unknown declarations fall back to `worker_api`; the fallback is
+  deterministic and never blocks the compatibility redirect.
+- `deploymentSha` is server-owned: use a valid `env.DEPLOYMENT_SHA`, then the
+  valid `commit` in the release asset. A client header cannot provide it.
+- Query text is not recorded; it is copied byte-for-byte by URL semantics to
+  the React route. Observation storage failure must not break the 308 redirect.
+- The manifest record is version 2, owner `frontend`, with 7-day write/read
+  windows and `maximumSupportedPhase: "instrumented"`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| `GET /admin.html` | `308` to `/react-chat/admin` |
+| `GET /admin.html?query` | `308` to `/react-chat/admin?query` |
+| Caller header is missing or unknown | Record `worker_api`; still redirect |
+| Caller header is one of the four declared values | Record that caller class |
+| Server SHA is valid | Record it; ignore client-provided SHA |
+| Server SHA is absent/invalid and release commit is valid | Record release commit |
+| Both server SHA sources are invalid/unavailable | Keep redirect; omit use event |
+| Coordinator sync/record fails | Keep redirect; do not emit content-bearing data |
+| Non-GET or unrelated path | Existing route behavior; no alias event |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a browser bookmark reaches the React admin page with its query intact,
+  and a content-free event identifies the caller and exact server deployment.
+- Base: local tests use the zero SHA in local config and assert redirect plus
+  bounded daily counters without Provider or production calls.
+- Bad: trust `x-chatus-deployment-sha` from the browser, persist query text, or
+  classify an unknown caller as an approved browser/deployment caller.
+
+### 6. Tests Required
+
+- Worker API test asserts 308 status, query preservation, declared caller use,
+  unknown-caller fallback, and server-owned zero-SHA evidence.
+- Manifest test asserts exactly one versioned/owned admin-alias record and all
+  other records remain version 1, owner `unassigned`, ceiling `discovered`.
+- Deployment-config test asserts `prepare-deployment.mjs` requires a valid
+  lowercase 40-character `GITHUB_SHA` and writes server-only `DEPLOYMENT_SHA`.
+- Agent browser and production smoke tests use the React route, exercise the
+  alias redirect with manual redirect handling, and retain bounded output.
+- Full repository checks and both browser suites must use only local fake
+  Provider/MCP fixtures; no live model or local production deployment.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const deploymentSha = request.headers.get("x-chatus-deployment-sha");
+return Response.redirect("/react-chat/admin", 308);
+```
+
+This loses query state, lets a client forge evidence, and provides no caller
+census.
+
+#### Correct
+
+```typescript
+await recordLegacyAdminAliasUse(request, env, url);
+const target = new URL("/react-chat/admin", url);
+target.search = url.search;
+return Response.redirect(target.toString(), 308);
+```
+
+The event is content-free and best-effort, while the redirect remains the
+authoritative compatibility behavior.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Required result |
@@ -183,9 +283,11 @@ Target receipts and central checkpoints make retry idempotent.
 
 ## 6. Tests Required
 
-- Assert all 13 IDs occur once, stay sorted and `discovered`, and manifest
-  additions/forward versions pass while removal, downgrade, duplicate, reorder,
-  identity/policy conflict, unknown fields, and digest drift reject.
+- Assert all 13 IDs occur once and stay sorted; the admin alias alone is version
+  2/owned/`instrumented`, the other 12 remain version 1/unassigned/`discovered`,
+  and every synchronized runtime state still begins at phase `discovered`.
+  Manifest additions/forward versions pass while removal, downgrade, duplicate,
+  reorder, identity/policy conflict, unknown fields, and digest drift reject.
 - Cover every forward phase/evidence gate, revision conflict, same/different
   operation replay, observation timing, separate read/write rollback, malformed
   storage, coordinator outage, counter bounds, delayed events, and content-field
@@ -232,5 +334,6 @@ const synchronized = await coordinator.syncLegacySurfaceManifest({
 if (!synchronized.ok) return failClosed(synchronized.error);
 ```
 
-The code-owned record establishes the maximum authority. Runtime enforcement and
-destructive cleanup remain separate, later, per-surface deliveries.
+The code-owned record establishes the maximum authority. The admin alias may
+advance only to `instrumented`; runtime disablement and destructive cleanup
+remain separate, later, per-surface deliveries.

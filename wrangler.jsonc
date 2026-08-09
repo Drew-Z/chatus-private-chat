@@ -102,6 +102,7 @@
     "SESSION_TTL_SECONDS": "2592000",
     "DEFAULT_MAX_TOKENS": "4096",
     "DEFAULT_CLIENT": "react",
+    "DEPLOYMENT_SHA": "0000000000000000000000000000000000000000",
     "DOCUMENT_INGEST_QUEUE_NAME": "chatus-document-ingest-local",
     "DOCUMENT_INGEST_DLQ_NAME": "chatus-document-ingest-dlq-local",
     "PROVIDER_ATTEMPT_LEDGER_MODE": "required"
