@@ -13,6 +13,7 @@
     "smoke:production": "node scripts/smoke-production.mjs",
     "acceptance:production": "node scripts/acceptance-production.mjs",
     "test:browser:agent": "node scripts/run-browser-agent-e2e.mjs",
+    "test:browser:product-validation": "node scripts/run-product-validation.mjs",
     "test:browser:workspace": "playwright test --config tests/browser/playwright.config.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
