@@ -64,6 +64,9 @@ authorize implementation.
   reserve/settle/release/reconcile semantics are implemented and verified.
 - Budget and observability failures must fail safely without double charging,
   silently losing usage, or counting one user message quota more than once.
+- Bound sequential Provider fallback with one pre-visible logical-run deadline,
+  show secret-free request-scoped progress, and correlate failures through
+  passive real-task evidence without active probes.
 
 ### R3. Legacy chat, API, and storage retirement
 

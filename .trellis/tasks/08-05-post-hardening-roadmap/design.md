@@ -27,6 +27,7 @@ DR manifest + stop-write capture
         -> Provider attempt ledger
         -> cost/reconciliation/capacity
         -> budget engine and scoped enforcement
+        -> bounded Provider-run deadline + fallback progress/correlation
         -> legacy surface disable/observation
         -> separately approved destructive cleanup
         -> stable principal/resource identity
@@ -126,6 +127,16 @@ Reservation denial produces zero Provider calls. Retry/fallback attempts reserve
 separately, and tool continuations cannot bypass the remaining turn ceiling.
 Rollback disables enforcement but preserves ledger events, operation fences,
 holds, and cost history.
+
+### 4.5 Provider-run latency closure
+
+After budget enforcement, one independently reviewable child adds a code-owned
+whole-run pre-visible deadline around sequential candidate fallback, an ephemeral
+secret-free progress frame, and request-reference correlation through existing
+passive reliability. It preserves each attempt's atomic budget admission, the
+one-message quota rule, parent cancellation, and committed long streams. Active
+health probes, parallel hedging, Provider-specific timeout tuning, and
+post-visible idle deadlines remain outside this roadmap.
 
 ### 4.4 Rollout gates
 

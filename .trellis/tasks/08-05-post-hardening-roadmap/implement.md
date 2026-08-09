@@ -18,8 +18,9 @@
 
 ## Child-task map
 
-The ten children below are created and linked. All remain `planning`; the first
-child to review for implementation is the recovery manifest/capture task.
+The eleven children below are created and linked. Completed children retain
+their archived evidence; remaining children stay `planning` until their own
+artifacts are reviewed and implementation is separately approved.
 
 ### 1. `dr-manifest-maintenance-capture`
 
@@ -77,7 +78,20 @@ child to review for implementation is the recovery manifest/capture task.
 - Depends on children 3 and 4. Risk: `FIN-03`.
 - Rollback: disable enforcement and new reservations; preserve balances/history.
 
-### 6. `legacy-surface-disable-observation`
+### 6. `provider-turn-deadline-fallback-progress`
+
+- [ ] Bound candidate planning, capacity wait, sequential attempts, settlement,
+      and pre-visible fallback with one code-owned Provider-run deadline.
+- [ ] Expose only bounded request-scoped progress and correlate timeout/fallback
+      through passive real-task reliability; never add a probe.
+- [ ] Preserve one-message quota, attempt-level budget admission, cancellation,
+      and committed long-stream semantics under fake-timer races.
+- Depends on children 3 through 5. Risks: `FIN-01`, `FIN-03`, `FIN-05` runtime
+  latency and evidence closure.
+- Rollback: remove the outer deadline/progress layer while retaining the existing
+  60-second per-attempt boundary and all ledger/reliability evidence.
+
+### 7. `legacy-surface-disable-observation`
 
 - [ ] Create one record per legacy surface with caller/data census, owner,
       replacement parity, dual-read/shadow evidence, stop-write result,
@@ -86,7 +100,7 @@ child to review for implementation is the recovery manifest/capture task.
 - Depends on child 2 and each replacement's parity. Risk: `DR-06`.
 - Rollback: re-enable the untouched legacy read path and reconcile divergence.
 
-### 7. `legacy-surface-destructive-cleanup`
+### 8. `legacy-surface-destructive-cleanup`
 
 - [ ] Treat each physical deletion as a separate approved production change
       after the disable observation period.
@@ -96,7 +110,7 @@ child to review for implementation is the recovery manifest/capture task.
 - Rollback: restore from the proven archive or forward-repair; Durable Object
       migration history remains append-only.
 
-### 8. `acl-stable-principal-resource-identity`
+### 9. `acl-stable-principal-resource-identity`
 
 - [ ] Add immutable principal IDs and alias mappings without changing Agent
       identity prematurely.
@@ -107,7 +121,7 @@ child to review for implementation is the recovery manifest/capture task.
 - Depends on legacy identity-source census where applicable. Risk: `ACL-01`.
 - Rollback: disable new routing while preserving stable IDs and current owners.
 
-### 9. `acl-sharing-revocation`
+### 10. `acl-sharing-revocation`
 
 - [ ] Implement owner/viewer and then editor grants with revisioned server-side
       authorization at every data and execution boundary.
@@ -118,7 +132,7 @@ child to review for implementation is the recovery manifest/capture task.
 - Depends on child 8. Risks: `ACL-03`, partial `ACL-04`.
 - Rollback: stop new grants/mutations, revoke shared execution, preserve history.
 
-### 10. `acl-transfer-deletion-export-tools`
+### 11. `acl-transfer-deletion-export-tools`
 
 - [ ] Implement idempotent revisioned transfer with interrupted-operation
       recovery, one-owner invariant and trust invalidation.
