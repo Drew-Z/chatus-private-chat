@@ -19,19 +19,19 @@
     "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit && tsc -p tests/browser/tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/vitest-pool-workers": "^0.20.2",
     "@cloudflare/workers-types": "^5.20260708.1",
-    "@playwright/test": "1.62.0",
-    "@types/node": "26.1.1",
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.1.2",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.3",
+    "@vitejs/plugin-react": "6.0.5",
     "@vitest/coverage-istanbul": "^4.1.10",
-    "typescript": "^5.9.3",
-    "vite": "8.1.4",
+    "typescript": "^7.0.2",
+    "vite": "8.2.1",
     "vitest": "^4.1.10",
     "wrangler": "^4.54.0",
-    "ws": "^8.21.0",
+    "ws": "^8.21.2",
     "yaml": "^2.9.0"
   },
   "dependencies": {
