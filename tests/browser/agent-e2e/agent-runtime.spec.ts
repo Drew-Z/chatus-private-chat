@@ -13,9 +13,20 @@ test("real Worker Agent transport preserves streaming, approval, attachments, an
   await expect(composer).toBeVisible();
 
   await sendMessage(page, "[e2e:delayed] 分两段回答");
-  await expect(page.locator(".thinking-row")).toBeVisible();
+  const providerProgress = page.locator(".thinking-row");
+  await expect(providerProgress).toBeVisible();
+  await expect(providerProgress).toContainText("正在尝试可用线路 1/1");
+  await expect(providerProgress).toContainText(/最多还需 \d+s/);
+  await expect(providerProgress).not.toContainText(/Provider|model|endpoint|fake-provider/);
+  expect(await page.evaluate(() => {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      if ((localStorage.getItem(localStorage.key(index) || "") || "").includes("chatus_provider_turn_progress")) return true;
+    }
+    return false;
+  })).toBe(false);
   const delayedAssistant = page.locator(".message.assistant").last();
   await expect(delayedAssistant).toContainText("渐进第一段");
+  await expect(providerProgress).toHaveCount(0);
   await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
   await expect(delayedAssistant).toContainText("渐进第二段");
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeVisible();

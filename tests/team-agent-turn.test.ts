@@ -6,6 +6,7 @@ import { stepCountIs, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
 import { PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS } from "../src/contracts/provider-finance";
+import type { ProviderTurnProgressV1 } from "../src/contracts/provider-turn-progress";
 import { createAgentToolSet } from "../src/services/agent-tools";
 import {
   loadProviderRouteReliability,
@@ -67,6 +68,7 @@ describe("prepared TeamAgent turn", () => {
 
   it("falls back before visible output and returns an AI SDK UI message stream", async () => {
     const requestId = "turn_fallback-123";
+    const progress: ProviderTurnProgressV1[] = [];
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
       routes: {
         primary: {
@@ -111,6 +113,10 @@ describe("prepared TeamAgent turn", () => {
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "整理三条发布检查事项" }],
       requestId,
+      onProviderProgress: (frame) => {
+        progress.push(frame);
+        throw new Error("synthetic broadcast failure");
+      },
     });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
@@ -128,6 +134,22 @@ describe("prepared TeamAgent turn", () => {
     expect(response.headers.get("Content-Type")).toContain("text/event-stream");
     expect(body).toContain("备用线路完成任务");
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(progress.map(({ sequence, phase, attempt, candidateCount }) => ({
+      sequence,
+      phase,
+      attempt,
+      candidateCount,
+    }))).toEqual([
+      { sequence: 1, phase: "planning", attempt: 0, candidateCount: 0 },
+      { sequence: 2, phase: "waiting_capacity", attempt: 0, candidateCount: 2 },
+      { sequence: 3, phase: "attempting", attempt: 1, candidateCount: 2 },
+      { sequence: 4, phase: "waiting_capacity", attempt: 0, candidateCount: 2 },
+      { sequence: 5, phase: "fallback", attempt: 2, candidateCount: 2 },
+    ]);
+    expect(progress.every((frame) => frame.requestId === requestId)).toBe(true);
+    expect(progress.every((frame) => frame.deadlineAt - frame.startedAt === 90_000)).toBe(true);
+    expect(new Set(progress.map((frame) => frame.startedAt)).size).toBe(1);
+    expect(JSON.stringify(progress)).not.toMatch(/primary|backup|example|test-key|unavailable/);
     await expect(env.CHAT_STORE.get("route-reliability:primary", "json")).resolves.toMatchObject({
       ok: false,
       outcome: "upstream_server",

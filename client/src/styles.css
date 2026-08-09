@@ -801,7 +801,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .stream-note { margin: 10px 0; color: var(--muted); font-size: 12px; }
 .error-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .error-actions .icon-text-button { min-height: 32px; }
-.thinking-row { min-height: 34px; display: inline-flex; align-items: center; gap: 9px; margin: 3px 0 18px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: #f8faf9; font-size: 12px; }
+.thinking-row { max-width: 100%; min-height: 34px; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 9px; margin: 3px 0 18px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: #f8faf9; font-size: 12px; overflow-wrap: anywhere; }
 .thinking-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 12px 0 0 var(--accent), 24px 0 0 var(--accent); transform: translateX(-8px); animation: thinking-pulse 1.2s ease-in-out infinite; }
 @keyframes thinking-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 

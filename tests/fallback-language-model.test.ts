@@ -13,6 +13,7 @@ import {
   ProviderBudgetError,
   type ProviderAttemptRun,
 } from "../src/services/provider-attempt-runtime";
+import { createProviderFirstVisibleDeadline } from "../src/services/provider-first-visible-deadline";
 
 const CALL_OPTIONS = { prompt: [] } as unknown as LanguageModelV3CallOptions;
 
@@ -23,6 +24,9 @@ function model(args: {
   onStreamOptions?: (options: LanguageModelV3CallOptions) => void;
   streamError?: unknown;
   generate?: LanguageModelV3GenerateResult;
+  generateSource?: PromiseLike<LanguageModelV3GenerateResult>;
+  onGenerate?: () => void;
+  onGenerateOptions?: (options: LanguageModelV3CallOptions) => void;
   generateError?: unknown;
 }): LanguageModelV3 {
   return {
@@ -30,8 +34,11 @@ function model(args: {
     provider: "test",
     modelId: "test-model",
     supportedUrls: {},
-    async doGenerate() {
+    async doGenerate(options) {
       if (args.generateError) throw args.generateError;
+      args.onGenerateOptions?.(options);
+      args.onGenerate?.();
+      if (args.generateSource) return args.generateSource;
       if (!args.generate) throw new Error("missing generate fixture");
       return args.generate;
     },
@@ -431,6 +438,214 @@ describe("fallback language model", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("bounds three stalled fallback candidates to one ninety-second run", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls = [vi.fn(), vi.fn(), vi.fn()];
+      const signals: Array<AbortSignal | undefined> = [];
+      const router = createFallbackLanguageModel(calls.map((onStream, index) => ({
+        routeId: `route-${index + 1}`,
+        providerId: `provider-${index + 1}`,
+        usedUserKey: false,
+        model: model({
+          streamSource: new ReadableStream<LanguageModelV3StreamPart>(),
+          onStream,
+          onStreamOptions: (options) => { signals[index] = options.abortSignal; },
+        }),
+      })));
+
+      const result = router.doStream(CALL_OPTIONS);
+      const rejection = expect(result).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls[0]).toHaveBeenCalledOnce();
+      expect(calls[1]).toHaveBeenCalledOnce();
+      expect(calls[2]).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejection;
+      expect(signals[0]?.aborted).toBe(true);
+      expect(signals[1]?.aborted).toBe(true);
+      expect(calls[2]).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases a capacity lease that resolves only after the run deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const release = vi.fn(async () => undefined);
+      const provider = model({ generate: generateResult("must not run") });
+      const providerSpy = vi.spyOn(provider, "doGenerate");
+      const router = createFallbackLanguageModel([{
+        routeId: "late-capacity",
+        providerId: "late-capacity-provider",
+        usedUserKey: false,
+        model: provider,
+        acquireLease: async () => new Promise((resolve) => {
+          setTimeout(() => resolve({ release }), 91_000);
+        }),
+      }]);
+
+      const result = router.doGenerate(CALL_OPTIONS);
+      const rejection = expect(result).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(90_000);
+      await rejection;
+      expect(providerSpy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(release).toHaveBeenCalledOnce();
+      expect(providerSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies the run deadline to generate and rejects a late result", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveGenerate!: (value: LanguageModelV3GenerateResult) => void;
+      const lateGenerate = new Promise<LanguageModelV3GenerateResult>((resolve) => {
+        resolveGenerate = resolve;
+      });
+      let upstreamSignal: AbortSignal | undefined;
+      const provider = model({
+        generateSource: lateGenerate,
+        onGenerateOptions: (options) => { upstreamSignal = options.abortSignal; },
+      });
+      const backup = model({ generate: generateResult("must not run") });
+      const backupSpy = vi.spyOn(backup, "doGenerate");
+      const router = createFallbackLanguageModel([
+        { routeId: "primary", providerId: "primary", usedUserKey: false, model: provider },
+        { routeId: "backup", providerId: "backup", usedUserKey: false, model: backup },
+      ]);
+
+      const result = router.doGenerate(CALL_OPTIONS);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(upstreamSignal?.aborted).toBe(true);
+      expect(backupSpy).toHaveBeenCalledOnce();
+      await expect(result).resolves.toMatchObject({ content: [{ type: "text", text: "must not run" }] });
+
+      resolveGenerate(generateResult("late"));
+      await Promise.resolve();
+      expect(backupSpy).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds stalled generate fallbacks to the same ninety-second run", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls = [vi.fn(), vi.fn(), vi.fn()];
+      const router = createFallbackLanguageModel(calls.map((onGenerate, index) => ({
+        routeId: `generate-route-${index + 1}`,
+        providerId: `generate-provider-${index + 1}`,
+        usedUserKey: false,
+        model: model({
+          generateSource: new Promise<LanguageModelV3GenerateResult>(() => undefined),
+          onGenerate,
+        }),
+      })));
+
+      const result = router.doGenerate(CALL_OPTIONS);
+      const rejection = expect(result).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls[0]).toHaveBeenCalledOnce();
+      expect(calls[1]).toHaveBeenCalledOnce();
+      expect(calls[2]).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await rejection;
+      expect(calls[2]).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("consumes planning time from a transferred initial run deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const initialRunDeadline = createProviderFirstVisibleDeadline(undefined, { timeoutMs: 90_000 });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const primaryCall = vi.fn();
+      const backup = model({ stream: successfulStream("must not run") });
+      const backupSpy = vi.spyOn(backup, "doStream");
+      const router = createFallbackLanguageModel([
+        {
+          routeId: "planned-primary",
+          providerId: "planned-primary-provider",
+          usedUserKey: false,
+          model: model({
+            streamSource: new ReadableStream<LanguageModelV3StreamPart>(),
+            onStream: primaryCall,
+          }),
+        },
+        { routeId: "planned-backup", providerId: "planned-backup-provider", usedUserKey: false, model: backup },
+      ], {}, {
+        createRun: () => ({
+          turnId: `turn_${crypto.randomUUID()}`,
+          runId: `run_${crypto.randomUUID()}`,
+          runKind: "main_answer",
+          start: vi.fn().mockResolvedValue(undefined),
+        } as unknown as ProviderAttemptRun),
+        initialRunDeadline,
+      });
+
+      const result = router.doStream(CALL_OPTIONS);
+      const rejection = expect(result).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await rejection;
+      expect(primaryCall).toHaveBeenCalledOnce();
+      expect(backupSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits secret-free run progress with monotonic attempt ordinals", async () => {
+    const progress: Array<{
+      phase: string;
+      attempt: number;
+      candidateCount: number;
+      startedAt: number;
+      deadlineAt: number;
+    }> = [];
+    const router = createFallbackLanguageModel([
+      {
+        routeId: "secret-primary-route",
+        providerId: "secret-primary-provider",
+        usedUserKey: false,
+        model: model({ streamError: { statusCode: 503, message: "secret-upstream-body" } }),
+      },
+      {
+        routeId: "secret-backup-route",
+        providerId: "secret-backup-provider",
+        usedUserKey: false,
+        model: model({ stream: successfulStream("ok") }),
+      },
+    ], {}, {
+      createRun: () => ({
+        turnId: `turn_${crypto.randomUUID()}`,
+        runId: `run_${crypto.randomUUID()}`,
+        runKind: "main_answer",
+        start: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ProviderAttemptRun),
+      onProgress: (event) => progress.push(event),
+    });
+
+    const result = await router.doStream(CALL_OPTIONS);
+    await readStream(result.stream);
+
+    expect(progress.map(({ phase, attempt, candidateCount }) => ({ phase, attempt, candidateCount }))).toEqual([
+      { phase: "waiting_capacity", attempt: 0, candidateCount: 2 },
+      { phase: "attempting", attempt: 1, candidateCount: 2 },
+      { phase: "waiting_capacity", attempt: 0, candidateCount: 2 },
+      { phase: "fallback", attempt: 2, candidateCount: 2 },
+    ]);
+    expect(JSON.stringify(progress)).not.toContain("secret-");
+    expect(progress.every((event) => event.deadlineAt - event.startedAt === 90_000)).toBe(true);
   });
 
   it("does not fall back when the parent request cancels before visible output", async () => {

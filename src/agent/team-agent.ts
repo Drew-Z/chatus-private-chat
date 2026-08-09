@@ -2615,6 +2615,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         longTermMemory,
         workspaceContext,
         requestId,
+        onProviderProgress: (progress) => {
+          try {
+            this.broadcast(JSON.stringify(progress));
+          } catch {
+            // Ephemeral progress must never change turn execution.
+          }
+        },
         abortSignal: options?.abortSignal,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
         turnId: providerTurnId,

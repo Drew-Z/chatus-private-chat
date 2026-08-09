@@ -11,6 +11,7 @@
 | [Production Acceptance](./production-acceptance.md) | Authenticated temporary-member acceptance and cleanup contracts |
 | [Deployment Configuration](./deployment-configuration.md) | Parameterized instance identity, preflight, generated Wrangler config, and Secret boundaries |
 | [Provider Plan Runtime](./provider-plan-runtime.md) | Passive quality ordering, access/capability filtering, BYOK gating, and credential preparation |
+| [Provider Turn Runtime](./provider-turn-runtime.md) | Main-answer absolute deadline, AI SDK fallback ownership, late-result cleanup, and ephemeral progress |
 | [Provider Tool Runtime](./provider-tool-runtime.md) | OpenAI/Anthropic tool-turn adapters, history, parsing, and error contracts |
 | [Provider Stream Runtime](./provider-stream-runtime.md) | OpenAI/Anthropic streaming adapters, pre-output validation, cancellation, and fallback boundary |
 | [Provider Attempt Ledger](./provider-attempt-ledger.md) | Server-issued turn/run/attempt identity, required shadow capture, diagnostics, privacy, and recovery |

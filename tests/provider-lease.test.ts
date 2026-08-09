@@ -60,6 +60,38 @@ describe("provider lease selection", () => {
     await selected?.lease.release();
     expect(releases[0]).toHaveBeenCalledOnce();
   });
+
+  it("releases a selected lease when the shared deadline expires while a loser ignores abort", async () => {
+    vi.useFakeTimers();
+    try {
+      const winnerRelease = vi.fn(async () => undefined);
+      const loserRelease = vi.fn(async () => undefined);
+      const controller = new AbortController();
+      const selection = acquireFirstAvailableLease(
+        [{ id: "winner" }, { id: "late-loser" }],
+        async (candidate, waitMs) => {
+          if (!waitMs) return null;
+          if (candidate.id === "winner") return createLease(candidate.id, winnerRelease);
+          return new Promise((resolve) => {
+            setTimeout(() => resolve(createLease(candidate.id, loserRelease)), 11_000);
+          });
+        },
+        controller.signal,
+      );
+      const rejection = expect(selection).rejects.toMatchObject({ name: "TimeoutError" });
+      await Promise.resolve();
+      const timeout = new Error("run deadline");
+      timeout.name = "TimeoutError";
+      controller.abort(timeout);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await rejection;
+
+      expect(winnerRelease).toHaveBeenCalledOnce();
+      expect(loserRelease).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function createLease(providerId: string, release = vi.fn()): ProviderLease {

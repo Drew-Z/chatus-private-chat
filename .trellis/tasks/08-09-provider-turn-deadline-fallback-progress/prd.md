@@ -115,29 +115,38 @@ diagnose the failure without sending a probe.
 
 ## Acceptance Criteria
 
-- [ ] AC1. Fake-timer tests prove three stalled fallback candidates terminate at
+- [x] AC1. Fake-timer tests prove three stalled fallback candidates terminate at
       the single 90-second run boundary instead of accumulating three 60-second
       waits, and no candidate starts after the boundary.
-- [ ] AC2. A fast primary failure may reach a fallback within the remaining
+- [x] AC2. A fast primary failure may reach a fallback within the remaining
       budget; a 60-second primary timeout leaves only the run remainder, and all
       planning/lease/reader dependencies that settle late are ignored.
-- [ ] AC3. First visible output commits both deadlines, route fallback cannot
+- [x] AC3. First visible output commits both deadlines, route fallback cannot
       reopen, and a committed stream remains valid beyond 90 seconds.
-- [ ] AC4. Parent cancellation, blocking budget/ledger errors, candidate
+- [x] AC4. Parent cancellation, blocking budget/ledger errors, candidate
       settlement, lease release, quota charging, and attempt/run identities keep
       their existing exact behavior under deadline races.
-- [ ] AC5. The progress frame is exact-shape, bounded, monotonic, request-scoped,
+- [x] AC5. The progress frame is exact-shape, bounded, monotonic, request-scoped,
       secret-free, ephemeral, and emits truthful planning/primary/fallback state.
-- [ ] AC6. React shows bounded first-output progress on desktop and 390px touch,
+- [x] AC6. React shows bounded first-output progress on desktop and 390px touch,
       ignores stale/malformed frames, falls back to generic waiting when evidence
       is absent, and clears state at every terminal/switch boundary.
-- [ ] AC7. Deadline attempts record passive timeout/fallback evidence with the
+- [x] AC7. Deadline attempts record passive timeout/fallback evidence with the
       same request reference as the progress/error UI; BYOK and telemetry-failure
       exclusions remain intact and no probe is introduced.
 - [ ] AC8. Focused fallback, Agent, error, reliability, client, and Workspace
       tests pass using local fixtures, followed by the full repository gate,
       Trellis/spec update, PR CI/artifacts, exact-main deployment acceptance,
       delivery evidence, and archive validation.
+
+## Local Acceptance Evidence
+
+- AC1-AC3: fake-timer fallback tests cover stalled stream and generate candidates, transferred planning time, fast fallback, no post-deadline Provider start, and a committed stream continuing past 90 seconds.
+- AC4: fallback/lease/TeamAgent tests cover parent cancellation, blocking budget and ledger admission, late settlement, late capacity winners, exact lease release, quota reuse, and Provider run/attempt identity.
+- AC5: shared server/client contract tests reject malformed IDs, unknown keys, contradictory phase ordinals, altered duration, and stale sequence/timestamp state; emitted frames remain bounded and secret-free.
+- AC6: full Workspace Playwright covers generic/evidenced waiting, clearing, desktop, and touch-enabled 390px containment; local fake-Agent acceptance observes the actual raw broadcast and verifies it never enters localStorage.
+- AC7: TeamAgent and fallback tests reuse the normalized request reference in progress and passive reliability, preserve canonical timeout projection, keep BYOK excluded, and prove broadcast/telemetry callback failure cannot affect routing.
+- AC8 remains open until the work commit, exact-head PR checks/artifacts, exact-main deployment and production acceptance, delivery evidence, and archive validation all complete.
 
 ## Out of scope
 

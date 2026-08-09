@@ -107,6 +107,7 @@ export async function acquireFirstAvailableLease<T, L extends ProviderLeaseLike>
 
   const controllers = busy.map(() => new AbortController());
   const abortAll = () => controllers.forEach((controller) => controller.abort(signal?.reason));
+  let winner: { candidate: T; lease: L; index: number } | undefined;
   signal?.addEventListener("abort", abortAll, { once: true });
   try {
     const attempts = busy.map(async (candidate, index) => {
@@ -115,18 +116,21 @@ export async function acquireFirstAvailableLease<T, L extends ProviderLeaseLike>
       if (!lease) throw providerBusyError();
       return { candidate, lease, index };
     });
-    const winner = await Promise.any(attempts);
+    const selectedWinner = await Promise.any(attempts);
+    winner = selectedWinner;
     controllers.forEach((controller, index) => {
-      if (index !== winner.index) controller.abort("provider_candidate_lost");
+      if (index !== selectedWinner.index) controller.abort("provider_candidate_lost");
     });
     const settled = await Promise.allSettled(attempts);
     await Promise.all(settled.map(async (result) => {
-      if (result.status === "fulfilled" && result.value.index !== winner.index) {
+      if (result.status === "fulfilled" && result.value.index !== selectedWinner.index) {
         await result.value.lease.release();
       }
     }));
-    return { candidate: winner.candidate, lease: winner.lease };
+    if (signal?.aborted) throw abortError(signal.reason);
+    return { candidate: selectedWinner.candidate, lease: selectedWinner.lease };
   } catch {
+    if (winner) await winner.lease.release().catch(() => undefined);
     if (signal?.aborted) throw abortError(signal.reason);
     return null;
   } finally {
@@ -139,6 +143,7 @@ function noopLease(providerId: string): ProviderLease {
 }
 
 function abortError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
   const error = new Error(typeof reason === "string" ? reason : "The request was cancelled.");
   error.name = "AbortError";
   return error;
