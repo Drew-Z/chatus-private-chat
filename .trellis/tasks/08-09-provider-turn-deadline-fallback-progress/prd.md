@@ -134,7 +134,7 @@ diagnose the failure without sending a probe.
 - [x] AC7. Deadline attempts record passive timeout/fallback evidence with the
       same request reference as the progress/error UI; BYOK and telemetry-failure
       exclusions remain intact and no probe is introduced.
-- [ ] AC8. Focused fallback, Agent, error, reliability, client, and Workspace
+- [x] AC8. Focused fallback, Agent, error, reliability, client, and Workspace
       tests pass using local fixtures, followed by the full repository gate,
       Trellis/spec update, PR CI/artifacts, exact-main deployment acceptance,
       delivery evidence, and archive validation.
@@ -146,7 +146,7 @@ diagnose the failure without sending a probe.
 - AC5: shared server/client contract tests reject malformed IDs, unknown keys, contradictory phase ordinals, altered duration, and stale sequence/timestamp state; emitted frames remain bounded and secret-free.
 - AC6: full Workspace Playwright covers generic/evidenced waiting, clearing, desktop, and touch-enabled 390px containment; local fake-Agent acceptance observes the actual raw broadcast and verifies it never enters localStorage.
 - AC7: TeamAgent and fallback tests reuse the normalized request reference in progress and passive reliability, preserve canonical timeout projection, keep BYOK excluded, and prove broadcast/telemetry callback failure cannot affect routing.
-- AC8 remains open until the work commit, exact-head PR checks/artifacts, exact-main deployment and production acceptance, delivery evidence, and archive validation all complete.
+- AC8: PR #54 passed exact-head CI and retained all required artifacts; its main-reachable squash SHA passed exact-main deployment, production revision verification, temporary-member acceptance/cleanup, and retained deployment/acceptance manifests. Archive validation is executed after this evidence is committed.
 
 ## Out of scope
 

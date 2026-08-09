@@ -52,7 +52,7 @@
       `npm run test:browser:workspace`, `npm run test:browser:agent`,
       `npm run typecheck`, `npx wrangler deploy --dry-run`,
       `git diff --check`, and `python ./.trellis/scripts/task.py validate-all`.
-- [ ] Commit on `codex/provider-turn-deadline-fallback-progress`, push a PR, retain
+- [x] Commit on `codex/provider-turn-deadline-fallback-progress`, push a PR, retain
       exact-head CI/artifacts, merge, verify exact-main GitHub Actions deployment
       and production smoke, record all AC/delivery evidence, and archive.
 
@@ -66,6 +66,14 @@
 - Wrangler 4.110.0 `npx wrangler deploy --dry-run` passed local packaging for 19 assets and all Worker/DO/KV/Queue/R2 bindings; no upload or production deployment occurred.
 - `git diff --check` and `python ./.trellis/scripts/task.py validate-all` passed after the code-spec update.
 - Every test used local deterministic fake Provider/Agent inputs. No live model, MCP/OAuth request, synthetic production probe, or local production deployment was used.
+
+## Delivery Evidence
+
+- Work commit: `39ae56906e557ddf9b5634f40e9e146f488ed6ac`, the squash commit reachable from `main` for PR [#54](https://github.com/Drew-Z/chatus-private-chat/pull/54).
+- PR exact-head CI: head `6a8214586a35a2a92f1de527274a067c910364ce`; `changes`, `quality`, `workspace-browser`, and `agent-browser` passed in [run 31302263886](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31302263886). Path classification, quality manifest, coverage summary, Workspace Playwright, and local fake-Provider Agent Playwright artifacts were retained.
+- Exact-main deployment: SHA `39ae56906e557ddf9b5634f40e9e146f488ed6ac` passed both stale-main guards, full quality gates, Worker deployment, production revision verification, and deployment-manifest retention in [run 31302578436](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31302578436). Artifacts `production-deployment-39ae56906e557ddf9b5634f40e9e146f488ed6ac` and `deployment-paths-39ae56906e557ddf9b5634f40e9e146f488ed6ac` were retained.
+- Production acceptance: the same main SHA passed deployed-revision verification, temporary-member acceptance, cleanup, and 90-day manifest retention in [run 31302800180](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31302800180). Artifact `production-acceptance-39ae56906e557ddf9b5634f40e9e146f488ed6ac` was retained.
+- Delivery used only GitHub Actions for production deployment and acceptance. No local production deployment, live Provider/MCP test, or synthetic probe was used.
 
 ## Risky files and rollback point
 

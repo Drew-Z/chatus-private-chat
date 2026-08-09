@@ -15,7 +15,7 @@
   "branch": "codex/provider-turn-deadline-fallback-progress",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "a00d405dba23848b39a8eaba31eb027f77af55ad",
+  "commit": "39ae56906e557ddf9b5634f40e9e146f488ed6ac",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/54",
   "subtasks": [],
   "children": [],
@@ -77,6 +77,24 @@
         "status": "passed",
         "summary": "Repository-wide Trellis consistency passed.",
         "at": "2026-08-09T07:47:34.781701+00:00"
+      },
+      {
+        "command": "GitHub Actions PR run 31302263886",
+        "status": "passed",
+        "summary": "Exact PR head 6a8214586a35a2a92f1de527274a067c910364ce passed changes, quality, Workspace browser, and local fake-Provider Agent browser with retained artifacts.",
+        "at": "2026-08-09T08:11:42.415300+00:00"
+      },
+      {
+        "command": "GitHub Actions deployment run 31302578436",
+        "status": "passed",
+        "summary": "Exact main SHA 39ae56906e557ddf9b5634f40e9e146f488ed6ac passed deployment guards, Worker deploy, production verification, and manifest retention.",
+        "at": "2026-08-09T08:11:43.430460+00:00"
+      },
+      {
+        "command": "GitHub Actions production acceptance run 31302800180",
+        "status": "passed",
+        "summary": "Exact main SHA 39ae56906e557ddf9b5634f40e9e146f488ed6ac passed deployed-revision verification, temporary-member acceptance, cleanup, and manifest retention.",
+        "at": "2026-08-09T08:11:44.363325+00:00"
       }
     ]
   }
