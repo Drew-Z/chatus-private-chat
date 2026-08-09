@@ -60,10 +60,10 @@
 - [x] Update backup/restore, future governance, delivery, frontend component,
       type-safety, and a dedicated legacy-surface governance spec. Record `DR-06`
       as mitigated only for the control plane, not closed for any surface.
-- [ ] Commit on `codex/legacy-surface-registry-control-plane`, push, open a PR,
+- [x] Commit on `codex/legacy-surface-registry-control-plane`, push, open a PR,
       wait for required CI/artifacts, merge, and retain exact-head/exact-main
       GitHub Actions deployment and production acceptance evidence.
-- [ ] Verify every AC, validation record, work commit, parent/child state,
+- [x] Verify every AC, validation record, work commit, parent/child state,
       persisted waiver, archive preflight, archive commit, workspace index, and
       journal update before closing the child.
 
@@ -96,3 +96,23 @@ change existing Durable Object migration tags.
   bindings and migration topology without deploying.
 - `git diff --check` and `python ./.trellis/scripts/task.py validate-all` passed;
   final repetitions are required after task/spec evidence edits.
+
+## Delivery evidence
+
+- Work commit `39aee8e738a871e89343290cfff652fa78bf1565` plus the deterministic
+  pending-state CI fix `cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54` were delivered
+  through PR #53 and merged as exact main SHA
+  `083cb24f8e1aa25f142b8e5ad3626ebfde5728ef` at 2026-08-09T00:59:01Z.
+- PR CI run `31287009343` passed `changes`, `quality`, `agent-browser`, and
+  `workspace-browser` on head `cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54`.
+  Five artifacts were retained through 2026-08-23: path classification
+  `9030153355`, fake-Provider Agent Playwright `9030168698`, quality
+  `9030196281`, coverage `9030196425`, and Workspace Playwright `9030241336`.
+- GitHub Actions deployment run `31287320428` passed on the exact main SHA,
+  deployed Worker version `ed875cde-8d9e-4178-bd3c-a9f381af107e`, and passed
+  production release-SHA smoke after bounded edge-propagation retries. The
+  production deployment manifest artifact `9030294645` is retained through
+  2026-11-07; deployment-path artifact `9030253562` is retained through
+  2026-09-08.
+- No waiver was required. All 13 manifest records remain code-owned at maximum
+  phase `discovered`; this delivery does not disable a legacy read or write path.

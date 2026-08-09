@@ -147,7 +147,7 @@ It does not disable any legacy read or write path.
 - [x] AC9. Tests prove all initial records remain `discovered`, existing legacy
       reads/writes and Durable Object bindings are unchanged, and no destructive
       cleanup or unsupported production claim is introduced.
-- [ ] AC10. Full repository gates, spec updates, work commit, PR CI/artifacts,
+- [x] AC10. Full repository gates, spec updates, work commit, PR CI/artifacts,
       exact-main deployment/acceptance evidence, archive validation, parent-child
       consistency, and any persisted waiver all pass.
 

@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-08-07",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/legacy-surface-registry-control-plane",
   "base_branch": "main",
   "worktree_path": null,
   "commit": "39aee8e738a871e89343290cfff652fa78bf1565",
@@ -85,11 +85,97 @@
         "at": "2026-08-07T16:19:14.579117+00:00"
       },
       {
+        "command": "gh run view 31287009343",
+        "status": "passed",
+        "summary": "PR CI passed changes, quality, Workspace Playwright, and local fake-Provider Agent jobs on head cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54; five artifacts retained.",
+        "at": "2026-08-09T01:06:04.196211+00:00"
+      },
+      {
+        "command": "gh run view 31287320428",
+        "status": "passed",
+        "summary": "Exact-main GitHub Actions deployment and production smoke passed on merge SHA 083cb24f8e1aa25f142b8e5ad3626ebfde5728ef; deployment manifests retained.",
+        "at": "2026-08-09T01:06:05.148489+00:00"
+      },
+      {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
-        "summary": "Repository task graph and workspace index consistency passed before final delivery metadata.",
-        "at": "2026-08-07T16:19:15.729141+00:00"
+        "summary": "Final repository task graph and workspace root index consistency passed after delivery evidence was recorded.",
+        "at": "2026-08-09T01:07:53.648851+00:00"
       }
-    ]
+    ],
+    "acceptance": {
+      "AC1": "The strict code-owned manifest seeds each of the 13 census records exactly once and rejects removal, downgrade, conflicts, unknown fields, and administrator-created records.",
+      "AC2": "Per-surface InstanceCoordinator objects atomically persist idempotent projection and event transitions and enforce code-owned phase ceilings.",
+      "AC3": "Coordinator tests cover every phase and evidence gate, rollback, observation timing, replay, crash retry, malformed storage, and outage behavior.",
+      "AC4": "Surface-use recording is exact-shape and content-free, returns authoritative controls, and bounds daily counters.",
+      "AC5": "Capture and isolated restore preserve authoritative registry state and fail closed on schema, digest, count, identity, or event conflicts without migration changes.",
+      "AC6": "Admin APIs enforce authentication, mutation fencing, exact decoding, bounded projection, stable errors, and content-free audit evidence.",
+      "AC7": "React Operations strictly decodes and paginates the registry and uses recoverable server-authoritative dialogs for mutations.",
+      "AC8": "Desktop and touch-390 Workspace Playwright plus local fake-Provider Agent acceptance passed locally and in PR CI.",
+      "AC9": "Tests and the code-owned phase ceiling prove all 13 initial records remain discovered with no legacy runtime disablement or destructive cleanup.",
+      "AC10": "Full gates, specs, work commit, PR CI and artifacts, exact-main deployment and production smoke, task consistency, and archive preflight passed without a waiver."
+    },
+    "delivery": {
+      "workCommit": "39aee8e738a871e89343290cfff652fa78bf1565",
+      "ciFixCommit": "cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54",
+      "pullRequest": {
+        "number": 53,
+        "url": "https://github.com/Drew-Z/chatus-private-chat/pull/53",
+        "ciRunId": 31287009343,
+        "headSha": "cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54",
+        "artifactRevisionSha": "3a0538fb0d70f0ac6bf6f14b778dce772a6fb9b9",
+        "status": "success",
+        "artifacts": [
+          {
+            "id": 9030153355,
+            "name": "pr-path-classification-3a0538fb0d70f0ac6bf6f14b778dce772a6fb9b9",
+            "expiresAt": "2026-08-23T00:50:01Z"
+          },
+          {
+            "id": 9030168698,
+            "name": "agent-playwright-3a0538fb0d70f0ac6bf6f14b778dce772a6fb9b9",
+            "expiresAt": "2026-08-23T00:51:22Z"
+          },
+          {
+            "id": 9030196281,
+            "name": "pr-quality-3a0538fb0d70f0ac6bf6f14b778dce772a6fb9b9",
+            "expiresAt": "2026-08-23T00:53:50Z"
+          },
+          {
+            "id": 9030196425,
+            "name": "pr-coverage-3a0538fb0d70f0ac6bf6f14b778dce772a6fb9b9",
+            "expiresAt": "2026-08-23T00:53:51Z"
+          },
+          {
+            "id": 9030241336,
+            "name": "workspace-playwright-3a0538fb0d70f0ac6bf6f14b778dce772a6fb9b9",
+            "expiresAt": "2026-08-23T00:58:03Z"
+          }
+        ]
+      },
+      "merge": {
+        "sha": "083cb24f8e1aa25f142b8e5ad3626ebfde5728ef",
+        "mergedAt": "2026-08-09T00:59:01Z"
+      },
+      "deployment": {
+        "runId": 31287320428,
+        "sha": "083cb24f8e1aa25f142b8e5ad3626ebfde5728ef",
+        "workerVersionId": "ed875cde-8d9e-4178-bd3c-a9f381af107e",
+        "status": "success",
+        "productionSmoke": "passed",
+        "artifacts": [
+          {
+            "id": 9030253562,
+            "name": "deployment-paths-083cb24f8e1aa25f142b8e5ad3626ebfde5728ef",
+            "expiresAt": "2026-09-08T00:59:14Z"
+          },
+          {
+            "id": 9030294645,
+            "name": "production-deployment-083cb24f8e1aa25f142b8e5ad3626ebfde5728ef",
+            "expiresAt": "2026-11-07T00:59:04Z"
+          }
+        ]
+      }
+    }
   }
 }
