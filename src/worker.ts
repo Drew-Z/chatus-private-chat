@@ -58,6 +58,20 @@ import {
   type FileInputPolicy,
   type FileValidationErrorCode,
 } from "./contracts/file";
+import {
+  LEGACY_SURFACE_ADMIN_LIMIT,
+  LEGACY_SURFACE_MANIFEST,
+  decodeLegacySurfaceAdvanceInput,
+  decodeLegacySurfaceRollbackInput,
+  legacySurfaceManifestDigest,
+  legacySurfaceObjectName,
+  type LegacySurfaceAdvanceInputV1,
+  type LegacySurfaceAdminSnapshotV1,
+  type LegacySurfaceManifestRecordV1,
+  type LegacySurfaceProjectionV1,
+  type LegacySurfaceRollbackInputV1,
+  type LegacySurfaceTransitionResult,
+} from "./contracts/legacy-surface";
 import type {
   ProviderConfig,
   ProviderCredential,
@@ -2155,7 +2169,7 @@ async function handleApi(
     if (!admin) {
       return jsonResponse({ error: "unauthorized" }, 401);
     }
-    return handleAdminApi(request, env, url, instanceFence, executionContext);
+    return handleAdminApi(request, env, url, requestId, instanceFence, executionContext);
   }
 
   if (url.pathname === "/api/login" && request.method === "POST") {
@@ -2475,6 +2489,7 @@ async function handleAdminApi(
   request: Request,
   env: Env,
   url: URL,
+  requestId: string,
   instanceFence?: InstanceOperationFence,
   executionContext?: ExecutionContext,
 ): Promise<Response> {
@@ -2635,6 +2650,20 @@ async function handleAdminApi(
     return handleAdminProviderFinance(env, url);
   }
 
+  if (url.pathname === "/api/admin/legacy-surfaces" && request.method === "GET") {
+    return handleGetAdminLegacySurfaces(env, url, requestId);
+  }
+
+  const legacySurfaceMutation = legacySurfaceMutationFromAdminPath(url.pathname);
+  if (legacySurfaceMutation && request.method === "POST") {
+    requireInstanceFence(instanceFence);
+    const manifest = LEGACY_SURFACE_MANIFEST.find(
+      ({ surfaceId }) => surfaceId === legacySurfaceMutation.surfaceId,
+    );
+    if (!manifest) return legacySurfaceErrorResponse("legacy_surface_not_found");
+    return handleAdminLegacySurfaceMutation(request, env, manifest, legacySurfaceMutation.action);
+  }
+
   if (url.pathname === "/api/admin/provider-finance/prices" && request.method === "POST") {
     requireInstanceFence(instanceFence);
     return handleAdminProviderFinancePrice(request, env);
@@ -2666,6 +2695,195 @@ async function handleAdminApi(
   }
 
   return jsonResponse({ error: "not_found" }, 404);
+}
+
+type LegacySurfaceMutationAction = "advance" | "rollback";
+
+type LegacySurfaceInspection =
+  | { ok: true; projections: LegacySurfaceProjectionV1[]; syncRequired: boolean }
+  | { ok: false; response: Response };
+
+async function handleGetAdminLegacySurfaces(
+  env: Env,
+  url: URL,
+  requestId: string,
+  syncFenceHeld = false,
+): Promise<Response> {
+  const limit = parseLegacySurfaceAdminLimit(url);
+  if (limit === undefined) return jsonResponse({ error: "invalid_limit" }, 400);
+
+  try {
+    const manifestDigest = await legacySurfaceManifestDigest();
+    let inspection = await inspectBundledLegacySurfaces(env, manifestDigest);
+    if (!inspection.ok) return inspection.response;
+
+    if (inspection.syncRequired && !syncFenceHeld) {
+      return handleRequestWithInstanceOperation(
+        env,
+        `${requestId}:legacy-surface-sync`,
+        "http_mutation",
+        () => handleGetAdminLegacySurfaces(env, url, requestId, true),
+      );
+    }
+    if (inspection.syncRequired) {
+      const syncError = await syncBundledLegacySurfaces(env, manifestDigest);
+      if (syncError) return syncError;
+      inspection = await inspectBundledLegacySurfaces(env, manifestDigest);
+      if (!inspection.ok) return inspection.response;
+      if (inspection.syncRequired) return legacySurfaceErrorResponse("legacy_surface_state_invalid");
+    }
+
+    const snapshot: LegacySurfaceAdminSnapshotV1 = {
+      version: 1,
+      manifestDigest,
+      generatedAt: Date.now(),
+      total: inspection.projections.length,
+      surfaces: inspection.projections.slice(0, limit),
+    };
+    return jsonResponse(snapshot);
+  } catch {
+    return legacySurfaceErrorResponse("legacy_surface_unavailable");
+  }
+}
+
+async function inspectBundledLegacySurfaces(
+  env: Env,
+  manifestDigest: string,
+): Promise<LegacySurfaceInspection> {
+  const projections: LegacySurfaceProjectionV1[] = [];
+  let syncRequired = false;
+  try {
+    for (const manifest of LEGACY_SURFACE_MANIFEST) {
+      const result = await env.INSTANCE_COORDINATOR
+        .getByName(legacySurfaceObjectName(manifest.surfaceId))
+        .inspectLegacySurface({ version: 1, manifest, manifestDigest });
+      if (!result.ok) {
+        if (result.error === "legacy_surface_not_found" || result.error === "legacy_surface_manifest_conflict") {
+          syncRequired = true;
+          continue;
+        }
+        return { ok: false, response: legacySurfaceErrorResponse(result.error) };
+      }
+      if (
+        result.projection.manifestVersion !== manifest.manifestVersion
+        || result.projection.manifestDigest !== manifestDigest
+      ) {
+        syncRequired = true;
+      }
+      projections.push(result.projection);
+    }
+    return { ok: true, projections, syncRequired };
+  } catch {
+    return { ok: false, response: legacySurfaceErrorResponse("legacy_surface_unavailable") };
+  }
+}
+
+async function syncBundledLegacySurfaces(env: Env, manifestDigest: string): Promise<Response | undefined> {
+  try {
+    for (const manifest of LEGACY_SURFACE_MANIFEST) {
+      const result = await env.INSTANCE_COORDINATOR
+        .getByName(legacySurfaceObjectName(manifest.surfaceId))
+        .syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest });
+      if (!result.ok) return legacySurfaceErrorResponse(result.error);
+    }
+    return undefined;
+  } catch {
+    return legacySurfaceErrorResponse("legacy_surface_unavailable");
+  }
+}
+
+async function handleAdminLegacySurfaceMutation(
+  request: Request,
+  env: Env,
+  manifest: LegacySurfaceManifestRecordV1,
+  action: LegacySurfaceMutationAction,
+): Promise<Response> {
+  const body: unknown = await readJson<unknown>(request);
+  const input = action === "advance"
+    ? decodeLegacySurfaceAdvanceInput(body)
+    : decodeLegacySurfaceRollbackInput(body);
+  if (!input || input.surfaceId !== manifest.surfaceId) {
+    return jsonResponse({ error: "invalid_legacy_surface_request" }, 400);
+  }
+
+  try {
+    const manifestDigest = await legacySurfaceManifestDigest();
+    const coordinator = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(manifest.surfaceId));
+    const synchronized = await coordinator.syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest });
+    if (!synchronized.ok) return legacySurfaceErrorResponse(synchronized.error);
+
+    const result = action === "advance"
+      ? await coordinator.advanceLegacySurface(input)
+      : await coordinator.rollbackLegacySurface(input);
+    if (!result.ok) return legacySurfaceErrorResponse(result.error);
+
+    await appendAdminAudit(
+      env,
+      `legacy-surface.${action}`,
+      legacySurfaceAuditTarget(action, input, result),
+    );
+    return jsonResponse(result);
+  } catch {
+    return legacySurfaceErrorResponse("legacy_surface_unavailable");
+  }
+}
+
+function legacySurfaceMutationFromAdminPath(pathname: string): {
+  surfaceId: string;
+  action: LegacySurfaceMutationAction;
+} | undefined {
+  const match = /^\/api\/admin\/legacy-surfaces\/([^/]+)\/(advance|rollback)$/.exec(pathname);
+  if (!match) return undefined;
+  try {
+    const surfaceId = decodeURIComponent(match[1]);
+    return surfaceId && !surfaceId.includes("/")
+      ? { surfaceId, action: match[2] as LegacySurfaceMutationAction }
+      : { surfaceId: "", action: match[2] as LegacySurfaceMutationAction };
+  } catch {
+    return { surfaceId: "", action: match[2] as LegacySurfaceMutationAction };
+  }
+}
+
+function parseLegacySurfaceAdminLimit(url: URL): number | undefined {
+  if ([...url.searchParams.keys()].some((key) => key !== "limit")) return undefined;
+  const values = url.searchParams.getAll("limit");
+  if (values.length === 0) return LEGACY_SURFACE_ADMIN_LIMIT;
+  if (values.length !== 1 || !/^(?:[1-9]|[1-9][0-9]|100)$/.test(values[0])) return undefined;
+  return Number(values[0]);
+}
+
+function legacySurfaceAuditTarget(
+  action: LegacySurfaceMutationAction,
+  input: LegacySurfaceAdvanceInputV1 | LegacySurfaceRollbackInputV1,
+  result: Extract<LegacySurfaceTransitionResult, { ok: true }>,
+): string {
+  const target = action === "advance"
+    ? (input as LegacySurfaceAdvanceInputV1).targetPhase
+    : `${(input as LegacySurfaceRollbackInputV1).scope}>${result.projection.phase}`;
+  const evidence = input.evidence[0];
+  return [
+    input.surfaceId,
+    target,
+    result.replayed ? "replay" : "ok",
+    `r${result.projection.revision}`,
+    ...(evidence ? [`e=${evidence.evidenceId}:${evidence.digest.slice(0, 12)}`] : []),
+  ].join("|").slice(0, 100);
+}
+
+function legacySurfaceErrorResponse(error: string): Response {
+  switch (error) {
+    case "legacy_surface_not_found":
+      return jsonResponse({ error }, 404);
+    case "legacy_surface_conflict":
+    case "legacy_surface_manifest_conflict":
+      return jsonResponse({ error }, 409);
+    case "legacy_surface_gate_blocked":
+      return jsonResponse({ error }, 422);
+    case "legacy_surface_state_invalid":
+    case "legacy_surface_unavailable":
+    default:
+      return jsonResponse({ error: error === "legacy_surface_state_invalid" ? error : "legacy_surface_unavailable" }, 503);
+  }
 }
 
 async function withAdminConfigMutationLock(env: Env, mutation: () => Promise<Response>): Promise<Response> {

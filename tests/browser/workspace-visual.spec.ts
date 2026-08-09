@@ -811,6 +811,7 @@ test("operations data stays scannable with local table overflow", async ({ page 
   test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "operations coverage targets desktop and 390px");
   await page.goto("/?view=operations");
   await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "旧功能面治理" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "7 日请求趋势" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "逻辑模型结果" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "成员反馈" })).toBeVisible();
@@ -834,9 +835,11 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(providerAttempts).toContainText("估算");
   await expect(providerAttempts).toContainText("已对账");
   await expect(providerAttempts).toContainText("已更正");
-  await expect(page.getByText(/当前显示 20 \/ 21/)).toHaveCount(8);
+  await expect(page.getByText(/当前显示 20 \/ 21/)).toHaveCount(9);
   await expect(page.getByText("第 21 条逻辑模型", { exact: true })).toHaveCount(0);
 
+  await page.getByRole("button", { name: "旧功能面治理：下一页" }).click();
+  await expect(page.getByText("legacy.surface-21", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "逻辑模型结果：下一页" }).click();
   await expect(page.getByText("第 21 条逻辑模型", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "成员反馈：下一页" }).click();
@@ -877,6 +880,94 @@ test("operations data stays scannable with local table overflow", async ({ page 
   expect(geometry.wrapperFits).toBe(true);
   if (testInfo.project.name === "touch-390") expect(geometry.localOverflow).toBe(true);
   await attachScreenshot(page, testInfo, "operations");
+});
+
+test("legacy surface transition keeps evidence retryable and refreshes authority", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "legacy surface governance targets desktop and 390px");
+  await page.goto("/?view=operations");
+
+  const result = page.getByTestId("legacy-surface-fixture-result");
+  const surfaceRow = page.locator(".legacy-surface-row").filter({ hasText: "legacy.surface-01" });
+  await expect(surfaceRow).toContainText("影子运行");
+  await expect(surfaceRow).toContainText("读取启用");
+  await expect(surfaceRow).toContainText("写入启用");
+  await surfaceRow.getByRole("button", { name: "推进至写入已停用" }).click();
+  await expect(result).toHaveAttribute("data-dirty", "true");
+
+  const form = page.locator(".legacy-surface-transition-form");
+  await expect(form).toContainText("影子运行 → 写入已停用");
+  const evidenceGroups = form.locator("fieldset");
+  await expect(evidenceGroups).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    const group = evidenceGroups.nth(index);
+    await group.getByLabel("证据 ID").fill(`fixture:evidence:${index + 1}`);
+    await group.getByLabel("SHA-256 摘要").fill("c".repeat(64));
+    await group.getByLabel("部署 Commit SHA").fill("d".repeat(40));
+    await group.getByLabel("计数").fill(String(index));
+  }
+  await form.getByRole("button", { name: "检查并确认" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "确认推进旧功能面" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("legacy.surface-01");
+  await expect(dialog).toContainText("影子运行");
+  await expect(dialog).toContainText("写入已停用");
+  await expect(dialog.getByRole("button", { name: "取消" })).toBeFocused();
+  await dialog.getByRole("button", { name: "确认推进" }).click();
+  await expect(result).toHaveAttribute("data-kind", "advance-attempt");
+  await expect(dialog.getByRole("button", { name: "正在提交..." })).toBeDisabled();
+  await releaseLegacySurfaceTransition(page);
+  await expect(dialog.getByRole("alert")).toHaveText("合成治理提交失败，请使用同一草稿重试。");
+  await expect(dialog).toBeVisible();
+  await expect(form.getByLabel("证据 ID").first()).toHaveValue("fixture:evidence:1");
+  await expect(result).toHaveAttribute("data-dirty", "true");
+
+  const firstAttempt = await result.evaluate((element) => ({
+    operationId: element.getAttribute("data-operation-id"),
+    requestedAt: element.getAttribute("data-requested-at"),
+  }));
+  expect(firstAttempt.operationId).toMatch(/^legacy-surface:[0-9a-f-]{36}$/);
+  expect(firstAttempt.requestedAt).toMatch(/^\d+$/);
+
+  const errorGeometry = await page.evaluate(() => {
+    const main = document.querySelector<HTMLElement>('main[data-visual-fixture="true"]');
+    const form = document.querySelector<HTMLElement>(".legacy-surface-transition-form");
+    const dialog = document.querySelector<HTMLElement>(".confirm-dialog");
+    const viewportWidth = document.documentElement.clientWidth;
+    if (!main || !form || !dialog) throw new Error("missing legacy surface transition fixture");
+    const dialogRect = dialog.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= viewportWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      mainFits: main.getBoundingClientRect().right <= viewportWidth + 1,
+      formFits: form.scrollWidth <= form.clientWidth + 1,
+      dialogFits: dialogRect.left >= 0 && dialogRect.right <= viewportWidth + 1,
+      dialogContentFits: dialog.scrollWidth <= dialog.clientWidth + 1,
+    };
+  });
+  expect(errorGeometry).toEqual({
+    documentFits: true,
+    bodyFits: true,
+    mainFits: true,
+    formFits: true,
+    dialogFits: true,
+    dialogContentFits: true,
+  });
+  await attachScreenshot(page, testInfo, "legacy-surface-transition-error");
+
+  await dialog.getByRole("button", { name: "确认推进" }).click();
+  await expect(dialog.getByRole("button", { name: "正在提交..." })).toBeDisabled();
+  await releaseLegacySurfaceTransition(page);
+  await expect(dialog).toHaveCount(0);
+  await expect(result).toHaveAttribute("data-kind", "advance");
+  await expect(result).toHaveAttribute("data-operation-id", firstAttempt.operationId!);
+  await expect(result).toHaveAttribute("data-requested-at", firstAttempt.requestedAt!);
+  await expect(result).toHaveAttribute("data-dirty", "false");
+  await expect(form).toHaveCount(0);
+  await expect(surfaceRow.getByText("写入已停用", { exact: true })).toBeVisible();
+  await expect(surfaceRow.locator(".legacy-surface-facts > div").filter({ hasText: "修订" })).toContainText("2");
+  await surfaceRow.scrollIntoViewIfNeeded();
+  await attachScreenshot(page, testInfo, "legacy-surface-transition-success");
 });
 
 test("finance entry fixture keeps drafts dirty on validation or mutation failure", async ({ page }, testInfo) => {
@@ -1305,7 +1396,32 @@ test("operations initial error is distinct from loading and retryable", async ({
             hardBudgetEnforcement: "instance_provider_v1",
             providers: [],
           }
-      : { entries: [] };
+        : url.pathname === "/api/admin/legacy-surfaces"
+          ? {
+              version: 1,
+              manifestDigest: "a".repeat(64),
+              generatedAt: 1785032000000,
+              total: 1,
+              surfaces: [{
+                version: 1,
+                surfaceId: "legacy.surface-alpha",
+                revision: 0,
+                manifestVersion: 1,
+                manifestDigest: "a".repeat(64),
+                phase: "discovered",
+                readControl: "enabled",
+                writeControl: "enabled",
+                owner: "unassigned",
+                blockerCodes: ["maximum_phase_reached", "owner_unassigned"],
+                observationStartedAt: 0,
+                observationRequiredUntil: 0,
+                lastTransitionAt: 0,
+                lastDeploymentSha: "",
+                evidence: { required: 0, present: 0, complete: true },
+                allowedActions: [],
+              }],
+            }
+          : { entries: [] };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
 
@@ -1676,6 +1792,12 @@ test("mobile drawer and delete confirmation preserve focus", async ({ page }, te
   await expect(opener).toBeFocused();
   await attachScreenshot(page, testInfo, "drawer-closed");
 });
+
+async function releaseLegacySurfaceTransition(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("chatus:fixture:legacy-surface-transition-release"));
+  });
+}
 
 async function attachScreenshot(page: Page, testInfo: TestInfo, name: string) {
   const path = testInfo.outputPath(`${name}-${testInfo.project.name}.png`);

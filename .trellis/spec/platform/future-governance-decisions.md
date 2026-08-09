@@ -6,8 +6,10 @@ Use this contract when planning or implementing member sharing/transfer/ACL, Pro
 
 Provider attempt identity, normalized usage, immutable price bindings, append-only
 cost evidence, and bounded reconciliation summaries are now supported for
-administrator operations. Hard budget enforcement, finance feedback receipts,
-ACL, numeric RPO/RTO, and destructive legacy retirement remain unimplemented.
+administrator operations. The legacy-surface registry and evidence control plane
+are also supported, but all initial records remain `discovered`. Hard budget
+enforcement, finance feedback receipts, ACL, numeric RPO/RTO, and destructive
+legacy retirement remain unimplemented.
 Design records under `.trellis/tasks/07-27-q3-followup-design-decisions/research/`
 establish future gates but do not by themselves create a supported API, schema,
 workflow, or operating claim for those deferred capabilities.
@@ -16,9 +18,12 @@ workflow, or operating claim for those deferred capabilities.
 
 No runtime API, database table, migration, command, workflow, or environment
 key is supported for the deferred ACL, hard-budget, finance-feedback, numeric
-RPO/RTO, or destructive-retirement capabilities. Provider finance v2 signatures
-are documented in `provider-attempt-ledger.md`; a future deferred-capability task
-must define its own versioned signatures after satisfying the gates below.
+RPO/RTO, or destructive-cleanup capabilities. The non-destructive retirement
+control-plane signatures are documented in `legacy-surface-governance.md`;
+their presence does not authorize instrumentation, disablement, or cleanup.
+Provider finance v2 signatures are documented in `provider-attempt-ledger.md`;
+a future deferred-capability task must define its own versioned signatures after
+satisfying the gates below.
 
 - `member-sharing-acl-design.md`: stable principal/resource identity, role/action policy, transfer, revoke, deletion, memory, trust, and export boundaries.
 - `provider-usage-cost-budget-feedback-design.md`: turn/run/attempt identity, evidence classes, price versions, reserve/settle/reconcile, feedback receipts, and privacy.
@@ -64,6 +69,12 @@ Future tasks must copy the relevant decision and risk IDs into their PRD rather 
 
 ### Legacy Retirement
 
+- `DR-06` is mitigated only at the shared control-plane layer: the code-owned
+  manifest, per-surface phase ceiling, append-only evidence, independent rollback,
+  bounded census RPC, admin projection, and capture/restore boundary now exist.
+  No initial surface has an assigned owner, caller census, parity proof,
+  observation, recovery proof, read/write disablement, or cleanup approval, so
+  `DR-06` remains open for every surface.
 - Retire each surface independently through census, parity, backup/restore evidence, rollback rehearsal, observation, owner approval, and only then destructive cleanup.
 - Absence of recent logs does not prove absence of callers.
 - Do not remove a legacy source in the same release that first disables it.
@@ -97,12 +108,16 @@ Every implementation task must include:
 | Capture baseline has no external historical Durable Object inventory evidence | Reject capture readiness; do not infer completeness from the runtime registry |
 | RPO/RTO has no measured schedule/drill evidence | Do not publish the number |
 | Legacy cleanup lacks per-surface rollback/observation evidence | Do not delete the surface or data |
+| A shared registry exists but a surface is still capped at `discovered` | Treat the surface as fully active and `DR-06` as open |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: a future ACL task first separates principal/resource identity, keeps owner memory/trust private, and proves revoke/transfer races locally.
 - Good: a cost task records every fallback attempt with evidence class and price version before enabling an idempotent budget reservation.
 - Good: a recovery task restores an isolated target from a consistent encrypted manifest, reconciles it, and retains exact drill evidence before making an availability claim.
+- Good: a legacy rollout versions one exact manifest record, wires and tests all
+  declared callers, and advances only that record while the other surfaces remain
+  independent.
 - Base: the current system continues without these capabilities while the design/risk records remain reviewable.
 - Bad: add an `ownerLabel`, token counter, cron export, or delete-old-data command and claim the corresponding product problem is solved.
 

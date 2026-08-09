@@ -15,6 +15,22 @@ import type {
   ConversationSkillMode,
 } from "../../../src/contracts/agent";
 import { normalizeAgentRequestId } from "../../../src/contracts/agent-error";
+import {
+  LEGACY_SURFACE_ADMIN_LIMIT,
+  LEGACY_SURFACE_PHASE_EVIDENCE,
+  decodeLegacySurfaceAdvanceInput,
+  decodeLegacySurfaceProjection,
+  decodeLegacySurfaceRollbackInput,
+  type LegacySurfaceAdvanceInputV1,
+  type LegacySurfaceAdminSnapshotV1,
+  type LegacySurfaceAllowedActionV1,
+  type LegacySurfaceEvidenceKind,
+  type LegacySurfaceEvidenceReferenceV1,
+  type LegacySurfacePhase,
+  type LegacySurfaceProjectionV1,
+  type LegacySurfaceRollbackInputV1,
+  type LegacySurfaceTransitionResult,
+} from "../../../src/contracts/legacy-surface";
 
 export type RouteProjection = {
   id: string;
@@ -636,11 +652,21 @@ export type AdminProviderFinanceSnapshot = {
   providers: AdminProviderFinanceProvider[];
 };
 
+export type AdminLegacySurfaceEvidence = LegacySurfaceEvidenceReferenceV1;
+export type AdminLegacySurfacePhase = LegacySurfacePhase;
+export type AdminLegacySurfaceAction = LegacySurfaceAllowedActionV1;
+export type AdminLegacySurfaceProjection = LegacySurfaceProjectionV1;
+export type AdminLegacySurfaceSnapshot = LegacySurfaceAdminSnapshotV1;
+export type AdminLegacySurfaceAdvanceInput = LegacySurfaceAdvanceInputV1;
+export type AdminLegacySurfaceRollbackInput = LegacySurfaceRollbackInputV1;
+export type AdminLegacySurfaceMutationResult = Extract<LegacySurfaceTransitionResult, { ok: true }>;
+
 export type AdminOperationsSnapshot = {
   stats: AdminOperationsStats;
   audit: AdminAuditEntry[];
   feedback: AdminFeedbackEntry[];
   finance: AdminProviderFinanceSnapshot;
+  legacySurfaces: AdminLegacySurfaceSnapshot;
 };
 
 export type AdminSkillConfig = {
@@ -1119,11 +1145,12 @@ export async function fetchAdminReliability(): Promise<AdminReliabilitySnapshot>
 }
 
 export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
-  const [stats, audit, feedback, finance] = await Promise.all([
+  const [stats, audit, feedback, finance, legacySurfaces] = await Promise.all([
     requestJson("/api/admin/stats"),
     requestJson("/api/admin/audit"),
     requestJson("/api/admin/feedback"),
     requestJson("/api/admin/provider-finance?limit=100"),
+    fetchAdminLegacySurfaces(),
   ]);
   if (!isAdminOperationsStats(stats)) {
     throw new ApiError("invalid_admin_stats_response", "运营统计格式无效。", 502);
@@ -1137,7 +1164,67 @@ export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
   if (!isAdminProviderFinanceSnapshot(finance)) {
     throw new ApiError("invalid_admin_provider_finance_response", "服务商成本数据格式无效。", 502);
   }
-  return { stats, audit: audit.entries, feedback: feedback.entries, finance };
+  return { stats, audit: audit.entries, feedback: feedback.entries, finance, legacySurfaces };
+}
+
+export async function fetchAdminLegacySurfaces(
+  limit = LEGACY_SURFACE_ADMIN_LIMIT,
+): Promise<AdminLegacySurfaceSnapshot> {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > LEGACY_SURFACE_ADMIN_LIMIT) {
+    throw new ApiError("invalid_legacy_surface_limit", "旧功能面列表上限无效。", 400);
+  }
+  const data = await requestJson(`/api/admin/legacy-surfaces?limit=${limit}`);
+  if (!isAdminLegacySurfaceSnapshot(data)) {
+    throw new ApiError("invalid_admin_legacy_surface_response", "旧功能面治理数据格式无效。", 502);
+  }
+  return data;
+}
+
+export async function advanceAdminLegacySurface(
+  input: AdminLegacySurfaceAdvanceInput,
+): Promise<AdminLegacySurfaceMutationResult> {
+  const normalized = decodeLegacySurfaceAdvanceInput(input);
+  if (!normalized) throw new ApiError("invalid_legacy_surface_request", "旧功能面推进请求格式无效。", 400);
+  const data = await requestJson(
+    `/api/admin/legacy-surfaces/${encodeURIComponent(normalized.surfaceId)}/advance`,
+    { method: "POST", body: JSON.stringify(normalized) },
+  );
+  if (
+    !isAdminLegacySurfaceMutationResult(data)
+    || data.projection.surfaceId !== normalized.surfaceId
+    || data.projection.phase !== normalized.targetPhase
+    || data.projection.revision !== normalized.expectedRevision + 1
+  ) {
+    throw new ApiError("invalid_admin_legacy_surface_mutation_response", "旧功能面推进结果格式无效。", 502);
+  }
+  return data;
+}
+
+export async function rollbackAdminLegacySurface(
+  input: AdminLegacySurfaceRollbackInput,
+): Promise<AdminLegacySurfaceMutationResult> {
+  const normalized = decodeLegacySurfaceRollbackInput(input);
+  if (!normalized) throw new ApiError("invalid_legacy_surface_request", "旧功能面回滚请求格式无效。", 400);
+  const expectedPhase = normalized.scope === "read" ? "recovery_proven" : "shadowing";
+  const data = await requestJson(
+    `/api/admin/legacy-surfaces/${encodeURIComponent(normalized.surfaceId)}/rollback`,
+    { method: "POST", body: JSON.stringify(normalized) },
+  );
+  if (
+    !isAdminLegacySurfaceMutationResult(data)
+    || data.projection.surfaceId !== normalized.surfaceId
+    || data.projection.phase !== expectedPhase
+    || data.projection.revision !== normalized.expectedRevision + 1
+  ) {
+    throw new ApiError("invalid_admin_legacy_surface_mutation_response", "旧功能面回滚结果格式无效。", 502);
+  }
+  return data;
+}
+
+export function adminLegacySurfaceRequiredEvidence(action: AdminLegacySurfaceAction): readonly LegacySurfaceEvidenceKind[] {
+  return action.kind === "advance"
+    ? LEGACY_SURFACE_PHASE_EVIDENCE[action.targetPhase]
+    : ["rollback_rehearsal"];
 }
 
 export async function createAdminProviderPriceCatalog(
@@ -1948,6 +2035,35 @@ export function isAdminProviderFinanceSnapshot(value: unknown): value is AdminPr
     return false;
   }
   return new Set(value.providers.map((provider) => provider.providerId)).size === value.providers.length;
+}
+
+export function isAdminLegacySurfaceSnapshot(value: unknown): value is AdminLegacySurfaceSnapshot {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ["version", "manifestDigest", "generatedAt", "total", "surfaces"])
+    || value.version !== 1
+    || !isSchemaFingerprint(value.manifestDigest)
+    || !isPositiveInteger(value.generatedAt)
+    || !isPositiveInteger(value.total)
+    || value.total > LEGACY_SURFACE_ADMIN_LIMIT
+    || !Array.isArray(value.surfaces)
+    || value.surfaces.length > value.total
+    || value.surfaces.length > LEGACY_SURFACE_ADMIN_LIMIT
+  ) return false;
+  const projections = value.surfaces.map(decodeLegacySurfaceProjection);
+  if (projections.some((projection) => !projection)) return false;
+  const normalized = projections as AdminLegacySurfaceProjection[];
+  const ids = normalized.map(({ surfaceId }) => surfaceId);
+  return normalized.every(({ manifestDigest }) => manifestDigest === value.manifestDigest)
+    && ids.every((surfaceId, index) => index === 0 || ids[index - 1] < surfaceId);
+}
+
+export function isAdminLegacySurfaceMutationResult(value: unknown): value is AdminLegacySurfaceMutationResult {
+  return isRecord(value)
+    && hasExactKeys(value, ["ok", "replayed", "projection"])
+    && value.ok === true
+    && typeof value.replayed === "boolean"
+    && Boolean(decodeLegacySurfaceProjection(value.projection));
 }
 
 function isAdminProviderFinanceProvider(value: unknown): value is AdminProviderFinanceProvider {

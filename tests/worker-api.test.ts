@@ -4,7 +4,8 @@ import { getAgentByName } from "agents";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
-import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse } from "../client/src/lib/api";
+import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse, isAdminLegacySurfaceSnapshot } from "../client/src/lib/api";
+import { LEGACY_SURFACE_MANIFEST, legacySurfaceObjectName, stableJson } from "../src/contracts/legacy-surface";
 import { providerOfferingId } from "../src/contracts/provider-attempt";
 import { PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS } from "../src/contracts/provider-finance";
 import { resolveProviderRouteCandidates } from "../src/services/provider-router";
@@ -4932,6 +4933,13 @@ describe("Worker API", () => {
     expect((await exports.default.fetch(new Request(
       "https://example.test/api/admin/provider-finance",
     ))).status).toBe(401);
+    expect((await exports.default.fetch(new Request(
+      "https://example.test/api/admin/legacy-surfaces",
+    ))).status).toBe(401);
+    expect((await exports.default.fetch(new Request(
+      `https://example.test/api/admin/legacy-surfaces/${LEGACY_SURFACE_MANIFEST[0].surfaceId}/advance`,
+      { method: "POST" },
+    ))).status).toBe(401);
     expect((await exports.default.fetch(new Request("https://example.test/api/admin/route-secrets/PRIVATE_TEST_KEY", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -4946,6 +4954,120 @@ describe("Worker API", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ secret: "test-private-value" }),
     }))).status).toBe(401);
+  });
+
+  it("serves the bounded legacy-surface registry and rejects invalid control-plane mutations", async () => {
+    const cookie = await adminLogin();
+    const initial = await apiRequest("/api/admin/legacy-surfaces", cookie);
+    expect(initial.status, await initial.clone().text()).toBe(200);
+    const snapshot: unknown = await initial.json();
+    expect(isAdminLegacySurfaceSnapshot(snapshot)).toBe(true);
+    if (!isAdminLegacySurfaceSnapshot(snapshot)) throw new Error("invalid legacy-surface snapshot fixture");
+    expect(Object.keys(snapshot).sort()).toEqual(["generatedAt", "manifestDigest", "surfaces", "total", "version"]);
+    expect(snapshot).toMatchObject({
+      version: 1,
+      manifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      total: LEGACY_SURFACE_MANIFEST.length,
+    });
+    expect(Number.isSafeInteger(snapshot.generatedAt)).toBe(true);
+    expect(snapshot.surfaces.map((surface) => surface.surfaceId)).toEqual(
+      LEGACY_SURFACE_MANIFEST.map(({ surfaceId }) => surfaceId),
+    );
+    for (const surface of snapshot.surfaces) {
+      expect(Object.keys(surface).sort()).toEqual([
+        "allowedActions",
+        "blockerCodes",
+        "evidence",
+        "lastDeploymentSha",
+        "lastTransitionAt",
+        "manifestDigest",
+        "manifestVersion",
+        "observationRequiredUntil",
+        "observationStartedAt",
+        "owner",
+        "phase",
+        "readControl",
+        "revision",
+        "surfaceId",
+        "version",
+        "writeControl",
+      ]);
+      expect(surface).toMatchObject({
+        version: 1,
+        phase: "discovered",
+        readControl: "enabled",
+        writeControl: "enabled",
+        owner: "unassigned",
+        allowedActions: [],
+      });
+      expect(surface.manifestDigest).toBe(snapshot.manifestDigest);
+    }
+
+    const limited = await apiRequest("/api/admin/legacy-surfaces?limit=1", cookie);
+    expect(limited.status).toBe(200);
+    await expect(limited.json()).resolves.toMatchObject({ total: LEGACY_SURFACE_MANIFEST.length, surfaces: [snapshot.surfaces[0]] });
+    for (const query of ["limit=0", "limit=01", "limit=101", "limit=1&limit=2", "limit=1&extra=1"]) {
+      const invalid = await apiRequest(`/api/admin/legacy-surfaces?${query}`, cookie);
+      expect(invalid.status, query).toBe(400);
+      await expect(invalid.json(), query).resolves.toEqual({ error: "invalid_limit" });
+    }
+
+    const surface = snapshot.surfaces[0];
+    const advanceInput = {
+      version: 1,
+      surfaceId: surface.surfaceId,
+      expectedRevision: surface.revision,
+      operationId: `worker-api-${crypto.randomUUID()}`,
+      targetPhase: "instrumented",
+      requestedAt: Date.now(),
+      evidence: [],
+    };
+    const blocked = await apiRequest(
+      `/api/admin/legacy-surfaces/${encodeURIComponent(surface.surfaceId)}/advance`,
+      cookie,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(advanceInput),
+      },
+    );
+    expect(blocked.status).toBe(422);
+    await expect(blocked.json()).resolves.toEqual({ error: "legacy_surface_gate_blocked" });
+
+    const leaked = await apiRequest(
+      `/api/admin/legacy-surfaces/${encodeURIComponent(surface.surfaceId)}/advance`,
+      cookie,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...advanceInput, operationId: `worker-api-${crypto.randomUUID()}`, notes: "must-not-persist" }),
+      },
+    );
+    expect(leaked.status).toBe(400);
+    await expect(leaked.json()).resolves.toEqual({ error: "invalid_legacy_surface_request" });
+    await expect(env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).resolves.toBeNull();
+
+    const unknown = await apiRequest("/api/admin/legacy-surfaces/not-bundled/rollback", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(unknown.status).toBe(404);
+    await expect(unknown.json()).resolves.toEqual({ error: "legacy_surface_not_found" });
+
+    const driftedManifest = { ...LEGACY_SURFACE_MANIFEST[0], owner: "frontend" };
+    await runInDurableObject(
+      env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(LEGACY_SURFACE_MANIFEST[0].surfaceId)),
+      async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_manifest SET manifest_json = ? WHERE id = 1",
+          stableJson(driftedManifest),
+        );
+      },
+    );
+    const drift = await apiRequest("/api/admin/legacy-surfaces", cookie);
+    expect(drift.status).toBe(409);
+    await expect(drift.json()).resolves.toEqual({ error: "legacy_surface_manifest_conflict" });
   });
 
   it("rejects malformed managed-secret inputs without mutating storage", async () => {

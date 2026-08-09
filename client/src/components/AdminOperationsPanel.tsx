@@ -1,14 +1,23 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Activity, BookOpenText, ChevronLeft, ChevronRight, CircleDollarSign, Gauge, MessageSquareText, ReceiptText, RefreshCw, Route, ScrollText, ShieldCheck, ThumbsDown, ThumbsUp, TriangleAlert, Users } from "lucide-react";
+import { Activity, ArrowRight, BookOpenText, ChevronLeft, ChevronRight, CircleDollarSign, Gauge, ListChecks, MessageSquareText, ReceiptText, RefreshCw, RotateCcw, Route, ScrollText, ShieldCheck, ThumbsDown, ThumbsUp, TriangleAlert, Users, X } from "lucide-react";
 import {
   ApiError,
+  adminLegacySurfaceRequiredEvidence,
+  advanceAdminLegacySurface,
   createAdminProviderBudgetPolicy,
   createAdminProviderPriceCatalog,
   fetchAdminOperations,
   importAdminProviderReconciliation,
   reconcileAdminProviderBudgetReservation,
+  rollbackAdminLegacySurface,
   type AdminAuditEntry,
   type AdminFeedbackEntry,
+  type AdminLegacySurfaceAction,
+  type AdminLegacySurfaceAdvanceInput,
+  type AdminLegacySurfaceEvidence,
+  type AdminLegacySurfacePhase,
+  type AdminLegacySurfaceProjection,
+  type AdminLegacySurfaceRollbackInput,
   type AdminOperationsSnapshot,
   type AdminProviderBudgetOperatorAction,
   type AdminProviderBudgetPolicyInput,
@@ -18,6 +27,7 @@ import {
   type AdminProviderPriceCatalog,
   type AdminProviderReconciliationInput,
 } from "../lib/api";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
 
@@ -33,7 +43,7 @@ type OperationsViewState =
   | { status: "ready"; snapshot: AdminOperationsSnapshot; refreshing: boolean }
   | { status: "error"; message: string };
 
-type OperationsList = "routes" | "feedback" | "audit" | "users" | "providers" | "catalogs" | "financeAttempts" | "reconciliations" | "budgetPolicies" | "budgetBalances" | "budgetReservations";
+type OperationsList = "legacySurfaces" | "routes" | "feedback" | "audit" | "users" | "providers" | "catalogs" | "financeAttempts" | "reconciliations" | "budgetPolicies" | "budgetBalances" | "budgetReservations";
 type OperationsPages = Record<OperationsList, number>;
 
 type FinanceActions = {
@@ -43,6 +53,34 @@ type FinanceActions = {
   reconcileBudgetReservation: (input: AdminProviderBudgetOperatorAction) => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
 };
+
+type LegacySurfaceActions = {
+  advance: (input: AdminLegacySurfaceAdvanceInput) => Promise<void>;
+  rollback: (input: AdminLegacySurfaceRollbackInput) => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
+};
+
+type LegacySurfaceEvidenceDraft = {
+  kind: AdminLegacySurfaceEvidence["kind"];
+  evidenceId: string;
+  digest: string;
+  deploymentSha: string;
+  observedAt: string;
+  count: string;
+  result: AdminLegacySurfaceEvidence["result"];
+};
+
+export type LegacySurfaceTransitionDraft = {
+  surfaceId: string;
+  expectedRevision: number;
+  fromPhase: AdminLegacySurfacePhase;
+  operationId: string;
+  action: AdminLegacySurfaceAction;
+  rollbackReason: AdminLegacySurfaceRollbackInput["reason"];
+  evidence: LegacySurfaceEvidenceDraft[];
+};
+
+type PreparedLegacySurfaceTransition = AdminLegacySurfaceAdvanceInput | AdminLegacySurfaceRollbackInput;
 
 export const OPERATIONS_PAGE_SIZE = 20;
 
@@ -57,7 +95,7 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
     void refresh();
   }, [refreshKey]);
 
-  async function refresh() {
+  async function refresh(): Promise<boolean> {
     const generation = refreshGeneration.current + 1;
     refreshGeneration.current = generation;
     setViewState((current) => current.status === "ready"
@@ -65,28 +103,41 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
       : { status: "loading" });
     try {
       const snapshot = await fetchAdminOperations();
-      if (generation !== refreshGeneration.current) return;
+      if (generation !== refreshGeneration.current) return false;
       setViewState({ status: "ready", snapshot, refreshing: false });
       onNotice(null);
+      return true;
     } catch (error) {
-      if (generation !== refreshGeneration.current) return;
+      if (generation !== refreshGeneration.current) return false;
       if (error instanceof ApiError && error.status === 401) {
         onSessionExpired();
-        return;
+        return false;
       }
       const message = error instanceof Error ? error.message : "暂时无法读取运营数据。";
       setViewState((current) => current.status === "ready"
         ? { ...current, refreshing: false }
         : { status: "error", message });
       onNotice({ kind: "error", text: message });
+      return false;
     }
   }
 
   async function runFinanceMutation(action: () => Promise<unknown>, successText: string) {
     try {
       await action();
+      if (!await refresh()) throw new Error("操作已提交，但暂时无法刷新权威数据。请重试确认以恢复状态。");
       onNotice({ kind: "success", text: successText });
-      await refresh();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      throw error;
+    }
+  }
+
+  async function runLegacySurfaceMutation(action: () => Promise<unknown>, successText: string) {
+    try {
+      await action();
+      if (!await refresh()) throw new Error("治理操作已提交，但暂时无法刷新权威状态。请重试确认。");
+      onNotice({ kind: "success", text: successText });
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onSessionExpired();
       throw error;
@@ -139,6 +190,17 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
             ),
             onDirtyChange,
           }}
+          legacySurfaceActions={{
+            advance: (input) => runLegacySurfaceMutation(
+              () => advanceAdminLegacySurface(input),
+              `旧功能面 ${input.surfaceId} 已推进到 ${legacySurfacePhaseLabel(input.targetPhase)}。`,
+            ),
+            rollback: (input) => runLegacySurfaceMutation(
+              () => rollbackAdminLegacySurface(input),
+              `旧功能面 ${input.surfaceId} 已完成${input.scope === "read" ? "读取" : "写入"}回滚。`,
+            ),
+            onDirtyChange,
+          }}
         />
       )}
     </section>
@@ -149,13 +211,16 @@ export function AdminOperationsContent({
   snapshot,
   filter = "",
   financeActions,
+  legacySurfaceActions,
 }: {
   snapshot: AdminOperationsSnapshot;
   filter?: string;
   financeActions?: FinanceActions;
+  legacySurfaceActions?: LegacySurfaceActions;
 }) {
   const query = filter.trim().toLocaleLowerCase();
   const [pages, setPages] = useState<OperationsPages>({
+    legacySurfaces: 1,
     routes: 1,
     feedback: 1,
     audit: 1,
@@ -172,6 +237,10 @@ export function AdminOperationsContent({
   const [reconciliationDirty, setReconciliationDirty] = useState(false);
   const [budgetPolicyDirty, setBudgetPolicyDirty] = useState(false);
   const [budgetActionDirty, setBudgetActionDirty] = useState(false);
+  const [legacySurfaceDraft, setLegacySurfaceDraft] = useState<LegacySurfaceTransitionDraft | null>(null);
+  const [preparedLegacySurfaceTransition, setPreparedLegacySurfaceTransition] = useState<PreparedLegacySurfaceTransition | null>(null);
+  const [legacySurfaceConfirmationOpen, setLegacySurfaceConfirmationOpen] = useState(false);
+  const [legacySurfaceValidationError, setLegacySurfaceValidationError] = useState("");
   const maxRequests = Math.max(1, ...snapshot.stats.trend.map((item) => item.requests));
   const users = useMemo(() => snapshot.stats.users.filter((user) => matchesQuery(query, user.label, user.displayName, user.defaultRoute)), [query, snapshot.stats.users]);
   const routes = useMemo(() => snapshot.stats.routeStats.filter((route) => matchesQuery(query, route.id, route.label, route.model)), [query, snapshot.stats.routeStats]);
@@ -196,6 +265,16 @@ export function AdminOperationsContent({
   const budgetReservations = useMemo(() => snapshot.finance.providers.flatMap((provider) => provider.budgetReservations
     .filter((reservation) => matchesQuery(query, provider.providerId, provider.label, reservation.policyId, reservation.currency, reservation.status))
     .map((reservation) => ({ provider, reservation }))), [query, snapshot.finance.providers]);
+  const legacySurfaces = useMemo(() => snapshot.legacySurfaces.surfaces.filter((surface) => matchesQuery(
+    query,
+    surface.surfaceId,
+    surface.phase,
+    surface.owner,
+    surface.readControl,
+    surface.writeControl,
+    ...surface.blockerCodes,
+  )), [query, snapshot.legacySurfaces.surfaces]);
+  const legacySurfacePage = paginateOperations(legacySurfaces, pages.legacySurfaces);
   const routePage = paginateOperations(routes, pages.routes);
   const feedbackPage = paginateOperations(feedback, pages.feedback);
   const auditPage = paginateOperations(audit, pages.audit);
@@ -209,16 +288,75 @@ export function AdminOperationsContent({
   const budgetReservationPage = paginateOperations(budgetReservations, pages.budgetReservations);
 
   useEffect(() => {
-    setPages({ routes: 1, feedback: 1, audit: 1, users: 1, providers: 1, catalogs: 1, financeAttempts: 1, reconciliations: 1, budgetPolicies: 1, budgetBalances: 1, budgetReservations: 1 });
+    setPages({ legacySurfaces: 1, routes: 1, feedback: 1, audit: 1, users: 1, providers: 1, catalogs: 1, financeAttempts: 1, reconciliations: 1, budgetPolicies: 1, budgetBalances: 1, budgetReservations: 1 });
   }, [query]);
 
   useEffect(() => {
-    financeActions?.onDirtyChange(priceDirty || reconciliationDirty || budgetPolicyDirty || budgetActionDirty);
-    return () => financeActions?.onDirtyChange(false);
-  }, [financeActions, priceDirty, reconciliationDirty, budgetPolicyDirty, budgetActionDirty]);
+    const dirty = priceDirty || reconciliationDirty || budgetPolicyDirty || budgetActionDirty || Boolean(legacySurfaceDraft);
+    financeActions?.onDirtyChange(dirty);
+    legacySurfaceActions?.onDirtyChange(dirty);
+    return () => {
+      financeActions?.onDirtyChange(false);
+      legacySurfaceActions?.onDirtyChange(false);
+    };
+  }, [financeActions, legacySurfaceActions, legacySurfaceDraft, priceDirty, reconciliationDirty, budgetPolicyDirty, budgetActionDirty]);
 
   function setPage(list: OperationsList, page: number) {
     setPages((current) => ({ ...current, [list]: page }));
+  }
+
+  function startLegacySurfaceTransition(surface: AdminLegacySurfaceProjection, action: AdminLegacySurfaceAction) {
+    if (legacySurfaceDraft) return;
+    setLegacySurfaceDraft(emptyLegacySurfaceTransitionDraft(surface, action));
+    setPreparedLegacySurfaceTransition(null);
+    setLegacySurfaceValidationError("");
+  }
+
+  function updateLegacySurfaceEvidence<K extends keyof LegacySurfaceEvidenceDraft>(
+    index: number,
+    key: K,
+    value: LegacySurfaceEvidenceDraft[K],
+  ) {
+    setLegacySurfaceDraft((current) => current ? {
+      ...current,
+      evidence: current.evidence.map((entry, entryIndex) => entryIndex === index
+        ? { ...entry, [key]: value }
+        : entry),
+    } : current);
+    setPreparedLegacySurfaceTransition(null);
+    setLegacySurfaceValidationError("");
+  }
+
+  function reviewLegacySurfaceTransition(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!legacySurfaceDraft) return;
+    try {
+      const prepared = prepareLegacySurfaceTransition(legacySurfaceDraft);
+      setPreparedLegacySurfaceTransition(prepared);
+      setLegacySurfaceConfirmationOpen(true);
+      setLegacySurfaceValidationError("");
+    } catch (error) {
+      setLegacySurfaceValidationError(error instanceof Error ? error.message : "治理证据格式无效。");
+    }
+  }
+
+  async function confirmLegacySurfaceTransition() {
+    if (!preparedLegacySurfaceTransition || !legacySurfaceActions) throw new Error("治理操作草稿已失效，请重新检查。");
+    if ("targetPhase" in preparedLegacySurfaceTransition) {
+      await legacySurfaceActions.advance(preparedLegacySurfaceTransition);
+    } else {
+      await legacySurfaceActions.rollback(preparedLegacySurfaceTransition);
+    }
+    setLegacySurfaceDraft(null);
+    setPreparedLegacySurfaceTransition(null);
+    setLegacySurfaceValidationError("");
+  }
+
+  function cancelLegacySurfaceTransition() {
+    setLegacySurfaceConfirmationOpen(false);
+    setPreparedLegacySurfaceTransition(null);
+    setLegacySurfaceDraft(null);
+    setLegacySurfaceValidationError("");
   }
 
   const summary: Array<{ label: string; value: string | number }> = [
@@ -231,6 +369,7 @@ export function AdminOperationsContent({
     { label: "Usage 未知", value: snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.unknownUsageAttempts, 0) },
     { label: "预算待结算", value: snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.pendingSettlementCount, 0), 0) },
     { label: "预算待复核", value: snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.reviewRequiredCount, 0), 0) },
+    { label: "治理面", value: snapshot.legacySurfaces.total },
   ];
 
   return (
@@ -238,6 +377,97 @@ export function AdminOperationsContent({
       <dl className="admin-operations-summary" aria-label="7 日运营摘要">
         {summary.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
       </dl>
+
+      <OperationsSection icon={<ListChecks size={17} />} title="旧功能面治理" meta={pageCountMeta(legacySurfacePage)}>
+        <div className="legacy-surface-list">
+          {legacySurfacePage.items.map((surface) => (
+            <div className="legacy-surface-row" key={surface.surfaceId}>
+              <div className="legacy-surface-identity">
+                <strong>{surface.surfaceId}</strong>
+                <span className={`legacy-surface-phase phase-${surface.phase}`}>{legacySurfacePhaseLabel(surface.phase)}</span>
+              </div>
+              <dl className="legacy-surface-facts">
+                <div><dt>读取</dt><dd>{legacySurfaceControlLabel(surface.readControl)}</dd></div>
+                <div><dt>写入</dt><dd>{legacySurfaceControlLabel(surface.writeControl)}</dd></div>
+                <div><dt>负责人</dt><dd>{legacySurfaceOwnerLabel(surface.owner)}</dd></div>
+                <div><dt>证据</dt><dd>{surface.evidence.present} / {surface.evidence.required}{surface.evidence.complete ? " · 完整" : " · 待补"}</dd></div>
+                <div><dt>观察</dt><dd>{legacySurfaceObservationLabel(surface)}</dd></div>
+                <div><dt>部署</dt><dd>{surface.lastDeploymentSha || "未记录"}</dd></div>
+                <div><dt>修订</dt><dd>{surface.revision}</dd></div>
+              </dl>
+              <div className="legacy-surface-blockers">
+                {surface.blockerCodes.length
+                  ? surface.blockerCodes.map((blocker) => <span key={blocker}>{legacySurfaceBlockerLabel(blocker)}</span>)
+                  : <span className="clear">无阻塞项</span>}
+              </div>
+              <div className="legacy-surface-actions">
+                {legacySurfaceActions && surface.allowedActions.map((action) => (
+                  <button
+                    className="quiet-button icon-text-button"
+                    type="button"
+                    key={legacySurfaceActionKey(action)}
+                    onClick={() => startLegacySurfaceTransition(surface, action)}
+                    disabled={Boolean(legacySurfaceDraft)}
+                  >
+                    {action.kind === "advance" ? <ArrowRight size={15} /> : <RotateCcw size={15} />}
+                    <span>{legacySurfaceActionLabel(action)}</span>
+                  </button>
+                ))}
+                {!surface.allowedActions.length && <small>当前无已授权操作</small>}
+              </div>
+            </div>
+          ))}
+          {!legacySurfacePage.total && <p className="typed-admin-empty">没有匹配的旧功能面</p>}
+        </div>
+        <PaginationControls label="旧功能面治理" page={legacySurfacePage} onPageChange={(page) => setPage("legacySurfaces", page)} />
+
+        {legacySurfaceDraft && legacySurfaceActions && (
+          <form className="legacy-surface-transition-form" onSubmit={reviewLegacySurfaceTransition}>
+            <header>
+              <div>
+                <h3>{legacySurfaceDraft.surfaceId}</h3>
+                <p>{legacySurfacePhaseLabel(legacySurfaceDraft.fromPhase)} → {legacySurfaceActionTargetLabel(legacySurfaceDraft.action)}</p>
+              </div>
+              <button className="icon-button" type="button" onClick={cancelLegacySurfaceTransition} aria-label="取消旧功能面操作" title="取消"><X size={17} /></button>
+            </header>
+            {legacySurfaceDraft.action.kind === "rollback" && (
+              <label className="legacy-surface-reason"><span>回滚原因</span><select
+                value={legacySurfaceDraft.rollbackReason}
+                onChange={(event) => {
+                  setLegacySurfaceDraft((current) => current ? { ...current, rollbackReason: event.target.value as AdminLegacySurfaceRollbackInput["reason"] } : current);
+                  setPreparedLegacySurfaceTransition(null);
+                }}
+              >
+                <option value="control_failure">控制失效</option>
+                <option value="evidence_invalidated">证据失效</option>
+                <option value="parity_regression">一致性回退</option>
+                <option value="recovery_failure">恢复失败</option>
+                <option value="runtime_regression">运行回退</option>
+              </select></label>
+            )}
+            <div className="legacy-surface-evidence-list">
+              {legacySurfaceDraft.evidence.map((evidence, index) => (
+                <fieldset key={evidence.kind}>
+                  <legend>{legacySurfaceEvidenceKindLabel(evidence.kind)}</legend>
+                  <div className="admin-form-grid two">
+                    <label><span>证据 ID</span><input value={evidence.evidenceId} maxLength={160} onChange={(event) => updateLegacySurfaceEvidence(index, "evidenceId", event.target.value)} required /></label>
+                    <label><span>结果</span><select value={evidence.result} onChange={(event) => updateLegacySurfaceEvidence(index, "result", event.target.value as LegacySurfaceEvidenceDraft["result"])}><option value="passed">通过</option><option value="complete">完成</option><option value="approved">已批准</option></select></label>
+                    <label className="admin-form-wide"><span>SHA-256 摘要</span><input value={evidence.digest} maxLength={64} pattern="[a-f0-9]{64}" onChange={(event) => updateLegacySurfaceEvidence(index, "digest", event.target.value)} required /></label>
+                    <label className="admin-form-wide"><span>部署 Commit SHA</span><input value={evidence.deploymentSha} maxLength={40} pattern="[a-f0-9]{40}" onChange={(event) => updateLegacySurfaceEvidence(index, "deploymentSha", event.target.value)} required /></label>
+                    <label><span>观察时间</span><input type="datetime-local" value={evidence.observedAt} onChange={(event) => updateLegacySurfaceEvidence(index, "observedAt", event.target.value)} required /></label>
+                    <label><span>计数</span><input type="number" min="0" step="1" value={evidence.count} onChange={(event) => updateLegacySurfaceEvidence(index, "count", event.target.value)} required /></label>
+                  </div>
+                </fieldset>
+              ))}
+            </div>
+            {legacySurfaceValidationError && <p className="form-message error" role="alert">{legacySurfaceValidationError}</p>}
+            <div className="legacy-surface-form-actions">
+              <button className="quiet-button icon-text-button" type="button" onClick={cancelLegacySurfaceTransition}><X size={15} /><span>取消</span></button>
+              <button className="primary-button icon-text-button" type="submit"><ShieldCheck size={15} /><span>检查并确认</span></button>
+            </div>
+          </form>
+        )}
+      </OperationsSection>
 
       <div className="admin-operations-grid">
         <OperationsSection icon={<Activity size={17} />} title="7 日请求趋势" meta={`统计日 ${snapshot.stats.day}`}>
@@ -450,6 +680,19 @@ export function AdminOperationsContent({
           }}
           onBudgetPolicyDirtyChange={setBudgetPolicyDirty}
           onBudgetActionDirtyChange={setBudgetActionDirty}
+        />
+      )}
+      {legacySurfaceConfirmationOpen && legacySurfaceDraft && preparedLegacySurfaceTransition && (
+        <ConfirmDialog
+          title={legacySurfaceDraft.action.kind === "advance" ? "确认推进旧功能面" : "确认回滚旧功能面"}
+          description={<>
+            将 <strong>{legacySurfaceDraft.surfaceId}</strong> 从 {legacySurfacePhaseLabel(legacySurfaceDraft.fromPhase)} 变更到 {legacySurfaceActionTargetLabel(legacySurfaceDraft.action)}，提交修订 {legacySurfaceDraft.expectedRevision} 的证据。
+          </>}
+          confirmLabel={legacySurfaceDraft.action.kind === "advance" ? "确认推进" : "确认回滚"}
+          pendingLabel="正在提交..."
+          tone={legacySurfaceDraft.action.kind === "rollback" ? "danger" : "default"}
+          onCancel={() => setLegacySurfaceConfirmationOpen(false)}
+          onConfirm={confirmLegacySurfaceTransition}
         />
       )}
     </div>
@@ -809,6 +1052,192 @@ function ProviderReconciliationForm({
       <button className="primary-button icon-text-button" type="submit" disabled={pending || !providers.length}><ReceiptText size={15} /><span>{pending ? "导入中..." : "导入对账摘要"}</span></button>
     </form>
   );
+}
+
+function emptyLegacySurfaceTransitionDraft(
+  surface: AdminLegacySurfaceProjection,
+  action: AdminLegacySurfaceAction,
+): LegacySurfaceTransitionDraft {
+  const observedAt = formatDateTimeLocal(Date.now());
+  return {
+    surfaceId: surface.surfaceId,
+    expectedRevision: surface.revision,
+    fromPhase: surface.phase,
+    operationId: `legacy-surface:${crypto.randomUUID()}`,
+    action,
+    rollbackReason: "runtime_regression",
+    evidence: adminLegacySurfaceRequiredEvidence(action).map((kind) => ({
+      kind,
+      evidenceId: "",
+      digest: "",
+      deploymentSha: "",
+      observedAt,
+      count: "0",
+      result: kind === "owner_approval" || kind.endsWith("_approval") ? "approved" : "passed",
+    })),
+  };
+}
+
+export function prepareLegacySurfaceTransition(
+  draft: LegacySurfaceTransitionDraft,
+  requestedAt = Date.now(),
+): PreparedLegacySurfaceTransition {
+  if (!Number.isSafeInteger(requestedAt) || requestedAt <= 0) {
+    throw new Error("请求时间格式无效。");
+  }
+  if (!Number.isSafeInteger(draft.expectedRevision) || draft.expectedRevision < 0) {
+    throw new Error("服务端修订号格式无效，请刷新后重试。");
+  }
+  if (draft.operationId.length > 160 || !/^[A-Za-z0-9][A-Za-z0-9:._/-]*$/.test(draft.operationId)) {
+    throw new Error("操作标识格式无效，请重新打开表单。");
+  }
+
+  const requiredKinds = adminLegacySurfaceRequiredEvidence(draft.action);
+  if (
+    draft.evidence.length !== requiredKinds.length
+    || draft.evidence.some((entry, index) => entry.kind !== requiredKinds[index])
+  ) {
+    throw new Error("证据类型与服务端授权操作不一致，请重新打开表单。");
+  }
+
+  const evidence: AdminLegacySurfaceEvidence[] = draft.evidence.map((entry) => {
+    const evidenceId = entry.evidenceId.trim();
+    if (evidenceId.length > 160 || !/^[A-Za-z0-9][A-Za-z0-9:._/-]*$/.test(evidenceId)) {
+      throw new Error(`${legacySurfaceEvidenceKindLabel(entry.kind)}的证据 ID 格式无效。`);
+    }
+    if (!/^[a-f0-9]{64}$/.test(entry.digest)) {
+      throw new Error(`${legacySurfaceEvidenceKindLabel(entry.kind)}的 SHA-256 摘要格式无效。`);
+    }
+    if (!/^[a-f0-9]{40}$/.test(entry.deploymentSha)) {
+      throw new Error(`${legacySurfaceEvidenceKindLabel(entry.kind)}的部署 Commit SHA 格式无效。`);
+    }
+    const observedAt = parseDateTime(entry.observedAt, `${legacySurfaceEvidenceKindLabel(entry.kind)}观察时间`);
+    if (observedAt <= 0 || observedAt > requestedAt) {
+      throw new Error(`${legacySurfaceEvidenceKindLabel(entry.kind)}的观察时间不能晚于请求时间。`);
+    }
+    const count = parseInteger(entry.count, `${legacySurfaceEvidenceKindLabel(entry.kind)}计数`);
+    if (entry.result !== "passed" && entry.result !== "complete" && entry.result !== "approved") {
+      throw new Error(`${legacySurfaceEvidenceKindLabel(entry.kind)}的结果格式无效。`);
+    }
+    return {
+      version: 1,
+      kind: entry.kind,
+      evidenceId,
+      digest: entry.digest,
+      deploymentSha: entry.deploymentSha,
+      observedAt,
+      count,
+      result: entry.result,
+    };
+  });
+
+  if (draft.action.kind === "advance") {
+    return {
+      version: 1,
+      surfaceId: draft.surfaceId,
+      expectedRevision: draft.expectedRevision,
+      operationId: draft.operationId,
+      targetPhase: draft.action.targetPhase,
+      requestedAt,
+      evidence,
+    };
+  }
+  return {
+    version: 1,
+    surfaceId: draft.surfaceId,
+    expectedRevision: draft.expectedRevision,
+    operationId: draft.operationId,
+    scope: draft.action.scope,
+    reason: draft.rollbackReason,
+    requestedAt,
+    evidence,
+  };
+}
+
+function legacySurfacePhaseLabel(phase: AdminLegacySurfacePhase): string {
+  return ({
+    discovered: "已发现",
+    instrumented: "已接入观测",
+    censused: "调用已盘点",
+    parity_proven: "一致性已证明",
+    shadowing: "影子运行",
+    write_disabled: "写入已停用",
+    write_observing: "写入观察中",
+    recovery_proven: "恢复已证明",
+    read_disabled: "读取已停用",
+    read_observing: "读取观察中",
+    approved_for_cleanup: "已批准清理",
+  } as const)[phase];
+}
+
+function legacySurfaceControlLabel(control: AdminLegacySurfaceProjection["readControl"]): string {
+  return control === "enabled" ? "启用" : "停用";
+}
+
+function legacySurfaceOwnerLabel(owner: AdminLegacySurfaceProjection["owner"]): string {
+  return ({
+    unassigned: "未分配",
+    frontend: "前端",
+    operations: "运营",
+    data: "数据",
+    provider: "Provider",
+    security: "安全",
+  } as const)[owner];
+}
+
+function legacySurfaceObservationLabel(surface: AdminLegacySurfaceProjection): string {
+  if (!surface.observationStartedAt && !surface.observationRequiredUntil) return "未要求";
+  if (!surface.observationStartedAt) return "尚未开始";
+  if (surface.observationRequiredUntil <= Date.now()) {
+    return `已完成于 ${formatShortDateTime(surface.observationRequiredUntil)}`;
+  }
+  return `观察至 ${formatShortDateTime(surface.observationRequiredUntil)}`;
+}
+
+function legacySurfaceBlockerLabel(blocker: AdminLegacySurfaceProjection["blockerCodes"][number]): string {
+  return ({
+    maximum_phase_reached: "已达到代码支持上限",
+    owner_unassigned: "负责人未分配",
+    missing_evidence: "缺少证据",
+    observation_incomplete: "观察窗口未完成",
+    manifest_conflict: "清单冲突",
+    state_invalid: "状态不可用",
+  } as const)[blocker];
+}
+
+function legacySurfaceActionKey(action: AdminLegacySurfaceAction): string {
+  return action.kind === "advance"
+    ? `advance:${action.targetPhase}`
+    : `rollback:${action.scope}:${action.targetPhase}`;
+}
+
+function legacySurfaceActionLabel(action: AdminLegacySurfaceAction): string {
+  return action.kind === "advance"
+    ? `推进至${legacySurfacePhaseLabel(action.targetPhase)}`
+    : `回滚${action.scope === "read" ? "读取" : "写入"}`;
+}
+
+function legacySurfaceActionTargetLabel(action: AdminLegacySurfaceAction): string {
+  return `${legacySurfacePhaseLabel(action.targetPhase)}${action.kind === "rollback" ? `（${action.scope === "read" ? "读取" : "写入"}回滚）` : ""}`;
+}
+
+function legacySurfaceEvidenceKindLabel(kind: AdminLegacySurfaceEvidence["kind"]): string {
+  return ({
+    caller_map: "调用方清单",
+    instrumentation_contract: "观测契约",
+    deployment: "部署证据",
+    census_window: "调用盘点窗口",
+    parity_digest: "一致性摘要",
+    shadow_reconciliation: "影子对账",
+    write_disable_approval: "停写批准",
+    rollback_rehearsal: "回滚演练",
+    write_observation: "停写观察",
+    capture_evidence: "捕获证据",
+    isolated_restore: "隔离恢复",
+    read_disable_approval: "停读批准",
+    read_observation: "停读观察",
+    owner_approval: "负责人批准",
+  } as const)[kind];
 }
 
 function emptyBudgetPolicyDraft(provider: AdminProviderFinanceProvider | undefined): BudgetPolicyDraft {

@@ -38,6 +38,15 @@ Documentation-only deployment skipping is narrow. Markdown files and approved do
 
 Delivery artifacts are non-sensitive JSON plus bounded Playwright output. A delivery manifest contains only `schemaVersion`, `kind`, `status`, `commit`, `generatedAt`, `packageLockSha256`, and `publicBundleSha256`. PR coverage retains only the bounded Istanbul `coverage/coverage-summary.json` for 14 days; the source-level HTML tree is local output and must not be uploaded. Never retain runtime credentials, dotenv files, Wrangler persistence, access codes, conversation content, stored memory, or a complete source-view coverage directory. The fake-Provider runner may retain a caller-owned Playwright output directory, but its temporary env and Wrangler state remain in a separately deleted directory. The runner always writes `agent-summary.json` into that directory with only schema version, kind, pass/fail status, commit, generation time, and bounded fake-Provider counters; a successful test must not leave the artifact directory empty.
 
+Legacy-surface foundation and rollout tasks affect shared Worker, Durable Object,
+recovery, and React Operations paths, so they retain both Workspace and local
+fake-Provider Agent Playwright evidence in addition to focused state-machine and
+restore tests. Foundation delivery evidence must prove all bundled records remain
+`discovered` and no runtime caller was wired. A later rollout records evidence for
+one exact surface and cannot reuse another surface's observation, owner approval,
+or rollback result. Production deployment and acceptance use the exact merged
+main SHA through GitHub Actions; local tests never mutate a production registry.
+
 Main deployment preserves the early and late remote-main SHA guards and the non-canceling production-mutation concurrency group. Both guards call `scripts/assert-main-tip.mjs`, which accepts only a lowercase 40-character `GITHUB_SHA`, requires exactly one valid `refs/heads/main` result, compares by exact equality, and emits bounded errors without command output. The early guard runs after Node setup but before provisioning or secret preparation; the late guard is the step immediately before `Deploy Worker`. The deploy job checks out full history before comparing `GITHUB_SHA^` to `GITHUB_SHA`; the default one-commit checkout makes the parent revision ambiguous and must not be used with this gate. Documentation/Trellis-record-only commits publish explicit path-classification evidence and a skip summary. A real deploy and manual production acceptance each retain an exact-SHA manifest.
 
 Trellis archive validates before any state or directory mutation. A code task requires checked acceptance criteria with no `TBD`, passed records for the five baseline commands, task-required impact-path browser/fake-runtime evidence named in its PRD or implementation plan, a resolving `task.json.commit`, a valid HTTPS `task.json.pr_url`, completed children, a free archive destination, repository-wide parent/child consistency, and a current workspace root index. The browser evidence may be enforced by the checked AC/implementation checklist when it is narrower than the repository-wide machine gate; it cannot be replaced by a live Provider, production probe, or local production deploy.
@@ -74,6 +83,8 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 | Executable workflow job lacks its approved timeout | Structured governance test fails |
 | Official action uses an unapproved or pre-Node-24 major | Structured governance test fails |
 | PR has whitespace errors in committed diff | Base-to-head `git diff --check` fails |
+| Legacy foundation evidence omits the all-`discovered` invariant or either browser suite | Keep its delivery checklist and AC open |
+| One surface rollout cites another surface's evidence | Reject the rollout/archive; per-surface evidence is not transferable |
 | Deploy checkout cannot resolve `GITHUB_SHA^` | Deployment stops before preparing secrets or mutating production |
 | Browser suite fails | Upload retained trace/screenshot output without runtime secrets |
 | Coverage suite completes or fails after producing a summary | Retain only `coverage/coverage-summary.json`; never upload HTML/source views |
@@ -105,6 +116,9 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 - Run the manifest writer under Node and assert a 0.x package line, exact commit, SHA-256 lockfile/bundle fields, and the bounded key set. Assert the fake-Provider runner writes a bounded summary into its caller-owned artifact directory even when Playwright produces no screenshot or trace.
 - Run `.trellis/tests` for checked/unchecked AC, missing validation, missing work commit, missing PR URL, incomplete children, occupied archive target, structured waiver scope, duplicates, cycles, orphans, fail-before-mutate, and workspace-index repair.
 - For storage/Agent/capture changes, retain local Workspace Playwright and isolated fake-Provider Agent summaries, assert no live endpoint or credential artifact, and record both commands before checking the task delivery item.
+- For legacy-surface foundation/rollout changes, also assert the exact bundled
+  manifest, phase ceiling, affected surface set, unchanged non-target surfaces,
+  recovery evidence, and absence of unsupported cleanup claims.
 - Run `python ./.trellis/scripts/task.py validate-all` against the real repository.
 - For a parent task, compare its exact `task.json.children` set with every child list/count in the planning artifacts, then inspect each resolved active/archive child for completed AC, work commit, PR evidence, and final delivery checklist state.
 - Before shipping, run both browser suites and all commands in `frontend/quality-guidelines.md`.

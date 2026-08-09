@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "08-07-legacy-surface-registry-control-plane"
+  ],
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],
   "notes": "",

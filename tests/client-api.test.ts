@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  advanceAdminLegacySurface,
   adminLogout,
   ApiError,
   createAgentConversation,
   deleteWorkspaceFile,
   exportUserData,
+  fetchAdminLegacySurfaces,
   fetchAdminSetupStatus,
   getAgentSkillSelectionMetadata,
   isAdminConfigSnapshot,
   isAdminLegacyRouteMigrationResponse,
+  isAdminLegacySurfaceMutationResult,
+  isAdminLegacySurfaceSnapshot,
   isAdminAuditSnapshot,
   isAdminFeedbackSnapshot,
   isAdminMemberCredentialResponse,
@@ -40,6 +44,7 @@ import {
   logout,
   migrateAdminLegacyRoutes,
   retryWorkspaceDocumentIngest,
+  rollbackAdminLegacySurface,
   setConversationWorkspaceFiles,
   submitFeedback,
   isUserDataExport,
@@ -219,6 +224,33 @@ const validSetupStatus = {
     permission: { ready: true, status: "ready", count: 1 },
     smoke: { ready: false, status: "not_run", count: 0 },
   },
+};
+
+const legacySurfaceProjection = {
+  version: 1 as const,
+  surfaceId: "legacy.surface-alpha",
+  revision: 0,
+  manifestVersion: 1,
+  manifestDigest: "a".repeat(64),
+  phase: "discovered" as const,
+  readControl: "enabled" as const,
+  writeControl: "enabled" as const,
+  owner: "unassigned" as const,
+  blockerCodes: ["maximum_phase_reached" as const, "owner_unassigned" as const],
+  observationStartedAt: 0,
+  observationRequiredUntil: 0,
+  lastTransitionAt: 0,
+  lastDeploymentSha: "",
+  evidence: { required: 0, present: 0, complete: true },
+  allowedActions: [],
+};
+
+const legacySurfaceSnapshot = {
+  version: 1 as const,
+  manifestDigest: legacySurfaceProjection.manifestDigest,
+  generatedAt: 1_785_032_000_000,
+  total: 1,
+  surfaces: [legacySurfaceProjection],
 };
 
 describe("admin logout client contract", () => {
@@ -454,6 +486,193 @@ describe("legacy route migration client contract", () => {
       code: "legacy_route_migration_blocked",
       status: 422,
       details: { legacyRouteStatuses: [{ routeId: "primary", status: "blocked", reason: "inline_credential_only" }] },
+    });
+  });
+});
+
+describe("legacy surface control-plane client contract", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("accepts only bounded exact sorted snapshots and mutation results", () => {
+    expect(isAdminLegacySurfaceSnapshot(legacySurfaceSnapshot)).toBe(true);
+    expect(isAdminLegacySurfaceSnapshot({ ...legacySurfaceSnapshot, token: "secret" })).toBe(false);
+    expect(isAdminLegacySurfaceSnapshot({ ...legacySurfaceSnapshot, manifestDigest: "A".repeat(64) })).toBe(false);
+    expect(isAdminLegacySurfaceSnapshot({ ...legacySurfaceSnapshot, total: 0 })).toBe(false);
+    expect(isAdminLegacySurfaceSnapshot({
+      ...legacySurfaceSnapshot,
+      surfaces: [{ ...legacySurfaceProjection, prompt: "secret" }],
+    })).toBe(false);
+    expect(isAdminLegacySurfaceSnapshot({
+      ...legacySurfaceSnapshot,
+      surfaces: [{ ...legacySurfaceProjection, phase: "read_disabled", readControl: "enabled" }],
+    })).toBe(false);
+    expect(isAdminLegacySurfaceSnapshot({
+      ...legacySurfaceSnapshot,
+      total: 2,
+      surfaces: [
+        { ...legacySurfaceProjection, surfaceId: "legacy.surface-beta" },
+        legacySurfaceProjection,
+      ],
+    })).toBe(false);
+    expect(isAdminLegacySurfaceSnapshot({
+      ...legacySurfaceSnapshot,
+      total: 2,
+      surfaces: [legacySurfaceProjection, legacySurfaceProjection],
+    })).toBe(false);
+    expect(isAdminLegacySurfaceSnapshot({
+      ...legacySurfaceSnapshot,
+      total: 101,
+      surfaces: [],
+    })).toBe(false);
+
+    const mutation = {
+      ok: true,
+      replayed: false,
+      projection: { ...legacySurfaceProjection, revision: 1, phase: "instrumented" },
+    };
+    expect(isAdminLegacySurfaceMutationResult(mutation)).toBe(true);
+    expect(isAdminLegacySurfaceMutationResult({ ...mutation, credential: "secret" })).toBe(false);
+    expect(isAdminLegacySurfaceMutationResult({ ...mutation, replayed: "false" })).toBe(false);
+  });
+
+  it("strictly decodes list, advance, and rollback HTTP responses", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(legacySurfaceSnapshot), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(fetchAdminLegacySurfaces(1)).resolves.toEqual(legacySurfaceSnapshot);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("/api/admin/legacy-surfaces?limit=1");
+
+    const advanceInput = {
+      version: 1 as const,
+      surfaceId: legacySurfaceProjection.surfaceId,
+      expectedRevision: 0,
+      operationId: "advance-operation",
+      targetPhase: "instrumented" as const,
+      requestedAt: 1_785_032_000_100,
+      evidence: [],
+    };
+    const advancedProjection = { ...legacySurfaceProjection, revision: 1, phase: "instrumented" as const };
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: true,
+      replayed: false,
+      projection: advancedProjection,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(advanceAdminLegacySurface(advanceInput)).resolves.toMatchObject({ projection: advancedProjection });
+    expect(fetchSpy.mock.calls[1]?.[0]).toBe("/api/admin/legacy-surfaces/legacy.surface-alpha/advance");
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual(advanceInput);
+
+    const rollbackInput = {
+      version: 1 as const,
+      surfaceId: legacySurfaceProjection.surfaceId,
+      expectedRevision: 7,
+      operationId: "rollback-operation",
+      scope: "read" as const,
+      reason: "runtime_regression" as const,
+      requestedAt: 1_785_032_000_200,
+      evidence: [{
+        version: 1 as const,
+        kind: "rollback_rehearsal" as const,
+        evidenceId: "rollback-evidence",
+        digest: "b".repeat(64),
+        deploymentSha: "c".repeat(40),
+        observedAt: 1_785_032_000_100,
+        count: 1,
+        result: "passed" as const,
+      }],
+    };
+    const rolledBackProjection = {
+      ...legacySurfaceProjection,
+      revision: 8,
+      phase: "recovery_proven" as const,
+      writeControl: "disabled" as const,
+      owner: "operations" as const,
+      blockerCodes: [],
+    };
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: true,
+      replayed: false,
+      projection: rolledBackProjection,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(rollbackAdminLegacySurface(rollbackInput)).resolves.toMatchObject({ projection: rolledBackProjection });
+    expect(fetchSpy.mock.calls[2]?.[0]).toBe("/api/admin/legacy-surfaces/legacy.surface-alpha/rollback");
+  });
+
+  it("rejects malformed local requests and mismatched successful responses", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(fetchAdminLegacySurfaces(101)).rejects.toMatchObject({
+      code: "invalid_legacy_surface_limit",
+      status: 400,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    const malformed = {
+      version: 1,
+      surfaceId: legacySurfaceProjection.surfaceId,
+      expectedRevision: 0,
+      operationId: "advance-operation",
+      targetPhase: "instrumented",
+      requestedAt: 1_785_032_000_100,
+      evidence: [],
+      notes: "must-not-send",
+    };
+    await expect(advanceAdminLegacySurface(malformed as never)).rejects.toMatchObject({
+      code: "invalid_legacy_surface_request",
+      status: 400,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: true,
+      replayed: false,
+      projection: { ...legacySurfaceProjection, revision: 2, phase: "instrumented" },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(advanceAdminLegacySurface({
+      version: 1,
+      surfaceId: legacySurfaceProjection.surfaceId,
+      expectedRevision: 0,
+      operationId: "advance-operation",
+      targetPhase: "instrumented",
+      requestedAt: 1_785_032_000_100,
+      evidence: [],
+    })).rejects.toMatchObject({
+      code: "invalid_admin_legacy_surface_mutation_response",
+      status: 502,
+    });
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: true,
+      replayed: false,
+      projection: {
+        ...legacySurfaceProjection,
+        revision: 8,
+        phase: "shadowing",
+        owner: "operations",
+        blockerCodes: [],
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(rollbackAdminLegacySurface({
+      version: 1,
+      surfaceId: legacySurfaceProjection.surfaceId,
+      expectedRevision: 7,
+      operationId: "rollback-operation",
+      scope: "read",
+      reason: "runtime_regression",
+      requestedAt: 1_785_032_000_200,
+      evidence: [{
+        version: 1,
+        kind: "rollback_rehearsal",
+        evidenceId: "rollback-evidence",
+        digest: "b".repeat(64),
+        deploymentSha: "c".repeat(40),
+        observedAt: 1_785_032_000_100,
+        count: 1,
+        result: "passed",
+      }],
+    })).rejects.toMatchObject({
+      code: "invalid_admin_legacy_surface_mutation_response",
+      status: 502,
     });
   });
 });
