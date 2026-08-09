@@ -1661,3 +1661,36 @@ Delivered the 13-record content-free legacy-surface registry and admin control p
 ### Next Steps
 
 - None - task complete
+
+
+## Session 44: Bound Provider fallback turns
+
+**Date**: 2026-08-09
+**Task**: Bound Provider fallback turns
+**Branch**: `main`
+
+### Summary
+
+Added a single 90-second pre-visible Provider run deadline, secret-free ephemeral fallback progress, late-resource cleanup, fake-only regression coverage, executable specs, exact-head CI, exact-main deployment, and production acceptance evidence.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `39ae56906e557ddf9b5634f40e9e146f488ed6ac` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
