@@ -252,6 +252,7 @@ export function createFallbackLanguageModel(
                 callbacks,
                 attempt,
                 lease,
+                signal: attemptDeadline.signal,
                 deadlines: [attemptDeadline, runDeadline],
               }),
             };
@@ -358,13 +359,21 @@ function monitorCommittedStream(args: {
   callbacks: FallbackLanguageModelCallbacks;
   attempt?: ProviderAttemptHandle;
   lease: ProviderCandidateLease;
+  signal?: AbortSignal;
   deadlines: ProviderFirstVisibleDeadline[];
 }): ReadableStream<LanguageModelV3StreamPart> {
   let bufferIndex = 0;
   let settled = false;
   let cancellationRequested = false;
+  let cancellation: Promise<void> | undefined;
   let firstTextDeltaAt = args.firstTextDeltaAt;
   let visibleTextDeltaCount = 0;
+  let abortHandler: (() => void) | undefined;
+  const removeAbortHandler = () => {
+    if (!abortHandler || !args.signal) return;
+    args.signal.removeEventListener("abort", abortHandler);
+    abortHandler = undefined;
+  };
 
   const settleSuccess = async (usage: LanguageModelV3StreamPart & { type: "finish" }) => {
     if (settled) return;
@@ -381,6 +390,7 @@ function monitorCommittedStream(args: {
         streamEvidence(args.startedAt, firstTextDeltaAt, visibleTextDeltaCount),
       ));
     } finally {
+      removeAbortHandler();
       args.deadlines.forEach((deadline) => deadline.dispose());
       await releaseLease(args.lease);
     }
@@ -398,6 +408,7 @@ function monitorCommittedStream(args: {
         error,
       ));
     } finally {
+      removeAbortHandler();
       args.deadlines.forEach((deadline) => deadline.dispose());
       await releaseLease(args.lease);
     }
@@ -408,13 +419,31 @@ function monitorCommittedStream(args: {
     try {
       await args.attempt?.cancel();
     } finally {
+      removeAbortHandler();
       args.deadlines.forEach((deadline) => deadline.dispose());
       await releaseLease(args.lease);
     }
   };
 
+  const cancelCommitted = (reason?: unknown): Promise<void> => {
+    cancellationRequested = true;
+    cancellation ??= (async () => {
+      await args.reader.cancel(reason).catch(() => undefined);
+      await settleCancelled();
+    })();
+    return cancellation;
+  };
+  abortHandler = () => void cancelCommitted(args.signal?.reason).catch(() => undefined);
+  if (args.signal?.aborted) abortHandler();
+  else args.signal?.addEventListener("abort", abortHandler, { once: true });
+
   return new ReadableStream({
     async pull(controller) {
+      if (cancellationRequested) {
+        await settleCancelled();
+        controller.close();
+        return;
+      }
       try {
         const next = bufferIndex < args.buffered.length
           ? { done: false as const, value: args.buffered[bufferIndex++] }
@@ -422,6 +451,7 @@ function monitorCommittedStream(args: {
         if (next.done) {
           if (cancellationRequested) {
             await settleCancelled();
+            controller.close();
             return;
           }
           await settleFailure(providerProtocolError("Provider stream ended without a finish event."));
@@ -438,6 +468,7 @@ function monitorCommittedStream(args: {
       } catch (error) {
         if (cancellationRequested) {
           await settleCancelled();
+          controller.close();
           return;
         }
         await settleFailure(error);
@@ -445,9 +476,7 @@ function monitorCommittedStream(args: {
       }
     },
     async cancel(reason) {
-      cancellationRequested = true;
-      await args.reader.cancel(reason).catch(() => undefined);
-      await settleCancelled();
+      await cancelCommitted(reason);
     },
   });
 }

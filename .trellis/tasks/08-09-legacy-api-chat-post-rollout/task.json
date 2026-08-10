@@ -1,0 +1,77 @@
+{
+  "id": "legacy-api-chat-post-rollout",
+  "name": "legacy-api-chat-post-rollout",
+  "title": "Legacy API chat post rollout",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-09",
+  "completedAt": null,
+  "branch": "codex/legacy-api-chat-post-rollout",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-05-legacy-surface-disable-observation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite build and frontend structure checks passed",
+        "at": "2026-08-10T03:25:17.112302+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "48 files and 740 tests passed with local fake fixtures",
+        "at": "2026-08-10T03:25:18.081321+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "90 passed and 55 matrix skips across five viewports",
+        "at": "2026-08-10T03:25:19.080303+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 local fake Provider Agent tests passed on the final run",
+        "at": "2026-08-10T03:25:20.030561+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker client and browser TypeScript checks passed",
+        "at": "2026-08-10T03:25:21.010423+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker bundle and bindings validated without deployment",
+        "at": "2026-08-10T03:25:21.985246+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Working tree diff has no whitespace errors",
+        "at": "2026-08-10T03:25:23.024326+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed",
+        "at": "2026-08-10T03:25:24.000049+00:00"
+      }
+    ]
+  }
+}

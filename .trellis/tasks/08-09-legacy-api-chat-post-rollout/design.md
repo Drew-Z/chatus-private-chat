@@ -1,0 +1,29 @@
+# Legacy API chat post rollout design
+
+## Boundary
+
+The surface owns `POST /api/chat` admission and dispatch. The replacement is the
+existing TeamAgent transport. Conversation storage projections and browser shell
+navigation stay separate.
+
+## Instrumentation and Parity
+
+Every admitted route dispatch records content-free write use; route availability
+records read use only at the exact compatibility boundary. Caller classification
+is fail-closed. Deterministic fake Provider/MCP fixtures compare legacy and Agent
+results across quota, attempts, fallback, progress, streams, tools, files,
+errors, cancellation, and guest policy without live calls.
+
+## Controls
+
+Write-disable rejects or routes no new legacy POST and guarantees zero Provider,
+tool, file mutation, or quota side effect through that path. Read-disable removes
+compatibility route availability after the browser shell and other callers have
+completed migration/observation.
+
+## Recovery and Rollback
+
+Current capture/restore evidence must include transitional conversation state.
+`routing_switch` rollback restores the unchanged route and reconciles any
+in-flight fence without mixing restored/source data. A late caller resets the
+relevant 30-day window.

@@ -550,6 +550,7 @@ const WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS = 60_000;
 const MAX_TOOL_RESULT_BYTES = 32 * 1024;
 const LEGACY_ADMIN_ALIAS_SURFACE_ID = "legacy.browser.admin-alias";
 const LEGACY_BROWSER_SHELL_SURFACE_ID = "legacy.browser.shell";
+const LEGACY_API_CHAT_POST_SURFACE_ID = "legacy.api.chat-post";
 const LEGACY_SURFACE_CALLER_HEADER = "x-chatus-legacy-caller";
 const LEGACY_SURFACE_DEPLOYMENT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 const LEGACY_BROWSER_SHELL_ASSET_PATHS = new Set([
@@ -1906,26 +1907,53 @@ async function recordLegacyBrowserSurfaceUse(
   env: Env,
   url: URL,
 ): Promise<void> {
+  // Browser rollback routes remain fail-open while their observation store is unavailable.
+  await recordLegacySurfaceUse(surfaceId, request, env, url, "read");
+}
+
+type LegacySurfaceUseResult =
+  | { ok: true; disabled: boolean; writeDisabled: boolean }
+  | { ok: false; error: string };
+
+async function recordLegacySurfaceUse(
+  surfaceId: string,
+  request: Request,
+  env: Env,
+  url: URL,
+  access: "read" | "write",
+): Promise<LegacySurfaceUseResult> {
   try {
     const manifest = LEGACY_SURFACE_MANIFEST.find((record) => record.surfaceId === surfaceId);
-    if (!manifest) return;
+    if (!manifest) return { ok: false, error: "legacy_surface_not_found" };
     const callerClass = classifyLegacyBrowserSurfaceCaller(request, manifest.callerClasses);
     const deploymentSha = await resolveLegacySurfaceDeploymentSha(env, url);
-    if (!deploymentSha) return;
+    if (!deploymentSha) return { ok: false, error: "legacy_surface_unavailable" };
     const manifestDigest = await legacySurfaceManifestDigest();
     const coordinator = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(manifest.surfaceId));
     const synchronized = await coordinator.syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest });
-    if (!synchronized.ok) return;
-    await coordinator.recordLegacySurfaceUse({
-      version: 1,
-      surfaceId: manifest.surfaceId,
-      callerClass,
-      access: "read",
-      occurredAt: Date.now(),
-      deploymentSha,
-    });
+    if (!synchronized.ok) return synchronized;
+    const control = access === "read" ? synchronized.projection.readControl : synchronized.projection.writeControl;
+    const disabled = control === "disabled";
+    // A disabled write is not an admitted legacy execution. A disabled read is
+    // retained as late-caller evidence before the compatibility route rejects it.
+    if (!(disabled && access === "write")) {
+      const recorded = await coordinator.recordLegacySurfaceUse({
+        version: 1,
+        surfaceId: manifest.surfaceId,
+        callerClass,
+        access,
+        occurredAt: Date.now(),
+        deploymentSha,
+      });
+      if (!recorded.ok) return recorded;
+    }
+    return {
+      ok: true,
+      disabled,
+      writeDisabled: synchronized.projection.writeControl === "disabled",
+    };
   } catch {
-    // Compatibility routes and assets remain available when the observation store is unavailable.
+    return { ok: false, error: "legacy_surface_unavailable" };
   }
 }
 
@@ -2320,6 +2348,20 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/chat" && request.method === "POST") {
+    const legacyRead = await recordLegacySurfaceUse(
+      LEGACY_API_CHAT_POST_SURFACE_ID,
+      request,
+      env,
+      url,
+      "read",
+    );
+    if (!legacyRead.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+    if (legacyRead.disabled) {
+      return jsonResponse({ error: "legacy_surface_read_disabled", message: "兼容接口已停用" }, 410);
+    }
+    if (legacyRead.writeDisabled) {
+      return jsonResponse({ error: "legacy_surface_write_disabled", message: "兼容接口已停止接收新消息" }, 410);
+    }
     return handleChat(request, env, session, requireInstanceFence(instanceFence), executionContext);
   }
   if (url.pathname === "/api/tool-approvals" && request.method === "POST") {
@@ -6855,6 +6897,20 @@ async function handleChat(
         "X-RateLimit-Remaining": "0",
       },
     );
+  }
+
+  const legacyWrite = await recordLegacySurfaceUse(
+    LEGACY_API_CHAT_POST_SURFACE_ID,
+    request,
+    env,
+    new URL(request.url),
+    "write",
+  );
+  if (!legacyWrite.ok || legacyWrite.disabled) {
+    await Promise.allSettled([admission.release(), admission.refundQuota()]);
+    return legacyWrite.ok
+      ? jsonResponse({ error: "legacy_surface_write_disabled", message: "兼容接口已停止接收新消息" }, 410)
+      : jsonResponse({ error: "legacy_surface_unavailable" }, 503);
   }
 
   const selectedSkills = getSelectedSkills(config, body.skillIds, access.user);

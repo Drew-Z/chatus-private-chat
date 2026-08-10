@@ -242,6 +242,83 @@ function openAiTextResponse(text: string): Response {
   });
 }
 
+function openAiUiTextResponse(text: string, model = "parity-model"): Response {
+  const chunks = [
+    {
+      id: "chatcmpl-parity",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+    },
+    {
+      id: "chatcmpl-parity",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+    },
+    {
+      id: "chatcmpl-parity",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+  ];
+  return new Response(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+function openAiUiToolCallResponse(
+  name: string,
+  input: Record<string, unknown>,
+  model = "parity-model",
+): Response {
+  const chunks = [
+    {
+      id: "chatcmpl-parity-tool",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+    },
+    {
+      id: "chatcmpl-parity-tool",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: "call-parity-text-stats",
+            type: "function",
+            function: { name, arguments: JSON.stringify(input) },
+          }],
+        },
+        finish_reason: null,
+      }],
+    },
+    {
+      id: "chatcmpl-parity-tool",
+      object: "chat.completion.chunk",
+      created: 1,
+      model,
+      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+  ];
+  return new Response(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("")}data: [DONE]\n\n`, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 
 async function adminLogin() {
   const response = await exports.default.fetch(
@@ -456,6 +533,46 @@ async function getConversationAgent(label: string, chatId: string) {
   return getAgentByName(env.TEAM_AGENT, instance, {
     props: { userLabel: label, scope: "conversation", chatId, rootInstance },
   }) as DurableObjectStub<TeamAgent>;
+}
+
+async function createMemberConversationAgent(
+  label: string,
+  chatId: string,
+  routeId: string,
+  skillIds: string[] = [],
+) {
+  const root = await getRootAgent(label);
+  const now = Date.now();
+  const created = await root.createConversation({
+    id: chatId,
+    title: "Parity conversation",
+    createdAt: now,
+    updatedAt: now,
+    summary: "",
+    pinned: false,
+    routeId,
+    skillMode: "manual",
+    skillIds,
+  });
+  if (!created.ok) throw new Error(created.error);
+  return getConversationAgent(label, chatId);
+}
+
+async function runAgentTurn(
+  agent: DurableObjectStub<TeamAgent>,
+  messages: UIMessage[],
+  requestId: string,
+): Promise<{ status: number; contentType: string; body: string }> {
+  const imported = await agent.importLegacyMessages(messages);
+  if (!imported.imported) throw new Error("agent_parity_import_failed");
+  return runInDurableObject(agent, async (instance) => {
+    const response = await instance.onChatMessage(async () => undefined, { requestId });
+    return {
+      status: response.status,
+      contentType: response.headers.get("Content-Type") || "",
+      body: await response.text(),
+    };
+  });
 }
 
 async function getPersistedAgentMessages(agent: DurableObjectStub<TeamAgent>): Promise<UIMessage[]> {
@@ -1230,6 +1347,664 @@ describe("Worker API", () => {
     ]));
     expect(content[1].text).toContain("# Notes");
     expect(JSON.stringify(providerBody)).not.toContain("data:text/markdown;base64");
+  });
+
+  it("keeps legacy and TeamAgent file, Skill, streaming, and attempt identity behavior in parity", async () => {
+    const suffix = crypto.randomUUID();
+    const providerId = `parity-context-${suffix}`;
+    const routeId = `parity-context-${suffix}`;
+    const model = "parity-context-model";
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Parity context provider",
+          type: "openai-chat",
+          baseUrl: `https://${providerId}.example/v1`,
+          apiKey: "parity-context-key",
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "Parity context route",
+          offerings: [{ providerId, model }],
+        },
+      },
+      defaults: {
+        defaultRoute: routeId,
+        allowedRoutes: [routeId],
+        allowedSkills: ["skill-2", "skill-4"],
+      },
+      skills: {
+        "skill-1": { enabled: true, label: "Skill 1", instructions: "instruction-1", order: 1 },
+        "skill-2": { enabled: true, label: "Skill 2", instructions: "instruction-2", order: 2 },
+        "skill-4": { enabled: true, label: "Skill 4", instructions: "instruction-4", order: 4 },
+      },
+      tools: {},
+      mcpServers: {},
+    }));
+    const legacy = await login(`legacy-parity-context-${suffix}`);
+    const providerBodies: any[] = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      providerBodies.push(JSON.parse(String(init?.body || "{}")));
+      return openAiUiTextResponse("parity context complete", model);
+    });
+    const parts = [
+      { type: "text" as const, text: "Read this file with the assigned Skills." },
+      {
+        type: "file" as const,
+        mediaType: "text/markdown",
+        filename: "notes.md",
+        url: "data:text/markdown;base64,IyBOb3Rlcw==",
+      },
+    ];
+
+    const legacyResponse = await apiRequest("/api/chat", legacy.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId,
+        skillIds: ["skill-4", "skill-2", "skill-1"],
+        messages: [{ role: "user", content: parts }],
+      }),
+    });
+    expect(legacyResponse.status, await legacyResponse.clone().text()).toBe(200);
+    await expect(legacyResponse.text()).resolves.toContain("parity context complete");
+
+    const agent = await createMemberConversationAgent(
+      `agent-parity-context-${suffix}`,
+      `agent-parity-context-chat-${suffix}`,
+      routeId,
+      ["skill-4", "skill-2", "skill-1"],
+    );
+    const agentResponse = await runAgentTurn(agent, [{
+      id: `agent-parity-context-user-${suffix}`,
+      role: "user",
+      parts,
+    }], "turn_parity-context-123");
+    expect(agentResponse.status).toBe(200);
+    expect(agentResponse.contentType).toContain("text/event-stream");
+    expect(agentResponse.body).toContain("parity context complete");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    expect(providerBodies).toHaveLength(2);
+    for (const providerBody of providerBodies) {
+      const serialized = JSON.stringify(providerBody);
+      expect(serialized).toContain("<attached_file name=\\\"notes.md\\\" mediaType=\\\"text/markdown\\\" bytes=\\\"7\\\">");
+      expect(serialized).toContain("# Notes");
+      expect(serialized).not.toContain("data:text/markdown;base64");
+      expect(serialized.indexOf("instruction-2")).toBeLessThan(serialized.indexOf("instruction-4"));
+      expect(serialized).not.toContain("instruction-1");
+    }
+
+    const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent({ limit: 10 });
+    expect(attempts).toHaveLength(2);
+    expect(attempts.every((attempt) => (
+      attempt.runKind === "main_answer"
+      && attempt.logicalRouteId === routeId
+      && attempt.providerId === providerId
+      && attempt.model === model
+      && attempt.status === "succeeded"
+    ))).toBe(true);
+    expect(new Set(attempts.map(({ turnId }) => turnId))).toHaveProperty("size", 2);
+    expect(new Set(attempts.map(({ runId }) => runId))).toHaveProperty("size", 2);
+    expect(new Set(attempts.map(({ attemptId }) => attemptId))).toHaveProperty("size", 2);
+  });
+
+  it("keeps legacy and TeamAgent builtin tool results and continuation attempts in parity", async () => {
+    const suffix = crypto.randomUUID();
+    const providerId = `parity-tool-${suffix}`;
+    const routeId = `parity-tool-${suffix}`;
+    const model = "parity-tool-model";
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Parity tool provider",
+          type: "openai-chat",
+          baseUrl: `https://${providerId}.example/v1`,
+          apiKey: "parity-tool-key",
+          supportsTools: true,
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "Parity tool route",
+          offerings: [{ providerId, model, supportsTools: true }],
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: routeId,
+        allowedRoutes: [routeId],
+        allowedSkills: ["analyze"],
+        allowedTools: ["builtin:text_stats"],
+      },
+      skills: {
+        analyze: {
+          enabled: true,
+          label: "Analyze",
+          instructions: "Use text statistics when the user asks for counts.",
+          toolIds: ["builtin:text_stats"],
+        },
+      },
+      tools: {
+        "builtin:text_stats": {
+          enabled: true,
+          label: "Text stats",
+          inputSchema: {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+            additionalProperties: false,
+          },
+          executor: { type: "builtin", name: "text_stats" },
+        },
+      },
+    }));
+    const providerBodies: any[] = [];
+    let legacyCalls = 0;
+    let agentCalls = 0;
+    const toolInput = { text: "hello world\nagain" };
+    const toolResult = { characters: 17, codePoints: 17, words: 3, lines: 2 };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      providerBodies.push(body);
+      if (body.stream === false) {
+        legacyCalls += 1;
+        if (legacyCalls === 1) {
+          const name = body.tools[0].function.name;
+          return new Response(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                  id: "call-legacy-parity-text-stats",
+                  type: "function",
+                  function: { name, arguments: JSON.stringify(toolInput) },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+          }), { headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "tool parity complete" }, finish_reason: "stop" }],
+        }), { headers: { "Content-Type": "application/json" } });
+      }
+      agentCalls += 1;
+      return agentCalls === 1
+        ? openAiUiToolCallResponse(body.tools[0].function.name, toolInput, model)
+        : openAiUiTextResponse("tool parity complete", model);
+    });
+
+    const legacy = await login(`legacy-parity-tool-${suffix}`);
+    const legacyResponse = await apiRequest("/api/chat", legacy.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId,
+        chatId: `legacy-parity-tool-chat-${suffix}`,
+        skillIds: ["analyze"],
+        messages: [{ role: "user", content: "统计 hello world 和 again" }],
+      }),
+    });
+    expect(legacyResponse.status).toBe(200);
+    const legacyEvents = await readCapabilityEvents(legacyResponse);
+    const legacyTool = legacyEvents.find((event) => (
+      event.type === "tool" && event.event?.status === "completed"
+    ));
+    expect(legacyTool?.event?.toolId).toBe("builtin:text_stats");
+    expect(JSON.parse(legacyTool.event.resultPreview)).toEqual(toolResult);
+    expect(legacyEvents).toContainEqual({ type: "assistant_delta", text: "tool parity complete" });
+
+    const agent = await createMemberConversationAgent(
+      `agent-parity-tool-${suffix}`,
+      `agent-parity-tool-chat-${suffix}`,
+      routeId,
+      ["analyze"],
+    );
+    const agentResponse = await runAgentTurn(agent, [{
+      id: `agent-parity-tool-user-${suffix}`,
+      role: "user",
+      parts: [{ type: "text", text: "统计 hello world 和 again" }],
+    }], "turn_parity-tool-123");
+    expect(agentResponse.status).toBe(200);
+    expect(agentResponse.body).toContain("text_stats_");
+    expect(agentResponse.body).toContain("characters");
+    expect(agentResponse.body).toContain("tool parity complete");
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+
+    const legacyContinuation = providerBodies.filter(({ stream }) => stream === false)[1];
+    const agentContinuation = providerBodies.filter(({ stream }) => stream === true)[1];
+    for (const continuation of [legacyContinuation, agentContinuation]) {
+      const serialized = JSON.stringify(continuation.messages);
+      expect(serialized).toContain("characters");
+      expect(serialized).toContain("codePoints");
+      expect(serialized).toContain("words");
+      expect(serialized).toContain("lines");
+      expect(serialized).toContain("17");
+      expect(serialized).toContain("3");
+      expect(serialized).toContain("2");
+    }
+
+    const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent({ limit: 10 });
+    expect(attempts).toHaveLength(4);
+    expect(attempts.map(({ runKind }) => runKind).sort()).toEqual([
+      "legacy_capability",
+      "main_answer",
+      "tool_continuation",
+      "tool_continuation",
+    ]);
+    expect(attempts.every(({ status }) => status === "succeeded")).toBe(true);
+    expect(new Set(attempts.map(({ turnId }) => turnId))).toHaveProperty("size", 2);
+    expect(new Set(attempts.map(({ runId }) => runId))).toHaveProperty("size", 4);
+  });
+
+  it("keeps legacy and TeamAgent one-message member quota denials in parity", async () => {
+    const suffix = crypto.randomUUID();
+    const providerId = `parity-quota-${suffix}`;
+    const routeId = `parity-quota-${suffix}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Parity quota provider",
+          type: "openai-chat",
+          baseUrl: `https://${providerId}.example/v1`,
+          apiKey: "parity-quota-key",
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "Parity quota route",
+          offerings: [{ providerId, model: "parity-quota-model" }],
+        },
+      },
+      defaults: {
+        defaultRoute: routeId,
+        allowedRoutes: [routeId],
+        dailyMessageLimit: 1,
+        minuteMessageLimit: 10,
+      },
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => (
+      openAiUiTextResponse("parity quota admitted", "parity-quota-model")
+    ));
+    const legacy = await login(`legacy-parity-quota-${suffix}`);
+    const legacyRequest = () => apiRequest("/api/chat", legacy.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId, messages: [{ role: "user", content: "one message only" }] }),
+    });
+    const legacyFirst = await legacyRequest();
+    expect(legacyFirst.status, await legacyFirst.clone().text()).toBe(200);
+    await legacyFirst.text();
+    const legacySecond = await legacyRequest();
+    expect(legacySecond.status).toBe(429);
+    await expect(legacySecond.json()).resolves.toMatchObject({ error: "rate_limited", scope: "session" });
+
+    const agent = await createMemberConversationAgent(
+      `agent-parity-quota-${suffix}`,
+      `agent-parity-quota-chat-${suffix}`,
+      routeId,
+    );
+    const firstUser: UIMessage = {
+      id: `agent-parity-quota-user-1-${suffix}`,
+      role: "user",
+      parts: [{ type: "text", text: "one message only" }],
+    };
+    const agentFirst = await runAgentTurn(agent, [firstUser], "turn_parity-quota-123");
+    expect(agentFirst.status).toBe(200);
+    expect(agentFirst.body).toContain("parity quota admitted");
+    const agentSecond = await runInDurableObject(agent, async (instance) => {
+      await instance.persistMessages([
+        firstUser,
+        { id: `agent-parity-quota-assistant-${suffix}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
+        { id: `agent-parity-quota-user-2-${suffix}`, role: "user", parts: [{ type: "text", text: "second message" }] },
+      ], [], { _deleteStaleRows: true });
+      const response = await instance.onChatMessage(async () => undefined, { requestId: "turn_parity-quota-456" });
+      return { status: response.status, body: await response.text() };
+    });
+    expect(agentSecond.status).toBe(429);
+    expect(agentSecond.body).toContain("rate_limited");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps legacy and TeamAgent guest route admission denials in parity", async () => {
+    const suffix = crypto.randomUUID();
+    await configurePublicAccess();
+    const guest = await createGuestSession(`parity-guest-source-${suffix}`);
+    const stored = await env.CHAT_STORE.get(`session:${sessionToken(guest.cookie)}`, "json") as any;
+    if (!stored?.label || !stored?.sourceKey) throw new Error("missing_guest_parity_session");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const legacyDenied = await guestChat(guest.cookie, MEMBER_ROUTE_ID);
+    expect(legacyDenied.status).toBe(403);
+    await expect(legacyDenied.json()).resolves.toMatchObject({ error: "route_not_allowed" });
+
+    const [rootInstance, conversationInstance] = await Promise.all([
+      getTeamAgentInstanceName(stored.label),
+      getTeamAgentConversationInstanceName(stored.label, `guest-parity-chat-${suffix}`),
+    ]);
+    const guestProps = {
+      userLabel: stored.label,
+      accessKind: "guest" as const,
+      sessionExpiresAt: stored.expiresAt,
+      sourceKey: stored.sourceKey,
+    };
+    const root = await getAgentByName(env.TEAM_AGENT, rootInstance, {
+      props: { ...guestProps, scope: "root" as const },
+    }) as DurableObjectStub<TeamAgent>;
+    const now = Date.now();
+    const created = await root.createConversation({
+      id: `guest-parity-chat-${suffix}`,
+      title: "Guest parity",
+      createdAt: now,
+      updatedAt: now,
+      summary: "",
+      pinned: false,
+      routeId: MEMBER_ROUTE_ID,
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(created.ok).toBe(true);
+    const agent = await getAgentByName(env.TEAM_AGENT, conversationInstance, {
+      props: {
+        ...guestProps,
+        scope: "conversation" as const,
+        chatId: `guest-parity-chat-${suffix}`,
+        rootInstance,
+      },
+    }) as DurableObjectStub<TeamAgent>;
+    const agentDenied = await runAgentTurn(agent, [{
+      id: `guest-parity-user-${suffix}`,
+      role: "user",
+      parts: [{ type: "text", text: "do not widen guest access" }],
+    }], "turn_parity-guest-123");
+    expect(agentDenied.status).toBe(403);
+    expect(agentDenied.body).toContain("route_not_allowed");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy and TeamAgent pre-visible fallback telemetry in parity", async () => {
+    const suffix = crypto.randomUUID();
+    const routeId = `parity-fallback-${suffix}`;
+    const primaryId = `parity-primary-${suffix}`;
+    const backupId = `parity-backup-${suffix}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [primaryId]: {
+          label: "Parity primary",
+          type: "openai-chat",
+          baseUrl: `https://${primaryId}.example/v1`,
+          apiKey: "parity-primary-key",
+          concurrency: "exclusive",
+          priority: 100,
+        },
+        [backupId]: {
+          label: "Parity backup",
+          type: "openai-chat",
+          baseUrl: `https://${backupId}.example/v1`,
+          apiKey: "parity-backup-key",
+          concurrency: "exclusive",
+          priority: 10,
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "Parity fallback route",
+          offerings: [
+            { providerId: primaryId, model: "parity-primary-model" },
+            { providerId: backupId, model: "parity-backup-model" },
+          ],
+        },
+      },
+      defaults: { defaultRoute: routeId, allowedRoutes: [routeId] },
+    }));
+    const privateMarker = `PRIVATE_FALLBACK_${suffix}`;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => (
+      String(input).includes(primaryId)
+        ? new Response(privateMarker, { status: 503 })
+        : openAiUiTextResponse("parity fallback complete", "parity-backup-model")
+    ));
+
+    const legacy = await login(`legacy-parity-fallback-${suffix}`);
+    const legacyResponse = await apiRequest("/api/chat", legacy.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({
+        routeId,
+        providerId: "forged-provider",
+        turnId: `turn_forged-${suffix}`,
+        runId: `run_forged-${suffix}`,
+        messages: [{ role: "user", content: "use the local fallback" }],
+      }),
+    });
+    expect(legacyResponse.status, await legacyResponse.clone().text()).toBe(200);
+    const legacyBody = await legacyResponse.text();
+    expect(legacyBody).toContain("parity fallback complete");
+    expect(legacyBody).not.toContain(privateMarker);
+
+    const agent = await createMemberConversationAgent(
+      `agent-parity-fallback-${suffix}`,
+      `agent-parity-fallback-chat-${suffix}`,
+      routeId,
+    );
+    const agentResponse = await runAgentTurn(agent, [{
+      id: `agent-parity-fallback-user-${suffix}`,
+      role: "user",
+      parts: [{ type: "text", text: "use the local fallback" }],
+    }], "turn_parity-fallback-123");
+    expect(agentResponse.status).toBe(200);
+    expect(agentResponse.body).toContain("parity fallback complete");
+    expect(agentResponse.body).not.toContain(privateMarker);
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes(primaryId))).toHaveLength(2);
+    expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes(backupId))).toHaveLength(2);
+
+    const attempts = [
+      ...await env.PROVIDER_ATTEMPT_LEDGER.getByName(primaryId).listRecent({ limit: 10 }),
+      ...await env.PROVIDER_ATTEMPT_LEDGER.getByName(backupId).listRecent({ limit: 10 }),
+    ];
+    expect(attempts).toHaveLength(4);
+    const byTurn = new Map<string, typeof attempts>();
+    for (const attempt of attempts) {
+      const group = byTurn.get(attempt.turnId) || [];
+      group.push(attempt);
+      byTurn.set(attempt.turnId, group);
+    }
+    expect(byTurn.size).toBe(2);
+    for (const group of byTurn.values()) {
+      expect(group).toHaveLength(2);
+      expect(new Set(group.map(({ runId }) => runId))).toHaveProperty("size", 1);
+      expect(new Set(group.map(({ attemptId }) => attemptId))).toHaveProperty("size", 2);
+      expect(group.find(({ providerId }) => providerId === primaryId)).toMatchObject({
+        fallbackIndex: 0,
+        status: "failed",
+        errorClass: "upstream_unavailable",
+      });
+      expect(group.find(({ providerId }) => providerId === backupId)).toMatchObject({
+        fallbackIndex: 1,
+        status: "succeeded",
+      });
+    }
+    expect(JSON.stringify(attempts)).not.toContain("forged-");
+    await expect(env.CHAT_STORE.get(
+      `${PROVIDER_ROUTE_RELIABILITY_PREFIX}${routeId}:${encodeURIComponent(primaryId)}`,
+      "json",
+    )).resolves.toMatchObject({ attempts: 2, successes: 0, lastOutcome: "upstream_server" });
+    await expect(env.CHAT_STORE.get(
+      `${PROVIDER_ROUTE_RELIABILITY_PREFIX}${routeId}:${encodeURIComponent(backupId)}`,
+      "json",
+    )).resolves.toMatchObject({ attempts: 2, successes: 2, lastOutcome: "success" });
+  });
+
+  it("keeps legacy and TeamAgent secret-safe Provider error classification in parity", async () => {
+    const suffix = crypto.randomUUID();
+    const providerId = `parity-error-${suffix}`;
+    const routeId = `parity-error-${suffix}`;
+    const endpoint = `https://${providerId}.example/v1`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Parity error provider",
+          type: "openai-chat",
+          baseUrl: endpoint,
+          apiKey: "parity-error-key",
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "Parity error route",
+          offerings: [{ providerId, model: "parity-error-model" }],
+        },
+      },
+      defaults: { defaultRoute: routeId, allowedRoutes: [routeId] },
+    }));
+    const privateMarker = `PRIVATE_RATE_LIMIT_${suffix}`;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => (
+      new Response(privateMarker, { status: 429 })
+    ));
+
+    const legacy = await login(`legacy-parity-error-${suffix}`);
+    const legacyResponse = await apiRequest("/api/chat", legacy.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
+      body: JSON.stringify({ routeId, messages: [{ role: "user", content: "classify locally" }] }),
+    });
+    expect(legacyResponse.status).toBe(429);
+    const legacyBody = await legacyResponse.text();
+    expect(JSON.parse(legacyBody)).toMatchObject({ error: "upstream_rate_limited", status: 429 });
+
+    const agent = await createMemberConversationAgent(
+      `agent-parity-error-${suffix}`,
+      `agent-parity-error-chat-${suffix}`,
+      routeId,
+    );
+    const agentResponse = await runAgentTurn(agent, [{
+      id: `agent-parity-error-user-${suffix}`,
+      role: "user",
+      parts: [{ type: "text", text: "classify locally" }],
+    }], "turn_parity-error-123");
+    expect(agentResponse.status).toBe(200);
+    expect(agentResponse.body).toContain("upstream_rate_limited");
+    expect(agentResponse.body).toContain("上游模型暂时限流，请稍后重试或切换模型。");
+    for (const body of [legacyBody, agentResponse.body]) {
+      expect(body).not.toContain(privateMarker);
+      expect(body).not.toContain(endpoint);
+      expect(body).not.toContain("parity-error-key");
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent({ limit: 10 });
+    expect(attempts).toHaveLength(2);
+    expect(attempts.every(({ status, errorClass }) => (
+      status === "failed" && errorClass === "upstream_rate_limited"
+    ))).toBe(true);
+  });
+
+  it("keeps legacy and TeamAgent visible-stream cancellation cleanup in parity", async () => {
+    const suffix = crypto.randomUUID();
+    const providerId = `parity-cancel-${suffix}`;
+    const routeId = `parity-cancel-${suffix}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "Parity cancellation provider",
+          type: "openai-chat",
+          baseUrl: `https://${providerId}.example/v1`,
+          apiKey: "parity-cancel-key",
+          concurrency: "exclusive",
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "Parity cancellation route",
+          offerings: [{ providerId, model: "parity-cancel-model" }],
+        },
+      },
+      defaults: { defaultRoute: routeId, allowedRoutes: [routeId] },
+    }));
+    let upstreamCancellations = 0;
+    const encoder = new TextEncoder();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(openAiTextEvent("parity cancellation visible")));
+        },
+        cancel() {
+          upstreamCancellations += 1;
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ));
+    const readVisibleAndCancel = async (
+      response: Response,
+      needle: string,
+      abortController?: AbortController,
+    ): Promise<string> => {
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (let index = 0; index < 20 && !text.includes(needle); index += 1) {
+        const next = await reader.read();
+        if (next.done) break;
+        text += decoder.decode(next.value, { stream: true });
+      }
+      expect(text).toContain(needle);
+      abortController?.abort("parity cancellation");
+      await reader.cancel("parity cancellation");
+      return text;
+    };
+
+    const legacy = await login(`legacy-parity-cancel-${suffix}`);
+    const legacyResponse = await worker.fetch(new Request("https://example.test/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Chatus-Client": "web",
+        Cookie: legacy.cookie,
+      },
+      body: JSON.stringify({ routeId, messages: [{ role: "user", content: "cancel after output" }] }),
+    }), env);
+    expect(legacyResponse.status).toBe(200);
+    await readVisibleAndCancel(legacyResponse, "parity cancellation visible");
+    await vi.waitFor(async () => {
+      await expect(env.PROVIDER_COORDINATOR.getByName(providerId).inspect()).resolves.toMatchObject({ active: 0 });
+    });
+    await vi.waitFor(async () => {
+      const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent({ limit: 10 });
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.status).toBe("cancelled");
+    });
+
+    const agent = await createMemberConversationAgent(
+      `agent-parity-cancel-${suffix}`,
+      `agent-parity-cancel-chat-${suffix}`,
+      routeId,
+    );
+    await agent.importLegacyMessages([{
+      id: `agent-parity-cancel-user-${suffix}`,
+      role: "user",
+      parts: [{ type: "text", text: "cancel after output" }],
+    }]);
+    const agentBody = await runInDurableObject(agent, async (instance) => {
+      const agentAbortController = new AbortController();
+      const response = await instance.onChatMessage(async () => undefined, {
+        requestId: "turn_parity-cancel-123",
+        abortSignal: agentAbortController.signal,
+      });
+      return readVisibleAndCancel(response, "parity cancellation visible", agentAbortController);
+    });
+    expect(agentBody).toContain("parity cancellation visible");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(upstreamCancellations).toBe(2));
+    await vi.waitFor(async () => {
+      await expect(env.PROVIDER_COORDINATOR.getByName(providerId).inspect()).resolves.toMatchObject({ active: 0 });
+    });
+    await vi.waitFor(async () => {
+      const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent({ limit: 10 });
+      expect(attempts).toHaveLength(2);
+      expect(attempts.every(({ status }) => status === "cancelled")).toBe(true);
+    });
   });
 
   it("isolates TeamAgent instances by authenticated member identity", async () => {
@@ -3915,6 +4690,115 @@ describe("Worker API", () => {
     ]);
   });
 
+  it("records separate legacy chat POST evidence and enforces read/write controls before Provider I/O", async () => {
+    const legacyChatPost = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.api.chat-post");
+    if (!legacyChatPost) throw new Error("missing_legacy_chat_post_manifest");
+    const legacyChatPostStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(legacyChatPost.surfaceId));
+    await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+    });
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        primary: {
+          label: "Primary",
+          type: "openai-chat",
+          baseUrl: "https://provider.example/v1",
+          model: "model-a",
+          apiKey: "hidden-server-key",
+        },
+      },
+      defaults: { defaultRoute: "primary", allowedRoutes: ["primary"] },
+    }));
+    const { cookie } = await login();
+    const usageBefore = (await apiRequest("/api/session", cookie).then((item) => item.json()) as any).usage.used;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => openAiTextResponse("local response"));
+
+    const response = await apiRequest("/api/chat", cookie, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Chatus-Client": "web",
+        "x-chatus-legacy-caller": "test",
+      },
+      body: JSON.stringify({
+        routeId: "primary",
+        messages: [{ role: "user", content: "local legacy chat test" }],
+      }),
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    await response.text();
+
+    await expect(runInDurableObject(legacyChatPostStub, async (_instance, state) => (
+      state.storage.sql.exec<{ caller_class: string; access: string; count: number; deployment_sha: string }>(
+        "SELECT caller_class, access, count, deployment_sha FROM legacy_surface_daily ORDER BY access",
+      ).toArray()
+    ))).resolves.toEqual([
+      { caller_class: "test", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "test", access: "write", count: 1, deployment_sha: "0".repeat(40) },
+    ]);
+
+    try {
+      await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_state SET phase = 'write_disabled', read_control = 'enabled', write_control = 'disabled' WHERE id = 1",
+        );
+      });
+      const writeBlocked = await apiRequest("/api/chat", cookie, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Chatus-Client": "web",
+          "x-chatus-legacy-caller": "test",
+        },
+        body: JSON.stringify({
+          routeId: "primary",
+          messages: [{ role: "user", content: "must not execute" }],
+        }),
+      });
+      expect(writeBlocked.status).toBe(410);
+      await expect(writeBlocked.json()).resolves.toMatchObject({ error: "legacy_surface_write_disabled" });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const usageAfterWriteBlock = (await apiRequest("/api/session", cookie).then((item) => item.json()) as any).usage.used;
+      expect(usageAfterWriteBlock).toBe(usageBefore + 1);
+
+      await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_state SET phase = 'read_disabled', read_control = 'disabled', write_control = 'disabled' WHERE id = 1",
+        );
+      });
+      const readBlocked = await apiRequest("/api/chat", cookie, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Chatus-Client": "web",
+          "x-chatus-legacy-caller": "test",
+        },
+        body: JSON.stringify({
+          routeId: "primary",
+          messages: [{ role: "user", content: "must not dispatch" }],
+        }),
+      });
+      expect(readBlocked.status).toBe(410);
+      await expect(readBlocked.json()).resolves.toMatchObject({ error: "legacy_surface_read_disabled" });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      await expect(runInDurableObject(legacyChatPostStub, async (_instance, state) => (
+        state.storage.sql.exec<{ access: string; count: number }>(
+          "SELECT access, count FROM legacy_surface_daily WHERE caller_class = 'test' ORDER BY access",
+        ).toArray()
+      ))).resolves.toEqual([
+        { access: "read", count: 3 },
+        { access: "write", count: 1 },
+      ]);
+    } finally {
+      await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_state SET phase = 'discovered', read_control = 'enabled', write_control = 'enabled' WHERE id = 1",
+        );
+      });
+    }
+  });
+
   it("serves the typed admin shell and a secret-free member projection", async () => {
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "bill:bill-secret,alice:alice-secret");
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
@@ -5060,7 +5944,8 @@ describe("Worker API", () => {
       LEGACY_SURFACE_MANIFEST.map(({ surfaceId }) => surfaceId),
     );
     for (const surface of snapshot.surfaces) {
-      const isInstrumentedBrowserSurface = surface.surfaceId === "legacy.browser.admin-alias"
+      const isInstrumentedSurface = surface.surfaceId === "legacy.api.chat-post"
+        || surface.surfaceId === "legacy.browser.admin-alias"
         || surface.surfaceId === "legacy.browser.shell";
       expect(Object.keys(surface).sort()).toEqual([
         "allowedActions",
@@ -5085,8 +5970,8 @@ describe("Worker API", () => {
         phase: "discovered",
         readControl: "enabled",
         writeControl: "enabled",
-        owner: isInstrumentedBrowserSurface ? "frontend" : "unassigned",
-        allowedActions: isInstrumentedBrowserSurface
+        owner: surface.surfaceId === "legacy.api.chat-post" ? "data" : isInstrumentedSurface ? "frontend" : "unassigned",
+        allowedActions: isInstrumentedSurface
           ? [{ kind: "advance", targetPhase: "instrumented" }]
           : [],
       });
@@ -5146,18 +6031,27 @@ describe("Worker API", () => {
     await expect(unknown.json()).resolves.toEqual({ error: "legacy_surface_not_found" });
 
     const driftedManifest = { ...LEGACY_SURFACE_MANIFEST[0], owner: "frontend" };
-    await runInDurableObject(
-      env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(LEGACY_SURFACE_MANIFEST[0].surfaceId)),
-      async (_instance, state) => {
+    const driftedSurfaceStub = env.INSTANCE_COORDINATOR.getByName(
+      legacySurfaceObjectName(LEGACY_SURFACE_MANIFEST[0].surfaceId),
+    );
+    try {
+      await runInDurableObject(driftedSurfaceStub, async (_instance, state) => {
         state.storage.sql.exec(
           "UPDATE legacy_surface_manifest SET manifest_json = ? WHERE id = 1",
           stableJson(driftedManifest),
         );
-      },
-    );
-    const drift = await apiRequest("/api/admin/legacy-surfaces", cookie);
-    expect(drift.status).toBe(409);
-    await expect(drift.json()).resolves.toEqual({ error: "legacy_surface_manifest_conflict" });
+      });
+      const drift = await apiRequest("/api/admin/legacy-surfaces", cookie);
+      expect(drift.status).toBe(409);
+      await expect(drift.json()).resolves.toEqual({ error: "legacy_surface_manifest_conflict" });
+    } finally {
+      await runInDurableObject(driftedSurfaceStub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_manifest SET manifest_json = ? WHERE id = 1",
+          stableJson(LEGACY_SURFACE_MANIFEST[0]),
+        );
+      });
+    }
   });
 
   it("rejects malformed managed-secret inputs without mutating storage", async () => {
@@ -6509,7 +7403,7 @@ describe("Worker API", () => {
     let confirmation: any = null;
     while (!confirmation) {
       const { value, done } = await reader.read();
-      expect(done).toBe(false);
+      expect(done, JSON.stringify(received)).toBe(false);
       buffer += decoder.decode(value, { stream: true });
       const frames = buffer.split("\n\n");
       buffer = frames.pop() || "";
@@ -7430,7 +8324,7 @@ describe("Worker API", () => {
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: JSON.stringify({ routeId: "managed", messages: [{ role: "user", content: "完成一个简短任务" }] }),
     });
-    expect(chat.status).toBe(200);
+    expect(chat.status, await chat.clone().text()).toBe(200);
     await expect(chat.text()).resolves.toContain("完成");
     expect(fetchSpy).toHaveBeenCalledOnce();
     for (const [, init] of fetchSpy.mock.calls) {
@@ -7482,7 +8376,7 @@ describe("Worker API", () => {
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: JSON.stringify({ routeId: "byok", messages: [{ role: "user", content: "执行 BYOK 测试" }] }),
     });
-    expect(missing.status).toBe(400);
+    expect(missing.status, await missing.clone().text()).toBe(400);
     await expect(missing.json()).resolves.toMatchObject({ error: "user_api_key_required", routeId: "byok" });
     expect(fetchSpy).not.toHaveBeenCalled();
 
@@ -7936,7 +8830,7 @@ describe("Worker API", () => {
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
       body: JSON.stringify({ routeId: "health", messages: [{ role: "user", content: "整理三条发布检查事项" }] }),
     });
-    expect(chat.status).toBe(200);
+    expect(chat.status, await chat.clone().text()).toBe(200);
     await expect(chat.text()).resolves.toContain("真实任务完成");
     expect(fetchSpy).toHaveBeenCalledOnce();
 

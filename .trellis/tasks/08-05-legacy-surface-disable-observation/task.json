@@ -19,7 +19,10 @@
   "pr_url": null,
   "subtasks": [],
   "children": [
-    "08-07-legacy-surface-registry-control-plane"
+    "08-07-legacy-surface-registry-control-plane",
+    "08-09-legacy-browser-admin-alias-rollout",
+    "08-09-legacy-browser-shell-rollout",
+    "08-09-legacy-api-chat-post-rollout"
   ],
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],

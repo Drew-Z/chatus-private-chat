@@ -20,7 +20,12 @@ export type QuotaUsageResult =
   | { ok: false; retryAfter: number; reset: "daily" | "minute"; scope?: "session" | "source" };
 
 export type TurnAdmission =
-  | { ok: true; remaining: number; release: () => Promise<void> }
+  | {
+      ok: true;
+      remaining: number;
+      release: () => Promise<void>;
+      refundQuota: () => Promise<void>;
+    }
   | {
       ok: false;
       error: "rate_limited" | "concurrent_turn";
@@ -142,8 +147,23 @@ export function createQuotaAdmissionService(
           scope: limits.scope,
         };
       }
+      let quotaRefunded = false;
+      const refundQuota = async (): Promise<void> => {
+        if (!consumeQuota || quotaRefunded) return;
+        quotaRefunded = true;
+        if (session.kind === "guest") {
+          await refundGuestLimits(session, nowMs);
+          return;
+        }
+        await dependencies.getBucket(session.label).refundLimits(nowMs);
+      };
       if (session.kind === "member") {
-        return { ok: true, remaining: limits.remaining, release: async () => undefined };
+        return {
+          ok: true,
+          remaining: limits.remaining,
+          release: async () => undefined,
+          refundQuota,
+        };
       }
 
       const token = dependencies.createToken();
@@ -163,6 +183,7 @@ export function createQuotaAdmissionService(
           released = true;
           await bucket.releaseGuestTurn(token);
         },
+        refundQuota,
       };
     },
   };

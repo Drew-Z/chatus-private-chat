@@ -345,6 +345,55 @@ describe("fallback language model", () => {
     ]);
   });
 
+  it("cancels a committed stream when the parent request aborts after visible output", async () => {
+    let controller!: ReadableStreamDefaultController<LanguageModelV3StreamPart>;
+    const cancel = vi.fn();
+    const source = new ReadableStream<LanguageModelV3StreamPart>({
+      start(value) {
+        controller = value;
+      },
+      cancel,
+    });
+    const release = vi.fn();
+    const success: ProviderAttemptEvent[] = [];
+    const failure: ProviderAttemptEvent[] = [];
+    const providerId = `provider-aborted-${crypto.randomUUID()}`;
+    const attempts = attemptRuntime();
+    const request = new AbortController();
+    const router = createFallbackLanguageModel([{
+      routeId: "aborted",
+      providerId,
+      modelName: "aborted-model",
+      credentialClass: "worker",
+      usedUserKey: false,
+      model: model({ streamSource: source }),
+      acquireLease: async () => ({ release }),
+    }], {
+      onSuccess: (event) => success.push(event),
+      onFailure: (event) => failure.push(event),
+    }, { createRun: () => attempts.createRun("main_answer") });
+
+    const resultPromise = router.doStream({ ...CALL_OPTIONS, abortSignal: request.signal });
+    controller.enqueue({ type: "text-delta", id: "text-1", delta: "partial" });
+    const result = await resultPromise;
+    const reader = result.stream.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ value: { type: "text-delta", delta: "partial" } });
+    request.abort(new DOMException("cancelled by user", "AbortError"));
+
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    expect(success).toEqual([]);
+    expect(failure).toEqual([]);
+    await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent()).resolves.toEqual([
+      expect.objectContaining({
+        turnId: attempts.turnId,
+        status: "cancelled",
+        errorClass: "request_cancelled",
+      }),
+    ]);
+  });
+
   it("never switches routes after visible output has started", async () => {
     const backup = model({ stream: successfulStream("backup") });
     const backupSpy = vi.spyOn(backup, "doStream");
