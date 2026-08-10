@@ -8,11 +8,12 @@ administrator legacy-surface APIs or Operations UI, capture/restore behavior, or
 a later rollout that instruments or disables one exact legacy surface.
 
 The shared control plane is implemented, but it does not by itself disable a
-caller or prove that a surface is unused. Eleven records remain code-owned with
+caller or prove that a surface is unused. Ten records remain code-owned with
 `owner: "unassigned"` and `maximumSupportedPhase: "discovered"`.
-`legacy.browser.admin-alias` and `legacy.browser.shell` are the current
-rollout-owned exceptions: each owner is `frontend`, manifest version is 2, and
-ceiling is `instrumented`.
+`legacy.browser.admin-alias`, `legacy.browser.shell`, and
+`legacy.api.chat-post` are the current rollout-owned exceptions. The browser
+records are owned by `frontend`; the chat POST record is owned by `data`. Each
+uses manifest version 2 and a ceiling of `instrumented`.
 Raising any ceiling requires a separately approved rollout task with that
 surface's caller, parity, recovery, observation, owner, and rollback evidence.
 
@@ -503,9 +504,9 @@ if (!control.ok || control.disabled) {
 
 ## 6. Tests Required
 
-- Assert all 13 IDs occur once and stay sorted; the admin alias and browser shell
-  are version 2/owned/`instrumented`, the other 11 remain version
-  1/unassigned/`discovered`,
+- Assert all 13 IDs occur once and stay sorted; the admin alias, browser shell,
+  and chat POST records are version 2/owned/`instrumented`, the other 10 remain
+  version 1/unassigned/`discovered`,
   and every synchronized runtime state still begins at phase `discovered`.
   Manifest additions/forward versions pass while removal, downgrade, duplicate,
   reorder, identity/policy conflict, unknown fields, and digest drift reject.

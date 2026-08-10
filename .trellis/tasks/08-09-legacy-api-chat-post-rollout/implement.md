@@ -7,7 +7,7 @@
 - [x] Add exact content-free read/write use recording and fail-closed controls.
 - [x] Add deterministic legacy-versus-Agent parity fixtures using local fake
       Provider/MCP only.
-- [ ] Persist identity migration/parity evidence for the ACL start gate.
+- [x] Persist identity migration/parity evidence for the ACL start gate.
 - [ ] After shell read observation and full caller migration, rehearse routing
       rollback and disable legacy POST writes with zero hidden side effects.
 - [ ] Retain 30-day write evidence, refresh recovery proof, disable route reads,
