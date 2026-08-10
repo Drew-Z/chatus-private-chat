@@ -71,13 +71,18 @@
         "status": "passed",
         "summary": "Repository consistency passed",
         "at": "2026-08-10T03:25:24.000049+00:00"
-      }
-      ,
+      },
       {
         "command": "gh run view 31353207727",
         "status": "passed",
         "summary": "PR 58 checks passed on head 796165a8beebbf3760fb905d25ce7d963402d930: changes, quality, and local fake-Provider Agent; Workspace Playwright skipped by path classification; four artifacts retained.",
         "at": "2026-08-10T03:48:27.4647054+00:00"
+      },
+      {
+        "command": "gh run view 31353676496",
+        "status": "passed",
+        "summary": "PR 58 final-head checks passed on head 1922a22a4fcdc87effffa1c445aa81cbd27809d4: changes, quality, and local fake-Provider Agent; Workspace Playwright skipped by path classification; four artifacts retained.",
+        "at": "2026-08-10T03:54:20+00:00"
       }
     ],
     "delivery": {
@@ -85,30 +90,30 @@
       "pullRequest": {
         "number": 58,
         "url": "https://github.com/Drew-Z/chatus-private-chat/pull/58",
-        "ciRunId": 31353207727,
-        "headSha": "796165a8beebbf3760fb905d25ce7d963402d930",
-        "artifactRevisionSha": "954afac702162375b9580e9c31770425d2f7497d",
+        "ciRunId": 31353676496,
+        "headSha": "1922a22a4fcdc87effffa1c445aa81cbd27809d4",
+        "artifactRevisionSha": "bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
         "status": "success",
         "artifacts": [
           {
-            "id": 9049673043,
-            "name": "pr-path-classification-954afac702162375b9580e9c31770425d2f7497d",
-            "expiresAt": "2026-08-24T03:39:46Z"
+            "id": 9049851317,
+            "name": "pr-path-classification-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:49:48Z"
           },
           {
-            "id": 9049699106,
-            "name": "agent-playwright-954afac702162375b9580e9c31770425d2f7497d",
-            "expiresAt": "2026-08-24T03:41:12Z"
+            "id": 9049875118,
+            "name": "agent-playwright-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:51:14Z"
           },
           {
-            "id": 9049746553,
-            "name": "pr-quality-954afac702162375b9580e9c31770425d2f7497d",
-            "expiresAt": "2026-08-24T03:43:48Z"
+            "id": 9049926510,
+            "name": "pr-quality-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:54:14Z"
           },
           {
-            "id": 9049746747,
-            "name": "pr-coverage-954afac702162375b9580e9c31770425d2f7497d",
-            "expiresAt": "2026-08-24T03:43:49Z"
+            "id": 9049926862,
+            "name": "pr-coverage-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:54:15Z"
           }
         ]
       }
