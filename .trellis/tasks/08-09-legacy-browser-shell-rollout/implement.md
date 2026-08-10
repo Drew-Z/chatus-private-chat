@@ -21,3 +21,25 @@
 
 Restore the retained shell routing and service-worker path without changing API
 authority, preserve counters, and restart the affected observation window.
+
+## Delivery Evidence
+
+- PR [#57](https://github.com/Drew-Z/chatus-private-chat/pull/57) passed
+  `changes`, `quality`, `workspace-browser`, and `agent-browser` on head
+  `a7f414804558b02f8cce839cc57b1df92c65f789` in [run
+  31344295863](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31344295863).
+  Five content-free path, quality, coverage, Workspace, and fake-Provider
+  artifacts are retained through 2026-08-24.
+- The squash merge produced exact main SHA
+  `695ff9877d82e0bfa732ba59dc08d40f6c31073b`. GitHub Actions [run
+  31344714210](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31344714210)
+  passed both stale-main guards, full quality gates, Worker deployment, and the
+  production smoke after normal edge-propagation retries. Worker version
+  `bb6bd337-78e4-499b-9b4e-de2fe295c3f5` is live.
+- Deployment-path artifact `9046925221` is retained through 2026-09-09 and
+  production-deployment artifact `9046988860` is retained through 2026-11-08.
+  No local production deploy, live model/MCP call, or synthetic production probe
+  was used.
+- This delivery starts no observation clock by itself. Routing rollback rehearsal,
+  the real 14-day write window, reversible read disable, and the later 14-day read
+  window remain open, so this task stays `in_progress` and unarchived.
