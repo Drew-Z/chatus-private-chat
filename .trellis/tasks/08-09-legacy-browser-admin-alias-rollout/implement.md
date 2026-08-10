@@ -43,3 +43,25 @@ and reset the affected observation window before another advance.
   seven-day write/read observation windows require an exact merged-main
   GitHub-Actions deployment and retained artifacts before any disable or
   cleanup decision.
+
+## Delivery Evidence
+
+- PR [#56](https://github.com/Drew-Z/chatus-private-chat/pull/56) passed
+  `changes`, `quality`, `workspace-browser`, and `agent-browser` on head
+  `dd37d84f05880498f188e4482e92b33d27114d8e` in [run
+  31329698513](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31329698513).
+  Five content-free path, quality, coverage, Workspace, and fake-Provider
+  artifacts are retained through 2026-08-23.
+- The squash merge produced exact main SHA
+  `c6f6b380070e48dc3d9ea16729e33e68bb6b1608`. GitHub Actions [run
+  31330106196](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31330106196)
+  passed both stale-main guards, full quality gates, Worker deployment, and the
+  production smoke after normal edge-propagation retries. Worker version
+  `fbabe5d9-b92e-4d61-8cdc-a5463790863b` was published.
+- Deployment-path artifact `9042663835` is retained through 2026-09-08 and
+  production-deployment artifact `9042714932` is retained through 2026-11-07.
+  No local production deploy, live model/MCP call, or synthetic production probe
+  was used.
+- Delivery evidence does not satisfy the route-switch rehearsal or observation
+  windows. The alias remains recoverable and this task stays `in_progress` and
+  unarchived until those gates are performed.
