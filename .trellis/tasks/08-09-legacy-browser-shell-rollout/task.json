@@ -15,7 +15,7 @@
   "branch": "codex/legacy-browser-shell-rollout",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "a91f7c98966f467f3b879a582ab2a13d433e7a06",
   "pr_url": null,
   "subtasks": [],
   "children": [],
