@@ -63,10 +63,18 @@ scripts/
   source available for an independently reversible routing switch.
 - Build the typed client to `public/react-chat/` with Vite. Treat that directory as generated output: ignore it in Git and regenerate it through `npm run build:client` or `npm run check:frontend` before deployment.
 - Serve the React shell at `/` and `/react-chat/`; serve an independent generated copy of the framework-free chat shell at `/legacy/`. `DEFAULT_CLIENT=legacy` is the emergency root rollback switch.
+- Treat `/app.js`, `/markdown.js`, `/theme.js`, `/styles.css`, `/icons.svg`, and
+  `public/legacy/index.html` as the legacy-exclusive browser-shell set. Route and
+  asset reads use the shared content-free legacy-surface observer; shared
+  `pwa.js`, manifest, and application icons are not legacy use by themselves.
 - Keep legacy chat DOM orchestration in `public/app.js`; administrator behavior belongs in the typed React workspace.
 - Extract pure, testable behavior when it is reusable or security-sensitive. Examples: `client/src/lib/api.ts`, `client/src/lib/markdown.ts`, `client/src/lib/state.ts`, and `public/markdown.js`.
 - Keep shared and legacy browser assets at the `public/` root. Vite content-hashed assets live under `public/react-chat/assets/` and receive immutable caching.
 - Keep navigation cache keys isolated for `/`, `/react-chat/`, and `/legacy/`; the retired `/admin.html` path must never be cached as an administrator shell.
+- Service-worker pre-cache requests for the legacy-exclusive shell set declare
+  `x-chatus-legacy-caller: service_worker`. Browser navigation keeps its browser
+  classification, while deployment smoke declares `deployment`; none of these
+  markers authorize a route or supply deployment identity.
 - Keep Worker composition in `src/index.ts`: it exports the default gateway plus every Wrangler Durable Object class.
 - Keep per-member Agent lifecycle and persistence behavior under `src/agent/`; gateway authentication and server-side instance selection stay in `src/worker.ts`.
 - Keep cross-runtime state and transport shapes under `src/contracts/`; validate untrusted request or storage data before it becomes one of these types.

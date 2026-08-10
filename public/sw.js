@@ -1,16 +1,18 @@
 const CACHE_NAME = "chatus-shell-v7";
 const SHELL_ASSETS = [
   "/",
+  "/pwa.js",
+  "/manifest.webmanifest",
+  "/icon-192.png",
+  "/icon-512.png",
+];
+const LEGACY_SHELL_ASSETS = [
   "/legacy/",
   "/styles.css",
   "/app.js",
   "/markdown.js",
   "/theme.js",
-  "/pwa.js",
   "/icons.svg",
-  "/manifest.webmanifest",
-  "/icon-192.png",
-  "/icon-512.png",
 ];
 
 self.addEventListener("install", (event) => {
@@ -80,6 +82,13 @@ async function fetchNavigation(request, fallbackPath) {
 async function cacheApplicationShell() {
   const cache = await caches.open(CACHE_NAME);
   await cache.addAll(SHELL_ASSETS);
+  await Promise.all(LEGACY_SHELL_ASSETS.map(async (path) => {
+    const response = await fetch(path, {
+      headers: { "x-chatus-legacy-caller": "service_worker" },
+    });
+    if (!response.ok) throw new Error("legacy_shell_unavailable");
+    await cache.put(path, response);
+  }));
   const response = await fetch("/react-chat/");
   if (!response.ok) throw new Error("react_shell_unavailable");
   await cache.put("/react-chat/", response.clone());

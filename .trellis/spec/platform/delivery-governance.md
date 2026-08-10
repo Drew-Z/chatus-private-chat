@@ -56,7 +56,9 @@ observation code may read that variable or the release asset's server-generated
 `commit`, but it must never accept a client header as deployment identity. The
 production smoke check follows the `/admin.html` compatibility redirect with
 `redirect: "manual"` and marks its caller as `deployment`, so a 308 response and
-the exact merged SHA are both auditable.
+the exact merged SHA are both auditable. It also marks `/legacy/` and each
+legacy-exclusive static asset request as `deployment`; shared React/PWA assets
+remain outside the browser-shell census.
 
 Trellis archive validates before any state or directory mutation. A code task requires checked acceptance criteria with no `TBD`, passed records for the five baseline commands, task-required impact-path browser/fake-runtime evidence named in its PRD or implementation plan, a resolving `task.json.commit`, a valid HTTPS `task.json.pr_url`, completed children, a free archive destination, repository-wide parent/child consistency, and a current workspace root index. The browser evidence may be enforced by the checked AC/implementation checklist when it is narrower than the repository-wide machine gate; it cannot be replaced by a live Provider, production probe, or local production deploy.
 
@@ -98,6 +100,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 | Browser suite fails | Upload retained trace/screenshot output without runtime secrets |
 | Deployment SHA is absent, malformed, or client-supplied | Fail preparation or ignore the client value; never record forged deployment evidence |
 | Legacy alias smoke follows redirects automatically | Gate fails; retain the manual 308 response and deployment caller marker |
+| Legacy shell or exclusive-asset smoke omits its deployment marker | Structural gate fails; do not attribute the request to a browser or Worker API |
 | Coverage suite completes or fails after producing a summary | Retain only `coverage/coverage-summary.json`; never upload HTML/source views |
 | Task has unchecked AC or `TBD` | Archive rejects before mutation |
 | Validation command is missing or failed | Archive rejects unless the exact `validation` gate has a valid waiver |

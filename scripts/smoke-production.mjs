@@ -17,6 +17,15 @@ async function request(path, options = {}) {
   return response;
 }
 
+function requestLegacySurface(path, options = {}) {
+  const headers = new Headers(options.headers);
+  headers.set("x-chatus-legacy-caller", "deployment");
+  return request(path, {
+    ...options,
+    headers,
+  });
+}
+
 function assertSecurityHeaders(response, label) {
   const csp = response.headers.get("content-security-policy") || "";
   assert(csp.includes("default-src 'self'"), `${label}: missing CSP`);
@@ -60,7 +69,7 @@ async function runChecks() {
     assert(response.headers.get("cache-control")?.includes("immutable"), `${asset}: immutable cache missing`);
   }
 
-  const legacy = await request(`/legacy/?smoke=${marker}`);
+  const legacy = await requestLegacySurface(`/legacy/?smoke=${marker}`);
   assert(legacy.status === 200, `legacy: expected 200, got ${legacy.status}`);
   assertSecurityHeaders(legacy, "legacy");
   const legacyHtml = await legacy.text();
@@ -86,13 +95,13 @@ async function runChecks() {
   assert(new URL(retiredAdmin.headers.get("location") || "", baseUrl).pathname === "/react-chat/admin", "retired admin: redirect target mismatch");
 
   if (expectedCommit) {
-    const fingerprintedAsset = await request(`/app.js?v=${expectedCommit}`);
+    const fingerprintedAsset = await requestLegacySurface(`/app.js?v=${expectedCommit}`);
     assert(fingerprintedAsset.headers.get("cache-control")?.includes("immutable"), "fingerprinted asset: immutable cache missing");
     const appSource = await fingerprintedAsset.text();
     assert(appSource.includes(`./markdown.js?v=${expectedCommit}`), "app module: dependency fingerprint does not match deployment");
-    const markdownAsset = await request(`/markdown.js?v=${expectedCommit}`);
+    const markdownAsset = await requestLegacySurface(`/markdown.js?v=${expectedCommit}`);
     assert(markdownAsset.headers.get("cache-control")?.includes("immutable"), "markdown module: immutable cache missing");
-    const plainAsset = await request("/app.js");
+    const plainAsset = await requestLegacySurface("/app.js");
     assert(!plainAsset.headers.get("cache-control")?.includes("immutable"), "plain asset: must remain revalidated");
     const releaseAsset = await request(`/release.json?v=${expectedCommit}`);
     assert(!releaseAsset.headers.get("cache-control")?.includes("immutable"), "release metadata: must not be immutable");

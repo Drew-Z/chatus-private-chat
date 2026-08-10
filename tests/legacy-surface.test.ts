@@ -59,7 +59,17 @@ describe("legacy surface contract", () => {
       readObservationMs: 7 * 24 * 60 * 60 * 1_000,
       maximumSupportedPhase: "instrumented",
     });
-    expect(LEGACY_SURFACE_MANIFEST.filter(({ surfaceId }) => surfaceId !== "legacy.browser.admin-alias").every((record) => (
+    const browserShell = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.browser.shell");
+    expect(browserShell).toMatchObject({
+      owner: "frontend",
+      manifestVersion: 2,
+      callerClasses: ["browser", "deployment", "service_worker", "test", "worker_api"],
+      writeObservationMs: 14 * 24 * 60 * 60 * 1_000,
+      readObservationMs: 14 * 24 * 60 * 60 * 1_000,
+      maximumSupportedPhase: "instrumented",
+    });
+    const instrumentedBrowserSurfaces = new Set(["legacy.browser.admin-alias", "legacy.browser.shell"]);
+    expect(LEGACY_SURFACE_MANIFEST.filter(({ surfaceId }) => !instrumentedBrowserSurfaces.has(surfaceId)).every((record) => (
       record.owner === "unassigned"
       && record.manifestVersion === 1
       && record.maximumSupportedPhase === "discovered"
@@ -187,6 +197,8 @@ describe("InstanceCoordinator legacy surface state", () => {
     for (const manifest of LEGACY_SURFACE_MANIFEST) {
       const stub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(manifest.surfaceId));
       const result = await stub.syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest: digest });
+      const isInstrumentedBrowserSurface = manifest.surfaceId === "legacy.browser.admin-alias"
+        || manifest.surfaceId === "legacy.browser.shell";
       expect(result).toEqual({
         ok: true,
         projection: expect.objectContaining({
@@ -195,8 +207,8 @@ describe("InstanceCoordinator legacy surface state", () => {
           phase: "discovered",
           readControl: "enabled",
           writeControl: "enabled",
-          owner: manifest.surfaceId === "legacy.browser.admin-alias" ? "frontend" : "unassigned",
-          allowedActions: manifest.surfaceId === "legacy.browser.admin-alias"
+          owner: isInstrumentedBrowserSurface ? "frontend" : "unassigned",
+          allowedActions: isInstrumentedBrowserSurface
             ? [{ kind: "advance", targetPhase: "instrumented" }]
             : [],
         }),
