@@ -1,16 +1,17 @@
 # Legacy API chat POST evidence handoff
 
-This is a pre-merge evidence handoff for `legacy.api.chat-post`. It records
-the caller and identity boundaries that are proven by source review and local
-fake-Provider tests. It does not claim a production census, a rollback
-rehearsal, or completion of either observation window.
+This is a deployment evidence handoff for `legacy.api.chat-post`. It records the
+caller and identity boundaries proven by source review and local fake-Provider
+tests, plus the exact merged-main deployment identity. It does not claim a
+production caller census, a rollback rehearsal, or completion of either
+observation window.
 
 ## Review identity
 
-- Review head: `9dd30b6bfcf5e96b7f78e56d475f2f77cb9bdd4f`
+- Review head: `b199fb3f25b1ed8bba2829e2b5cc8c4f01e0317b`
 - Surface manifest: `legacy.api.chat-post`, manifest version `2`, owner `data`
 - Caller classes in the code-owned manifest: `browser`, `test`, `worker_api`
-- Production deployment SHA: not assigned on this pre-merge branch
+- Production deployment SHA: `a0f8b30a4549dbf832827d6e54de4fbbb48790b3`
 
 ## Caller census map
 
@@ -60,12 +61,29 @@ markers, and reject label rename/reuse or client-supplied identity/routing IDs.
 This API rollout is therefore a source-identity handoff, not ACL identity
 implementation.
 
+## Delivery evidence
+
+- PR #58 final CI: run `31360685183`, head
+  `b199fb3f25b1ed8bba2829e2b5cc8c4f01e0317b`; `changes`, `quality`, and local
+  fake-Provider Agent acceptance passed. Workspace Playwright was skipped by the
+  path classifier, with the complete local Workspace matrix retained separately.
+- Squash merge: `a0f8b30a4549dbf832827d6e54de4fbbb48790b3` at
+  `2026-08-10T06:10:36Z`.
+- Exact-main deployment: run `31361000781`; both stale-main guards, Worker
+  deployment, and production verification passed. Worker version is
+  `09624a59-5546-4a47-bd71-29c51d9a285f`.
+- Retained deployment artifacts: `9052343216` through 2026-09-09 and
+  `9052434350` through 2026-11-08.
+
+Deployment proves the shipped identity and route instrumentation are live. It
+does not prove which production callers exist or start either 30-day window.
+
 ## Gate status
 
 | Gate | Status | Why |
 | --- | --- | --- |
 | Static caller map and parity contract | Prepared | Source and local fake-runtime evidence above |
-| Production exact-SHA caller census | Open | Requires the merged-main deployment and observation evidence |
+| Production exact-SHA caller census | Open | Deployment SHA is assigned; caller observation evidence is not yet retained |
 | Routing rollback rehearsal | Open | Requires the deployed control-plane operation and retained rollback evidence |
 | 30-day write observation | Open | The API ceiling remains `instrumented` |
 | Read disable and 30-day read observation | Open | Depends on shell migration and write observation |

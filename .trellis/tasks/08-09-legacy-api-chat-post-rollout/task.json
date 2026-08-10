@@ -83,6 +83,18 @@
         "status": "passed",
         "summary": "PR 58 final-head checks passed on head 1922a22a4fcdc87effffa1c445aa81cbd27809d4: changes, quality, and local fake-Provider Agent; Workspace Playwright skipped by path classification; four artifacts retained.",
         "at": "2026-08-10T03:54:20+00:00"
+      },
+      {
+        "command": "gh run view 31360685183",
+        "status": "passed",
+        "summary": "PR 58 final checks passed on head b199fb3f25b1ed8bba2829e2b5cc8c4f01e0317b: changes, quality, and local fake-Provider Agent; Workspace Playwright skipped by path classification; four artifacts retained.",
+        "at": "2026-08-10T06:17:52.829618+00:00"
+      },
+      {
+        "command": "gh run view 31361000781",
+        "status": "passed",
+        "summary": "Exact-main GitHub Actions deployment passed on a0f8b30a4549dbf832827d6e54de4fbbb48790b3: both stale-main guards, Worker deploy, production verification, and two retained artifacts.",
+        "at": "2026-08-10T06:18:09.997124+00:00"
       }
     ],
     "delivery": {
@@ -90,30 +102,53 @@
       "pullRequest": {
         "number": 58,
         "url": "https://github.com/Drew-Z/chatus-private-chat/pull/58",
-        "ciRunId": 31353676496,
-        "headSha": "1922a22a4fcdc87effffa1c445aa81cbd27809d4",
-        "artifactRevisionSha": "bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+        "ciRunId": 31360685183,
+        "headSha": "b199fb3f25b1ed8bba2829e2b5cc8c4f01e0317b",
+        "artifactRevisionSha": "54d6a322ad0c176fd7ed361464eab0088f85d9fa",
         "status": "success",
         "artifacts": [
           {
-            "id": 9049851317,
-            "name": "pr-path-classification-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
-            "expiresAt": "2026-08-24T03:49:48Z"
+            "id": 9052237819,
+            "name": "pr-path-classification-54d6a322ad0c176fd7ed361464eab0088f85d9fa",
+            "expiresAt": "2026-08-24T06:05:28Z"
           },
           {
-            "id": 9049875118,
-            "name": "agent-playwright-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
-            "expiresAt": "2026-08-24T03:51:14Z"
+            "id": 9052267701,
+            "name": "agent-playwright-54d6a322ad0c176fd7ed361464eab0088f85d9fa",
+            "expiresAt": "2026-08-24T06:07:02Z"
           },
           {
-            "id": 9049926510,
-            "name": "pr-quality-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
-            "expiresAt": "2026-08-24T03:54:14Z"
+            "id": 9052318560,
+            "name": "pr-quality-54d6a322ad0c176fd7ed361464eab0088f85d9fa",
+            "expiresAt": "2026-08-24T06:09:35Z"
           },
           {
-            "id": 9049926862,
-            "name": "pr-coverage-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
-            "expiresAt": "2026-08-24T03:54:15Z"
+            "id": 9052318792,
+            "name": "pr-coverage-54d6a322ad0c176fd7ed361464eab0088f85d9fa",
+            "expiresAt": "2026-08-24T06:09:36Z"
+          }
+        ]
+      },
+      "merge": {
+        "sha": "a0f8b30a4549dbf832827d6e54de4fbbb48790b3",
+        "mergedAt": "2026-08-10T06:10:36Z"
+      },
+      "deployment": {
+        "runId": 31361000781,
+        "sha": "a0f8b30a4549dbf832827d6e54de4fbbb48790b3",
+        "workerVersionId": "09624a59-5546-4a47-bd71-29c51d9a285f",
+        "status": "success",
+        "productionSmoke": "passed",
+        "artifacts": [
+          {
+            "id": 9052343216,
+            "name": "deployment-paths-a0f8b30a4549dbf832827d6e54de4fbbb48790b3",
+            "expiresAt": "2026-09-09T06:10:47Z"
+          },
+          {
+            "id": 9052434350,
+            "name": "production-deployment-a0f8b30a4549dbf832827d6e54de4fbbb48790b3",
+            "expiresAt": "2026-11-08T06:10:39Z"
           }
         ]
       }
