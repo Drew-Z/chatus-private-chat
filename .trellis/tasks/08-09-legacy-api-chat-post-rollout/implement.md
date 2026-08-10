@@ -32,6 +32,11 @@ conversation/accounting evidence, and restart the affected observation window.
 - The control-plane drift fixture restores the exact code-owned manifest in a
   `finally` block so later legacy callers remain isolated and fail-closed tests
   do not contaminate the suite.
+- `evidence.md` records the pre-merge caller/identity handoff: browser, guest,
+  Worker API, and test boundaries; deterministic local parity references; and
+  the current label-derived TeamAgent identities that the ACL task must migrate
+  without rebinding. It deliberately leaves production census, rollback, and
+  observation gates open.
 - Identity migration evidence, rollback rehearsal, the 30-day write/read
   observation windows, route read-disable, cleanup approval, and delivery/PR
   evidence remain future gates and are intentionally unchecked.
