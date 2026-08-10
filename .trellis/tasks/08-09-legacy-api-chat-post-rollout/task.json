@@ -15,7 +15,7 @@
   "branch": "codex/legacy-api-chat-post-rollout",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "8ba33ad96023b3947b20a5a68ad5b6fa87dc59b3",
   "pr_url": null,
   "subtasks": [],
   "children": [],
