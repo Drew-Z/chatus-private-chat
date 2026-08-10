@@ -1,0 +1,122 @@
+{
+  "id": "legacy-api-chat-post-rollout",
+  "name": "legacy-api-chat-post-rollout",
+  "title": "Legacy API chat post rollout",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-09",
+  "completedAt": null,
+  "branch": "codex/legacy-api-chat-post-rollout",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "8ba33ad96023b3947b20a5a68ad5b6fa87dc59b3",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/58",
+  "subtasks": [],
+  "children": [],
+  "parent": "08-05-legacy-surface-disable-observation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite build and frontend structure checks passed",
+        "at": "2026-08-10T03:25:17.112302+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "48 files and 740 tests passed with local fake fixtures",
+        "at": "2026-08-10T03:25:18.081321+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "90 passed and 55 matrix skips across five viewports",
+        "at": "2026-08-10T03:25:19.080303+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 local fake Provider Agent tests passed on the final run",
+        "at": "2026-08-10T03:25:20.030561+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker client and browser TypeScript checks passed",
+        "at": "2026-08-10T03:25:21.010423+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker bundle and bindings validated without deployment",
+        "at": "2026-08-10T03:25:21.985246+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Working tree diff has no whitespace errors",
+        "at": "2026-08-10T03:25:23.024326+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed",
+        "at": "2026-08-10T03:25:24.000049+00:00"
+      },
+      {
+        "command": "gh run view 31353207727",
+        "status": "passed",
+        "summary": "PR 58 checks passed on head 796165a8beebbf3760fb905d25ce7d963402d930: changes, quality, and local fake-Provider Agent; Workspace Playwright skipped by path classification; four artifacts retained.",
+        "at": "2026-08-10T03:48:27.4647054+00:00"
+      },
+      {
+        "command": "gh run view 31353676496",
+        "status": "passed",
+        "summary": "PR 58 final-head checks passed on head 1922a22a4fcdc87effffa1c445aa81cbd27809d4: changes, quality, and local fake-Provider Agent; Workspace Playwright skipped by path classification; four artifacts retained.",
+        "at": "2026-08-10T03:54:20+00:00"
+      }
+    ],
+    "delivery": {
+      "workCommit": "8ba33ad96023b3947b20a5a68ad5b6fa87dc59b3",
+      "pullRequest": {
+        "number": 58,
+        "url": "https://github.com/Drew-Z/chatus-private-chat/pull/58",
+        "ciRunId": 31353676496,
+        "headSha": "1922a22a4fcdc87effffa1c445aa81cbd27809d4",
+        "artifactRevisionSha": "bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+        "status": "success",
+        "artifacts": [
+          {
+            "id": 9049851317,
+            "name": "pr-path-classification-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:49:48Z"
+          },
+          {
+            "id": 9049875118,
+            "name": "agent-playwright-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:51:14Z"
+          },
+          {
+            "id": 9049926510,
+            "name": "pr-quality-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:54:14Z"
+          },
+          {
+            "id": 9049926862,
+            "name": "pr-coverage-bcccbf55c5af4b320bd9d7c3b1256865ce8f0454",
+            "expiresAt": "2026-08-24T03:54:15Z"
+          }
+        ]
+      }
+    }
+  }
+}

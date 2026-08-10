@@ -59,6 +59,15 @@ describe("legacy surface contract", () => {
       readObservationMs: 7 * 24 * 60 * 60 * 1_000,
       maximumSupportedPhase: "instrumented",
     });
+    const legacyChatPost = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.api.chat-post");
+    expect(legacyChatPost).toMatchObject({
+      owner: "data",
+      manifestVersion: 2,
+      callerClasses: ["browser", "test", "worker_api"],
+      writeObservationMs: 30 * 24 * 60 * 60 * 1_000,
+      readObservationMs: 30 * 24 * 60 * 60 * 1_000,
+      maximumSupportedPhase: "instrumented",
+    });
     const browserShell = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.browser.shell");
     expect(browserShell).toMatchObject({
       owner: "frontend",
@@ -68,8 +77,8 @@ describe("legacy surface contract", () => {
       readObservationMs: 14 * 24 * 60 * 60 * 1_000,
       maximumSupportedPhase: "instrumented",
     });
-    const instrumentedBrowserSurfaces = new Set(["legacy.browser.admin-alias", "legacy.browser.shell"]);
-    expect(LEGACY_SURFACE_MANIFEST.filter(({ surfaceId }) => !instrumentedBrowserSurfaces.has(surfaceId)).every((record) => (
+    const instrumentedSurfaces = new Set(["legacy.api.chat-post", "legacy.browser.admin-alias", "legacy.browser.shell"]);
+    expect(LEGACY_SURFACE_MANIFEST.filter(({ surfaceId }) => !instrumentedSurfaces.has(surfaceId)).every((record) => (
       record.owner === "unassigned"
       && record.manifestVersion === 1
       && record.maximumSupportedPhase === "discovered"
@@ -104,7 +113,7 @@ describe("legacy surface contract", () => {
   });
 
   it("allows only additive or forward-versioned manifest evolution", () => {
-    const ownerAssigned = replaceRecord(LEGACY_SURFACE_MANIFEST, 0, {
+    const ownerAssigned = replaceRecord(LEGACY_SURFACE_MANIFEST, 1, {
       owner: "operations",
       manifestVersion: 2,
       maximumSupportedPhase: "instrumented",
@@ -112,11 +121,11 @@ describe("legacy surface contract", () => {
     expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, ownerAssigned)).toEqual(ownerAssigned);
 
     expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, ownerAssigned.slice(1))).toBeUndefined();
-    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 0, {
+    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 1, {
       owner: "security",
       manifestVersion: 3,
     }))).toBeUndefined();
-    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 0, {
+    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 1, {
       maximumSupportedPhase: "discovered",
       manifestVersion: 3,
     }))).toBeUndefined();
@@ -124,7 +133,7 @@ describe("legacy surface contract", () => {
       replacement: "conflicting-replacement",
       manifestVersion: 2,
     }))).toBeUndefined();
-    expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, replaceRecord(LEGACY_SURFACE_MANIFEST, 0, {
+    expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, replaceRecord(LEGACY_SURFACE_MANIFEST, 1, {
       maximumSupportedPhase: "instrumented",
     }))).toBeUndefined();
   });
@@ -197,7 +206,8 @@ describe("InstanceCoordinator legacy surface state", () => {
     for (const manifest of LEGACY_SURFACE_MANIFEST) {
       const stub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(manifest.surfaceId));
       const result = await stub.syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest: digest });
-      const isInstrumentedBrowserSurface = manifest.surfaceId === "legacy.browser.admin-alias"
+      const isInstrumentedSurface = manifest.surfaceId === "legacy.api.chat-post"
+        || manifest.surfaceId === "legacy.browser.admin-alias"
         || manifest.surfaceId === "legacy.browser.shell";
       expect(result).toEqual({
         ok: true,
@@ -207,8 +217,8 @@ describe("InstanceCoordinator legacy surface state", () => {
           phase: "discovered",
           readControl: "enabled",
           writeControl: "enabled",
-          owner: isInstrumentedBrowserSurface ? "frontend" : "unassigned",
-          allowedActions: isInstrumentedBrowserSurface
+          owner: manifest.surfaceId === "legacy.api.chat-post" ? "data" : isInstrumentedSurface ? "frontend" : "unassigned",
+          allowedActions: isInstrumentedSurface
             ? [{ kind: "advance", targetPhase: "instrumented" }]
             : [],
         }),

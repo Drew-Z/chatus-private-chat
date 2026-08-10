@@ -8,11 +8,12 @@ administrator legacy-surface APIs or Operations UI, capture/restore behavior, or
 a later rollout that instruments or disables one exact legacy surface.
 
 The shared control plane is implemented, but it does not by itself disable a
-caller or prove that a surface is unused. Eleven records remain code-owned with
+caller or prove that a surface is unused. Ten records remain code-owned with
 `owner: "unassigned"` and `maximumSupportedPhase: "discovered"`.
-`legacy.browser.admin-alias` and `legacy.browser.shell` are the current
-rollout-owned exceptions: each owner is `frontend`, manifest version is 2, and
-ceiling is `instrumented`.
+`legacy.browser.admin-alias`, `legacy.browser.shell`, and
+`legacy.api.chat-post` are the current rollout-owned exceptions. The browser
+records are owned by `frontend`; the chat POST record is owned by `data`. Each
+uses manifest version 2 and a ceiling of `instrumented`.
 Raising any ceiling requires a separately approved rollout task with that
 surface's caller, parity, recovery, observation, owner, and rollback evidence.
 
@@ -365,6 +366,113 @@ await cache.put(path, response);
 The explicit caller marker distinguishes service-worker use while the Worker
 continues to own SHA resolution and the response remains the retained asset.
 
+## Scenario: `legacy.api.chat-post`
+
+### 1. Scope / Trigger
+
+- Trigger: instrument the compatibility `POST /api/chat` boundary while callers
+  migrate to the TeamAgent transport; this rollout does not delete the route or
+  alter `/api/chats*` storage projections.
+- Ownership: `data`; manifest version 2; read/write observation windows are 30
+  days; the code ceiling is `instrumented` until a separately approved rollout
+  proves later gates.
+
+### 2. Signatures
+
+```text
+POST /api/chat -> legacy read admission, then legacy write admission, then the
+TeamAgent-equivalent legacy handler
+```
+
+```typescript
+recordLegacySurfaceUse(
+  "legacy.api.chat-post",
+  request,
+  env,
+  url,
+  access: "read" | "write",
+): Promise<{ ok: true; disabled: boolean; writeDisabled: boolean } | { ok: false; error: string }>
+```
+
+### 3. Contracts
+
+- The route records exact, content-free caller/access/SHA evidence. Request,
+  conversation, model, Provider, credential, memory, tool, and response content
+  never enters the registry.
+- A POST performs a read control check before request dispatch. The write check
+  runs after admission but before message construction or Provider/tool I/O.
+- `read_disabled` returns HTTP `410 legacy_surface_read_disabled`; a write-disabled
+  route returns HTTP `410 legacy_surface_write_disabled` and records no admitted
+  write event.
+- If a write is rejected after member/guest quota admission, the admission is
+  released and its one-shot `refundQuota()` restores the consumed member bucket
+  or both guest personal/source buckets. A rejected write therefore has no
+  hidden Provider/tool side effect and no net message charge.
+- The TeamAgent response body is wrapped so downstream reader cancellation aborts
+  the internal turn. After visible output, fallback monitoring treats parent
+  abort and reader cancellation as one idempotent cancellation: cancel the
+  upstream reader, settle the attempt as `cancelled`, dispose deadlines, and
+  release the Provider lease without fallback or failure telemetry.
+- Observation or coordinator failures fail closed for this API boundary with the
+  stable `legacy_surface_unavailable` error; no secret-bearing diagnostic is
+  returned.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Manifest/coordinator unavailable or conflicting | `503 legacy_surface_unavailable`; no Provider call |
+| Read control disabled | `410 legacy_surface_read_disabled`; no admission or Provider call |
+| Write control disabled | `410 legacy_surface_write_disabled`; quota is refunded; no write event or Provider/tool call |
+| Client cancels before visible output | `request_cancelled`; no fallback and the lease/attempt settles once |
+| Client cancels after visible output | Upstream reader cancellation; attempt `cancelled`; no synthetic failure telemetry |
+| Normal legacy POST | One content-free read and one content-free admitted-write event; TeamAgent-equivalent result |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a write-disabled request records the compatibility read, refunds the
+  provisional quota admission, and returns 410 without touching a fake Provider.
+- Base: an enabled request emits bounded read/write evidence and reaches the
+  same route, Skill, tool, file, stream, error, and attempt semantics as Agent.
+- Bad: check the write control after starting Provider work, count a rejected
+  write as admitted evidence, charge quota twice, or expose the coordinator
+  conflict text to the member.
+
+### 6. Tests Required
+
+- Worker tests compare legacy and TeamAgent member/guest admission, route and
+  Skill selection, quota, fallback, tools/files, stable errors, streams,
+  cancellation, attempt identity, and secret-free telemetry using local fake
+  Provider/MCP fixtures only.
+- The legacy control test asserts read/write evidence counts, zero Provider calls
+  on disabled writes, and unchanged quota after the one-shot refund.
+- Fallback unit tests assert committed-stream parent abort cancels the upstream
+  reader, releases the lease once, and leaves failure telemetry at zero.
+- Any test that mutates a Durable Object manifest/state directly must restore the
+  exact code-owned manifest/state in `finally`; otherwise later legacy callers
+  correctly fail closed and the suite becomes order-dependent.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await admitTurn();
+await provider.stream();
+if (legacyWriteDisabled) return new Response("disabled", { status: 410 });
+```
+
+#### Correct
+
+```typescript
+const admission = await admitTurn();
+const control = await recordLegacySurfaceUse("legacy.api.chat-post", request, env, url, "write");
+if (!control.ok || control.disabled) {
+  await Promise.allSettled([admission.release(), admission.refundQuota()]);
+  return legacySurfaceUnavailableOrWriteDisabled(control);
+}
+```
+
 ## 4. Validation & Error Matrix
 
 | Condition | Required result |
@@ -396,9 +504,9 @@ continues to own SHA resolution and the response remains the retained asset.
 
 ## 6. Tests Required
 
-- Assert all 13 IDs occur once and stay sorted; the admin alias and browser shell
-  are version 2/owned/`instrumented`, the other 11 remain version
-  1/unassigned/`discovered`,
+- Assert all 13 IDs occur once and stay sorted; the admin alias, browser shell,
+  and chat POST records are version 2/owned/`instrumented`, the other 10 remain
+  version 1/unassigned/`discovered`,
   and every synchronized runtime state still begins at phase `discovered`.
   Manifest additions/forward versions pass while removal, downgrade, duplicate,
   reorder, identity/policy conflict, unknown fields, and digest drift reject.

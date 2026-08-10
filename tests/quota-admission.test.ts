@@ -79,6 +79,20 @@ describe("quota admission service", () => {
     expect(personal.consumeLimits).toHaveBeenCalledTimes(2);
   });
 
+  it("refunds a successful member quota admission at most once when dispatch is rejected", async () => {
+    const personal = createBucket();
+    const harness = createHarness({ bill: personal }, 4);
+
+    const result = await harness.service.admitTurn(MEMBER, { user: {} });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected successful admission");
+    await result.refundQuota();
+    await result.refundQuota();
+    expect(personal.refundLimits).toHaveBeenCalledTimes(1);
+    expect(personal.refundLimits).toHaveBeenCalledWith(NOW);
+  });
+
   it("refunds the personal bucket when the guest source bucket rejects admission", async () => {
     const personal = createBucket();
     const source = createBucket({
@@ -147,6 +161,23 @@ describe("quota admission service", () => {
     expect(personal.acquireGuestTurn).toHaveBeenCalledWith("turn-token", NOW, 600_000);
     expect(personal.releaseGuestTurn).toHaveBeenCalledTimes(1);
     expect(personal.releaseGuestTurn).toHaveBeenCalledWith("turn-token");
+  });
+
+  it("refunds both successful guest quota buckets at most once", async () => {
+    const personal = createBucket();
+    const source = createBucket();
+    const harness = createHarness({ "guest-a": personal, "guest-source:a": source });
+
+    const result = await harness.service.admitTurn(GUEST, { user: {} });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected successful admission");
+    await result.refundQuota();
+    await result.refundQuota();
+    expect(personal.refundLimits).toHaveBeenCalledTimes(1);
+    expect(source.refundLimits).toHaveBeenCalledTimes(1);
+    expect(personal.refundLimits).toHaveBeenCalledWith(NOW);
+    expect(source.refundLimits).toHaveBeenCalledWith(NOW);
   });
 
   it("charges both guest buckets with the configured source policy", async () => {

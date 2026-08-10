@@ -182,6 +182,31 @@ type PendingConversationActivity = {
   requestId: string;
 };
 
+function responseWithAbortController(response: Response, controller: AbortController): Response {
+  const reader = response.body?.getReader();
+  if (!reader) return response;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(streamController) {
+      try {
+        const next = await reader.read();
+        if (next.done) streamController.close();
+        else streamController.enqueue(next.value);
+      } catch (error) {
+        streamController.error(error);
+      }
+    },
+    async cancel(reason) {
+      if (!controller.signal.aborted) controller.abort(reason);
+      await reader.cancel(reason).catch(() => undefined);
+    },
+  }, { highWaterMark: 0 });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 type AgentFailurePhase =
   | "identity"
   | "attachments"
@@ -2684,10 +2709,18 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       }
     }
 
+    const turnAbortController = new AbortController();
+    const abortFromRequest = () => {
+      if (!turnAbortController.signal.aborted) turnAbortController.abort(options?.abortSignal?.reason);
+    };
+    if (options?.abortSignal?.aborted) abortFromRequest();
+    else options?.abortSignal?.addEventListener("abort", abortFromRequest, { once: true });
     let finalized = false;
+    const removeRequestAbort = () => options?.abortSignal?.removeEventListener("abort", abortFromRequest);
     const finalize = async () => {
       if (finalized) return;
       finalized = true;
+      removeRequestAbort();
       await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn(), instanceFence.release()]);
     };
     let streamFailureLogged = false;
@@ -2708,7 +2741,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         stopWhen: stepCountIs(prepared.maxToolSteps),
         maxRetries: 0,
         allowSystemInMessages: true,
-        abortSignal: options?.abortSignal,
+        abortSignal: turnAbortController.signal,
         onFinish: async (event) => {
           await finalize();
           await onFinish(event);
@@ -2721,7 +2754,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         },
       });
 
-      return result.toUIMessageStreamResponse({
+      return responseWithAbortController(result.toUIMessageStreamResponse({
         originalMessages: this.messages,
         messageMetadata: ({ part }) => part.type === "finish"
           ? {
@@ -2735,7 +2768,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           "X-Request-ID": requestId,
         },
         onError: (error) => serializeAgentErrorEnvelope(projectStreamFailure(error), requestId),
-      });
+      }), turnAbortController);
     } catch (error) {
       await finalize();
       await prepared.recordStreamFailure();
