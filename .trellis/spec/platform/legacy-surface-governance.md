@@ -8,10 +8,11 @@ administrator legacy-surface APIs or Operations UI, capture/restore behavior, or
 a later rollout that instruments or disables one exact legacy surface.
 
 The shared control plane is implemented, but it does not by itself disable a
-caller or prove that a surface is unused. Twelve records remain code-owned with
+caller or prove that a surface is unused. Eleven records remain code-owned with
 `owner: "unassigned"` and `maximumSupportedPhase: "discovered"`.
-`legacy.browser.admin-alias` is the only current rollout-owned exception: its
-owner is `frontend`, manifest version is 2, and ceiling is `instrumented`.
+`legacy.browser.admin-alias` and `legacy.browser.shell` are the current
+rollout-owned exceptions: each owner is `frontend`, manifest version is 2, and
+ceiling is `instrumented`.
 Raising any ceiling requires a separately approved rollout task with that
 surface's caller, parity, recovery, observation, owner, and rollback evidence.
 
@@ -172,9 +173,8 @@ GET /admin.html[?query] -> 308 Location: /react-chat/admin[?query]
 ```
 
 ```typescript
-recordLegacyAdminAliasUse(request, env, url): Promise<void>
-classifyLegacyAdminAliasCaller(request):
-  "browser" | "deployment" | "test" | "worker_api"
+recordLegacyBrowserSurfaceUse(surfaceId, request, env, url): Promise<void>
+classifyLegacyBrowserSurfaceCaller(request, allowedCallerClasses): LegacySurfaceCallerClass
 resolveLegacySurfaceDeploymentSha(env, url): Promise<LowercaseSha | undefined>
 ```
 
@@ -243,7 +243,7 @@ census.
 #### Correct
 
 ```typescript
-await recordLegacyAdminAliasUse(request, env, url);
+await recordLegacyBrowserSurfaceUse("legacy.browser.admin-alias", request, env, url);
 const target = new URL("/react-chat/admin", url);
 target.search = url.search;
 return Response.redirect(target.toString(), 308);
@@ -251,6 +251,119 @@ return Response.redirect(target.toString(), 308);
 
 The event is content-free and best-effort, while the redirect remains the
 authoritative compatibility behavior.
+
+## Scenario: `legacy.browser.shell`
+
+### 1. Scope / Trigger
+
+- Trigger: instrument `/legacy`, `/legacy/`, the generated legacy entry, legacy-
+  exclusive static assets, the `DEFAULT_CLIENT=legacy` root switch, service-
+  worker pre-cache, tests, and deployment smoke without disabling the shell.
+- Ownership: `frontend`; chat APIs and storage compatibility records remain
+  independently governed.
+- Current ceiling: `instrumented`; static rollback source and routing remain
+  available while the 14-day write/read windows are still future gates.
+
+### 2. Signatures
+
+```text
+GET /legacy              -> 308 Location: /legacy/
+GET /legacy/             -> generated public/legacy/index.html
+GET /legacy/index.html   -> generated legacy entry
+GET /{app.js,markdown.js,theme.js,styles.css,icons.svg}
+GET / or /index.html when DEFAULT_CLIENT=legacy -> legacy shell
+```
+
+```typescript
+recordLegacyBrowserSurfaceUse("legacy.browser.shell", request, env, url): Promise<void>
+x-chatus-legacy-caller:
+  "browser" | "deployment" | "service_worker" | "test" | "worker_api"
+```
+
+### 3. Contracts
+
+- The manifest record is version 2, owner `frontend`, uses 14-day write and read
+  windows, and has `maximumSupportedPhase: "instrumented"`.
+- Every admitted shell route or legacy-exclusive asset read records only caller
+  class, read access, UTC bucket, count, occurrence time, and server-owned exact
+  deployment SHA. Paths, queries, local storage, conversations, prompts, model
+  data, labels, and headers are never evidence fields.
+- Only `/app.js`, `/markdown.js`, `/theme.js`, `/styles.css`, `/icons.svg`, and
+  the generated legacy entry are legacy-exclusive. Shared `/pwa.js`, manifest,
+  and application icons must not be counted merely because React uses them.
+- A valid declared caller is preserved. Browser Fetch Metadata or HTML
+  navigation classifies as `browser`; missing metadata and unknown declarations
+  fall back to `worker_api`. The service worker marks legacy pre-cache requests
+  as `service_worker`, deterministic tests mark `test`, and production smoke
+  marks the shell and exclusive assets as `deployment`.
+- Deployment identity comes only from `DEPLOYMENT_SHA` or `release.json`.
+  Coordinator, manifest-sync, SHA-resolution, or record failures never block a
+  redirect, shell response, static asset, or emergency root routing switch.
+- Navigation caches remain isolated for `/`, `/react-chat/`, and `/legacy/`.
+  Cached rollback assets remain retained; this instrumentation changes neither
+  `POST /api/chat` nor `/api/chats*` admission, telemetry, or authority.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| `/legacy` bookmark | Record its caller, then preserve the 308 rollback redirect |
+| `/legacy/`, generated entry, or exclusive asset | Record one best-effort read and preserve the asset response |
+| Root request while `DEFAULT_CLIENT=legacy` | Record shell use and serve the retained legacy entry |
+| Browser Fetch Metadata is present | Classify `browser` unless a valid explicit declared caller is supplied |
+| Caller declaration is `deployment`, `service_worker`, or `test` | Record that exact declared class |
+| Caller declaration is unknown or absent without browser metadata | Record `worker_api` |
+| SHA or observation store is unavailable | Serve normally and omit the event |
+| Shared React/PWA asset is requested | Do not count it solely as legacy shell use |
+| Shell instrumentation changes a chat API | Reject the change; the surfaces are independent |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a stale service worker pre-caches the retained shell with an explicit
+  caller marker while a browser navigation and deployment smoke produce their
+  own exact-SHA, content-free buckets.
+- Base: local tests use the configured zero SHA and assert all five caller
+  classes without contacting a Provider, MCP server, or production.
+- Bad: count `/pwa.js` as legacy whenever React loads it, trust a caller-supplied
+  deployment SHA, persist the requested URL, or gate `/api/chat` with the shell.
+
+### 6. Tests Required
+
+- Manifest tests assert only the admin alias and browser shell are version 2,
+  `frontend`, and capped at `instrumented`; the other 11 records remain version
+  1, unassigned, and capped at `discovered`.
+- Worker integration covers `/legacy`, `/legacy/`, one exclusive asset per
+  declared caller class, browser Fetch Metadata, unknown-caller fallback,
+  read-only daily counts, and the server-owned zero SHA.
+- Frontend structure checks assert the exact legacy asset set, service-worker
+  caller marker, deployment-smoke marker, isolated navigation cache keys, and
+  retained `DEFAULT_CLIENT=legacy` routing source.
+- Workspace Playwright proves React parity across the five approved viewports;
+  local fake-Provider Agent Playwright covers direct legacy/React/admin entries.
+  Neither suite may contact production or a live Provider/MCP server.
+- Run the complete Vitest suite, typecheck, Wrangler dry-run, diff check, and
+  repository-wide Trellis consistency serially with frontend builds.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```javascript
+const SHELL_ASSETS = ["/legacy/", "/app.js"];
+await cache.addAll(SHELL_ASSETS); // service-worker use becomes worker_api
+```
+
+#### Correct
+
+```javascript
+const response = await fetch(path, {
+  headers: { "x-chatus-legacy-caller": "service_worker" },
+});
+await cache.put(path, response);
+```
+
+The explicit caller marker distinguishes service-worker use while the Worker
+continues to own SHA resolution and the response remains the retained asset.
 
 ## 4. Validation & Error Matrix
 
@@ -283,8 +396,9 @@ authoritative compatibility behavior.
 
 ## 6. Tests Required
 
-- Assert all 13 IDs occur once and stay sorted; the admin alias alone is version
-  2/owned/`instrumented`, the other 12 remain version 1/unassigned/`discovered`,
+- Assert all 13 IDs occur once and stay sorted; the admin alias and browser shell
+  are version 2/owned/`instrumented`, the other 11 remain version
+  1/unassigned/`discovered`,
   and every synchronized runtime state still begins at phase `discovered`.
   Manifest additions/forward versions pass while removal, downgrade, duplicate,
   reorder, identity/policy conflict, unknown fields, and digest drift reject.
@@ -334,6 +448,6 @@ const synchronized = await coordinator.syncLegacySurfaceManifest({
 if (!synchronized.ok) return failClosed(synchronized.error);
 ```
 
-The code-owned record establishes the maximum authority. The admin alias may
-advance only to `instrumented`; runtime disablement and destructive cleanup
-remain separate, later, per-surface deliveries.
+The code-owned record establishes the maximum authority. The admin alias and
+browser shell may advance only to `instrumented`; runtime disablement and
+destructive cleanup remain separate, later, per-surface deliveries.

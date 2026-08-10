@@ -404,6 +404,11 @@ const INITIAL_MANIFEST: LegacySurfaceManifestRecordV1[] = [
     replacement: "react-workspace-shell",
     rollbackRoute: "routing_switch",
     recoveryClass: "code_only",
+    manifestVersion: 2,
+    owner: "frontend",
+    writeObservationMs: 14 * 24 * 60 * 60 * 1_000,
+    readObservationMs: 14 * 24 * 60 * 60 * 1_000,
+    maximumSupportedPhase: "instrumented",
   }),
   manifestRecord({
     surfaceId: "legacy.config.source-fallback",

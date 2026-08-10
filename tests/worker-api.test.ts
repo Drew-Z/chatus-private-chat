@@ -3871,6 +3871,50 @@ describe("Worker API", () => {
     expect(legacyHtml).toContain('/app.js?v=development');
   });
 
+  it("records content-free exact-SHA evidence for every legacy browser shell caller", async () => {
+    const browserShell = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.browser.shell");
+    if (!browserShell) throw new Error("missing_browser_shell_manifest");
+    const browserShellStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(browserShell.surfaceId));
+    await runInDurableObject(browserShellStub, async (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+    });
+
+    const responses = await Promise.all([
+      exports.default.fetch(new Request("https://example.test/legacy", {
+        redirect: "manual",
+        headers: { "x-chatus-legacy-caller": "browser" },
+      })),
+      exports.default.fetch(new Request("https://example.test/legacy/", {
+        headers: { "x-chatus-legacy-caller": "test" },
+      })),
+      exports.default.fetch(new Request("https://example.test/app.js?v=development", {
+        headers: { "x-chatus-legacy-caller": "deployment" },
+      })),
+      exports.default.fetch(new Request("https://example.test/markdown.js?v=development", {
+        headers: { "x-chatus-legacy-caller": "service_worker" },
+      })),
+      exports.default.fetch(new Request("https://example.test/styles.css?v=development", {
+        headers: { "sec-fetch-dest": "style", "sec-fetch-site": "same-origin" },
+      })),
+      exports.default.fetch(new Request("https://example.test/theme.js?v=development", {
+        headers: { "x-chatus-legacy-caller": "not-declared" },
+      })),
+    ]);
+    expect(responses.map(({ status }) => status)).toEqual([308, 200, 200, 200, 200, 200]);
+
+    await expect(runInDurableObject(browserShellStub, async (_instance, state) => (
+      state.storage.sql.exec<{ caller_class: string; access: string; count: number; deployment_sha: string }>(
+        "SELECT caller_class, access, count, deployment_sha FROM legacy_surface_daily ORDER BY caller_class",
+      ).toArray()
+    ))).resolves.toEqual([
+      { caller_class: "browser", access: "read", count: 2, deployment_sha: "0".repeat(40) },
+      { caller_class: "deployment", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "service_worker", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "test", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "worker_api", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+    ]);
+  });
+
   it("serves the typed admin shell and a secret-free member projection", async () => {
     await env.CHAT_STORE.put(ACCESS_CODES_KEY, "bill:bill-secret,alice:alice-secret");
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
@@ -5016,6 +5060,8 @@ describe("Worker API", () => {
       LEGACY_SURFACE_MANIFEST.map(({ surfaceId }) => surfaceId),
     );
     for (const surface of snapshot.surfaces) {
+      const isInstrumentedBrowserSurface = surface.surfaceId === "legacy.browser.admin-alias"
+        || surface.surfaceId === "legacy.browser.shell";
       expect(Object.keys(surface).sort()).toEqual([
         "allowedActions",
         "blockerCodes",
@@ -5039,8 +5085,8 @@ describe("Worker API", () => {
         phase: "discovered",
         readControl: "enabled",
         writeControl: "enabled",
-        owner: surface.surfaceId === "legacy.browser.admin-alias" ? "frontend" : "unassigned",
-        allowedActions: surface.surfaceId === "legacy.browser.admin-alias"
+        owner: isInstrumentedBrowserSurface ? "frontend" : "unassigned",
+        allowedActions: isInstrumentedBrowserSurface
           ? [{ kind: "advance", targetPhase: "instrumented" }]
           : [],
       });

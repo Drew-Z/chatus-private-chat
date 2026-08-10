@@ -549,8 +549,17 @@ const MCP_OAUTH_REFRESH_SKEW_MS = 60_000;
 const WORKSPACE_PENDING_UPLOAD_MISSING_OBJECT_TIMEOUT_MS = 60_000;
 const MAX_TOOL_RESULT_BYTES = 32 * 1024;
 const LEGACY_ADMIN_ALIAS_SURFACE_ID = "legacy.browser.admin-alias";
+const LEGACY_BROWSER_SHELL_SURFACE_ID = "legacy.browser.shell";
 const LEGACY_SURFACE_CALLER_HEADER = "x-chatus-legacy-caller";
 const LEGACY_SURFACE_DEPLOYMENT_SHA_PATTERN = /^[a-f0-9]{40}$/;
+const LEGACY_BROWSER_SHELL_ASSET_PATHS = new Set([
+  "/legacy/index.html",
+  "/app.js",
+  "/markdown.js",
+  "/theme.js",
+  "/styles.css",
+  "/icons.svg",
+]);
 const TOOL_SCHEMA_VALIDATOR = new CfWorkerJsonSchemaValidator({ draft: "2020-12", shortcircuit: false });
 
 class CapabilityError extends Error {
@@ -1864,38 +1873,45 @@ async function handleRequest(
     return fetchRewrittenAsset(request, env, url, "/react-chat/");
   }
   if (request.method === "GET" && url.pathname === "/legacy") {
+    await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
     return Response.redirect(new URL("/legacy/", url).toString(), 308);
   }
   if (request.method === "GET" && url.pathname === "/legacy/") {
+    await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
     return fetchRewrittenAsset(request, env, url, "/legacy/");
   }
   if (request.method === "GET" && url.pathname === "/admin.html") {
-    await recordLegacyAdminAliasUse(request, env, url);
+    await recordLegacyBrowserSurfaceUse(LEGACY_ADMIN_ALIAS_SURFACE_ID, request, env, url);
     const target = new URL("/react-chat/admin", url);
     target.search = url.search;
     return Response.redirect(target.toString(), 308);
   }
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
     const shellPath = env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html";
+    if (shellPath === "/legacy/") {
+      await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
+    }
     return fetchRewrittenAsset(request, env, url, shellPath);
+  }
+  if (request.method === "GET" && LEGACY_BROWSER_SHELL_ASSET_PATHS.has(url.pathname)) {
+    await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
   }
   const assetResponse = await env.ASSETS.fetch(request);
   return withAssetCacheHeaders(assetResponse, url);
 }
 
-type LegacyAdminAliasCallerClass = Extract<
-  LegacySurfaceCallerClass,
-  "browser" | "deployment" | "test" | "worker_api"
->;
-
-async function recordLegacyAdminAliasUse(request: Request, env: Env, url: URL): Promise<void> {
-  const callerClass = classifyLegacyAdminAliasCaller(request);
-  const deploymentSha = await resolveLegacySurfaceDeploymentSha(env, url);
-  if (!deploymentSha) return;
-  const manifest = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === LEGACY_ADMIN_ALIAS_SURFACE_ID);
-  if (!manifest) return;
-
+async function recordLegacyBrowserSurfaceUse(
+  surfaceId: typeof LEGACY_ADMIN_ALIAS_SURFACE_ID | typeof LEGACY_BROWSER_SHELL_SURFACE_ID,
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<void> {
   try {
+    const manifest = LEGACY_SURFACE_MANIFEST.find((record) => record.surfaceId === surfaceId);
+    if (!manifest) return;
+    const callerClass = classifyLegacyBrowserSurfaceCaller(request, manifest.callerClasses);
+    const deploymentSha = await resolveLegacySurfaceDeploymentSha(env, url);
+    if (!deploymentSha) return;
     const manifestDigest = await legacySurfaceManifestDigest();
     const coordinator = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(manifest.surfaceId));
     const synchronized = await coordinator.syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest });
@@ -1909,21 +1925,30 @@ async function recordLegacyAdminAliasUse(request: Request, env: Env, url: URL): 
       deploymentSha,
     });
   } catch {
-    // Compatibility redirects remain available when the observation store is unavailable.
+    // Compatibility routes and assets remain available when the observation store is unavailable.
   }
 }
 
-function classifyLegacyAdminAliasCaller(request: Request): LegacyAdminAliasCallerClass {
+function classifyLegacyBrowserSurfaceCaller(
+  request: Request,
+  allowedCallerClasses: readonly LegacySurfaceCallerClass[],
+): LegacySurfaceCallerClass {
   const declared = request.headers.get(LEGACY_SURFACE_CALLER_HEADER);
   if (declared !== null) {
-    return declared === "browser" || declared === "deployment" || declared === "test" || declared === "worker_api"
-      ? declared
-      : "worker_api";
+    return allowedCallerClasses.find((callerClass) => callerClass === declared) ?? "worker_api";
   }
   const fetchMode = request.headers.get("sec-fetch-mode")?.toLowerCase();
   const fetchDestination = request.headers.get("sec-fetch-dest")?.toLowerCase();
   const acceptsHtml = request.headers.get("accept")?.toLowerCase().includes("text/html") === true;
-  if (fetchMode === "navigate" || fetchDestination === "document" || acceptsHtml) return "browser";
+  if (
+    fetchMode === "navigate"
+    || request.headers.has("sec-fetch-site")
+    || fetchDestination === "document"
+    || fetchDestination === "script"
+    || fetchDestination === "style"
+    || fetchDestination === "image"
+    || acceptsHtml
+  ) return "browser";
   return "worker_api";
 }
 

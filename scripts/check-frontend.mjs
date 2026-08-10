@@ -64,6 +64,7 @@ const chatHtml = await readText(path.join(root, "public/index.html"));
 const styles = await readText(path.join(root, "public/styles.css"));
 const icons = await readText(path.join(root, "public/icons.svg"));
 const workerScript = await readText(path.join(root, "src/worker.ts"));
+const productionSmoke = await readText(path.join(root, "scripts/smoke-production.mjs"));
 const reactStyles = await readText(path.join(root, "client/src/styles.css"));
 const reactClient = await readText(path.join(root, "client/src/components/ChatWorkspace.tsx"));
 const reactSidebar = await readText(path.join(root, "client/src/components/ConversationSidebar.tsx"));
@@ -245,6 +246,7 @@ for (const asset of reactAssets) {
 }
 assert(workerScript.includes('url.pathname === "/legacy"'), "Worker: legacy rollback redirect is missing");
 assert(workerScript.includes('fetchRewrittenAsset(request, env, url, "/legacy/")'), "Worker: legacy rollback shell is missing");
+assert(workerScript.includes("LEGACY_BROWSER_SHELL_ASSET_PATHS") && workerScript.includes("recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID"), "Worker: legacy shell routes and exclusive assets need passive use evidence");
 assert(workerScript.includes('env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html"'), "Worker: React default and legacy rollback selection is missing");
 assert(workerScript.includes('url.pathname === "/react-chat/admin"') && workerScript.includes('fetchRewrittenAsset(request, env, url, "/react-chat/")'), "Worker: typed admin shell fallback must preserve the admin pathname without an Assets index redirect");
 assert(workerScript.includes('url.pathname === "/api/admin/members"'), "Worker: typed admin member projection is missing");
@@ -257,6 +259,7 @@ assert(workerScript.includes('url.pathname === "/api/user-data/export"') && work
 assert(workerScript.includes("MAX_USER_DATA_EXPORT_BYTES") && workerScript.includes('Content-Disposition'), "Worker: user data export needs a bounded attachment response");
 assert(workerScript.includes('error: "last_access_code"') && workerScript.includes("requireAccessCodeMutationSnapshot"), "Worker: member access revocation needs last-code and revision protection");
 assert(serviceWorker.includes('if (pathname.startsWith("/legacy")) return "/legacy/"'), "sw.js: legacy navigation cache must stay isolated");
+assert(serviceWorker.includes('"x-chatus-legacy-caller": "service_worker"'), "sw.js: legacy shell pre-cache must declare the service-worker caller");
 assert(serviceWorker.includes('if (pathname.startsWith("/react-chat")) return "/react-chat/"'), "sw.js: React navigation cache must stay isolated");
 assert(!serviceWorker.includes('"/admin"') && !serviceWorker.includes('"/admin.js"') && !serviceWorker.includes('"/admin-report.js"'), "sw.js: retired admin assets must not remain cached");
 assert(serviceWorker.includes('url.pathname.startsWith("/agent")'), "sw.js: Agent transport must never be cached");
@@ -265,6 +268,7 @@ assert(legacyBuild === chatHtml, "Legacy build: generated rollback shell drifted
 assert(chatScript.includes('./markdown.js?v=development'), "app.js: markdown module must share the release fingerprint");
 assert(workerScript.includes('url.pathname === "/admin.html"') && workerScript.includes('new URL("/react-chat/admin", url)'), "worker: /admin.html must permanently redirect to the typed admin");
 assert(serviceWorker.includes('"/icons.svg"'), "sw.js: offline chat shell must include the Lucide sprite");
+assert(productionSmoke.includes("requestLegacySurface") && productionSmoke.includes('"x-chatus-legacy-caller": "deployment"'), "Production smoke: legacy shell checks must declare the deployment caller");
 assert(icons.includes("lucide-static v1.24.0 - ISC"), "icons.svg: missing Lucide license provenance");
 assert(chatHtml.includes("/icons.svg?v=development#"), "index.html: Lucide sprite references must share the release fingerprint");
 const spriteIconIds = new Set([...icons.matchAll(/<symbol id="([a-z0-9-]+)"/g)].map((match) => match[1]));
