@@ -15,7 +15,7 @@
   "branch": "codex/acl-stable-principal-resource-identity",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "05bdc8461fbd200a600922428796e5e3aa27d25b",
   "pr_url": null,
   "subtasks": [],
   "children": [],
