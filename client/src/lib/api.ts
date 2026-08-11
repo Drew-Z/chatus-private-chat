@@ -16,6 +16,14 @@ import type {
 } from "../../../src/contracts/agent";
 import { normalizeAgentRequestId } from "../../../src/contracts/agent-error";
 import {
+  isConversationAccessRole,
+  isConversationGrantRole,
+  isPrincipalId,
+  isResourceId,
+  type ConversationAccessRoleV1,
+  type ConversationGrantRoleV1,
+} from "../../../src/contracts/identity";
+import {
   LEGACY_SURFACE_ADMIN_LIMIT,
   LEGACY_SURFACE_PHASE_EVIDENCE,
   decodeLegacySurfaceAdvanceInput,
@@ -848,6 +856,30 @@ export type AgentConversation = {
   skillIds: string[];
   messageCount: number;
   workspaceFiles: WorkspaceConversationFileRef[];
+  resourceId?: string;
+  accessRole?: ConversationAccessRoleV1;
+  accessRevision?: number;
+};
+
+export type ConversationGrant = {
+  principalId: string;
+  alias: string;
+  role: ConversationGrantRoleV1;
+  grantRevision: number;
+  grantedAt: number;
+  updatedAt: number;
+};
+
+export type ConversationGrantList = {
+  version: 1;
+  resourceId: string;
+  accessRevision: number;
+  grants: ConversationGrant[];
+};
+
+export type ConversationGrantMutationResult = ConversationGrantList & {
+  operationId: string;
+  changed: boolean;
 };
 
 export type WorkspaceFileVersion = WorkspaceFileVersionProjection;
@@ -1496,7 +1528,11 @@ export async function updateAgentConversation(
 ): Promise<AgentConversation> {
   const data = await requestJson(`/api/agent/conversations/${encodeURIComponent(conversation.id)}`, {
     method: "PATCH",
-    body: JSON.stringify({ ...patch, expectedUpdatedAt: conversation.updatedAt }),
+    body: JSON.stringify({
+      ...patch,
+      expectedUpdatedAt: conversation.updatedAt,
+      ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
+    }),
   });
   if (!isRecord(data) || !isAgentConversation(data.conversation)) {
     throw new ApiError("invalid_conversation_response", "会话更新格式无效。", 502);
@@ -1505,14 +1541,16 @@ export async function updateAgentConversation(
 }
 
 export async function deleteAgentConversation(conversation: AgentConversation): Promise<AgentConversation[]> {
+  const query = new URLSearchParams({ expectedUpdatedAt: String(conversation.updatedAt) });
+  if (conversation.resourceId) query.set("resourceId", conversation.resourceId);
   const data = await requestJson(
-    `/api/agent/conversations/${encodeURIComponent(conversation.id)}?expectedUpdatedAt=${conversation.updatedAt}`,
+    `/api/agent/conversations/${encodeURIComponent(conversation.id)}?${query}`,
     { method: "DELETE" },
   );
   if (!isRecord(data) || !Array.isArray(data.conversations) || !data.conversations.every(isAgentConversation)) {
     throw new ApiError("invalid_conversation_response", "会话删除结果格式无效。", 502);
   }
-  return data.conversations;
+  return listAgentConversations();
 }
 
 export async function createAgentConversationBranch(
@@ -1529,6 +1567,7 @@ export async function createAgentConversationBranch(
     body: JSON.stringify({
       ...input,
       expectedUpdatedAt: conversation.updatedAt,
+      ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
     }),
   });
   if (!isAgentConversationBranchResult(data)) {
@@ -1623,13 +1662,90 @@ export async function setConversationWorkspaceFiles(
     `/api/agent/conversations/${encodeURIComponent(conversation.id)}/workspace-files`,
     {
       method: "PUT",
-      body: JSON.stringify({ expectedUpdatedAt: conversation.updatedAt, files }),
+      body: JSON.stringify({
+        expectedUpdatedAt: conversation.updatedAt,
+        files,
+        ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
+      }),
     },
   );
   if (!isWorkspaceConversationMutationResponse(data)) {
     throw new ApiError("invalid_conversation_response", "会话文件更新格式无效。", 502);
   }
   return data.conversation;
+}
+
+export async function listConversationShares(conversation: AgentConversation): Promise<ConversationGrantList> {
+  if (!conversation.resourceId) {
+    throw new ApiError("conversation_resource_required", "会话资源标识不可用，请刷新后重试。", 409);
+  }
+  const query = new URLSearchParams({ resourceId: conversation.resourceId });
+  const data = await requestJson(
+    `/api/agent/conversations/${encodeURIComponent(conversation.id)}/shares?${query}`,
+  );
+  if (!isConversationGrantList(data)) {
+    throw new ApiError("invalid_conversation_share_response", "共享列表格式无效。", 502);
+  }
+  return data;
+}
+
+export async function upsertConversationShare(input: {
+  conversation: AgentConversation;
+  operationId: string;
+  granteeLabel: string;
+  role: ConversationGrantRoleV1;
+  expectedAccessRevision: number;
+}): Promise<ConversationGrantMutationResult> {
+  const { conversation } = input;
+  if (!conversation.resourceId) {
+    throw new ApiError("conversation_resource_required", "会话资源标识不可用，请刷新后重试。", 409);
+  }
+  const data = await requestJson(`/api/agent/conversations/${encodeURIComponent(conversation.id)}/shares`, {
+    method: "PUT",
+    body: JSON.stringify({
+      version: 1,
+      operationId: input.operationId,
+      resourceId: conversation.resourceId,
+      granteeLabel: input.granteeLabel,
+      role: input.role,
+      expectedAccessRevision: input.expectedAccessRevision,
+    }),
+  });
+  if (!isConversationGrantMutationResponse(data, input.operationId)) {
+    throw new ApiError("invalid_conversation_share_response", "共享更新格式无效。", 502);
+  }
+  const { ok: _ok, ...result } = data;
+  return result;
+}
+
+export async function revokeConversationShare(input: {
+  conversation: AgentConversation;
+  operationId: string;
+  granteePrincipalId: string;
+  expectedAccessRevision: number;
+}): Promise<ConversationGrantMutationResult> {
+  const { conversation } = input;
+  if (!conversation.resourceId) {
+    throw new ApiError("conversation_resource_required", "会话资源标识不可用，请刷新后重试。", 409);
+  }
+  const data = await requestJson(
+    `/api/agent/conversations/${encodeURIComponent(conversation.id)}/shares/revoke`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        version: 1,
+        operationId: input.operationId,
+        resourceId: conversation.resourceId,
+        granteePrincipalId: input.granteePrincipalId,
+        expectedAccessRevision: input.expectedAccessRevision,
+      }),
+    },
+  );
+  if (!isConversationGrantMutationResponse(data, input.operationId)) {
+    throw new ApiError("invalid_conversation_share_response", "共享撤销格式无效。", 502);
+  }
+  const { ok: _ok, ...result } = data;
+  return result;
 }
 
 export function workspaceFileDownloadUrl(fileId: string, versionId?: string): string {
@@ -2531,6 +2647,19 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
 }
 
 export function isAgentConversation(value: unknown): value is AgentConversation {
+  if (!isRecord(value)) return false;
+  const hasAnyAccessField = value.resourceId !== undefined
+    || value.accessRole !== undefined
+    || value.accessRevision !== undefined;
+  const hasCompleteAccessFields = isResourceId(value.resourceId)
+    && isConversationAccessRole(value.accessRole)
+    && isPositiveInteger(value.accessRevision);
+  if (hasAnyAccessField && !hasCompleteAccessFields) return false;
+  if (
+    hasCompleteAccessFields
+    && value.accessRole !== "owner"
+    && (value.parentChatId !== undefined || !Array.isArray(value.workspaceFiles) || value.workspaceFiles.length !== 0)
+  ) return false;
   return isRecord(value)
     && hasExactKeys(value, [
       "id",
@@ -2545,6 +2674,7 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
       "workspaceFiles",
       ...(value.routeId === undefined ? [] : ["routeId"]),
       ...(value.parentChatId === undefined ? [] : ["parentChatId"]),
+      ...(value.resourceId === undefined ? [] : ["resourceId", "accessRole", "accessRevision"]),
     ])
     && isNonEmptyString(value.id)
     && isNonEmptyString(value.title)
@@ -2561,6 +2691,45 @@ export function isAgentConversation(value: unknown): value is AgentConversation 
     && Array.isArray(value.workspaceFiles)
     && value.workspaceFiles.length <= 10
     && value.workspaceFiles.every(isWorkspaceConversationFileRef);
+}
+
+export function isConversationGrantList(value: unknown): value is ConversationGrantList {
+  return isRecord(value)
+    && hasExactKeys(value, ["version", "resourceId", "accessRevision", "grants"])
+    && value.version === 1
+    && isResourceId(value.resourceId)
+    && isPositiveInteger(value.accessRevision)
+    && Array.isArray(value.grants)
+    && value.grants.length <= 50
+    && value.grants.every(isConversationGrant)
+    && new Set(value.grants.map((grant) => grant.principalId)).size === value.grants.length;
+}
+
+function isConversationGrantMutationResponse(
+  value: unknown,
+  operationId: string,
+): value is ConversationGrantMutationResult & { ok: true } {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "ok", "version", "resourceId", "accessRevision", "grants", "operationId", "changed",
+  ])) return false;
+  const { ok: _ok, operationId: _operationId, changed: _changed, ...list } = value;
+  return value.ok === true
+    && value.operationId === operationId
+    && typeof value.changed === "boolean"
+    && isConversationGrantList(list);
+}
+
+function isConversationGrant(value: unknown): value is ConversationGrant {
+  return isRecord(value)
+    && hasExactKeys(value, ["principalId", "alias", "role", "grantRevision", "grantedAt", "updatedAt"])
+    && isPrincipalId(value.principalId)
+    && isNonEmptyString(value.alias)
+    && value.alias.length <= 80
+    && isConversationGrantRole(value.role)
+    && isPositiveInteger(value.grantRevision)
+    && isNonNegativeInteger(value.grantedAt)
+    && isNonNegativeInteger(value.updatedAt)
+    && value.updatedAt >= value.grantedAt;
 }
 
 export function getAgentSkillSelectionMetadata(value: unknown): AgentSkillSelectionMetadata | undefined {

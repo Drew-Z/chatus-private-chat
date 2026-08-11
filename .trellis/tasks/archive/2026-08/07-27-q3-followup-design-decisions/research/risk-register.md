@@ -27,6 +27,17 @@ Field meanings:
 | ACL-04 | Tool authorization and side effects | editor invokes tool using owner trust | remote side effect without current principal confirmation | high / possible | trust is principal/resource/review scoped; write tools are per-call | remote call counters on deny/revoke/transfer | invalidate trust on ACL/owner revision; default editor tools denied | disable shared tools and clear trust | consecutive confirmation and zero-call revoke tests | Capability owner / before shared tools |
 | ACL-05 | Deletion and export | owner/member deletion or shared export | orphaned resource, cascade loss, or other-member disclosure | high / possible | disposition is explicit and exports state ownership/snapshot scope | orphan census, export leak scan, blocked-delete metrics | block owner deletion; explicit transfer/tombstone; bounded shared export policy | restore grant metadata; keep tombstone | owner deletion and export matrix with anti-resurrection test | Privacy owner / before ACL GA |
 
+### ACL Implementation Evidence (2026-08-12)
+
+| ID | Status | Retained evidence | Remaining boundary |
+| --- | --- | --- | --- |
+| ACL-03 | Closed for v1 conversation viewer/editor sharing | `tests/worker-api.test.ts` covers the complete role/path matrix and the `isolates viewer and editor Agent turns from principal context, credentials, and tools` fixture; client decoders reject shared parent/file projection; Workspace Playwright proves bounded viewer/editor controls. Local fake Provider/MCP tests observe no root memory, Workspace refs/content, browser API key, OAuth token, feedback/export authority, tool definition, or remote tool call. | Resource-local/shared files and shared export remain unsupported and belong to ACL-05 policy work. |
+| ACL-04 | Partially mitigated | Every effective grant/role/revoke revision clears conversation trust; shared editor/viewer preparation constructs an empty tool set; `keeps authoritative grant and revoke results when derived Agent invalidation fails` and `fences and rolls back an editor stream revoked without derived Agent invalidation` prove authority does not depend on cleanup delivery and fake-MCP call count remains zero. | Any shared tool enablement, principal/resource/review-scoped confirmation UX, ownership-transfer trust invalidation, and consecutive side-effect confirmation remain unsupported. |
+
+The implementation evidence above narrows only the named v1 sharing scope. It
+does not close ACL-02 or ACL-05 and does not authorize transfer, owner deletion,
+shared files, shared export, or shared tool execution.
+
 ## Provider Finance And Feedback Risks
 
 | ID | Asset / trust boundary | Trigger | Failure mode | Severity / likelihood | Invariant | Detection | Mitigation | Rollback | Acceptance evidence | Owner / review date |

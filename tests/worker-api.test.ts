@@ -5,9 +5,14 @@ import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
 import {
+  CONVERSATION_AGENT_ACCESS_BODY_KEY,
+  type ConversationAgentAccessContextV1,
+} from "../src/contracts/agent";
+import {
   conversationResourceInstanceName,
   principalRootInstanceName,
   principalUserStateInstanceName,
+  type ConversationAccessActionV1,
   type ConversationResourceRouteV1,
   type PrincipalRouteV1,
 } from "../src/contracts/identity";
@@ -28,6 +33,7 @@ import worker, {
   getTeamAgentInstanceName,
   responseWithProviderLease,
   runTeamAgentCleanupSchedule,
+  scheduleConversationAccessInvalidation,
 } from "../src/worker";
 import wranglerConfig from "../wrangler.jsonc?raw";
 
@@ -121,8 +127,8 @@ async function readCapabilityEvents(response: Response): Promise<any[]> {
     .map((line) => JSON.parse(line.slice(6)));
 }
 
-async function seedMcpOAuthData(label: string, serverId: string) {
-  const state = env.USER_STATE.getByName(label);
+async function seedMcpOAuthData(label: string, serverId: string, stateInstanceName = label) {
+  const state = env.USER_STATE.getByName(stateInstanceName);
   const now = Date.now();
   const auth = {
     version: 1 as const,
@@ -643,18 +649,97 @@ async function createMemberConversationAgent(
     skillIds,
   });
   if (!created.ok) throw new Error(created.error);
-  return getConversationAgent(label, chatId);
+  const agent = await getConversationAgent(label, chatId);
+  const access = await ownerConversationAccessContext(label, chatId);
+  return { agent, access };
+}
+
+async function ownerConversationAccessContext(
+  label: string,
+  chatId: string,
+): Promise<ConversationAgentAccessContextV1> {
+  return conversationAccessContext(label, chatId);
+}
+
+async function conversationAccessContext(
+  label: string,
+  chatId: string,
+  exactResourceId?: string,
+  action: ConversationAccessActionV1 = "conversation.message.send",
+): Promise<ConversationAgentAccessContextV1> {
+  const principal = await resolveTestPrincipal(label);
+  if (!principal) throw new Error("missing_agent_test_principal");
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  let resourceId = exactResourceId;
+  if (!resourceId) {
+    const resource = await registry.lookupConversationResource({
+      version: 1,
+      principalId: principal.principalId,
+      conversationId: chatId,
+    });
+    if (!resource.found) throw new Error("missing_agent_test_resource");
+    resourceId = resource.route.resourceId;
+  }
+  const access = await registry.resolveConversationAccess({
+    version: 1,
+    actorPrincipalId: principal.principalId,
+    resourceId,
+    conversationId: chatId,
+    action,
+  });
+  return {
+    version: 1,
+    access,
+    actor: {
+      label,
+      principalId: principal.principalId,
+      rootInstanceName: principal.rootInstanceName,
+      userStateInstanceName: principal.userStateInstanceName,
+      registryRevision: principal.registryRevision,
+      sessionExpiresAt: Date.now() + 60_000,
+    },
+  };
+}
+
+async function runSharedEditorTurn(
+  agent: DurableObjectStub<TeamAgent>,
+  messages: UIMessage[],
+  requestId: string,
+  access: ConversationAgentAccessContextV1,
+  body: Record<string, unknown> = {},
+): Promise<{ status: number; contentType: string; body: string }> {
+  return runInDurableObject(agent, async (instance) => {
+    await instance.persistMessages(messages, [], { _deleteStaleRows: true });
+    (instance as any).registerConversationAccessTurn(
+      requestId,
+      access.access,
+      Math.max(0, messages.length - 1),
+    );
+    const response = await instance.onChatMessage(async () => undefined, {
+      requestId,
+      body: { ...body, [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
+    });
+    return {
+      status: response.status,
+      contentType: response.headers.get("Content-Type") || "",
+      body: await response.text(),
+    };
+  });
 }
 
 async function runAgentTurn(
   agent: DurableObjectStub<TeamAgent>,
   messages: UIMessage[],
   requestId: string,
+  access?: ConversationAgentAccessContextV1,
 ): Promise<{ status: number; contentType: string; body: string }> {
   const imported = await agent.importLegacyMessages(messages);
   if (!imported.imported) throw new Error("agent_parity_import_failed");
   return runInDurableObject(agent, async (instance) => {
-    const response = await instance.onChatMessage(async () => undefined, { requestId });
+    const response = await instance.onChatMessage(async () => undefined, {
+      requestId,
+      body: access ? { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access } : undefined,
+    });
     return {
       status: response.status,
       contentType: response.headers.get("Content-Type") || "",
@@ -1498,7 +1583,7 @@ describe("Worker API", () => {
     expect(legacyResponse.status, await legacyResponse.clone().text()).toBe(200);
     await expect(legacyResponse.text()).resolves.toContain("parity context complete");
 
-    const agent = await createMemberConversationAgent(
+    const { agent, access } = await createMemberConversationAgent(
       `agent-parity-context-${suffix}`,
       `agent-parity-context-chat-${suffix}`,
       routeId,
@@ -1508,7 +1593,7 @@ describe("Worker API", () => {
       id: `agent-parity-context-user-${suffix}`,
       role: "user",
       parts,
-    }], "turn_parity-context-123");
+    }], "turn_parity-context-123", access);
     expect(agentResponse.status).toBe(200);
     expect(agentResponse.contentType).toContain("text/event-stream");
     expect(agentResponse.body).toContain("parity context complete");
@@ -1645,7 +1730,7 @@ describe("Worker API", () => {
     expect(JSON.parse(legacyTool.event.resultPreview)).toEqual(toolResult);
     expect(legacyEvents).toContainEqual({ type: "assistant_delta", text: "tool parity complete" });
 
-    const agent = await createMemberConversationAgent(
+    const { agent, access } = await createMemberConversationAgent(
       `agent-parity-tool-${suffix}`,
       `agent-parity-tool-chat-${suffix}`,
       routeId,
@@ -1655,7 +1740,7 @@ describe("Worker API", () => {
       id: `agent-parity-tool-user-${suffix}`,
       role: "user",
       parts: [{ type: "text", text: "统计 hello world 和 again" }],
-    }], "turn_parity-tool-123");
+    }], "turn_parity-tool-123", access);
     expect(agentResponse.status).toBe(200);
     expect(agentResponse.body).toContain("text_stats_");
     expect(agentResponse.body).toContain("characters");
@@ -1730,9 +1815,11 @@ describe("Worker API", () => {
     expect(legacySecond.status).toBe(429);
     await expect(legacySecond.json()).resolves.toMatchObject({ error: "rate_limited", scope: "session" });
 
-    const agent = await createMemberConversationAgent(
-      `agent-parity-quota-${suffix}`,
-      `agent-parity-quota-chat-${suffix}`,
+    const agentLabel = `agent-parity-quota-${suffix}`;
+    const agentChatId = `agent-parity-quota-chat-${suffix}`;
+    const { agent, access } = await createMemberConversationAgent(
+      agentLabel,
+      agentChatId,
       routeId,
     );
     const firstUser: UIMessage = {
@@ -1740,7 +1827,7 @@ describe("Worker API", () => {
       role: "user",
       parts: [{ type: "text", text: "one message only" }],
     };
-    const agentFirst = await runAgentTurn(agent, [firstUser], "turn_parity-quota-123");
+    const agentFirst = await runAgentTurn(agent, [firstUser], "turn_parity-quota-123", access);
     expect(agentFirst.status).toBe(200);
     expect(agentFirst.body).toContain("parity quota admitted");
     const agentSecond = await runInDurableObject(agent, async (instance) => {
@@ -1749,7 +1836,10 @@ describe("Worker API", () => {
         { id: `agent-parity-quota-assistant-${suffix}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
         { id: `agent-parity-quota-user-2-${suffix}`, role: "user", parts: [{ type: "text", text: "second message" }] },
       ], [], { _deleteStaleRows: true });
-      const response = await instance.onChatMessage(async () => undefined, { requestId: "turn_parity-quota-456" });
+      const response = await instance.onChatMessage(async () => undefined, {
+        requestId: "turn_parity-quota-456",
+        body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
+      });
       return { status: response.status, body: await response.text() };
     });
     expect(agentSecond.status).toBe(429);
@@ -1872,7 +1962,7 @@ describe("Worker API", () => {
     expect(legacyBody).toContain("parity fallback complete");
     expect(legacyBody).not.toContain(privateMarker);
 
-    const agent = await createMemberConversationAgent(
+    const { agent, access } = await createMemberConversationAgent(
       `agent-parity-fallback-${suffix}`,
       `agent-parity-fallback-chat-${suffix}`,
       routeId,
@@ -1881,7 +1971,7 @@ describe("Worker API", () => {
       id: `agent-parity-fallback-user-${suffix}`,
       role: "user",
       parts: [{ type: "text", text: "use the local fallback" }],
-    }], "turn_parity-fallback-123");
+    }], "turn_parity-fallback-123", access);
     expect(agentResponse.status).toBe(200);
     expect(agentResponse.body).toContain("parity fallback complete");
     expect(agentResponse.body).not.toContain(privateMarker);
@@ -1963,7 +2053,7 @@ describe("Worker API", () => {
     const legacyBody = await legacyResponse.text();
     expect(JSON.parse(legacyBody)).toMatchObject({ error: "upstream_rate_limited", status: 429 });
 
-    const agent = await createMemberConversationAgent(
+    const { agent, access } = await createMemberConversationAgent(
       `agent-parity-error-${suffix}`,
       `agent-parity-error-chat-${suffix}`,
       routeId,
@@ -1972,7 +2062,7 @@ describe("Worker API", () => {
       id: `agent-parity-error-user-${suffix}`,
       role: "user",
       parts: [{ type: "text", text: "classify locally" }],
-    }], "turn_parity-error-123");
+    }], "turn_parity-error-123", access);
     expect(agentResponse.status).toBe(200);
     expect(agentResponse.body).toContain("upstream_rate_limited");
     expect(agentResponse.body).toContain("上游模型暂时限流，请稍后重试或切换模型。");
@@ -2064,7 +2154,7 @@ describe("Worker API", () => {
       expect(attempts[0]?.status).toBe("cancelled");
     });
 
-    const agent = await createMemberConversationAgent(
+    const { agent, access } = await createMemberConversationAgent(
       `agent-parity-cancel-${suffix}`,
       `agent-parity-cancel-chat-${suffix}`,
       routeId,
@@ -2079,6 +2169,7 @@ describe("Worker API", () => {
       const response = await instance.onChatMessage(async () => undefined, {
         requestId: "turn_parity-cancel-123",
         abortSignal: agentAbortController.signal,
+        body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
       });
       return readVisibleAndCancel(response, "parity cancellation visible", agentAbortController);
     });
@@ -2182,7 +2273,10 @@ describe("Worker API", () => {
 
   it("removes a forged Agent image turn and returns an exact error before provider execution", async () => {
     const label = `agent-image-reject-${crypto.randomUUID()}`;
-    const agent = await getConversationAgent(label, `image-reject-${crypto.randomUUID()}`);
+    const chatId = `image-reject-${crypto.randomUUID()}`;
+    await reserveNativeTestPrincipal(label);
+    const agent = await getConversationAgent(label, chatId);
+    const access = await ownerConversationAccessContext(label, chatId);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const rejected = await runInDurableObject(agent, async (instance) => {
       await instance.persistMessages([{
@@ -2193,7 +2287,9 @@ describe("Worker API", () => {
           { type: "file", mediaType: "image/png", filename: "remote.png", url: "https://example.test/image.png" },
         ],
       }], [], { _deleteStaleRows: true });
-      const response = await instance.onChatMessage(async () => undefined, {});
+      const response = await instance.onChatMessage(async () => undefined, {
+        body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
+      });
       return { status: response.status, body: await response.text() };
     });
     expect(rejected.status).toBe(400);
@@ -2253,6 +2349,7 @@ describe("Worker API", () => {
       skillIds: [],
     });
     const agent = await getConversationAgent(label, chatId);
+    const access = await ownerConversationAccessContext(label, chatId);
     await agent.importLegacyMessages([{
       id: "agent-budget-user",
       role: "user",
@@ -2261,7 +2358,10 @@ describe("Worker API", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const requestId = "turn_budget-123";
     const result = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, { requestId });
+      const response = await instance.onChatMessage(async () => undefined, {
+        requestId,
+        body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
+      });
       return {
         status: response.status,
         requestId: response.headers.get("X-Request-ID"),
@@ -2677,6 +2777,7 @@ describe("Worker API", () => {
     });
     expect(created.ok).toBe(true);
     const agent = await getConversationAgent(member.label, conversationId);
+    const access = await ownerConversationAccessContext(member.label, conversationId);
     await agent.importLegacyMessages([{ id: "retired-turn-message", role: "user", parts: [{ type: "text", text: "blocked" }] }]);
     await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).retirePrincipalAlias({
       version: 1,
@@ -2687,7 +2788,10 @@ describe("Worker API", () => {
     });
     const providerFetch = vi.spyOn(globalThis, "fetch");
     const response = await runInDurableObject(agent, (instance) => (
-      instance.onChatMessage(async () => undefined, { requestId: `retired-turn-${crypto.randomUUID()}` })
+      instance.onChatMessage(async () => undefined, {
+        requestId: `retired-turn-${crypto.randomUUID()}`,
+        body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
+      })
     ));
     expect(response.status).toBe(401);
     expect(providerFetch).not.toHaveBeenCalled();
@@ -2987,6 +3091,793 @@ describe("Worker API", () => {
     });
     expect(staleAgentMemoryUpdate.status).toBe(409);
     await expect(env.CHAT_STORE.get(legacyMemoryKey)).resolves.toBe("legacy preference");
+  });
+
+  it("enforces exact conversation ACL roles across list, share, title, and owner-only paths", async () => {
+    const owner = await login(`acl-owner-${crypto.randomUUID().slice(0, 12)}`);
+    const collaborator = await login(`acl-collaborator-${crypto.randomUUID().slice(0, 12)}`);
+    const outsider = await login(`acl-outsider-${crypto.randomUUID().slice(0, 12)}`);
+    const conversationId = `acl-chat-${crypto.randomUUID()}`;
+    const createdResponse = await apiRequest("/api/agent/conversations", owner.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: conversationId, title: "Shared release work" }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as any;
+    expect(created.conversation).toMatchObject({
+      id: conversationId,
+      accessRole: "owner",
+      accessRevision: 1,
+      resourceId: expect.stringMatching(/^res_/),
+    });
+    const resourceId = created.conversation.resourceId as string;
+
+    const grantViewer = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}/shares`, owner.cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        operationId: `grant-viewer-${crypto.randomUUID()}`,
+        resourceId,
+        granteeLabel: collaborator.label,
+        role: "viewer",
+        expectedAccessRevision: 1,
+      }),
+    });
+    expect(grantViewer.status).toBe(200);
+    const viewerGrant = await grantViewer.json() as any;
+    expect(viewerGrant).toMatchObject({
+      ok: true,
+      changed: true,
+      accessRevision: 2,
+      grants: [{ alias: collaborator.label, role: "viewer", grantRevision: 2 }],
+    });
+    const granteePrincipalId = viewerGrant.grants[0].principalId as string;
+
+    const collaboratorList = await apiRequest("/api/agent/conversations", collaborator.cookie)
+      .then((response) => response.json()) as any;
+    expect(collaboratorList.conversations).toEqual([
+      expect.objectContaining({
+        id: conversationId,
+        title: "Shared release work",
+        resourceId,
+        accessRole: "viewer",
+        accessRevision: 2,
+        workspaceFiles: [],
+      }),
+    ]);
+    expect(collaboratorList.conversations[0]).not.toHaveProperty("parentChatId");
+    const outsiderList = await apiRequest("/api/agent/conversations", outsider.cookie)
+      .then((response) => response.json()) as any;
+    expect(outsiderList.conversations).toEqual([]);
+
+    const viewerRename = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, collaborator.cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resourceId,
+        title: "Viewer forged title",
+        expectedUpdatedAt: created.conversation.updatedAt,
+      }),
+    });
+    expect(viewerRename.status).toBe(403);
+    await expect(viewerRename.json()).resolves.toMatchObject({ error: "conversation_action_denied" });
+
+    const viewerShares = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares?resourceId=${encodeURIComponent(resourceId)}`,
+      collaborator.cookie,
+    );
+    expect(viewerShares.status).toBe(403);
+
+    const staleRoleChange = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}/shares`, owner.cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        operationId: `stale-editor-${crypto.randomUUID()}`,
+        resourceId,
+        granteeLabel: collaborator.label,
+        role: "editor",
+        expectedAccessRevision: 1,
+      }),
+    });
+    expect(staleRoleChange.status).toBe(409);
+
+    const grantEditor = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}/shares`, owner.cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        operationId: `grant-editor-${crypto.randomUUID()}`,
+        resourceId,
+        granteeLabel: collaborator.label,
+        role: "editor",
+        expectedAccessRevision: 2,
+      }),
+    });
+    expect(grantEditor.status).toBe(200);
+    await expect(grantEditor.clone().json()).resolves.toMatchObject({
+      changed: true,
+      accessRevision: 3,
+      grants: [{ role: "editor", grantRevision: 3 }],
+    });
+
+    const editorRename = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, collaborator.cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resourceId,
+        title: "Editor title",
+        expectedUpdatedAt: created.conversation.updatedAt,
+      }),
+    });
+    expect(editorRename.status).toBe(200);
+    const renamed = await editorRename.json() as any;
+    expect(renamed.conversation).toMatchObject({
+      title: "Editor title",
+      resourceId,
+      accessRole: "editor",
+      accessRevision: 3,
+    });
+
+    const editorSettings = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, collaborator.cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resourceId,
+        routeId: "forged-route",
+        expectedUpdatedAt: renamed.conversation.updatedAt,
+      }),
+    });
+    expect(editorSettings.status).toBe(403);
+
+    const editorBranch = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}/branches`, collaborator.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resourceId,
+        requestId: `editor-branch-${crypto.randomUUID()}`,
+        action: "branch",
+        sourceMessageId: "message-1",
+        expectedUpdatedAt: renamed.conversation.updatedAt,
+      }),
+    });
+    expect(editorBranch.status).toBe(403);
+
+    const editorWorkspaceRefs = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/workspace-files`,
+      collaborator.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resourceId,
+          expectedUpdatedAt: renamed.conversation.updatedAt,
+          files: [],
+        }),
+      },
+    );
+    expect(editorWorkspaceRefs.status).toBe(403);
+
+    const editorDelete = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}?resourceId=${encodeURIComponent(resourceId)}&expectedUpdatedAt=${renamed.conversation.updatedAt}`,
+      collaborator.cookie,
+      { method: "DELETE" },
+    );
+    expect(editorDelete.status).toBe(403);
+
+    const outsiderRename = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, outsider.cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resourceId, title: "Forged", expectedUpdatedAt: renamed.conversation.updatedAt }),
+    });
+    expect(outsiderRename.status).toBe(404);
+    await expect(outsiderRename.json()).resolves.toMatchObject({ error: "conversation_not_found" });
+
+    const ownerShares = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares?resourceId=${encodeURIComponent(resourceId)}`,
+      owner.cookie,
+    );
+    expect(ownerShares.status).toBe(200);
+    await expect(ownerShares.json()).resolves.toMatchObject({
+      resourceId,
+      accessRevision: 3,
+      grants: [{ principalId: granteePrincipalId, alias: collaborator.label, role: "editor" }],
+    });
+
+    const revoked = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}/shares/revoke`, owner.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        operationId: `revoke-editor-${crypto.randomUUID()}`,
+        resourceId,
+        granteePrincipalId,
+        expectedAccessRevision: 3,
+      }),
+    });
+    expect(revoked.status).toBe(200);
+    await expect(revoked.json()).resolves.toMatchObject({ changed: true, accessRevision: 4, grants: [] });
+
+    const revokedList = await apiRequest("/api/agent/conversations", collaborator.cookie)
+      .then((response) => response.json()) as any;
+    expect(revokedList.conversations).toEqual([]);
+    const revokedRename = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, collaborator.cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resourceId, title: "Stale tab", expectedUpdatedAt: renamed.conversation.updatedAt }),
+    });
+    expect(revokedRename.status).toBe(404);
+  });
+
+  it("keeps authoritative grant and revoke results when derived Agent invalidation fails", async () => {
+    const suffix = crypto.randomUUID();
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      routes: {
+        default: {
+          label: "ACL invalidation",
+          type: "openai-chat",
+          baseUrl: "https://acl-invalidation-provider.example/v1",
+          model: "acl-invalidation-model",
+          apiKey: "acl-invalidation-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+    }));
+    const owner = await login(`acl-invalidation-owner-${suffix}`);
+    const collaborator = await login(`acl-invalidation-collaborator-${suffix}`);
+    const conversationId = `acl-invalidation-chat-${suffix}`;
+    const createdResponse = await apiRequest("/api/agent/conversations", owner.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: conversationId }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const resourceId = ((await createdResponse.json() as any).conversation.resourceId) as string;
+    const failingTeamAgent = {
+      getByName: () => ({
+        applyConversationAccessRevision: async () => {
+          throw new Error("synthetic_invalidation_failure");
+        },
+      }),
+    } as unknown as typeof env.TEAM_AGENT;
+
+    const grantedResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares`,
+      owner.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          operationId: `acl-invalidation-grant-${suffix}`,
+          resourceId,
+          granteeLabel: collaborator.label,
+          role: "viewer",
+          expectedAccessRevision: 1,
+        }),
+      },
+    );
+    expect(grantedResponse.status, await grantedResponse.clone().text()).toBe(200);
+    const granted = await grantedResponse.json() as any;
+    expect(granted).toMatchObject({ changed: true, accessRevision: 2 });
+    const granteePrincipalId = granted.grants[0].principalId as string;
+    await expect(scheduleConversationAccessInvalidation(
+      { TEAM_AGENT: failingTeamAgent } as any,
+      undefined,
+      "synthetic-agent-instance",
+      resourceId,
+      2,
+    )).resolves.toBeUndefined();
+    await expect(apiRequest("/api/agent/conversations", collaborator.cookie).then((response) => response.json()))
+      .resolves.toMatchObject({
+        conversations: [expect.objectContaining({ resourceId, accessRole: "viewer", accessRevision: 2 })],
+      });
+
+    const revokedResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares/revoke`,
+      owner.cookie,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          operationId: `acl-invalidation-revoke-${suffix}`,
+          resourceId,
+          granteePrincipalId,
+          expectedAccessRevision: 2,
+        }),
+      },
+    );
+    expect(revokedResponse.status, await revokedResponse.clone().text()).toBe(200);
+    await expect(revokedResponse.json()).resolves.toMatchObject({
+      changed: true,
+      accessRevision: 3,
+      grants: [],
+    });
+    await expect(scheduleConversationAccessInvalidation(
+      { TEAM_AGENT: failingTeamAgent } as any,
+      undefined,
+      "synthetic-agent-instance",
+      resourceId,
+      3,
+    )).resolves.toBeUndefined();
+    await expect(apiRequest("/api/agent/conversations", collaborator.cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: [] });
+  });
+
+  it("isolates viewer and editor Agent turns from principal context, credentials, and tools", async () => {
+    const suffix = crypto.randomUUID();
+    const providerId = `acl-isolation-provider-${suffix}`;
+    const routeId = `acl-isolation-route-${suffix}`;
+    const model = "acl-isolation-model";
+    const managedKey = `managed-key-${suffix}`;
+    const serverId = `acl-isolation-mcp-${suffix}`;
+    const remoteToolId = `mcp:${serverId}:lookup`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "ACL isolation Provider",
+          type: "openai-chat",
+          baseUrl: `https://${providerId}.example/v1`,
+          apiKey: managedKey,
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "ACL isolation route",
+          offerings: [{ providerId, model, supportsTools: true }],
+          supportsTools: true,
+        },
+      },
+      defaults: {
+        defaultRoute: routeId,
+        allowedRoutes: [routeId],
+        allowedSkills: ["acl-isolation-skill"],
+        allowedTools: [remoteToolId],
+        dailyMessageLimit: 5,
+        minuteMessageLimit: 5,
+      },
+      skills: {
+        "acl-isolation-skill": {
+          enabled: true,
+          label: "ACL isolation Skill",
+          instructions: "Use the configured conversation guidance without invoking tools.",
+          toolIds: [remoteToolId],
+        },
+      },
+      tools: {
+        [remoteToolId]: {
+          enabled: true,
+          label: "Private lookup",
+          inputSchema: { type: "object", properties: {} },
+          confirmation: "auto",
+          reviewRequired: false,
+          executor: { type: "mcp", serverId, remoteName: "lookup" },
+        },
+      },
+      mcpServers: {
+        [serverId]: {
+          enabled: true,
+          label: "Private MCP",
+          endpoint: `https://${serverId}.example/rpc`,
+          authType: "oauth2",
+          auth: {
+            issuer: "https://acl-isolation-issuer.example",
+            clientId: "acl-isolation-client",
+            scopes: ["tools.read"],
+            callbackPath: "/api/mcp/oauth/callback",
+          },
+        },
+      },
+    }));
+
+    const owner = await login(`acl-agent-owner-${suffix}`);
+    const collaborator = await login(`acl-agent-editor-${suffix}`);
+    const [ownerPrincipal, collaboratorPrincipal] = await Promise.all([
+      resolveTestPrincipal(owner.label),
+      resolveTestPrincipal(collaborator.label),
+    ]);
+    if (!ownerPrincipal || !collaboratorPrincipal) throw new Error("missing_acl_agent_principal");
+
+    const ownerMemory = `OWNER_MEMORY_MUST_NOT_LEAK_${suffix}`;
+    const collaboratorMemory = `EDITOR_MEMORY_MUST_NOT_LEAK_${suffix}`;
+    const ownerRoot = await getRootAgent(owner.label);
+    const collaboratorRoot = await getRootAgent(collaborator.label);
+    const [ownerMemoryState, collaboratorMemoryState] = await Promise.all([
+      ownerRoot.getMemory(),
+      collaboratorRoot.getMemory(),
+    ]);
+    await Promise.all([
+      ownerRoot.putMemory(ownerMemory, ownerMemoryState.revision),
+      collaboratorRoot.putMemory(collaboratorMemory, collaboratorMemoryState.revision),
+    ]);
+    const [ownerOAuth, collaboratorOAuth] = await Promise.all([
+      seedMcpOAuthData(owner.label, serverId, ownerPrincipal.userStateInstanceName),
+      seedMcpOAuthData(collaborator.label, serverId, collaboratorPrincipal.userStateInstanceName),
+    ]);
+
+    const conversationId = `acl-agent-chat-${suffix}`;
+    const createdResponse = await apiRequest("/api/agent/conversations", owner.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: conversationId,
+        title: "Isolated shared conversation",
+        routeId,
+        skillMode: "manual",
+        skillIds: ["acl-isolation-skill"],
+      }),
+    });
+    expect(createdResponse.status, await createdResponse.clone().text()).toBe(201);
+    const created = (await createdResponse.json() as any).conversation;
+    const resourceId = created.resourceId as string;
+
+    const workspaceCanary = `OWNER_WORKSPACE_MUST_NOT_LEAK_${suffix}`;
+    const uploadForm = new FormData();
+    uploadForm.set("file", new File([workspaceCanary], "private.txt", { type: "text/plain" }));
+    uploadForm.set("relativePath", `acl/${suffix}/private.txt`);
+    uploadForm.set("operationId", `acl-isolation-upload-${suffix}`);
+    const uploadedResponse = await apiRequest("/api/workspace/files", owner.cookie, {
+      method: "POST",
+      body: uploadForm,
+    });
+    expect(uploadedResponse.status, await uploadedResponse.clone().text()).toBe(201);
+    const uploaded = await uploadedResponse.json() as any;
+    const linkedResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/workspace-files`,
+      owner.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resourceId,
+          expectedUpdatedAt: created.updatedAt,
+          files: [{
+            fileId: uploaded.file.id,
+            versionId: uploaded.file.currentVersion.id,
+          }],
+        }),
+      },
+    );
+    expect(linkedResponse.status, await linkedResponse.clone().text()).toBe(200);
+
+    const grantViewerResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares`,
+      owner.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          operationId: `acl-isolation-viewer-${suffix}`,
+          resourceId,
+          granteeLabel: collaborator.label,
+          role: "viewer",
+          expectedAccessRevision: 1,
+        }),
+      },
+    );
+    expect(grantViewerResponse.status).toBe(200);
+    const viewerGrant = await grantViewerResponse.json() as any;
+    const granteePrincipalId = viewerGrant.grants[0].principalId as string;
+
+    let providerCalls = 0;
+    let remoteMcpCalls = 0;
+    let providerBody: Record<string, unknown> | undefined;
+    let providerAuthorization = "";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const target = String(input);
+      if (target.includes(serverId)) {
+        remoteMcpCalls += 1;
+        return new Response("unexpected remote MCP call", { status: 500 });
+      }
+      providerCalls += 1;
+      providerBody = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+      providerAuthorization = new Headers(init?.headers).get("Authorization") || "";
+      return openAiUiTextResponse("editor isolated response", model);
+    });
+
+    const agent = await getConversationAgent(owner.label, conversationId);
+    const baseline: UIMessage = {
+      id: `acl-isolation-baseline-${suffix}`,
+      role: "assistant",
+      parts: [{ type: "text", text: "Existing shared transcript" }],
+    };
+    await agent.importLegacyMessages([baseline]);
+    const viewerAccess = await conversationAccessContext(
+      collaborator.label,
+      conversationId,
+      resourceId,
+      "conversation.read",
+    );
+    const viewerDenied = await runInDurableObject(agent, async (instance) => {
+      const response = await instance.onChatMessage(async () => undefined, {
+        requestId: `acl-viewer-turn-${suffix}`,
+        body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: viewerAccess },
+      });
+      return { status: response.status, body: await response.text() };
+    });
+    expect(viewerDenied.status).toBe(403);
+    expect(viewerDenied.body).toContain("conversation_action_denied");
+    expect(providerCalls).toBe(0);
+    expect(remoteMcpCalls).toBe(0);
+    await expect(agent.getConversationMessageCount()).resolves.toBe(1);
+
+    const grantEditorResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares`,
+      owner.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          operationId: `acl-isolation-editor-${suffix}`,
+          resourceId,
+          granteeLabel: collaborator.label,
+          role: "editor",
+          expectedAccessRevision: 2,
+        }),
+      },
+    );
+    expect(grantEditorResponse.status).toBe(200);
+    const editorAccess = await conversationAccessContext(collaborator.label, conversationId, resourceId);
+    const forgedApiKey = `FORGED_EDITOR_API_KEY_${suffix}`;
+    const forgedSummary = `FORGED_EDITOR_SUMMARY_${suffix}`;
+    const editorResponse = await runSharedEditorTurn(
+      agent,
+      [
+        baseline,
+        {
+          id: `acl-isolation-user-${suffix}`,
+          role: "user",
+          parts: [{ type: "text", text: "Use only the shared conversation context." }],
+        },
+      ],
+      `acl-editor-turn-${suffix}`,
+      editorAccess,
+      {
+        routeId: "forged-editor-route",
+        skillMode: "automatic",
+        skillIds: ["forged-editor-skill"],
+        userApiKey: forgedApiKey,
+        sessionSummary: forgedSummary,
+        temperature: 0.01,
+      },
+    );
+    expect(editorResponse.status, editorResponse.body).toBe(200);
+    expect(editorResponse.contentType).toContain("text/event-stream");
+    expect(editorResponse.body).toContain("editor isolated response");
+    expect(providerCalls).toBe(1);
+    expect(remoteMcpCalls).toBe(0);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(providerAuthorization).toContain(managedKey);
+    expect(providerAuthorization).not.toContain(forgedApiKey);
+    expect(providerBody?.tools === undefined || (Array.isArray(providerBody.tools) && providerBody.tools.length === 0))
+      .toBe(true);
+
+    const serializedProviderBody = JSON.stringify(providerBody);
+    for (const canary of [
+      ownerMemory,
+      collaboratorMemory,
+      workspaceCanary,
+      forgedApiKey,
+      forgedSummary,
+      ownerOAuth.accessToken,
+      ownerOAuth.refreshToken,
+      collaboratorOAuth.accessToken,
+      collaboratorOAuth.refreshToken,
+      remoteToolId,
+    ]) {
+      expect(serializedProviderBody).not.toContain(canary);
+    }
+
+    const day = new Date().toISOString().slice(0, 10);
+    const ownerState = env.USER_STATE.getByName(ownerPrincipal.userStateInstanceName);
+    const collaboratorState = env.USER_STATE.getByName(collaboratorPrincipal.userStateInstanceName);
+    await vi.waitFor(async () => {
+      await expect(collaboratorState.getUsage(day, 0)).resolves.toBe(1);
+      const stats = await collaboratorState.getStats([day]);
+      expect(stats.metrics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ day, kind: "req", count: 1 }),
+        expect.objectContaining({ day, kind: "route_ok", routeId, count: 1 }),
+      ]));
+    });
+    await expect(ownerState.getUsage(day, 0)).resolves.toBe(0);
+    await expect(ownerState.getStats([day])).resolves.toEqual({ usage: { [day]: 0 }, metrics: [] });
+
+    const revokeResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares/revoke`,
+      owner.cookie,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          operationId: `acl-isolation-revoke-${suffix}`,
+          resourceId,
+          granteePrincipalId,
+          expectedAccessRevision: 3,
+        }),
+      },
+    );
+    expect(revokeResponse.status).toBe(200);
+    const staleReconnect = await apiRequest(
+      `/agent?chatId=${encodeURIComponent(conversationId)}&resourceId=${encodeURIComponent(resourceId)}`,
+      collaborator.cookie,
+    );
+    expect(staleReconnect.status).toBe(404);
+    await expect(staleReconnect.json()).resolves.toMatchObject({ error: "conversation_not_found" });
+  });
+
+  it("fences and rolls back an editor stream revoked without derived Agent invalidation", async () => {
+    const suffix = crypto.randomUUID();
+    const providerId = `acl-race-provider-${suffix}`;
+    const routeId = `acl-race-route-${suffix}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        [providerId]: {
+          label: "ACL race Provider",
+          type: "openai-chat",
+          baseUrl: `https://${providerId}.example/v1`,
+          apiKey: `acl-race-managed-key-${suffix}`,
+        },
+      },
+      routes: {
+        [routeId]: {
+          label: "ACL race route",
+          offerings: [{ providerId, model: "acl-race-model" }],
+        },
+      },
+      defaults: { defaultRoute: routeId, allowedRoutes: [routeId] },
+      skills: {},
+      tools: {},
+      mcpServers: {},
+    }));
+
+    const owner = await login(`acl-race-owner-${suffix}`);
+    const collaborator = await login(`acl-race-editor-${suffix}`);
+    const conversationId = `acl-race-chat-${suffix}`;
+    const createdResponse = await apiRequest("/api/agent/conversations", owner.cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: conversationId, title: "Revocation race", routeId }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json() as any).conversation;
+    const resourceId = created.resourceId as string;
+    const grantResponse = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}/shares`,
+      owner.cookie,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          operationId: `acl-race-grant-${suffix}`,
+          resourceId,
+          granteeLabel: collaborator.label,
+          role: "editor",
+          expectedAccessRevision: 1,
+        }),
+      },
+    );
+    expect(grantResponse.status).toBe(200);
+    const grant = await grantResponse.json() as any;
+    const granteePrincipalId = grant.grants[0].principalId as string;
+    const collaboratorPrincipal = await resolveTestPrincipal(collaborator.label);
+    if (!collaboratorPrincipal) throw new Error("missing_acl_race_principal");
+    const access = await conversationAccessContext(collaborator.label, conversationId, resourceId);
+    const agent = await getConversationAgent(owner.label, conversationId);
+    const requestId = `acl-race-turn-${suffix}`;
+    const baseline: UIMessage = {
+      id: `acl-race-baseline-${suffix}`,
+      role: "assistant",
+      parts: [{ type: "text", text: "Authoritative baseline" }],
+    };
+    const submitted: UIMessage = {
+      id: `acl-race-user-${suffix}`,
+      role: "user",
+      parts: [{ type: "text", text: "Begin the revocable turn." }],
+    };
+    const encoder = new TextEncoder();
+    let providerController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          providerController = controller;
+          controller.enqueue(encoder.encode(openAiTextEvent("visible before revoke")));
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    ));
+
+    let releaseAfterRevoke: (() => void) | undefined;
+    const afterRevoke = new Promise<void>((resolve) => { releaseAfterRevoke = resolve; });
+    let reportVisible: (() => void) | undefined;
+    const visible = new Promise<void>((resolve) => { reportVisible = resolve; });
+    const turn = runInDurableObject(agent, async (instance, state) => {
+      await instance.persistMessages([baseline, submitted], [], { _deleteStaleRows: true });
+      (instance as any).registerConversationAccessTurn(requestId, access.access, 1);
+      const response = await instance.onChatMessage(async () => undefined, {
+        requestId,
+        body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
+      });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let streamed = "";
+      while (!streamed.includes("visible before revoke")) {
+        const next = await reader.read();
+        if (next.done) break;
+        streamed += decoder.decode(next.value, { stream: true });
+      }
+      reportVisible?.();
+      await afterRevoke;
+      let streamError = "";
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          streamed += decoder.decode(next.value, { stream: true });
+        }
+      } catch (error) {
+        streamError = error instanceof Error ? error.message : String(error);
+      }
+
+      await instance.persistMessages([
+        baseline,
+        submitted,
+        {
+          id: `acl-race-tentative-assistant-${suffix}`,
+          role: "assistant",
+          parts: [{ type: "text", text: "Tentative output must be removed" }],
+        },
+      ], [], { _deleteStaleRows: true });
+      await (instance as any).onChatResponse({ requestId });
+      const persisted = state.storage.sql.exec<{ message: string }>(
+        "SELECT message FROM cf_ai_chat_agent_messages ORDER BY created_at, id",
+      ).toArray().map((row) => JSON.parse(row.message) as UIMessage);
+      const accessTurns = state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM chatus_conversation_access_turns",
+      ).one().count;
+      const providerStates = state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM chatus_provider_turn_state",
+      ).one().count;
+      return { streamed, streamError, persisted, accessTurns, providerStates };
+    });
+
+    await visible;
+    const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+    const revoked = await registry.revokeConversationGrant({
+      version: 1,
+      operationId: `acl-race-revoke-${suffix}`,
+      actorPrincipalId: (await resolveTestPrincipal(owner.label))!.principalId,
+      resourceId,
+      targetPrincipalId: granteePrincipalId,
+      expectedAccessRevision: 2,
+    });
+    expect(revoked).toMatchObject({ changed: true, accessRevision: 3, grants: [] });
+    providerController?.enqueue(encoder.encode(openAiTextEvent("output after revoke must be fenced")));
+    providerController?.enqueue(encoder.encode("data: [DONE]\n\n"));
+    providerController?.close();
+    releaseAfterRevoke?.();
+
+    const result = await turn;
+    expect(result.streamed).toContain("visible before revoke");
+    expect(result.streamed).not.toContain("output after revoke must be fenced");
+    expect(result.streamError).toContain("conversation_not_found");
+    expect(result.persisted).toEqual([baseline]);
+    expect(result.accessTurns).toBe(0);
+    expect(result.providerStates).toBe(0);
+    await expect((await getRootAgent(owner.label)).getConversationSummary(conversationId)).resolves.toMatchObject({
+      updatedAt: created.updatedAt,
+      messageCount: 0,
+    });
+    const day = new Date().toISOString().slice(0, 10);
+    await expect(env.USER_STATE.getByName(collaboratorPrincipal.userStateInstanceName).getUsage(day, 0))
+      .resolves.toBe(1);
   });
 
   it("creates durable idempotent conversation branches without changing the source transcript", async () => {
@@ -5458,9 +6349,9 @@ describe("Worker API", () => {
     expect(inspection.status).toBe(200);
     const inspectionPayload = await inspection.json() as any;
     expect(Object.keys(inspectionPayload).sort()).toEqual([
-      "aliases", "limit", "migration", "principals", "resources", "schemaVersion", "version",
+      "acl", "aliases", "limit", "migration", "principals", "resources", "schemaVersion", "version",
     ]);
-    expect(inspectionPayload).toMatchObject({ version: 1, schemaVersion: "identity-registry-v1", limit: 20 });
+    expect(inspectionPayload).toMatchObject({ version: 1, schemaVersion: "identity-registry-v2", limit: 20 });
     expect(JSON.stringify(inspectionPayload)).not.toContain(label);
 
     const input = {

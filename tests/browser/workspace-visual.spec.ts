@@ -1,7 +1,30 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page, type Route, type TestInfo } from "@playwright/test";
 import type { AdminConfig } from "../../client/src/lib/api";
 
 const blockedRequests = new WeakMap<Page, string[]>();
+
+type ShareFixtureGrant = {
+  principalId: string;
+  alias: string;
+  role: "viewer" | "editor";
+  grantRevision: number;
+  grantedAt: number;
+  updatedAt: number;
+};
+
+type ShareFixtureState = {
+  accessRevision: number;
+  grants: ShareFixtureGrant[];
+  replay: Map<string, Record<string, unknown>>;
+  failedOperations: Set<string>;
+  loadFailed: boolean;
+  upsertOperationIds: string[];
+  revokeOperationIds: string[];
+};
+
+const shareFixtureStates = new WeakMap<Page, ShareFixtureState>();
+const shareFixtureResourceId = "res_11111111-1111-4111-8111-111111111111";
+const shareFixtureNow = 1785032000000;
 
 const adminMemberConfig: AdminConfig = {
   routes: {
@@ -100,8 +123,93 @@ test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const blocked: string[] = [];
   blockedRequests.set(page, blocked);
+  const shareState: ShareFixtureState = {
+    accessRevision: 1,
+    grants: [{
+      principalId: "prn_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      alias: "visual-grantee",
+      role: "viewer",
+      grantRevision: 1,
+      grantedAt: shareFixtureNow,
+      updatedAt: shareFixtureNow,
+    }],
+    replay: new Map(),
+    failedOperations: new Set(),
+    loadFailed: false,
+    upsertOperationIds: [],
+    revokeOperationIds: [],
+  };
+  shareFixtureStates.set(page, shareState);
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
+    if (url.origin === "http://127.0.0.1:4178" && /^\/api\/agent\/conversations\/[^/]+\/shares(?:\/revoke)?$/.test(url.pathname)) {
+      const fixtureParams = new URL(page.url()).searchParams;
+      const response = () => ({
+        version: 1 as const,
+        resourceId: shareFixtureResourceId,
+        accessRevision: shareState.accessRevision,
+        grants: shareState.grants,
+      });
+      if (route.request().method() === "GET") {
+        if (fixtureParams.get("shareLoadError") === "once" && !shareState.loadFailed) {
+          shareState.loadFailed = true;
+          await fulfillShareError(route, "conversation_acl_unavailable", "合成共享列表暂时不可用。");
+          return;
+        }
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response()) });
+        return;
+      }
+
+      const body = JSON.parse(route.request().postData() || "{}") as Record<string, unknown>;
+      const operationId = String(body.operationId || "");
+      const replay = shareState.replay.get(operationId);
+      if (url.pathname.endsWith("/revoke")) shareState.revokeOperationIds.push(operationId);
+      else shareState.upsertOperationIds.push(operationId);
+      if (replay) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(replay) });
+        return;
+      }
+
+      if (url.pathname.endsWith("/revoke")) {
+        const principalId = String(body.granteePrincipalId || "");
+        shareState.accessRevision += 1;
+        shareState.grants = shareState.grants.filter((grant) => grant.principalId !== principalId);
+      } else {
+        const alias = String(body.granteeLabel || "");
+        const role = body.role === "editor" ? "editor" : "viewer";
+        const existing = shareState.grants.find((grant) => grant.alias === alias);
+        shareState.accessRevision += 1;
+        if (existing) {
+          shareState.grants = shareState.grants.map((grant) => grant.alias === alias ? {
+            ...grant,
+            role,
+            grantRevision: grant.grantRevision + 1,
+            updatedAt: shareFixtureNow + shareState.accessRevision,
+          } : grant);
+        } else {
+          shareState.grants = [...shareState.grants, {
+            principalId: "prn_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            alias,
+            role,
+            grantRevision: 1,
+            grantedAt: shareFixtureNow + shareState.accessRevision,
+            updatedAt: shareFixtureNow + shareState.accessRevision,
+          }];
+        }
+      }
+      const mutationResponse = { ok: true, ...response(), operationId, changed: true };
+      shareState.replay.set(operationId, mutationResponse);
+      if (fixtureParams.get("shareDelay") === "1") {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      if (fixtureParams.get("shareFailure") === "once" && !shareState.failedOperations.has(operationId)) {
+        shareState.failedOperations.add(operationId);
+        await fulfillShareError(route, "conversation_acl_unavailable", "合成共享写入已提交，但响应暂时不可用。");
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mutationResponse) });
+      return;
+    }
     const allowed = url.origin === "http://127.0.0.1:4178"
       && !url.pathname.startsWith("/api/")
       && !url.pathname.startsWith("/agent");
@@ -118,6 +226,18 @@ test.beforeEach(async ({ page }) => {
 test.afterEach(async ({ page }) => {
   expect(blockedRequests.get(page) || [], "visual fixture attempted an unexpected network request").toEqual([]);
 });
+
+async function fulfillShareError(
+  route: Route,
+  error: string,
+  message: string,
+): Promise<void> {
+  await route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error, message }),
+  });
+}
 
 test("workspace geometry stays contained and ordered", async ({ page }, testInfo) => {
   const viewport = page.viewportSize();
@@ -1798,6 +1918,120 @@ test("member OAuth MCP connections stay actionable and contained", async ({ page
   });
   expect(geometry).toEqual({ documentFits: true, dialogFits: true, contentFits: true });
   await attachScreenshot(page, testInfo, "mcp-connections");
+});
+
+test("owner manages conversation shares with accessible pending confirmation", async ({ page }) => {
+  await page.goto("/?acl=owner&drawer=open&shareDelay=1");
+  const opener = page.getByRole("button", { name: "管理共享" });
+  await opener.click();
+  const dialog = page.getByRole("dialog", { name: "共享对话" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByPlaceholder("输入精确成员标签")).toBeFocused();
+  await expect(dialog.getByText("visual-grantee", { exact: true })).toBeVisible();
+
+  await dialog.getByPlaceholder("输入精确成员标签").fill("visual-editor");
+  await dialog.locator(".share-grant-form select").selectOption("editor");
+  await dialog.getByRole("button", { name: "添加共享" }).click();
+  const addedRow = dialog.locator(".share-grant-row").filter({ hasText: "visual-editor" });
+  await expect(addedRow).toBeVisible();
+  await expect(addedRow.locator("select")).toHaveValue("editor");
+
+  await addedRow.locator("select").selectOption("viewer");
+  await expect(addedRow.locator("select")).toHaveValue("viewer");
+  const revokeButton = addedRow.getByRole("button", { name: "撤销 visual-editor 的共享" });
+  await revokeButton.click();
+  const confirm = page.getByRole("dialog", { name: "撤销共享？" });
+  await expect(confirm.getByRole("button", { name: "取消" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(revokeButton).toBeFocused();
+
+  await revokeButton.click();
+  await confirm.getByRole("button", { name: "撤销共享" }).click();
+  await expect(confirm.getByRole("button", { name: "撤销中..." })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toHaveCount(0);
+  await expect(addedRow).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test("share retries replay the same operation identity", async ({ page }) => {
+  await page.goto("/?acl=owner&drawer=open&shareFailure=once");
+  await page.getByRole("button", { name: "管理共享" }).click();
+  const dialog = page.getByRole("dialog", { name: "共享对话" });
+  await dialog.getByPlaceholder("输入精确成员标签").fill("visual-retry");
+  await dialog.getByRole("button", { name: "添加共享" }).click();
+  await expect(dialog.getByText("合成共享写入已提交，但响应暂时不可用。")).toBeVisible();
+  await dialog.getByRole("button", { name: "重试" }).click();
+  await expect(dialog.getByText("visual-retry", { exact: true })).toBeVisible();
+
+  const stateAfterGrant = shareFixtureStates.get(page);
+  expect(stateAfterGrant?.upsertOperationIds).toHaveLength(2);
+  expect(new Set(stateAfterGrant?.upsertOperationIds).size).toBe(1);
+
+  const retryRow = dialog.locator(".share-grant-row").filter({ hasText: "visual-retry" });
+  await retryRow.getByRole("button", { name: "撤销 visual-retry 的共享" }).click();
+  const confirm = page.getByRole("dialog", { name: "撤销共享？" });
+  await confirm.getByRole("button", { name: "撤销共享" }).click();
+  await expect(confirm.getByText("合成共享写入已提交，但响应暂时不可用。")).toBeVisible();
+  await confirm.getByRole("button", { name: "撤销共享" }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(retryRow).toHaveCount(0);
+
+  const stateAfterRevoke = shareFixtureStates.get(page);
+  expect(stateAfterRevoke?.revokeOperationIds).toHaveLength(2);
+  expect(new Set(stateAfterRevoke?.revokeOperationIds).size).toBe(1);
+});
+
+test("share list load failure recovers without leaving the dialog", async ({ page }) => {
+  await page.goto("/?acl=owner&drawer=open&shareLoadError=once");
+  await page.getByRole("button", { name: "管理共享" }).click();
+  const dialog = page.getByRole("dialog", { name: "共享对话" });
+  await expect(dialog.getByText("合成共享列表暂时不可用。")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "重试" })).toBeFocused();
+  await dialog.getByRole("button", { name: "重试" }).click();
+  await expect(dialog.getByText("visual-grantee", { exact: true })).toBeVisible();
+});
+
+test("viewer and editor receive only their bounded conversation controls", async ({ page }) => {
+  await page.goto("/?acl=viewer&drawer=open");
+  const viewerRow = page.locator(".conversation-row.active");
+  await expect(page.getByText("查看者", { exact: true }).first()).toBeVisible();
+  await expect(page.locator(".composer")).toHaveCount(0);
+  await expect(page.getByText("查看者权限：可以阅读这段对话，但不能发送消息或修改内容。", { exact: true })).toBeVisible();
+  await expect(viewerRow.getByRole("button", { name: "重命名", exact: true })).toHaveCount(0);
+  await expect(viewerRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
+  await expect(viewerRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "设置", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "查看线路与状态" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "记忆" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /MCP 连接/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "编辑并分支发送" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重新生成并创建分支" })).toHaveCount(0);
+
+  await page.goto("/?acl=editor&drawer=open");
+  const editorRow = page.locator(".conversation-row.active");
+  await expect(page.getByText("编辑者", { exact: true }).first()).toBeVisible();
+  await expect(page.locator(".composer")).toBeVisible();
+  await expect(page.getByRole("button", { name: "当前会话不支持附件" })).toBeDisabled();
+  await expect(editorRow.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+  await expect(editorRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
+  await expect(editorRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "设置", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "编辑并分支发送" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重新生成并创建分支" })).toHaveCount(0);
+
+  const containment = await page.evaluate(() => ({
+    documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+  }));
+  expect(containment).toEqual({ documentFits: true, bodyFits: true });
 });
 
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {

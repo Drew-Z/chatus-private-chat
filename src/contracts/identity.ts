@@ -1,4 +1,4 @@
-export const IDENTITY_REGISTRY_SCHEMA_VERSION = 1 as const;
+export const IDENTITY_REGISTRY_SCHEMA_VERSION = 2 as const;
 
 export type IdentityOrigin = "legacy" | "native";
 export type IdentityMigrationState = "backfilled" | "reconciled" | "authoritative";
@@ -24,6 +24,125 @@ export type ConversationResourceRouteV1 = {
   migrationState: IdentityMigrationState;
   agentInstanceName: string;
   registryRevision: number;
+};
+
+export type ConversationAccessRoleV1 = "owner" | "editor" | "viewer";
+export type ConversationGrantRoleV1 = Exclude<ConversationAccessRoleV1, "owner">;
+export type ConversationGrantStateV1 = "active" | "revoked";
+export type ConversationAclEventTypeV1 = "grant" | "role_change" | "revoke";
+
+export const CONVERSATION_ACCESS_ACTIONS = [
+  "conversation.list",
+  "conversation.read",
+  "conversation.message.send",
+  "conversation.message.stop",
+  "conversation.title.update",
+  "conversation.settings.update",
+  "conversation.branch.create",
+  "conversation.delete",
+  "conversation.acl.read",
+  "conversation.acl.mutate",
+  "conversation.workspace_refs.read",
+  "conversation.workspace_refs.mutate",
+  "conversation.tools.execute",
+  "conversation.feedback.create",
+  "conversation.export",
+] as const;
+
+export type ConversationAccessActionV1 = typeof CONVERSATION_ACCESS_ACTIONS[number];
+
+export type ConversationAccessSnapshotV1 = {
+  version: 1;
+  resourceId: string;
+  conversationId: string;
+  ownerPrincipalId: string;
+  actorPrincipalId: string;
+  role: ConversationAccessRoleV1;
+  accessRevision: number;
+  grantRevision: number;
+  agentInstanceName: string;
+  ownerRootInstanceName: string;
+};
+
+export type ConversationAccessRouteV1 = Omit<
+  ConversationAccessSnapshotV1,
+  "actorPrincipalId"
+>;
+
+export type ConversationGrantV1 = {
+  principalId: string;
+  alias: string;
+  role: ConversationGrantRoleV1;
+  grantRevision: number;
+  grantedAt: number;
+  updatedAt: number;
+};
+
+export type ConversationAccessRouteListV1 = {
+  version: 1;
+  routes: ConversationAccessRouteV1[];
+  nextCursor?: string;
+};
+
+export type ConversationGrantListV1 = {
+  version: 1;
+  resourceId: string;
+  accessRevision: number;
+  grants: ConversationGrantV1[];
+};
+
+export type ConversationGrantMutationResultV1 = ConversationGrantListV1 & {
+  operationId: string;
+  changed: boolean;
+};
+
+export type LookupConversationResourceByIdInputV1 = {
+  version: 1;
+  resourceId: string;
+};
+
+export type ResolveConversationAccessInputV1 = {
+  version: 1;
+  actorPrincipalId: string;
+  resourceId: string;
+  conversationId: string;
+  action: ConversationAccessActionV1;
+  expectedAccessRevision?: number;
+};
+
+export type ListConversationAccessRoutesInputV1 = {
+  version: 1;
+  actorPrincipalId: string;
+  cursor?: string;
+  limit: number;
+};
+
+export type ListConversationGrantsInputV1 = {
+  version: 1;
+  actorPrincipalId: string;
+  resourceId: string;
+};
+
+export type UpsertConversationGrantInputV1 = {
+  version: 1;
+  operationId: string;
+  actorPrincipalId: string;
+  resourceId: string;
+  targetPrincipalId: string;
+  role: ConversationGrantRoleV1;
+  expectedAccessRevision: number;
+};
+
+export type RevokeConversationGrantInputV1 = Omit<UpsertConversationGrantInputV1, "role">;
+
+export type AssertConversationMutationCommitInputV1 = {
+  version: 1;
+  actorPrincipalId: string;
+  resourceId: string;
+  conversationId: string;
+  action: ConversationAccessActionV1;
+  accessRevision: number;
+  grantRevision: number;
 };
 
 export type ResolveOrCreatePrincipalInputV1 = {
@@ -279,6 +398,197 @@ export function decodeResolveConversationResourceInput(
   return { version: 1, principalId: value.principalId, conversationId };
 }
 
+export function decodeLookupConversationResourceByIdInput(
+  value: unknown,
+): LookupConversationResourceByIdInputV1 | undefined {
+  if (!hasExactKeys(value, ["version", "resourceId"])) return undefined;
+  if (value.version !== 1 || !isResourceId(value.resourceId)) return undefined;
+  return { version: 1, resourceId: value.resourceId };
+}
+
+export function decodeResolveConversationAccessInput(
+  value: unknown,
+): ResolveConversationAccessInputV1 | undefined {
+  if (!hasOnlyKeys(value, [
+    "version", "actorPrincipalId", "resourceId", "conversationId", "action",
+    "expectedAccessRevision",
+  ])) return undefined;
+  const conversationId = normalizeBoundedId(value.conversationId);
+  const expectedAccessRevision = optionalPositiveInteger(value.expectedAccessRevision);
+  if (
+    value.version !== 1 || !isPrincipalId(value.actorPrincipalId) || !isResourceId(value.resourceId)
+    || !conversationId || !isConversationAccessAction(value.action)
+    || expectedAccessRevision === null
+  ) return undefined;
+  return {
+    version: 1,
+    actorPrincipalId: value.actorPrincipalId,
+    resourceId: value.resourceId,
+    conversationId,
+    action: value.action,
+    ...(expectedAccessRevision === undefined ? {} : { expectedAccessRevision }),
+  };
+}
+
+export function decodeConversationAccessSnapshot(
+  value: unknown,
+): ConversationAccessSnapshotV1 | undefined {
+  if (!hasExactKeys(value, [
+    "version", "resourceId", "conversationId", "ownerPrincipalId", "actorPrincipalId",
+    "role", "accessRevision", "grantRevision", "agentInstanceName", "ownerRootInstanceName",
+  ])) return undefined;
+  const conversationId = normalizeBoundedId(value.conversationId);
+  const agentInstanceName = normalizeBoundedId(value.agentInstanceName);
+  const ownerRootInstanceName = normalizeBoundedId(value.ownerRootInstanceName);
+  if (
+    value.version !== 1 || !isResourceId(value.resourceId) || !conversationId
+    || !isPrincipalId(value.ownerPrincipalId) || !isPrincipalId(value.actorPrincipalId)
+    || !isConversationAccessRole(value.role) || !isPositiveInteger(value.accessRevision)
+    || !isNonNegativeInteger(value.grantRevision) || !agentInstanceName || !ownerRootInstanceName
+    || (value.role === "owner"
+      ? value.ownerPrincipalId !== value.actorPrincipalId || value.grantRevision !== 0
+      : value.ownerPrincipalId === value.actorPrincipalId || value.grantRevision <= 0)
+  ) return undefined;
+  return {
+    version: 1,
+    resourceId: value.resourceId,
+    conversationId,
+    ownerPrincipalId: value.ownerPrincipalId,
+    actorPrincipalId: value.actorPrincipalId,
+    role: value.role,
+    accessRevision: value.accessRevision,
+    grantRevision: value.grantRevision,
+    agentInstanceName,
+    ownerRootInstanceName,
+  };
+}
+
+export function decodeListConversationAccessRoutesInput(
+  value: unknown,
+): ListConversationAccessRoutesInputV1 | undefined {
+  if (!hasOnlyKeys(value, ["version", "actorPrincipalId", "cursor", "limit"])) return undefined;
+  const cursor = value.cursor === undefined ? undefined : isResourceId(value.cursor) ? value.cursor : null;
+  if (
+    value.version !== 1 || !isPrincipalId(value.actorPrincipalId) || cursor === null
+    || !Number.isSafeInteger(value.limit) || typeof value.limit !== "number"
+    || value.limit < 1 || value.limit > 50
+  ) return undefined;
+  return {
+    version: 1,
+    actorPrincipalId: value.actorPrincipalId,
+    ...(cursor ? { cursor } : {}),
+    limit: value.limit,
+  };
+}
+
+export function decodeListConversationGrantsInput(
+  value: unknown,
+): ListConversationGrantsInputV1 | undefined {
+  if (!hasExactKeys(value, ["version", "actorPrincipalId", "resourceId"])) return undefined;
+  if (
+    value.version !== 1 || !isPrincipalId(value.actorPrincipalId) || !isResourceId(value.resourceId)
+  ) return undefined;
+  return { version: 1, actorPrincipalId: value.actorPrincipalId, resourceId: value.resourceId };
+}
+
+export function decodeUpsertConversationGrantInput(
+  value: unknown,
+): UpsertConversationGrantInputV1 | undefined {
+  if (!hasExactKeys(value, [
+    "version", "operationId", "actorPrincipalId", "resourceId", "targetPrincipalId",
+    "role", "expectedAccessRevision",
+  ])) return undefined;
+  const operationId = normalizeBoundedId(value.operationId);
+  if (
+    value.version !== 1 || !operationId || !isPrincipalId(value.actorPrincipalId)
+    || !isResourceId(value.resourceId) || !isPrincipalId(value.targetPrincipalId)
+    || !isConversationGrantRole(value.role) || !isPositiveInteger(value.expectedAccessRevision)
+  ) return undefined;
+  return {
+    version: 1,
+    operationId,
+    actorPrincipalId: value.actorPrincipalId,
+    resourceId: value.resourceId,
+    targetPrincipalId: value.targetPrincipalId,
+    role: value.role,
+    expectedAccessRevision: value.expectedAccessRevision,
+  };
+}
+
+export function decodeRevokeConversationGrantInput(
+  value: unknown,
+): RevokeConversationGrantInputV1 | undefined {
+  if (!hasExactKeys(value, [
+    "version", "operationId", "actorPrincipalId", "resourceId", "targetPrincipalId",
+    "expectedAccessRevision",
+  ])) return undefined;
+  const operationId = normalizeBoundedId(value.operationId);
+  if (
+    value.version !== 1 || !operationId || !isPrincipalId(value.actorPrincipalId)
+    || !isResourceId(value.resourceId) || !isPrincipalId(value.targetPrincipalId)
+    || !isPositiveInteger(value.expectedAccessRevision)
+  ) return undefined;
+  return {
+    version: 1,
+    operationId,
+    actorPrincipalId: value.actorPrincipalId,
+    resourceId: value.resourceId,
+    targetPrincipalId: value.targetPrincipalId,
+    expectedAccessRevision: value.expectedAccessRevision,
+  };
+}
+
+export function decodeAssertConversationMutationCommitInput(
+  value: unknown,
+): AssertConversationMutationCommitInputV1 | undefined {
+  if (!hasExactKeys(value, [
+    "version", "actorPrincipalId", "resourceId", "conversationId", "action",
+    "accessRevision", "grantRevision",
+  ])) return undefined;
+  const conversationId = normalizeBoundedId(value.conversationId);
+  if (
+    value.version !== 1 || !isPrincipalId(value.actorPrincipalId) || !isResourceId(value.resourceId)
+    || !conversationId || !isConversationAccessAction(value.action)
+    || !isPositiveInteger(value.accessRevision) || !isNonNegativeInteger(value.grantRevision)
+  ) return undefined;
+  return {
+    version: 1,
+    actorPrincipalId: value.actorPrincipalId,
+    resourceId: value.resourceId,
+    conversationId,
+    action: value.action,
+    accessRevision: value.accessRevision,
+    grantRevision: value.grantRevision,
+  };
+}
+
+export function isConversationAccessRole(value: unknown): value is ConversationAccessRoleV1 {
+  return value === "owner" || value === "editor" || value === "viewer";
+}
+
+export function isConversationGrantRole(value: unknown): value is ConversationGrantRoleV1 {
+  return value === "editor" || value === "viewer";
+}
+
+export function isConversationAccessAction(value: unknown): value is ConversationAccessActionV1 {
+  return typeof value === "string"
+    && (CONVERSATION_ACCESS_ACTIONS as readonly string[]).includes(value);
+}
+
+export function conversationAccessRoleAllowsAction(
+  role: ConversationAccessRoleV1,
+  action: ConversationAccessActionV1,
+): boolean {
+  if (role === "owner") return true;
+  if (action === "conversation.list" || action === "conversation.read") return true;
+  return role === "editor"
+    && (
+      action === "conversation.message.send"
+      || action === "conversation.message.stop"
+      || action === "conversation.title.update"
+    );
+}
+
 export function decodeRecordStableIdentityMarkerInput(
   value: unknown,
 ): RecordStableIdentityMarkerInputV1 | undefined {
@@ -450,12 +760,20 @@ function optionalBoundedId(value: unknown): string | undefined | null {
   return value === undefined ? undefined : normalizeBoundedId(value) ?? null;
 }
 
+function optionalPositiveInteger(value: unknown): number | undefined | null {
+  return value === undefined ? undefined : isPositiveInteger(value) ? value : null;
+}
+
 function isTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function hasOnlyKeys(value: unknown, allowed: readonly string[]): value is Record<string, unknown> {

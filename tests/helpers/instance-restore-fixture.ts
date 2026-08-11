@@ -391,7 +391,7 @@ function fixtureCaptureAdapters(
       object.schemaVersion,
       object.stateClass,
       object.restoreBehavior,
-      durableSnapshotBytes(object.schemaVersion, object.kind === "user_state"),
+      durableSnapshotBytes(object.schemaVersion, object.kind),
       object.kind === "user_state" ? 1 : 0,
     ));
   }
@@ -522,7 +522,7 @@ function objectRegistration(
     schemaVersion: kind === "provider_attempt_ledger"
       ? "provider-attempt-ledger-v3"
       : kind === "identity_registry"
-        ? "identity-registry-v1"
+        ? "identity-registry-v2"
       : `${kind}-schema-v1`,
     stateClass: "authoritative",
     restoreBehavior: "restore",
@@ -589,12 +589,26 @@ function supportedSchemas(manifest: CaptureManifestV1): RestoreTargetInspectionV
   ));
 }
 
-function durableSnapshotBytes(schemaVersion: string, includeEmptyBinary: boolean): Uint8Array {
+function durableSnapshotBytes(schemaVersion: string, kind: InstanceObjectKind): Uint8Array {
+  const tables = kind === "identity_registry"
+    ? [
+      {
+        name: "conversation_acl_entries",
+        schema: "CREATE TABLE conversation_acl_entries(resource_id TEXT NOT NULL, grantee_principal_id TEXT NOT NULL, role TEXT NOT NULL, state TEXT NOT NULL, grant_revision INTEGER NOT NULL, revoke_revision INTEGER, granted_by_principal_id TEXT NOT NULL, revoked_by_principal_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, revoked_at INTEGER, PRIMARY KEY(resource_id, grantee_principal_id))",
+        rows: [],
+      },
+      {
+        name: "conversation_acl_events",
+        schema: "CREATE TABLE conversation_acl_events(operation_id TEXT PRIMARY KEY, resource_id TEXT NOT NULL, actor_principal_id TEXT, target_principal_id TEXT NOT NULL, event_type TEXT NOT NULL, before_role TEXT, after_role TEXT, access_revision INTEGER NOT NULL, occurred_at INTEGER NOT NULL)",
+        rows: [],
+      },
+    ]
+    : [];
   return stableBytes({
     version: 1,
     schemaVersion,
-    tables: [],
-    storage: includeEmptyBinary ? [{ key: "empty-binary", value: { $binary: "" } }] : [],
+    tables,
+    storage: kind === "user_state" ? [{ key: "empty-binary", value: { $binary: "" } }] : [],
     storageBackedTables: [],
     excludedTables: [],
   });

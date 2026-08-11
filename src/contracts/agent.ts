@@ -1,9 +1,19 @@
 import type { UIMessage } from "ai";
 import type { SessionKind } from "./session";
+import {
+  decodeConversationAccessSnapshot,
+  isPrincipalId,
+  isResourceId,
+  normalizeMemberAlias,
+  type ConversationAccessRoleV1,
+  type ConversationAccessSnapshotV1,
+} from "./identity";
 import type { WorkspaceConversationFileRef } from "./workspace-file";
 
 export const MAX_AGENT_CONVERSATIONS = 50;
 export const AGENT_MEMORY_PROPOSAL_TOOL_NAME = "chatus_update_memory";
+export const CONVERSATION_AGENT_ACCESS_HEADER = "X-Chatus-Conversation-Access";
+export const CONVERSATION_AGENT_ACCESS_BODY_KEY = "__chatusConversationAccess";
 
 export type ConversationSkillMode = "automatic" | "manual";
 
@@ -68,6 +78,99 @@ export type AgentConversationSummary = {
   skillIds: string[];
   workspaceFiles: WorkspaceConversationFileRef[];
   messageCount: number;
+};
+
+export type ConversationAgentAccessContextV1 = {
+  version: 1;
+  access: ConversationAccessSnapshotV1;
+  actor: {
+    label: string;
+    principalId: string;
+    rootInstanceName: string;
+    userStateInstanceName: string;
+    registryRevision: number;
+    sessionExpiresAt: number;
+  };
+};
+
+export type ConversationAgentAccessRevisionV1 = {
+  version: 1;
+  resourceId: string;
+  accessRevision: number;
+};
+
+export function decodeConversationAgentAccessContext(
+  value: unknown,
+): ConversationAgentAccessContextV1 | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, ["version", "access", "actor"])) return undefined;
+  const access = decodeConversationAccessSnapshot(value.access);
+  if (!access || value.version !== 1 || !isRecord(value.actor) || !hasExactKeys(value.actor, [
+    "label", "principalId", "rootInstanceName", "userStateInstanceName",
+    "registryRevision", "sessionExpiresAt",
+  ])) return undefined;
+  const label = normalizeMemberAlias(value.actor.label);
+  const rootInstanceName = boundedIdentityString(value.actor.rootInstanceName);
+  const userStateInstanceName = boundedIdentityString(value.actor.userStateInstanceName);
+  if (
+    !label || !isPrincipalId(value.actor.principalId)
+    || value.actor.principalId !== access.actorPrincipalId
+    || !rootInstanceName || !userStateInstanceName
+    || !isPositiveSafeInteger(value.actor.registryRevision)
+    || typeof value.actor.sessionExpiresAt !== "number"
+    || !Number.isSafeInteger(value.actor.sessionExpiresAt)
+    || value.actor.sessionExpiresAt <= 0
+  ) return undefined;
+  return {
+    version: 1,
+    access,
+    actor: {
+      label,
+      principalId: value.actor.principalId,
+      rootInstanceName,
+      userStateInstanceName,
+      registryRevision: value.actor.registryRevision,
+      sessionExpiresAt: value.actor.sessionExpiresAt,
+    },
+  };
+}
+
+export function decodeConversationAgentAccessRevision(
+  value: unknown,
+): ConversationAgentAccessRevisionV1 | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, ["version", "resourceId", "accessRevision"])) {
+    return undefined;
+  }
+  if (value.version !== 1 || !isResourceId(value.resourceId) || !isPositiveSafeInteger(value.accessRevision)) {
+    return undefined;
+  }
+  return { version: 1, resourceId: value.resourceId, accessRevision: value.accessRevision };
+}
+
+function boundedIdentityString(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.trim();
+  return normalized && normalized.length <= 180 && !/[\u0000-\u001f\u007f]/u.test(normalized)
+    ? normalized
+    : "";
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+export type AgentAccessibleConversationSummary = AgentConversationSummary & {
+  resourceId: string;
+  accessRole: ConversationAccessRoleV1;
+  accessRevision: number;
 };
 
 export type AgentExportPart =

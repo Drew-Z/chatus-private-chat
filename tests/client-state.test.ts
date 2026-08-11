@@ -7,6 +7,7 @@ import {
   hasVisibleAssistantOutputAfterLatestUser,
   isActiveTurnPhase,
   resolveMessageActionAvailability,
+  resolveConversationAccessPermissions,
   restoreRejectedDraft,
   resolveLoadedMemoryDraft,
   resolvePendingDraftAction,
@@ -188,6 +189,56 @@ describe("React client state recovery", () => {
       continue: "hidden",
       branch: "hidden",
       feedback: "hidden",
+    });
+    expect(availability({ accessRole: "editor" })).toMatchObject({
+      copy: "enabled",
+      edit: "hidden",
+      resend: "hidden",
+      branch: "hidden",
+    });
+    expect(availability({ accessRole: "viewer", role: "assistant", canContinue: true })).toMatchObject({
+      copy: "enabled",
+      regenerate: "hidden",
+      continue: "hidden",
+      branch: "hidden",
+      feedback: "hidden",
+      approveTool: "hidden",
+    });
+  });
+
+  it("projects the owner editor viewer control matrix from one helper", () => {
+    expect(resolveConversationAccessPermissions("owner")).toMatchObject({
+      canSend: true,
+      canRename: true,
+      canManageSettings: true,
+      canBranch: true,
+      canDelete: true,
+      canManageShares: true,
+      canUseWorkspace: true,
+      canUseConversationTools: true,
+      canSubmitFeedback: true,
+    });
+    expect(resolveConversationAccessPermissions("editor")).toMatchObject({
+      canSend: true,
+      canRename: true,
+      canManageSettings: false,
+      canBranch: false,
+      canDelete: false,
+      canManageShares: false,
+      canUseWorkspace: false,
+      canUseConversationTools: false,
+      canSubmitFeedback: false,
+    });
+    expect(resolveConversationAccessPermissions("viewer")).toMatchObject({
+      canSend: false,
+      canRename: false,
+      canManageSettings: false,
+      canBranch: false,
+      canDelete: false,
+      canManageShares: false,
+      canUseWorkspace: false,
+      canUseConversationTools: false,
+      canSubmitFeedback: false,
     });
   });
 

@@ -8,7 +8,10 @@ import type { TeamAgent } from "./agent/team-agent";
 import type { InstanceCoordinator } from "./instance-coordinator";
 import { IDENTITY_REGISTRY_INSTANCE_NAME, type IdentityRegistry } from "./identity-registry";
 import {
+  CONVERSATION_AGENT_ACCESS_BODY_KEY,
+  CONVERSATION_AGENT_ACCESS_HEADER,
   MAX_AGENT_CONVERSATIONS,
+  type AgentAccessibleConversationSummary,
   type AgentExportMessage,
   type AgentConversationBranchAction,
   type AgentConversationBranchLaunch,
@@ -19,6 +22,7 @@ import {
   type AgentConversationSummary,
   type AgentSkillSelectionMetadata,
   type AgentSkillSelectionReason,
+  type ConversationAgentAccessContextV1,
   type ConversationSkillMode,
   type TeamAgentProps,
 } from "./contracts/agent";
@@ -104,9 +108,13 @@ import {
   conversationResourceInstanceName,
   decodeStablePrincipalIdentity,
   isPrincipalId,
+  isResourceId,
   normalizeMemberAlias,
   principalRootInstanceName,
   principalUserStateInstanceName,
+  type ConversationAccessActionV1,
+  type ConversationAccessSnapshotV1,
+  type ConversationGrantRoleV1,
   type ConversationResourceRouteV1,
   type PrincipalRouteV1,
   type StablePrincipalIdentityV1,
@@ -2313,6 +2321,47 @@ async function handleTeamAgentRequest(
   if (!chatId) {
     return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
   }
+  if (session.kind === "member") {
+    const resourceId = url.searchParams.get("resourceId");
+    if (!resourceId) {
+      await ensureAgentLegacyImport(env, session.label, session);
+      const root = await getTeamAgent(env, session.label, session);
+      await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
+      const now = Date.now();
+      const created = await root.createConversation({
+        id: chatId,
+        title: "新对话",
+        createdAt: now,
+        updatedAt: now,
+        summary: "",
+        pinned: false,
+        skillMode: "automatic",
+        skillIds: [],
+      });
+      if (!created.ok) return agentConversationMutationError(created);
+    }
+    const resolved = await resolveConversationAccessForMember(
+      env,
+      session,
+      chatId,
+      "conversation.read",
+      resourceId,
+      !resourceId,
+    );
+    if (!resolved.ok) return resolved.response;
+    const summary = await env.TEAM_AGENT.getByName(resolved.access.ownerRootInstanceName)
+      .getConversationSummary(chatId)
+      .catch(() => undefined);
+    if (!summary) return conversationAccessErrorResponse(new Error("conversation_not_found"));
+    const headers = new Headers(request.headers);
+    headers.delete(CONVERSATION_AGENT_ACCESS_HEADER);
+    headers.set(
+      CONVERSATION_AGENT_ACCESS_HEADER,
+      JSON.stringify(conversationAgentAccessContext(session, resolved.access)),
+    );
+    return env.TEAM_AGENT.getByName(resolved.access.agentInstanceName)
+      .fetch(new Request(request, { headers }));
+  }
   await ensureAgentLegacyImport(env, session.label, session);
   const root = await getTeamAgent(env, session.label, session);
   await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
@@ -2324,7 +2373,7 @@ async function handleTeamAgentRequest(
     updatedAt: now,
     summary: "",
     pinned: false,
-    skillMode: session.kind === "member" ? "automatic" : "manual",
+    skillMode: "manual",
     skillIds: [],
   });
   if (!created.ok) return agentConversationMutationError(created);
@@ -2437,6 +2486,27 @@ async function handleApi(
   }
   if (url.pathname === "/api/agent/conversations" && request.method === "POST") {
     return handleCreateAgentConversation(request, env, session);
+  }
+  if (
+    url.pathname.startsWith("/api/agent/conversations/")
+    && url.pathname.endsWith("/shares")
+    && request.method === "GET"
+  ) {
+    return handleListConversationShares(env, session, url);
+  }
+  if (
+    url.pathname.startsWith("/api/agent/conversations/")
+    && url.pathname.endsWith("/shares")
+    && request.method === "PUT"
+  ) {
+    return handleUpsertConversationShare(request, env, session, url, executionContext);
+  }
+  if (
+    url.pathname.startsWith("/api/agent/conversations/")
+    && url.pathname.endsWith("/shares/revoke")
+    && request.method === "POST"
+  ) {
+    return handleRevokeConversationShare(request, env, session, url, executionContext);
   }
   if (
     url.pathname.startsWith("/api/agent/conversations/")
@@ -4991,11 +5061,221 @@ async function handleSessionSummary(
   return jsonResponse({ summary, routeId: result.routeId, maxChars: maxSummary });
 }
 
+type ConversationAccessCarrier = Pick<
+  ConversationAccessSnapshotV1,
+  "resourceId" | "role" | "accessRevision"
+>;
+
+type ConversationAccessResolution =
+  | { ok: true; access: ConversationAccessSnapshotV1 }
+  | { ok: false; response: Response };
+
+type ConversationShareUpsertInput = {
+  operationId: string;
+  resourceId: string;
+  granteeLabel: string;
+  role: ConversationGrantRoleV1;
+  expectedAccessRevision: number;
+};
+
+type ConversationShareRevokeInput = {
+  operationId: string;
+  resourceId: string;
+  granteePrincipalId: string;
+  expectedAccessRevision: number;
+};
+
+function conversationAgentAccessContext(
+  session: Extract<Session, { kind: "member" }>,
+  access: ConversationAccessSnapshotV1,
+): ConversationAgentAccessContextV1 {
+  return {
+    version: 1,
+    access,
+    actor: {
+      label: session.label,
+      principalId: session.principalId,
+      rootInstanceName: session.rootInstanceName,
+      userStateInstanceName: session.userStateInstanceName,
+      registryRevision: session.registryRevision,
+      sessionExpiresAt: session.expiresAt,
+    },
+  };
+}
+
+async function resolveConversationAccessForMember(
+  env: Env,
+  session: Extract<Session, { kind: "member" }>,
+  conversationId: string,
+  action: ConversationAccessActionV1,
+  resourceIdValue: unknown,
+  allowOwnerFallback: boolean,
+  expectedAccessRevision?: number,
+): Promise<ConversationAccessResolution> {
+  let resourceId: string;
+  if (resourceIdValue === undefined || resourceIdValue === null || resourceIdValue === "") {
+    if (!allowOwnerFallback) {
+      return { ok: false, response: jsonResponse({
+        error: "conversation_access_input_invalid",
+        message: "缺少会话资源标识，请刷新后重试",
+      }, 400) };
+    }
+    try {
+      resourceId = (await resolveOrCreateConversationRoute(env, session, conversationId)).resourceId;
+    } catch (error) {
+      return { ok: false, response: conversationAccessErrorResponse(error) };
+    }
+  } else if (isResourceId(resourceIdValue)) {
+    resourceId = resourceIdValue;
+  } else {
+    return { ok: false, response: jsonResponse({
+      error: "conversation_access_input_invalid",
+      message: "会话资源标识无效",
+    }, 400) };
+  }
+  try {
+    const access = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .resolveConversationAccess({
+        version: 1,
+        actorPrincipalId: session.principalId,
+        resourceId,
+        conversationId,
+        action,
+        ...(expectedAccessRevision === undefined ? {} : { expectedAccessRevision }),
+      });
+    return { ok: true, access };
+  } catch (error) {
+    return { ok: false, response: conversationAccessErrorResponse(error) };
+  }
+}
+
+function conversationAccessErrorResponse(error: unknown): Response {
+  const code = error instanceof Error ? error.message : "conversation_acl_unavailable";
+  if (code === "conversation_not_found") {
+    return jsonResponse({ error: code, message: "会话不存在" }, 404);
+  }
+  if (code === "conversation_action_denied") {
+    return jsonResponse({ error: code, message: "当前共享角色不允许此操作" }, 403);
+  }
+  if (code === "conversation_access_revision_conflict") {
+    return jsonResponse({ error: code, message: "共享状态已更新，请刷新后重试" }, 409);
+  }
+  if (code === "conversation_acl_operation_conflict") {
+    return jsonResponse({ error: code, message: "共享操作标识已用于其他请求" }, 409);
+  }
+  if (code === "conversation_acl_target_unavailable") {
+    return jsonResponse({ error: "acl_target_unavailable", message: "目标成员不可用" }, 404);
+  }
+  if (code === "conversation_acl_target_invalid" || code.endsWith("_input_invalid")) {
+    return jsonResponse({ error: code, message: "共享请求无效" }, 400);
+  }
+  return jsonResponse({
+    error: "conversation_acl_unavailable",
+    message: "共享授权服务暂时不可用，请稍后重试",
+  }, 503);
+}
+
+function accessibleConversationSummary(
+  conversation: AgentConversationSummary,
+  access: ConversationAccessCarrier,
+): AgentAccessibleConversationSummary {
+  if (access.role !== "owner") {
+    const { parentChatId: _parentChatId, workspaceFiles: _workspaceFiles, ...shared } = conversation;
+    return {
+      ...shared,
+      workspaceFiles: [],
+      resourceId: access.resourceId,
+      accessRole: access.role,
+      accessRevision: access.accessRevision,
+    };
+  }
+  return {
+    ...conversation,
+    resourceId: access.resourceId,
+    accessRole: access.role,
+    accessRevision: access.accessRevision,
+  };
+}
+
+function compareAccessibleConversations(
+  left: AgentAccessibleConversationSummary,
+  right: AgentAccessibleConversationSummary,
+): number {
+  if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+  if (left.updatedAt !== right.updatedAt) return right.updatedAt - left.updatedAt;
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function normalizeConversationShareUpsert(value: unknown): ConversationShareUpsertInput | undefined {
+  if (!isRecord(value) || !hasOnlyExactKeys(value, [
+    "version", "operationId", "resourceId", "granteeLabel", "role", "expectedAccessRevision",
+  ])) return undefined;
+  const operationId = normalizeWorkspaceOperationId(value.operationId);
+  const granteeLabel = normalizeMemberAlias(value.granteeLabel);
+  const expectedAccessRevision = finitePositiveInteger(value.expectedAccessRevision);
+  const role = value.role === "editor" || value.role === "viewer" ? value.role : undefined;
+  if (
+    value.version !== 1 || !operationId || !isResourceId(value.resourceId) || !granteeLabel
+    || !role || !expectedAccessRevision
+  ) return undefined;
+  return {
+    operationId,
+    resourceId: value.resourceId,
+    granteeLabel,
+    role,
+    expectedAccessRevision,
+  };
+}
+
+function normalizeConversationShareRevoke(value: unknown): ConversationShareRevokeInput | undefined {
+  if (!isRecord(value) || !hasOnlyExactKeys(value, [
+    "version", "operationId", "resourceId", "granteePrincipalId", "expectedAccessRevision",
+  ])) return undefined;
+  const operationId = normalizeWorkspaceOperationId(value.operationId);
+  const expectedAccessRevision = finitePositiveInteger(value.expectedAccessRevision);
+  if (
+    value.version !== 1 || !operationId || !isResourceId(value.resourceId)
+    || !isPrincipalId(value.granteePrincipalId) || !expectedAccessRevision
+  ) return undefined;
+  return {
+    operationId,
+    resourceId: value.resourceId,
+    granteePrincipalId: value.granteePrincipalId,
+    expectedAccessRevision,
+  };
+}
+
 async function handleListAgentConversations(env: Env, session: Session): Promise<Response> {
   await ensureAgentLegacyImport(env, session.label, session);
   const root = await getTeamAgent(env, session.label, session);
   await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
-  const conversations = await root.listConversations();
+  const ownedConversations = await root.listConversations();
+  if (session.kind !== "member") {
+    return jsonResponse({ conversations: ownedConversations, maxConversations: MAX_AGENT_CONVERSATIONS });
+  }
+  let accessRoutes;
+  try {
+    accessRoutes = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .listConversationAccessRoutes({
+        version: 1,
+        actorPrincipalId: session.principalId,
+        limit: MAX_AGENT_CONVERSATIONS,
+      });
+  } catch {
+    return jsonResponse({ conversations: ownedConversations, maxConversations: MAX_AGENT_CONVERSATIONS });
+  }
+  const conversations = (await Promise.all(accessRoutes.routes.map(async (access) => {
+    try {
+      const summary = access.ownerPrincipalId === session.principalId
+        ? await root.getConversationSummary(access.conversationId)
+        : await env.TEAM_AGENT.getByName(access.ownerRootInstanceName)
+          .getConversationSummary(access.conversationId);
+      return summary ? accessibleConversationSummary(summary, access) : undefined;
+    } catch {
+      return undefined;
+    }
+  }))).filter((conversation): conversation is AgentAccessibleConversationSummary => Boolean(conversation));
+  conversations.sort(compareAccessibleConversations);
   return jsonResponse({ conversations, maxConversations: MAX_AGENT_CONVERSATIONS });
 }
 
@@ -5032,10 +5312,163 @@ async function handleCreateAgentConversation(request: Request, env: Env, session
     skillIds: settings.skillIds || [],
   });
   if (!result.ok || !result.conversation) return agentConversationMutationError(result);
-  if (session.kind === "member") {
-    await resolveOrCreateConversationRoute(env, session, result.conversation.id);
+  if (session.kind !== "member") {
+    return jsonResponse({ ok: true, conversation: result.conversation }, result.created ? 201 : 200);
   }
-  return jsonResponse({ ok: true, conversation: result.conversation }, result.created ? 201 : 200);
+  const resource = await resolveOrCreateConversationRoute(env, session, result.conversation.id);
+  const access = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+    .resolveConversationAccess({
+      version: 1,
+      actorPrincipalId: session.principalId,
+      resourceId: resource.resourceId,
+      conversationId: result.conversation.id,
+      action: "conversation.read",
+    });
+  return jsonResponse({
+    ok: true,
+    conversation: accessibleConversationSummary(result.conversation, access),
+  }, result.created ? 201 : 200);
+}
+
+async function handleListConversationShares(env: Env, session: Session, url: URL): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "capability_not_allowed" }, 403);
+  const conversationId = agentConversationSubresourceIdFromPath(url, "/shares");
+  if (!conversationId) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  const resolved = await resolveConversationAccessForMember(
+    env,
+    session,
+    conversationId,
+    "conversation.acl.read",
+    url.searchParams.get("resourceId"),
+    true,
+  );
+  if (!resolved.ok) return resolved.response;
+  try {
+    return jsonResponse(await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .listConversationGrants({
+        version: 1,
+        actorPrincipalId: session.principalId,
+        resourceId: resolved.access.resourceId,
+      }));
+  } catch (error) {
+    return conversationAccessErrorResponse(error);
+  }
+}
+
+async function handleUpsertConversationShare(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+  executionContext: ExecutionContext | undefined,
+): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "capability_not_allowed" }, 403);
+  const conversationId = agentConversationSubresourceIdFromPath(url, "/shares");
+  if (!conversationId) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  const body = await readJson<unknown>(request);
+  const input = normalizeConversationShareUpsert(body);
+  if (!input) return jsonResponse({ error: "conversation_acl_input_invalid", message: "共享设置无效" }, 400);
+  const resolved = await resolveConversationAccessForMember(
+    env,
+    session,
+    conversationId,
+    "conversation.acl.mutate",
+    input.resourceId,
+    false,
+    input.expectedAccessRevision,
+  );
+  if (!resolved.ok) return resolved.response;
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  try {
+    const target = await registry.lookupActivePrincipalAlias({ version: 1, alias: input.granteeLabel });
+    if (!target.found) return conversationAccessErrorResponse(new Error("conversation_acl_target_unavailable"));
+    const result = await registry.upsertConversationGrant({
+      version: 1,
+      operationId: input.operationId,
+      actorPrincipalId: session.principalId,
+      resourceId: resolved.access.resourceId,
+      targetPrincipalId: target.route.principalId,
+      role: input.role,
+      expectedAccessRevision: input.expectedAccessRevision,
+    });
+    if (result.changed) {
+      await scheduleConversationAccessInvalidation(
+        env,
+        executionContext,
+        resolved.access.agentInstanceName,
+        resolved.access.resourceId,
+        result.accessRevision,
+      );
+    }
+    return jsonResponse({ ok: true, ...result });
+  } catch (error) {
+    return conversationAccessErrorResponse(error);
+  }
+}
+
+async function handleRevokeConversationShare(
+  request: Request,
+  env: Env,
+  session: Session,
+  url: URL,
+  executionContext: ExecutionContext | undefined,
+): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "capability_not_allowed" }, 403);
+  const conversationId = agentConversationSubresourceIdFromPath(url, "/shares/revoke");
+  if (!conversationId) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
+  const body = await readJson<unknown>(request);
+  const input = normalizeConversationShareRevoke(body);
+  if (!input) return jsonResponse({ error: "conversation_acl_input_invalid", message: "共享撤销请求无效" }, 400);
+  const resolved = await resolveConversationAccessForMember(
+    env,
+    session,
+    conversationId,
+    "conversation.acl.mutate",
+    input.resourceId,
+    false,
+    input.expectedAccessRevision,
+  );
+  if (!resolved.ok) return resolved.response;
+  try {
+    const result = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .revokeConversationGrant({
+        version: 1,
+        operationId: input.operationId,
+        actorPrincipalId: session.principalId,
+        resourceId: resolved.access.resourceId,
+        targetPrincipalId: input.granteePrincipalId,
+        expectedAccessRevision: input.expectedAccessRevision,
+      });
+    if (result.changed) {
+      await scheduleConversationAccessInvalidation(
+        env,
+        executionContext,
+        resolved.access.agentInstanceName,
+        resolved.access.resourceId,
+        result.accessRevision,
+      );
+    }
+    return jsonResponse({ ok: true, ...result });
+  } catch (error) {
+    return conversationAccessErrorResponse(error);
+  }
+}
+
+export async function scheduleConversationAccessInvalidation(
+  env: Env,
+  executionContext: ExecutionContext | undefined,
+  agentInstanceName: string,
+  resourceId: string,
+  accessRevision: number,
+): Promise<void> {
+  const invalidation = env.TEAM_AGENT.getByName(agentInstanceName)
+    .applyConversationAccessRevision({ version: 1, resourceId, accessRevision })
+    .then(() => undefined, () => undefined);
+  if (executionContext) {
+    executionContext.waitUntil(invalidation);
+    return;
+  }
+  await invalidation;
 }
 
 async function handleCreateAgentConversationBranch(
@@ -5047,6 +5480,7 @@ async function handleCreateAgentConversationBranch(
   const sourceId = agentConversationBranchSourceIdFromPath(url);
   if (!sourceId) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
   const body = await readJson<{
+    resourceId?: unknown;
     requestId?: unknown;
     action?: unknown;
     sourceMessageId?: unknown;
@@ -5065,10 +5499,24 @@ async function handleCreateAgentConversationBranch(
     return jsonResponse({ error: "invalid_branch_request", message: "分支编辑内容无效" }, 400);
   }
 
+  const access = session.kind === "member"
+    ? await resolveConversationAccessForMember(
+      env,
+      session,
+      sourceId,
+      "conversation.branch.create",
+      body.resourceId,
+      true,
+    )
+    : undefined;
+  if (access && !access.ok) return access.response;
+
   await ensureAgentLegacyImport(env, session.label, session);
-  const root = await getTeamAgent(env, session.label, session);
+  const root = access?.ok
+    ? env.TEAM_AGENT.getByName(access.access.ownerRootInstanceName)
+    : await getTeamAgent(env, session.label, session);
   await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
-  const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId);
+  const source = await root.getConversationSummary(sourceId);
   if (!source) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
   const settings = await repairAgentConversationSettings(
     env,
@@ -5105,9 +5553,21 @@ async function handleCreateAgentConversationBranch(
     return agentConversationBranchResponse(reservation.operation);
   }
 
-  const sourceAgent = await getTeamAgentConversation(env, session.label, sourceId, session);
+  const sourceAgent = access?.ok
+    ? env.TEAM_AGENT.getByName(access.access.agentInstanceName)
+    : await getTeamAgentConversation(env, session.label, sourceId, session);
   const destinationResource = session.kind === "member"
     ? await resolveOrCreateConversationRoute(env, session, reservation.operation.destinationId)
+    : undefined;
+  const destinationAccess = session.kind === "member" && destinationResource
+    ? await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .resolveConversationAccess({
+        version: 1,
+        actorPrincipalId: session.principalId,
+        resourceId: destinationResource.resourceId,
+        conversationId: reservation.operation.destinationId,
+        action: "conversation.message.send",
+      })
     : undefined;
   const copied = await sourceAgent.copyConversationBranchTo({
     sourceMessageId,
@@ -5120,7 +5580,14 @@ async function handleCreateAgentConversationBranch(
     destinationId: reservation.operation.destinationId,
     destinationInstance: destinationResource?.agentInstanceName
       ?? await getTeamAgentConversationInstanceName(session.label, reservation.operation.destinationId),
-    body: { routeId: settings.routeId, skillMode: settings.skillMode, skillIds: settings.skillIds },
+    body: {
+      routeId: settings.routeId,
+      skillMode: settings.skillMode,
+      skillIds: settings.skillIds,
+      ...(destinationAccess && session.kind === "member"
+        ? { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: conversationAgentAccessContext(session, destinationAccess) }
+        : {}),
+    },
   });
   if ("error" in copied) {
     await failAgentConversationBranch(env, session, root, reservation.operation, fingerprint);
@@ -5152,6 +5619,7 @@ async function handleUpdateAgentConversation(
   const id = agentConversationIdFromPath(url);
   if (!id) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
   const body = await readJson<{
+    resourceId?: unknown;
     title?: unknown;
     routeId?: unknown;
     skillMode?: unknown;
@@ -5162,10 +5630,23 @@ async function handleUpdateAgentConversation(
   if (!expectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
+  const settingsMutation = hasOwn(body, "routeId") || hasOwn(body, "skillMode") || hasOwn(body, "skillIds");
+  const access = session.kind === "member"
+    ? await resolveConversationAccessForMember(
+      env,
+      session,
+      id,
+      settingsMutation ? "conversation.settings.update" : "conversation.title.update",
+      body.resourceId,
+      true,
+    )
+    : undefined;
+  if (access && !access.ok) return access.response;
   await ensureAgentLegacyImport(env, session.label, session);
-  const root = await getTeamAgent(env, session.label, session);
-  const current = (await root.listConversations())
-    .find((conversation) => conversation.id === id);
+  const root = access?.ok
+    ? env.TEAM_AGENT.getByName(access.access.ownerRootInstanceName)
+    : await getTeamAgent(env, session.label, session);
+  const current = await root.getConversationSummary(id);
   if (!current) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
   const settings = await validateAgentConversationSettings(
     env,
@@ -5185,7 +5666,12 @@ async function handleUpdateAgentConversation(
     skillIds: settings.skillIds,
   });
   if (!result.ok || !result.conversation) return agentConversationMutationError(result);
-  return jsonResponse({ ok: true, conversation: result.conversation });
+  return jsonResponse({
+    ok: true,
+    conversation: access?.ok
+      ? accessibleConversationSummary(result.conversation, access.access)
+      : result.conversation,
+  });
 }
 
 async function handleDeleteAgentConversation(env: Env, session: Session, url: URL): Promise<Response> {
@@ -5195,8 +5681,21 @@ async function handleDeleteAgentConversation(env: Env, session: Session, url: UR
   if (!expectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
+  const access = session.kind === "member"
+    ? await resolveConversationAccessForMember(
+      env,
+      session,
+      id,
+      "conversation.delete",
+      url.searchParams.get("resourceId"),
+      true,
+    )
+    : undefined;
+  if (access && !access.ok) return access.response;
   await ensureAgentLegacyImport(env, session.label, session);
-  const root = await getTeamAgent(env, session.label, session);
+  const root = access?.ok
+    ? env.TEAM_AGENT.getByName(access.access.ownerRootInstanceName)
+    : await getTeamAgent(env, session.label, session);
   const result = await root.deleteConversation(id, expectedUpdatedAt);
   if (!result.ok) return agentConversationMutationError(result);
   const cleanupPending = !(await attemptAgentConversationCleanup(
@@ -5543,7 +6042,12 @@ async function handleSetConversationWorkspaceFiles(
   const conversationId = agentConversationWorkspaceSourceIdFromPath(url);
   if (!conversationId) return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
   const body = await readJson<unknown>(request);
-  if (!isRecord(body) || Object.keys(body).length !== 2 || !("expectedUpdatedAt" in body) || !("files" in body)) {
+  if (
+    !isRecord(body)
+    || !hasOnlyExactKeys(body, ["expectedUpdatedAt", "files", "resourceId"])
+    || !("expectedUpdatedAt" in body)
+    || !("files" in body)
+  ) {
     return jsonResponse({ error: "workspace_refs_invalid", message: "会话文件选择无效" }, 400);
   }
   const expectedUpdatedAt = finitePositiveInteger(body.expectedUpdatedAt);
@@ -5557,7 +6061,20 @@ async function handleSetConversationWorkspaceFiles(
   ) {
     return jsonResponse({ error: "workspace_refs_invalid", message: "会话文件选择无效" }, 400);
   }
-  const root = await getTeamAgent(env, session.label, session);
+  const access = session.kind === "member"
+    ? await resolveConversationAccessForMember(
+      env,
+      session,
+      conversationId,
+      "conversation.workspace_refs.mutate",
+      body.resourceId,
+      true,
+    )
+    : undefined;
+  if (access && !access.ok) return access.response;
+  const root = access?.ok
+    ? env.TEAM_AGENT.getByName(access.access.ownerRootInstanceName)
+    : await getTeamAgent(env, session.label, session);
   const result = await root.setConversationWorkspaceFiles(
     conversationId,
     expectedUpdatedAt,
@@ -5767,6 +6284,18 @@ function agentConversationBranchSourceIdFromPath(url: URL): string {
   const prefix = "/api/agent/conversations/";
   const suffix = "/branches";
   if (!url.pathname.startsWith(prefix) || !url.pathname.endsWith(suffix)) return "";
+  const encoded = url.pathname.slice(prefix.length, -suffix.length);
+  if (!encoded || encoded.includes("/")) return "";
+  try {
+    return normalizeAgentConversationId(decodeURIComponent(encoded));
+  } catch {
+    return "";
+  }
+}
+
+function agentConversationSubresourceIdFromPath(url: URL, suffix: string): string {
+  const prefix = "/api/agent/conversations/";
+  if (!suffix.startsWith("/") || !url.pathname.startsWith(prefix) || !url.pathname.endsWith(suffix)) return "";
   const encoded = url.pathname.slice(prefix.length, -suffix.length);
   if (!encoded || encoded.includes("/")) return "";
   try {
@@ -7618,6 +8147,8 @@ async function handleChat(
 
 export type TeamAgentTurnInput = {
   messages: ChatMessage[];
+  allowFileInput?: boolean;
+  disableTools?: boolean;
   continuation?: boolean;
   routeId?: string;
   skillMode?: ConversationSkillMode;
@@ -7688,7 +8219,9 @@ export async function prepareTeamAgentTurn(
     return { ok: false, error: "no_routes_available", message: "没有可用线路", status: 403 };
   }
 
-  const normalization = normalizeMessages(input.messages, env, { fileInput: session.kind === "member" });
+  const normalization = normalizeMessages(input.messages, env, {
+    fileInput: input.allowFileInput ?? session.kind === "member",
+  });
   if (!normalization.ok) return normalization;
   const normalized = trimMessagesForContext(normalization.messages, env);
   if (!normalized.length) {
@@ -7710,7 +8243,9 @@ export async function prepareTeamAgentTurn(
   }
   let selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
     || access.routes.find((route) => route.id === access.defaultRoute);
-  let memoryToolEnabled = session.kind === "member" && selectedPublicRoute?.supportsTools === true;
+  let memoryToolEnabled = input.disableTools !== true
+    && session.kind === "member"
+    && selectedPublicRoute?.supportsTools === true;
   if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
     return {
       ok: false,
@@ -7793,7 +8328,7 @@ export async function prepareTeamAgentTurn(
     }
     selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
       || access.routes.find((route) => route.id === access.defaultRoute);
-    memoryToolEnabled = selectedPublicRoute?.supportsTools === true;
+    memoryToolEnabled = input.disableTools !== true && selectedPublicRoute?.supportsTools === true;
     const resolved = resolveAutomaticSkillSelection(
       config,
       access.user,
@@ -7818,7 +8353,7 @@ export async function prepareTeamAgentTurn(
   );
   const systemMessageCount = Math.max(0, messages.length - normalized.length);
   const systemMessages = toProviderModelMessages(messages.slice(0, systemMessageCount));
-  const toolDefinitions = selectedPublicRoute?.supportsTools
+  const toolDefinitions = input.disableTools !== true && selectedPublicRoute?.supportsTools
     ? await buildCapabilityToolDefinitions(config, access.user, selectedSkills, secretFingerprint)
     : [];
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
@@ -8003,7 +8538,14 @@ export async function prepareTeamAgentTurn(
     initialRunDeadline,
     onProgress: (progress) => emitProviderProgress?.(progress),
   });
-  const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env, session);
+  const toolRuntime = input.disableTools === true
+    ? {
+        runTool: (async () => {
+          throw new CapabilityError("tool_not_allowed", "当前共享会话不允许工具调用");
+        }) satisfies CapabilityToolRunner,
+        close: async () => undefined,
+      }
+    : createAgentCapabilityRuntime(toolDefinitions, env, session);
 
   return {
     ok: true,
@@ -12503,6 +13045,11 @@ function utcDayStringAt(nowMs: number, daysAgo = 0): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOnlyExactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
 }
 
 function isCaptureEpoch(value: unknown): value is string {

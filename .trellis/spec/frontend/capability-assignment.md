@@ -508,6 +508,10 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 - Member OAuth discovery stores a bounded, expiring candidate in that member's `UserState`; admin review retrieves it by `{ serverId, memberLabel }`. It does not grant execution by itself.
 - Discovery and every remote call compare schema fingerprint, normalized security annotations, side-effect classification, and review revision. Any difference persistently disables the reviewed tool through the drift overlay and invalidates conversation trust until an administrator rediscovers, reviews, and explicitly enables it.
 - `read` tools may use `first-per-conversation`. `write` and `destructive` tools always normalize to `confirmation: "always"`; each invocation accepts only `once` or `deny` and never creates conversation trust. Trust keys and Agent SQLite rows include `reviewRevision`.
+- Conversation ACL is an additional execution boundary. Shared editor/viewer
+  turns receive no tool definitions, no OAuth/static member credential, and no
+  approval UI. Every resource `accessRevision` change clears conversation trust;
+  shared-tool enablement remains unsupported.
 - Skill/MCP rename or deletion repairs references as before. MCP secret input stays byte-exact, write-only, and ephemeral; server deletion does not implicitly delete a separately managed static or OAuth client-secret reference.
 
 ### 4. Validation & Error Matrix
@@ -522,6 +526,7 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 | Schema/security/side-effect/review revision differs | Persist drift disablement and return `mcp_tool_changed` before `tools/call` |
 | Side-effect approval is `conversation`, denied, cancelled, or times out | Reject conversation trust; deny/cancel/timeout produces zero remote calls |
 | Guest invokes any MCP OAuth endpoint | `403 capability_not_allowed`; no storage or remote call |
+| Shared editor/viewer attempts tool approval or execution | Deny before runtime construction; clear stale trust on ACL revision and make zero `tools/call` requests |
 | Browser response contains unknown or secret-like fields | Exact decoder rejects it instead of persisting the projection |
 | MCP tool governance is incomplete | Accept the admin snapshot only when the tool is disabled and review-required; reject enabled, non-review, malformed-present-field, or invalid-executor variants |
 | Builtin tool contains any MCP governance field | Reject the snapshot; fix Worker normalization to omit the field rather than weakening the builtin decoder |
@@ -546,6 +551,9 @@ capability_tool_trust(conversation_id, tool_id, review_revision, approved_at)
 - `UserState` tests assert state TTL/one-time/session/member binding, encrypted-only storage, concurrent refresh single-flight, CAS rotation, revoke/purge races, discovery candidate expiry, and exact member/server isolation.
 - Worker tests use only local fake OAuth/MCP and cover start/callback replay/swap/exchange failure, exact status/revoke projections, no token/audit/export/log leak, config/scope drift, member candidate review, and permanent deletion.
 - MCP runtime and Agent tests assert all four review dimensions before `tools/call`, persistent drift overlay, review-revision trust isolation, consecutive side-effect confirmations, invalid `conversation` decisions, and zero calls on deny/cancel/timeout.
+- ACL isolation tests additionally assert editor/viewer turns expose no tools or
+  OAuth tokens, grant/role/revoke revisions clear trust, and revoke races keep the
+  fake MCP remote-call count at zero.
 - Client tests assert exact versioned auth and connection decoders, OAuth admin round-trip, callback query consumption, busy deduplication boundaries, and guest denial. Workspace Playwright covers the five-view matrix; fake-Provider Agent Playwright remains separate.
 - Compatibility tests persist a governance-incomplete MCP tool, assert the Worker omits rather than fabricates missing fields, exercise GET/PUT/GET preservation, reject runnable incomplete client shapes, and prove the React admin recovery/delete/rediscovery path with local fixtures.
 - At least one Worker integration test must pass the exact serialized `GET /api/admin/config` JSON into the exported React `isAdminConfigSnapshot` decoder. The fixture includes the builtin tool plus multiple historical defects, asserts builtin MCP fields are absent, asserts credentials/headers are absent, and repeats the decoder assertion after PUT/GET.

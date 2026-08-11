@@ -1,5 +1,6 @@
-import { ArrowLeft, Brain, Cable, Download, LogIn, LogOut, Menu, Route, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, Brain, Cable, Download, Eye, LogIn, LogOut, Menu, Pencil, Route, Wifi, WifiOff } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
+import { resolveConversationAccessPermissions } from "../lib/state";
 
 export type ConnectionState = "connecting" | "ready" | "error";
 
@@ -45,6 +46,10 @@ export function WorkspaceHeader({
   const connection = connectionLabel(connectionState);
   const connectedMcpCount = mcpConnections.filter((item) => item.connected).length;
   const logoutLabel = logoutPending ? "正在退出登录" : "退出登录";
+  const permissions = resolveConversationAccessPermissions(conversation?.accessRole);
+  const sharedRole = conversation?.accessRole && conversation.accessRole !== "owner"
+    ? conversation.accessRole
+    : undefined;
 
   return (
     <header className="workspace-header">
@@ -76,9 +81,14 @@ export function WorkspaceHeader({
               <ArrowLeft size={12} aria-hidden="true" />
               <span>父会话不可用</span>
             </span>
+          ) : sharedRole ? (
+            <span className={`conversation-access-chip ${sharedRole}`} title={sharedRole === "editor" ? "共享编辑者" : "共享查看者"}>
+              {sharedRole === "editor" ? <Pencil size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
+              <span>{sharedRole === "editor" ? "编辑者" : "查看者"}</span>
+            </span>
           ) : null}
         </div>
-        {session.access === "guest" ? (
+        {session.access === "guest" || !permissions.canManageSettings ? (
           <div className="header-route-button static" title={route ? `${route.label} · ${route.model}` : "未选择线路"}>
             <Route size={14} aria-hidden="true" />
             <span className="header-route-copy">
@@ -103,10 +113,10 @@ export function WorkspaceHeader({
           <span>{connection}</span>
         </div>
         <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
-        {session.capabilities.memory && (
+        {session.capabilities.memory && permissions.canManageSettings && (
           <button className="icon-text-button quiet-button" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
         )}
-        {session.access === "member" && (
+        {session.access === "member" && permissions.canUseConversationTools && (
           <button className={`icon-button mcp-connections-trigger ${connectedMcpCount ? "connected" : ""}`} type="button" onClick={onOpenMcpConnections} disabled={busy || accountBusy} title={`MCP 连接${connectedMcpCount ? ` · ${connectedMcpCount} 已连接` : ""}`} aria-label={`MCP 连接${connectedMcpCount ? `，${connectedMcpCount} 个已连接` : ""}`}><Cable size={18} /></button>
         )}
         {session.access === "guest" ? (

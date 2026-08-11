@@ -5,8 +5,12 @@
 - `TeamAgent.onChatMessage()` is the owner of `streamText()` and returns `toUIMessageStreamResponse()` so Cloudflare AIChat persistence, reconnect, cancellation, and recovery remain active.
 - The Worker preparation boundary validates the member, messages, blocked-prompt policy, route access, image support, quota, Skills, credentials, and route candidates before a model stream starts.
 - Provider keys exist only while constructing server-side AI SDK model instances. They must not enter Agent state, UI messages, response metadata, logs, or run traces.
-- The browser receives a server-derived root Agent instance and `basePath: "agent"`; it supplies only a bounded `chatId`, while the gateway derives the conversation Agent instance.
-- The root Agent owns the authoritative long-term memory, conversation tombstones, and persisted transcript-cleanup queue. Conversation Agents read root memory before turn preparation.
+- The browser receives a server-derived Agent client key and `basePath: "agent"`;
+  it supplies bounded `chatId` plus the server-projected stable `resourceId`, while
+  the gateway resolves the authoritative conversation Agent route.
+- The root Agent owns the authoritative long-term memory, conversation tombstones,
+  and persisted transcript-cleanup queue. Owner turns may read root memory before
+  preparation; shared editor turns must use empty memory and Workspace context.
 - Legacy transcript import is idempotent and prefix-safe. A deleted ID or divergent Agent transcript is never overwritten by a rollback-client snapshot.
 
 ## Scenario: Per-conversation Client Isolation
@@ -18,19 +22,26 @@ This contract applies whenever the React workspace connects `useAgent()` and `us
 ### 2. Signatures
 
 ```typescript
-conversationAgentClientName(rootInstance: string, chatId: string): string
+conversationAgentClientName(resourceOrRootInstance: string, chatId: string): string
 
 useAgent({
-  name: conversationAgentClientName(session.agent.instance, conversation.id),
+  name: conversationAgentClientName(
+    conversation.resourceId || session.agent.instance,
+    conversation.id,
+  ),
   basePath: session.agent.basePath,
-  query: { chatId: conversation.id },
+  query: { chatId: conversation.id, resourceId: conversation.resourceId },
 })
 ```
 
 ### 3. Contracts
 
-- The gateway still treats the authenticated session plus bounded `chatId` query as the only server-side routing authority; the browser cannot select the Durable Object instance.
-- Every mounted conversation must also receive a stable, collision-free client name derived from the authenticated root instance and exact `chatId`. This name isolates the Agents React `agent.path`, AIChat initial-message cache, `useChat` ID, reconnect state, and local message list.
+- The gateway treats the authenticated session plus exact stable resource/chat
+  pair as the server-side routing input and re-resolves ACL authority. The browser
+  cannot select a Durable Object instance or role.
+- Every mounted conversation receives a stable, collision-free client name from
+  the resource ID (or owner compatibility root) plus exact `chatId`. This isolates
+  Agents React cache, reconnect state, and local messages across principals.
 - `queryDeps` refreshes connection query data but does not make the query part of the AIChat client cache key. It is not a substitute for a conversation-specific client name.
 - Switching conversations unmounts the old `ConversationChat` and mounts the new one with a distinct SDK identity. Messages, drafts, errors, tool continuations, and resumable-stream state must remain scoped to that conversation.
 
@@ -38,7 +49,7 @@ useAgent({
 
 - Same member and same `chatId` -> produce the same client name so reconnect and resume remain stable.
 - Same member and different `chatId` -> produce different client names even when IDs contain separators or similar prefixes.
-- Different member root instance and same `chatId` -> produce different client names.
+- Different resource ID and same `chatId` -> produce different client names.
 - Missing or invalid `chatId` -> rejected by the existing gateway/API validation before a conversation transport is mounted.
 
 ### 5. Good / Base / Bad Cases
@@ -69,9 +80,12 @@ useAgent({
 
 ```typescript
 useAgent({
-  name: conversationAgentClientName(session.agent.instance, conversation.id),
+  name: conversationAgentClientName(
+    conversation.resourceId || session.agent.instance,
+    conversation.id,
+  ),
   basePath: session.agent.basePath,
-  query: { chatId: conversation.id },
+  query: { chatId: conversation.id, resourceId: conversation.resourceId },
 });
 ```
 
@@ -332,6 +346,8 @@ runTool(
 - Agent continuation requests use `convertToModelMessages(this.messages, { tools })` so tool calls and approval responses survive the second model call.
 - Continuations do not consume another message quota unit. A new user turn does.
 - Tool execution is bounded by 4 model steps, 8 calls, 15 seconds per call, 45 seconds of cumulative execution time, and 32 KiB of serialized result data.
+- Shared editor/viewer access never constructs this tool set. Every ACL revision
+  clears conversation trust, and deny/revoke paths must produce zero remote calls.
 
 ### 4. Validation & Error Matrix
 
@@ -353,6 +369,8 @@ runTool(
 - Assert approval-required tools transition from required to trusted only after execution.
 - Assert `convertToModelMessages` preserves tool-call, approval-request, and approval-response parts.
 - Assert continuation preparation does not increment daily/minute quota.
+- Assert shared editor/viewer turns construct no tool definitions or memory tool,
+  ACL revision invalidation clears trust, and deny/revoke produces zero fake-MCP calls.
 - Assert no test contacts a real model or MCP server.
 
 ### 7. Wrong vs Correct

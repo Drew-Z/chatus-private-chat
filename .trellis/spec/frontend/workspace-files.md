@@ -114,6 +114,11 @@ type WorkspaceTrackedUsage = {
 - Failed or retryable non-deleting versions remain in `quotaBytes` because upload admission uses the same SQL state rule. A deleting version remains in `pendingCleanupBytes` until metadata finalization removes it, even when an individual R2 delete already succeeded.
 - Usage is metadata-tracked occupancy, not R2 bucket actual usage. It cannot prove referenced objects exist or discover orphan/old-generation R2 objects, and it must not add object keys, checksums, paths, Queue owner IDs, or operation data to the usage object.
 - The browser decoder requires exactly the five usage keys, non-negative safe integers, a positive safe `limitBytes`, safe addition, and exact `trackedBytes` arithmetic. The React quota progress uses only `quotaBytes / limitBytes`; parsed and pending-cleanup bytes are outside the upload quota percentage.
+- Conversation sharing does not grant Workspace membership. Shared summaries
+  project `workspaceFiles: []`; editor/viewer UI exposes no file entry point, and
+  `conversation.workspace_refs.read|mutate` remains owner-only. Shared editor
+  Provider preparation skips root reference resolution and sends empty
+  `workspaceContext`.
 
 ### Async Document Ingest
 
@@ -176,6 +181,7 @@ type WorkspaceTrackedUsage = {
 | Stale `expectedUpdatedAt` or overlapping upload | `409 workspace_file_conflict` with the current public projection |
 | Operation ID is reused with a different fingerprint/kind | `409 workspace_operation_conflict` |
 | Requested file/version belongs to another member | `404 workspace_file_not_found` / `workspace_version_not_found`; expose no owner metadata |
+| Active shared editor/viewer requests conversation Workspace refs | `403 conversation_action_denied`; perform no Root/R2 lookup or mutation |
 | Exact selected version is tombstoned, failed, or missing | Reject the reference/send or return the bounded unavailable context; never follow current version |
 | R2 put fails | Mark operation/version/file failed; allow a new immutable retry |
 | R2 put succeeds but finalize is interrupted | Return pending and reconcile from size plus SHA-256 evidence |
@@ -222,6 +228,9 @@ type WorkspaceTrackedUsage = {
 - Prove additive cleanup migration accepts legacy rows and makes them immediately due; due filtering, 5-second exponential backoff, 5-minute cap, 8-attempt terminal retention, and direct idempotent recovery are deterministic.
 - Prove two immutable versions exist, a conversation pins the old exact version, rename/current-version changes do not drift it, and a local fake Provider sees only that old text.
 - Prove object keys and raw PDF/Office bytes are absent from APIs, exports, client state, Provider payloads, and diagnostics.
+- Prove viewer/editor conversation summaries contain no parent/ref metadata,
+  Workspace ref mutations are denied, and shared editor Provider requests contain
+  no filenames, extracted text, file/version IDs, or R2 access.
 - Table-test normal Queue extraction for all five formats and permanent rejection for macro/script, ActiveX/OLE, embedded/nested archives, external/escaping relationships, compression bombs, encryption, corrupt packages, and PDF active names before Provider execution.
 - Prove initial delivery plus exactly three transient retries reaches DLQ; permanent failure does not retry; manual retry advances generation; duplicate/concurrent/expired-lease/old-generation/deleted races remain idempotent.
 - During maintenance, prove queued/DLQ delivery retries, Workspace/API/Agent/cleanup mutation admission is fenced, reads/logout remain available, and every admitted operation holds an independent fence until its stream or side effects settle.

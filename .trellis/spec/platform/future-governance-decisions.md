@@ -6,19 +6,22 @@ Use this contract when planning or implementing member sharing/transfer/ACL, Pro
 
 Provider attempt identity, normalized usage, immutable price bindings, append-only
 cost evidence, and bounded reconciliation summaries are now supported for
-administrator operations. The legacy-surface registry and evidence control plane
-are also supported, but all initial records remain `discovered`. Hard budget
-enforcement, finance feedback receipts, ACL, numeric RPO/RTO, and destructive
-legacy retirement remain unimplemented.
+administrator operations. Stable principal/resource identity plus conversation
+viewer/editor sharing and authoritative revocation are also supported. Ownership
+transfer, owner deletion disposition, shared files/tools/export, hard budget
+enforcement, finance feedback receipts, numeric RPO/RTO, and destructive legacy
+retirement remain unimplemented. The legacy-surface registry and evidence control
+plane are supported, but all initial records remain `discovered`.
 Design records under `.trellis/tasks/07-27-q3-followup-design-decisions/research/`
 establish future gates but do not by themselves create a supported API, schema,
 workflow, or operating claim for those deferred capabilities.
 
 ## 2. Signatures And Current Decision Records
 
-No runtime API, database table, migration, command, workflow, or environment
-key is supported for the deferred ACL, hard-budget, finance-feedback, numeric
-RPO/RTO, or destructive-cleanup capabilities. The non-destructive retirement
+Conversation sharing/revocation runtime contracts are documented in
+`conversation-acl.md`; this file continues to govern the deferred transfer,
+owner-deletion, shared-file/tool/export, hard-budget, finance-feedback, numeric
+RPO/RTO, and destructive-cleanup capabilities. The non-destructive retirement
 control-plane signatures are documented in `legacy-surface-governance.md`;
 their presence does not authorize instrumentation, disablement, or cleanup.
 Provider finance v2 signatures are documented in `provider-attempt-ledger.md`;
@@ -40,6 +43,9 @@ Future tasks must copy the relevant decision and risk IDs into their PRD rather 
 
 - Introduce an immutable principal identity before a mutable member label can participate in ACL or transfer.
 - Share explicit conversation resources, not a member root. Root memory, credentials, OAuth tokens, workspace root state, feedback ownership, exports, and capability trust do not follow a share implicitly.
+- The supported v1 share roles are viewer plus bounded editor. Every effective ACL
+  change advances one resource access revision; active shared mutations commit
+  only after revalidating the exact actor/resource/grant snapshot.
 - A shareable resource has exactly one owner. Transfer is an idempotent, revisioned ownership transition, not copy-and-revoke.
 - Revocation becomes authoritative before cleanup/cache invalidation, and in-flight mutations recheck the resource revision at commit.
 - Owner deletion requires an explicit disposition for each owned resource. Never elect an owner implicitly.
@@ -112,7 +118,9 @@ Every implementation task must include:
 
 ## 5. Good / Base / Bad Cases
 
-- Good: a future ACL task first separates principal/resource identity, keeps owner memory/trust private, and proves revoke/transfer races locally.
+- Good: the supported sharing path resolves stable resources, keeps owner
+  memory/trust private, and proves revoke races locally; a future transfer task
+  separately proves exactly-one-owner transition and deletion disposition.
 - Good: a cost task records every fallback attempt with evidence class and price version before enabling an idempotent budget reservation.
 - Good: a recovery task restores an isolated target from a consistent encrypted manifest, reconciles it, and retains exact drill evidence before making an availability claim.
 - Good: a legacy rollout versions one exact manifest record, wires and tests all
@@ -123,9 +131,9 @@ Every implementation task must include:
 
 ## 6. Tests Required
 
-The deferred portions of this contract require no runtime test. Provider finance
-runtime behavior is executable and follows the tests in
-`provider-attempt-ledger.md`; future design-only deliveries must prove:
+The deferred portions of this contract require no runtime test. Conversation ACL
+runtime behavior follows `conversation-acl.md`, and Provider finance runtime
+behavior follows `provider-attempt-ledger.md`; future design-only deliveries must prove:
 
 - only Trellis/spec/docs paths changed;
 - every decision document contains current evidence, invariants, options/recommendation, migration/rollback, acceptance scenarios, open decisions, and linked risks;
@@ -141,7 +149,7 @@ Future runtime tasks must add tests proportional to the affected cross-store and
 
 ```text
 Add ownerLabel to conversations, add token totals to reliability KV, and schedule
-an export cron. Mark ACL, cost budgets, and full-instance recovery supported.
+an export cron. Mark transfer/shared tools, cost budgets, and full-instance recovery supported.
 ```
 
 These local fields do not establish stable identity, attempt attribution, atomic budget settlement, multi-store consistency, key custody, or restore evidence.
@@ -149,9 +157,10 @@ These local fields do not establish stable identity, attempt attribution, atomic
 ### Correct
 
 ```text
-Keep the capability unsupported. Create a future Trellis task that carries the
-relevant risk IDs, defines versioned cross-layer contracts, proves migration and
-rollback, passes local deterministic acceptance, and only then updates support claims.
+Keep the deferred capability unsupported. Create a future Trellis task that
+carries the relevant risk IDs, defines versioned cross-layer contracts, proves
+migration and rollback, passes local deterministic acceptance, and only then
+updates its support claim.
 ```
 
 Support status follows executable evidence, not the presence of a design or one storage field.
