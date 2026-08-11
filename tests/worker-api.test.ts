@@ -4,8 +4,16 @@ import { getAgentByName } from "agents";
 import type { UIMessage } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
+import {
+  conversationResourceInstanceName,
+  principalRootInstanceName,
+  principalUserStateInstanceName,
+  type ConversationResourceRouteV1,
+  type PrincipalRouteV1,
+} from "../src/contracts/identity";
 import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse, isAdminLegacySurfaceSnapshot } from "../client/src/lib/api";
 import { LEGACY_SURFACE_MANIFEST, legacySurfaceObjectName, stableJson } from "../src/contracts/legacy-surface";
+import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../src/identity-registry";
 import { providerOfferingId } from "../src/contracts/provider-attempt";
 import { PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS } from "../src/contracts/provider-finance";
 import { resolveProviderRouteCandidates } from "../src/services/provider-router";
@@ -14,6 +22,8 @@ import {
   createProviderAttemptRuntime,
 } from "../src/services/provider-attempt-runtime";
 import worker, {
+  assertConversationRouteParity,
+  assertPrincipalRouteParity,
   getTeamAgentConversationInstanceName,
   getTeamAgentInstanceName,
   responseWithProviderLease,
@@ -520,19 +530,96 @@ function guestChat(cookie: string, routeId = PUBLIC_ROUTE_ID, body: Record<strin
   });
 }
 
+async function resolveTestPrincipal(label: string): Promise<PrincipalRouteV1 | undefined> {
+  const result = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).lookupActivePrincipalAlias({
+    version: 1,
+    alias: label,
+  });
+  return result.found ? result.route : undefined;
+}
+
+async function reserveNativeTestPrincipal(label: string): Promise<PrincipalRouteV1> {
+  return env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).resolveOrCreatePrincipal({
+    version: 1,
+    operationId: `test-principal:${crypto.randomUUID()}`,
+    alias: label,
+    origin: "native",
+  });
+}
+
+function stablePrincipalTestMarker(principal: PrincipalRouteV1) {
+  return {
+    version: 1 as const,
+    principalId: principal.principalId,
+    rootInstanceName: principal.rootInstanceName,
+    userStateInstanceName: principal.userStateInstanceName,
+    registryRevision: principal.registryRevision,
+  };
+}
+
 async function getRootAgent(label: string) {
-  const instance = await getTeamAgentInstanceName(label);
-  return getAgentByName(env.TEAM_AGENT, instance, { props: { userLabel: label, scope: "root" } }) as DurableObjectStub<TeamAgent>;
+  const principal = await resolveTestPrincipal(label);
+  const instance = principal?.rootInstanceName ?? await getTeamAgentInstanceName(label);
+  const props = { userLabel: label, scope: "root" as const };
+  const agent = await getAgentByName(env.TEAM_AGENT, instance, { props }) as DurableObjectStub<TeamAgent>;
+  if (principal) {
+    const marker = stablePrincipalTestMarker(principal);
+    const identity = await agent.ensureIdentity(props);
+    if (!identity.ok) throw new Error(identity.error);
+    await Promise.all([
+      agent.ensureStableIdentity({
+        ...marker,
+        scope: "root",
+        resourceId: "",
+        resourceRegistryRevision: 0,
+        pinnedInstanceName: instance,
+      }),
+      env.USER_STATE.getByName(principal.userStateInstanceName).ensureStableIdentity(marker),
+    ]);
+  }
+  return agent;
 }
 
 async function getConversationAgent(label: string, chatId: string) {
-  const [instance, rootInstance] = await Promise.all([
-    getTeamAgentConversationInstanceName(label, chatId),
-    getTeamAgentInstanceName(label),
-  ]);
-  return getAgentByName(env.TEAM_AGENT, instance, {
-    props: { userLabel: label, scope: "conversation", chatId, rootInstance },
-  }) as DurableObjectStub<TeamAgent>;
+  const principal = await resolveTestPrincipal(label);
+  let resource: ConversationResourceRouteV1 | undefined;
+  if (principal) {
+    const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+    const lookup = await registry.lookupConversationResource({
+      version: 1,
+      principalId: principal.principalId,
+      conversationId: chatId,
+    });
+    if (lookup.found) {
+      resource = lookup.route;
+    } else {
+      resource = await registry.ensureConversationResource({
+        version: 1,
+        operationId: `test-resource:${crypto.randomUUID()}`,
+        principalId: principal.principalId,
+        conversationId: chatId,
+      });
+    }
+  }
+  const [instance, rootInstance] = resource && principal
+    ? [resource.agentInstanceName, principal.rootInstanceName]
+    : await Promise.all([
+        getTeamAgentConversationInstanceName(label, chatId),
+        getTeamAgentInstanceName(label),
+      ]);
+  const props = { userLabel: label, scope: "conversation" as const, chatId, rootInstance };
+  const agent = await getAgentByName(env.TEAM_AGENT, instance, { props }) as DurableObjectStub<TeamAgent>;
+  if (principal && resource) {
+    await agent.ensureIdentity(props);
+    await agent.ensureStableIdentity({
+      ...stablePrincipalTestMarker(principal),
+      scope: "conversation",
+      resourceId: resource.resourceId,
+      resourceRegistryRevision: resource.registryRevision,
+      pinnedInstanceName: instance,
+    });
+  }
+  return agent;
 }
 
 async function createMemberConversationAgent(
@@ -541,6 +628,7 @@ async function createMemberConversationAgent(
   routeId: string,
   skillIds: string[] = [],
 ) {
+  await reserveNativeTestPrincipal(label);
   const root = await getRootAgent(label);
   const now = Date.now();
   const created = await root.createConversation({
@@ -2151,6 +2239,7 @@ describe("Worker API", () => {
     await seedHardProviderBudget({ providerId, routeId, model, knownPrice: false });
     const label = `agent-budget-member-${crypto.randomUUID()}`;
     const chatId = `agent-budget-chat-${crypto.randomUUID()}`;
+    await reserveNativeTestPrincipal(label);
     const root = await getRootAgent(label);
     await root.createConversation({
       id: chatId,
@@ -2449,6 +2538,159 @@ describe("Worker API", () => {
       rootInstance: await getTeamAgentInstanceName(label),
     })).resolves.toEqual({ ok: false, error: "agent_identity_conflict" });
     await expect(root.getMemory()).resolves.toMatchObject({ memory: "" });
+  });
+
+  it("advances stable TeamAgent registry revisions without changing the resource binding", async () => {
+    const label = `agent-stable-revision-${crypto.randomUUID()}`;
+    const chatId = `stable-revision-${crypto.randomUUID()}`;
+    const principal = await reserveNativeTestPrincipal(label);
+    const conversation = await getConversationAgent(label, chatId);
+    const resource = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .resolveConversationResource({
+        version: 1,
+        principalId: principal.principalId,
+        conversationId: chatId,
+      });
+    const marker = {
+      ...stablePrincipalTestMarker(principal),
+      scope: "conversation" as const,
+      resourceId: resource.resourceId,
+      resourceRegistryRevision: resource.registryRevision,
+      pinnedInstanceName: resource.agentInstanceName,
+    };
+
+    const initial = await conversation.ensureStableIdentity(marker);
+    const advanced = await conversation.ensureStableIdentity({
+      ...marker,
+      resourceRegistryRevision: marker.resourceRegistryRevision + 1,
+    });
+    expect(advanced.digest).not.toBe(initial.digest);
+  });
+
+  it("fails closed when pinned principal or conversation routes drift", async () => {
+    const legacyAlias = `identity-parity-${crypto.randomUUID().slice(0, 12)}`;
+    const legacyPrincipal: PrincipalRouteV1 = {
+      version: 1,
+      principalId: `prn_${crypto.randomUUID()}`,
+      alias: legacyAlias,
+      origin: "legacy",
+      lifecycleState: "active",
+      migrationState: "authoritative",
+      rootInstanceName: await getTeamAgentInstanceName(legacyAlias),
+      userStateInstanceName: legacyAlias,
+      registryRevision: 3,
+    };
+    await expect(assertPrincipalRouteParity(legacyPrincipal)).resolves.toBeUndefined();
+    await expect(assertPrincipalRouteParity({
+      ...legacyPrincipal,
+      rootInstanceName: "member-wrong-root",
+    })).rejects.toThrow("identity_principal_route_conflict");
+
+    const legacyResource: ConversationResourceRouteV1 = {
+      version: 1,
+      resourceId: `res_${crypto.randomUUID()}`,
+      principalId: legacyPrincipal.principalId,
+      conversationId: `conversation-${crypto.randomUUID()}`,
+      migrationState: "authoritative",
+      agentInstanceName: "",
+      registryRevision: 3,
+    };
+    legacyResource.agentInstanceName = await getTeamAgentConversationInstanceName(
+      legacyAlias,
+      legacyResource.conversationId,
+    );
+    await expect(assertConversationRouteParity(legacyPrincipal, legacyResource)).resolves.toBeUndefined();
+    await expect(assertConversationRouteParity(legacyPrincipal, {
+      ...legacyResource,
+      agentInstanceName: "conversation-wrong-route",
+    })).rejects.toThrow("identity_resource_route_conflict");
+
+    const nativePrincipal: PrincipalRouteV1 = {
+      ...legacyPrincipal,
+      principalId: `prn_${crypto.randomUUID()}`,
+      alias: `identity-native-${crypto.randomUUID().slice(0, 12)}`,
+      origin: "native",
+      rootInstanceName: "",
+      userStateInstanceName: "",
+    };
+    nativePrincipal.rootInstanceName = principalRootInstanceName(nativePrincipal.principalId);
+    nativePrincipal.userStateInstanceName = principalUserStateInstanceName(nativePrincipal.principalId);
+    const nativeResource: ConversationResourceRouteV1 = {
+      ...legacyResource,
+      resourceId: `res_${crypto.randomUUID()}`,
+      principalId: nativePrincipal.principalId,
+      agentInstanceName: "",
+    };
+    nativeResource.agentInstanceName = conversationResourceInstanceName(nativeResource.resourceId);
+    await expect(assertPrincipalRouteParity(nativePrincipal)).resolves.toBeUndefined();
+    await expect(assertConversationRouteParity(nativePrincipal, nativeResource)).resolves.toBeUndefined();
+  });
+
+  it("keeps a pre-registry conversation usable after principal authority advances", async () => {
+    const label = `identity-existing-${crypto.randomUUID().slice(0, 12)}`;
+    const conversationId = `identity-existing-chat-${crypto.randomUUID()}`;
+    const root = await getRootAgent(label);
+    const now = Date.now();
+    const created = await root.createConversation({
+      id: conversationId,
+      title: "Existing conversation",
+      createdAt: now,
+      updatedAt: now,
+      summary: "",
+      pinned: false,
+      routeId: "default",
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(created.ok).toBe(true);
+    await getConversationAgent(label, conversationId);
+
+    const member = await login(label);
+    const principal = await resolveTestPrincipal(label);
+    expect(principal).toMatchObject({ migrationState: "authoritative", registryRevision: 3 });
+    const response = await apiRequest(
+      `/api/agent/conversations/${encodeURIComponent(conversationId)}?expectedUpdatedAt=${created.conversation?.updatedAt}`,
+      member.cookie,
+      { method: "DELETE" },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, deleted: true, cleanupPending: false });
+  });
+
+  it("rejects an established member Agent turn after its alias is retired", async () => {
+    const member = await login(`identity-retired-turn-${crypto.randomUUID().slice(0, 12)}`);
+    const principal = await resolveTestPrincipal(member.label);
+    if (!principal) throw new Error("missing_identity_test_principal");
+    const conversationId = `identity-retired-turn-chat-${crypto.randomUUID()}`;
+    const root = await getRootAgent(member.label);
+    const now = Date.now();
+    const created = await root.createConversation({
+      id: conversationId,
+      title: "Retired connection",
+      createdAt: now,
+      updatedAt: now,
+      summary: "",
+      pinned: false,
+      routeId: "default",
+      skillMode: "manual",
+      skillIds: [],
+    });
+    expect(created.ok).toBe(true);
+    const agent = await getConversationAgent(member.label, conversationId);
+    await agent.importLegacyMessages([{ id: "retired-turn-message", role: "user", parts: [{ type: "text", text: "blocked" }] }]);
+    await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).retirePrincipalAlias({
+      version: 1,
+      operationId: `retired-turn:${crypto.randomUUID()}`,
+      principalId: principal.principalId,
+      alias: member.label,
+      retiredAt: Date.now(),
+    });
+    const providerFetch = vi.spyOn(globalThis, "fetch");
+    const response = await runInDurableObject(agent, (instance) => (
+      instance.onChatMessage(async () => undefined, { requestId: `retired-turn-${crypto.randomUUID()}` })
+    ));
+    expect(response.status).toBe(401);
+    expect(providerFetch).not.toHaveBeenCalled();
   });
 
   it("persists only the safe truncated-output marker from Agent message metadata", async () => {
@@ -5023,6 +5265,9 @@ describe("Worker API", () => {
 
     const rotatedSession = await loginWithCode(rotatedPayload.accessCode);
     expect(rotatedSession).toMatch(/^chatus_session=/);
+    const retiredPrincipal = await resolveTestPrincipal(label);
+    expect(retiredPrincipal).toBeDefined();
+    const retiredProjection = await apiRequest("/api/session", rotatedSession!).then((response) => response.json()) as any;
     const revoked = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/access-code`, adminCookie, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -5052,6 +5297,253 @@ describe("Worker API", () => {
     ]));
     expect(JSON.stringify(audit)).not.toContain(createdPayload.accessCode);
     expect(JSON.stringify(audit)).not.toContain(rotatedPayload.accessCode);
+
+    const recreated = await apiRequest("/api/admin/members", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, expectedAccessRevision: listedAfterRevoke.accessRevision }),
+    });
+    expect(recreated.status).toBe(200);
+    const recreatedPayload = await recreated.json() as any;
+    const replacementSession = await loginWithCode(recreatedPayload.accessCode);
+    expect(replacementSession).toMatch(/^chatus_session=/);
+    const replacementPrincipal = await resolveTestPrincipal(label);
+    expect(replacementPrincipal).toBeDefined();
+    expect(replacementPrincipal?.principalId).not.toBe(retiredPrincipal?.principalId);
+    expect(replacementPrincipal?.rootInstanceName).not.toBe(retiredPrincipal?.rootInstanceName);
+    expect(replacementPrincipal?.userStateInstanceName).not.toBe(retiredPrincipal?.userStateInstanceName);
+    const replacementProjection = await apiRequest("/api/session", replacementSession!).then((response) => response.json()) as any;
+    expect(replacementProjection.agent.instance).not.toBe(retiredProjection.agent.instance);
+  });
+
+  it("retires member authority even when session-key cleanup remains incomplete", async () => {
+    const label = `lifecycle-incomplete-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, `owner:owner-code,${label}:member-code`);
+    const memberCookie = await loginWithCode("member-code");
+    expect(memberCookie).toMatch(/^chatus_session=/);
+    const sessionKey = `session:${sessionToken(memberCookie!)}`;
+    const principal = await resolveTestPrincipal(label);
+    expect(principal).toBeDefined();
+    const adminCookie = await adminLogin();
+    const members = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    const failingStore = new Proxy(env.CHAT_STORE, {
+      get(target, property) {
+        if (property === "delete") {
+          return async (key: string) => {
+            if (key === sessionKey) throw new Error("synthetic_session_delete_failure");
+            return target.delete(key);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const revoked = await worker.fetch(new Request(
+      `https://example.test/api/admin/members/${encodeURIComponent(label)}/access-code`,
+      {
+        method: "DELETE",
+        headers: { Cookie: adminCookie, "Content-Type": "application/json" },
+        body: JSON.stringify({ expectedAccessRevision: members.accessRevision }),
+      },
+    ), { ...env, CHAT_STORE: failingStore });
+    expect(revoked.status).toBe(200);
+    const payload = await revoked.json() as any;
+    expect(payload.sessionRevocation).toEqual({ revoked: 0, complete: false });
+    await expect(env.CHAT_STORE.get(sessionKey)).resolves.not.toBeNull();
+    await expect(env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).lookupActivePrincipalAlias({
+      version: 1,
+      alias: label,
+    })).resolves.toEqual({ version: 1, found: false });
+
+    expect((await apiRequest("/api/session", memberCookie!)).status).toBe(401);
+    await expect(env.CHAT_STORE.get(sessionKey)).resolves.toBeNull();
+    const recreated = await apiRequest("/api/admin/members", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, expectedAccessRevision: payload.accessRevision }),
+    });
+    expect(recreated.status).toBe(200);
+    const replacement = await resolveTestPrincipal(label);
+    expect(replacement?.principalId).not.toBe(principal?.principalId);
+  });
+
+  it("keeps a replacement principal intact while delayed cleanup finishes the retired principal", async () => {
+    const label = `cleanup-reuse-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, `owner:owner-code,${label}:old-code`);
+    const oldCookie = await loginWithCode("old-code");
+    expect(oldCookie).toMatch(/^chatus_session=/);
+    const oldPrincipal = await resolveTestPrincipal(label);
+    expect(oldPrincipal).toBeDefined();
+    const oldRoot = await getRootAgent(label);
+    const legacyUsageKey = `usage:${encodeURIComponent(label)}:${new Date().toISOString().slice(0, 10)}`;
+    await env.CHAT_STORE.put(legacyUsageKey, "9");
+    await oldRoot.registerAccountCleanupRequest(Date.now());
+
+    const adminCookie = await adminLogin();
+    const members = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    const revoked = await apiRequest(`/api/admin/members/${encodeURIComponent(label)}/access-code`, adminCookie, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expectedAccessRevision: members.accessRevision }),
+    });
+    expect(revoked.status).toBe(200);
+    const revokedPayload = await revoked.json() as any;
+    const recreated = await apiRequest("/api/admin/members", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, expectedAccessRevision: revokedPayload.accessRevision }),
+    });
+    expect(recreated.status).toBe(200);
+    const recreatedPayload = await recreated.json() as any;
+    const replacementCookie = await loginWithCode(recreatedPayload.accessCode);
+    expect(replacementCookie).toMatch(/^chatus_session=/);
+    const replacementPrincipal = await resolveTestPrincipal(label);
+    expect(replacementPrincipal?.principalId).not.toBe(oldPrincipal?.principalId);
+    await expect(apiRequest("/api/session", replacementCookie!).then((response) => response.json()))
+      .resolves.toMatchObject({ usage: { used: 0 } });
+
+    const feedback = await apiRequest("/api/feedback", replacementCookie!, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rating: "up",
+        routeId: "default",
+        chatId: "replacement-chat",
+        messageId: "replacement-message",
+      }),
+    });
+    expect(feedback.status).toBe(200);
+    const replacementMemory = await apiRequest("/api/agent/memory", replacementCookie!).then((response) => response.json()) as any;
+    const savedMemory = await apiRequest("/api/agent/memory", replacementCookie!, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memory: "replacement principal memory", expectedRevision: replacementMemory.revision }),
+    });
+    expect(savedMemory.status).toBe(200);
+
+    await runInDurableObject(oldRoot, async (instance) => {
+      await runTeamAgentCleanupSchedule(env, label, instance);
+    });
+
+    expect((await apiRequest("/api/session", replacementCookie!)).status).toBe(200);
+    await expect(env.CHAT_STORE.get(legacyUsageKey)).resolves.toBeNull();
+    await expect(apiRequest("/api/agent/memory", replacementCookie!).then((response) => response.json()))
+      .resolves.toMatchObject({ memory: "replacement principal memory" });
+    const feedbackAfterCleanup = await apiRequest("/api/admin/feedback", adminCookie).then((response) => response.json()) as any;
+    expect(feedbackAfterCleanup.entries).toContainEqual(expect.objectContaining({
+      label,
+      chatId: "replacement-chat",
+      messageId: "replacement-message",
+    }));
+  });
+
+  it("exposes bounded content-free identity inspection and idempotent reconciliation", async () => {
+    await env.CHAT_STORE.put(ACCESS_CODES_KEY, "owner:owner-code");
+    const adminCookie = await adminLogin();
+    const label = `identity-admin-${crypto.randomUUID()}`;
+    const members = await apiRequest("/api/admin/members", adminCookie).then((response) => response.json()) as any;
+    const created = await apiRequest("/api/admin/members", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label, expectedAccessRevision: members.accessRevision }),
+    });
+    expect(created.status).toBe(200);
+    const createdPayload = await created.json() as any;
+    const principal = await resolveTestPrincipal(label);
+    expect(principal).toBeDefined();
+    if (!principal) throw new Error("missing_identity_test_principal");
+
+    const inspection = await apiRequest("/api/admin/identity?limit=20", adminCookie);
+    expect(inspection.status).toBe(200);
+    const inspectionPayload = await inspection.json() as any;
+    expect(Object.keys(inspectionPayload).sort()).toEqual([
+      "aliases", "limit", "migration", "principals", "resources", "schemaVersion", "version",
+    ]);
+    expect(inspectionPayload).toMatchObject({ version: 1, schemaVersion: "identity-registry-v1", limit: 20 });
+    expect(JSON.stringify(inspectionPayload)).not.toContain(label);
+
+    const input = {
+      label,
+      operationId: `admin-reconcile:${crypto.randomUUID()}`,
+      expectedRegistryRevision: principal.registryRevision,
+      limit: 20,
+    };
+    const reconciled = await apiRequest("/api/admin/identity/reconcile", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    expect(reconciled.status).toBe(200);
+    const payload = await reconciled.json() as any;
+    expect(Object.keys(payload).sort()).toEqual([
+      "authoritative", "checkedConversations", "digest", "eligibleForAuthority", "issues",
+      "migrationState", "operationId", "principalId", "registryRevision", "totalResources", "version",
+    ]);
+    expect(payload).toMatchObject({
+      version: 1,
+      operationId: input.operationId,
+      principalId: principal.principalId,
+      migrationState: "authoritative",
+      checkedConversations: 0,
+      totalResources: 0,
+      issues: [],
+      eligibleForAuthority: true,
+      authoritative: true,
+    });
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain(label);
+    expect(serialized).not.toContain(principal.rootInstanceName);
+    expect(serialized).not.toContain(principal.userStateInstanceName);
+    expect(serialized).not.toContain(createdPayload.accessCode);
+
+    const replay = await apiRequest("/api/admin/identity/reconcile", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toEqual(payload);
+    const injected = await apiRequest("/api/admin/identity/reconcile", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...input, rootInstanceName: principal.rootInstanceName }),
+    });
+    expect(injected.status).toBe(400);
+    await expect(injected.json()).resolves.toEqual({ error: "identity_reconciliation_input_invalid" });
+
+    const stale = await apiRequest("/api/admin/identity/reconcile", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...input,
+        operationId: `admin-reconcile-stale:${crypto.randomUUID()}`,
+        expectedRegistryRevision: principal.registryRevision + 1,
+      }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toEqual({ error: "identity_registry_revision_conflict" });
+  });
+
+  it("keeps ACL, sharing, transfer, and shared discovery endpoints unavailable", async () => {
+    const member = await login(`identity-negative-${crypto.randomUUID()}`);
+    const adminCookie = await adminLogin();
+    const cases = [
+      ["/api/acl", member.cookie],
+      ["/api/shares", member.cookie],
+      ["/api/transfers", member.cookie],
+      ["/api/shared-resources", member.cookie],
+      ["/api/admin/acl", adminCookie],
+    ] as const;
+    for (const [path, cookie] of cases) {
+      const response = await apiRequest(path, cookie, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ principalId: `prn_${crypto.randomUUID()}`, role: "owner" }),
+      });
+      expect(response.status, path).toBe(404);
+      await expect(response.json()).resolves.toEqual({ error: "not_found" });
+    }
   });
 
   it("refuses to revoke the last access code instead of falling back to the deployment secret", async () => {

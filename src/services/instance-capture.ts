@@ -11,6 +11,7 @@ export const INSTANCE_CAPTURE_REQUIRED_STORES = [
   "document_ingest_queue",
   "provider_coordinator",
   "provider_attempt_ledger",
+  "identity_registry",
   "instance_object_registry",
   "legacy_surface_registry",
   "instance_coordinator_runtime",
@@ -33,7 +34,8 @@ export type InstanceObjectKind =
   | "root_team_agent"
   | "conversation_team_agent"
   | "provider_coordinator"
-  | "provider_attempt_ledger";
+  | "provider_attempt_ledger"
+  | "identity_registry";
 
 export type InstanceMaintenanceStateV1 = {
   version: 1;
@@ -1052,7 +1054,8 @@ function isInstanceOperationKind(value: unknown): value is InstanceOperationKind
 
 function isInstanceObjectKind(value: unknown): value is InstanceObjectKind {
   return value === "user_state" || value === "root_team_agent" || value === "conversation_team_agent"
-    || value === "provider_coordinator" || value === "provider_attempt_ledger";
+    || value === "provider_coordinator" || value === "provider_attempt_ledger"
+    || value === "identity_registry";
 }
 
 function isValidStateRestoreCombination(

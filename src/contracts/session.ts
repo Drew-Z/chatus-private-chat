@@ -10,6 +10,14 @@ type BaseSession = {
 
 export type MemberSession = BaseSession & {
   kind: "member";
+  principalId: string;
+  rootInstanceName: string;
+  userStateInstanceName: string;
+  registryRevision: number;
+};
+
+export type LegacyMemberSession = BaseSession & {
+  kind: "member";
 };
 
 export type GuestSession = BaseSession & {
@@ -18,3 +26,4 @@ export type GuestSession = BaseSession & {
 };
 
 export type Session = MemberSession | GuestSession;
+export type StoredSession = Session | LegacyMemberSession;

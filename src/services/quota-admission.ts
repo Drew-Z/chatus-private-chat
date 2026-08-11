@@ -58,8 +58,8 @@ export type QuotaBucket = {
 };
 
 export type QuotaAdmissionDependencies = {
-  getBucket(label: string): QuotaBucket;
-  readLegacyDayCount(label: string, day: string): Promise<number>;
+  getBucket(label: string, session?: Session): QuotaBucket;
+  readLegacyDayCount(label: string, day: string, session?: Session): Promise<number>;
   defaultDailyLimit: number;
   defaultMinuteLimit: number;
   defaultGuestPolicy: GuestQuotaPolicy;
@@ -84,8 +84,8 @@ export function createQuotaAdmissionService(
   const usageAt = async (session: Session, user: QuotaUserLimits, nowMs: number): Promise<QuotaUsage> => {
     const day = utcDay(nowMs);
     const dailyLimit = user.dailyMessageLimit || dependencies.defaultDailyLimit;
-    const legacyUsed = await dependencies.readLegacyDayCount(session.label, day);
-    const used = await dependencies.getBucket(session.label).getUsage(day, legacyUsed);
+    const legacyUsed = await dependencies.readLegacyDayCount(session.label, day, session);
+    const used = await dependencies.getBucket(session.label, session).getUsage(day, legacyUsed);
     return { used, limit: dailyLimit, remaining: Math.max(0, dailyLimit - used) };
   };
 
@@ -98,8 +98,8 @@ export function createQuotaAdmissionService(
     const day = utcDay(nowMs);
     const dailyLimit = user.dailyMessageLimit || dependencies.defaultDailyLimit;
     const minuteLimit = user.minuteMessageLimit || dependencies.defaultMinuteLimit;
-    const legacyDayCount = await dependencies.readLegacyDayCount(session.label, day);
-    const personalBucket = dependencies.getBucket(session.label);
+    const legacyDayCount = await dependencies.readLegacyDayCount(session.label, day, session);
+    const personalBucket = dependencies.getBucket(session.label, session);
     const personal = await personalBucket.consumeLimits(dailyLimit, minuteLimit, nowMs, legacyDayCount);
     if (!personal.ok || session.kind === "member") {
       return personal.ok ? personal : { ...personal, scope: "session" };
@@ -120,7 +120,7 @@ export function createQuotaAdmissionService(
 
   const refundGuestLimits = async (session: GuestSession, nowMs: number): Promise<void> => {
     await Promise.all([
-      dependencies.getBucket(session.label).refundLimits(nowMs),
+      dependencies.getBucket(session.label, session).refundLimits(nowMs),
       dependencies.getBucket(session.sourceKey).refundLimits(nowMs),
     ]);
   };
@@ -155,7 +155,7 @@ export function createQuotaAdmissionService(
           await refundGuestLimits(session, nowMs);
           return;
         }
-        await dependencies.getBucket(session.label).refundLimits(nowMs);
+        await dependencies.getBucket(session.label, session).refundLimits(nowMs);
       };
       if (session.kind === "member") {
         return {
@@ -167,7 +167,7 @@ export function createQuotaAdmissionService(
       }
 
       const token = dependencies.createToken();
-      const bucket = dependencies.getBucket(session.label);
+      const bucket = dependencies.getBucket(session.label, session);
       const lease = await bucket.acquireGuestTurn(token, nowMs, dependencies.guestTurnLeaseMs);
       if (!lease.ok) {
         if (consumeQuota) await refundGuestLimits(session, nowMs);

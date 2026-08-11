@@ -6,6 +6,7 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 import { generateText, type ModelMessage, type UIMessage } from "ai";
 import type { TeamAgent } from "./agent/team-agent";
 import type { InstanceCoordinator } from "./instance-coordinator";
+import { IDENTITY_REGISTRY_INSTANCE_NAME, type IdentityRegistry } from "./identity-registry";
 import {
   MAX_AGENT_CONVERSATIONS,
   type AgentExportMessage,
@@ -98,11 +99,24 @@ import type {
   ProviderBudgetPolicyInputV1,
   ProviderBudgetPolicyMutationInputV1,
 } from "./contracts/provider-finance";
-import type { GuestSession, Session } from "./contracts/session";
+import type { GuestSession, Session, StoredSession } from "./contracts/session";
+import {
+  conversationResourceInstanceName,
+  decodeStablePrincipalIdentity,
+  isPrincipalId,
+  normalizeMemberAlias,
+  principalRootInstanceName,
+  principalUserStateInstanceName,
+  type ConversationResourceRouteV1,
+  type PrincipalRouteV1,
+  type StablePrincipalIdentityV1,
+  type StableTeamAgentIdentityV1,
+} from "./contracts/identity";
 import {
   MAX_WORKSPACE_FILE_BYTES,
   MAX_WORKSPACE_FILES_PER_CONVERSATION,
   MAX_WORKSPACE_LIST_LIMIT,
+  decodeDocumentIngestMessage,
   normalizeWorkspaceEntityId,
   normalizeWorkspaceOperationId,
   workspaceDocumentByteLimit,
@@ -448,6 +462,7 @@ export type Env = {
   PROVIDER_COORDINATOR: DurableObjectNamespace<ProviderCoordinator>;
   PROVIDER_ATTEMPT_LEDGER: DurableObjectNamespace<ProviderAttemptLedger>;
   INSTANCE_COORDINATOR: DurableObjectNamespace<InstanceCoordinator>;
+  IDENTITY_REGISTRY: DurableObjectNamespace<IdentityRegistry>;
   ACCESS_CODES?: string;
   ACCESS_CODES_MODE?: string;
   ROUTES_CONFIG?: string;
@@ -551,6 +566,7 @@ const MAX_TOOL_RESULT_BYTES = 32 * 1024;
 const LEGACY_ADMIN_ALIAS_SURFACE_ID = "legacy.browser.admin-alias";
 const LEGACY_BROWSER_SHELL_SURFACE_ID = "legacy.browser.shell";
 const LEGACY_API_CHAT_POST_SURFACE_ID = "legacy.api.chat-post";
+const USER_STATE_STABLE_IDENTITY_STORAGE_KEY = "chatus:stable-user-identity:v1";
 const LEGACY_SURFACE_CALLER_HEADER = "x-chatus-legacy-caller";
 const LEGACY_SURFACE_DEPLOYMENT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 const LEGACY_BROWSER_SHELL_ASSET_PATHS = new Set([
@@ -795,6 +811,31 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
       schemaVersion,
       (table) => USER_STATE_CAPTURE_TABLES.has(table),
     );
+  }
+
+  async ensureStableIdentity(input: unknown): Promise<{ ok: true; digest: string; registryRevision: number }> {
+    const marker = decodeStablePrincipalIdentity(input);
+    if (!marker || this.ctx.id.name !== marker.userStateInstanceName) {
+      throw new Error("user_state_stable_identity_invalid");
+    }
+    const storedValue = await this.ctx.storage.get<unknown>(USER_STATE_STABLE_IDENTITY_STORAGE_KEY);
+    const stored = storedValue === undefined ? undefined : decodeStablePrincipalIdentity(storedValue);
+    if (storedValue !== undefined && !stored) throw new Error("user_state_stable_identity_corrupt");
+    if (stored && !sameStablePrincipalIdentity(stored, marker)) {
+      throw new Error("user_state_stable_identity_conflict");
+    }
+    if (stored && marker.registryRevision < stored.registryRevision) {
+      throw new Error("user_state_stable_identity_stale");
+    }
+    const active = stored && stored.registryRevision >= marker.registryRevision ? stored : marker;
+    if (!stored || active.registryRevision !== stored.registryRevision) {
+      await this.ctx.storage.put(USER_STATE_STABLE_IDENTITY_STORAGE_KEY, active);
+    }
+    return {
+      ok: true,
+      digest: await stablePrincipalIdentityDigest(active),
+      registryRevision: active.registryRevision,
+    };
   }
 
   async consumeLimits(
@@ -1607,6 +1648,7 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
     this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_tokens");
     this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_discovery_candidates");
     this.ctx.storage.sql.exec("DELETE FROM mcp_oauth_owner");
+    await this.ctx.storage.delete(USER_STATE_STABLE_IDENTITY_STORAGE_KEY);
     this.ctx.storage.sql.exec(
       "INSERT INTO user_state(key, value) VALUES ('chats_purged_at', ?) ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
       nowMs,
@@ -1757,13 +1799,22 @@ async function handleDocumentIngestMessageWithFence(
 }
 
 async function handleDocumentIngestDlqMessage(message: Message<DocumentIngestMessage>, env: Env): Promise<void> {
-  const body = normalizeDocumentIngestQueueMessage(message.body);
+  const body = decodeDocumentIngestMessage(message.body);
   if (!body) {
     message.ack();
     return;
   }
   try {
-    const root = await getTeamAgent(env, body.ownerId);
+    const session = await resolveDocumentIngestOwnerSession(env, body);
+    if (!session) {
+      message.ack();
+      return;
+    }
+    const root = await resolveDocumentIngestRoot(env, body);
+    if (!root) {
+      message.ack();
+      return;
+    }
     await root.recordDocumentIngestDlq(body, "document_ingest_retry_exhausted");
     message.ack();
   } catch {
@@ -1772,14 +1823,24 @@ async function handleDocumentIngestDlqMessage(message: Message<DocumentIngestMes
 }
 
 async function handleDocumentIngestMessage(message: Message<DocumentIngestMessage>, env: Env): Promise<void> {
-  const body = normalizeDocumentIngestQueueMessage(message.body);
+  const body = decodeDocumentIngestMessage(message.body);
   if (!body) {
     message.ack();
     return;
   }
   let root: DurableObjectStub<TeamAgent>;
   try {
-    root = await getTeamAgent(env, body.ownerId);
+    const session = await resolveDocumentIngestOwnerSession(env, body);
+    if (!session) {
+      message.ack();
+      return;
+    }
+    const resolvedRoot = await resolveDocumentIngestRoot(env, body);
+    if (!resolvedRoot) {
+      message.ack();
+      return;
+    }
+    root = resolvedRoot;
   } catch {
     message.retry();
     return;
@@ -2252,9 +2313,9 @@ async function handleTeamAgentRequest(
   if (!chatId) {
     return jsonResponse({ error: "invalid_chat_id", message: "会话 ID 无效" }, 400);
   }
-  await ensureAgentLegacyImport(env, session.label);
-  await drainAgentConversationCleanup(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
   const root = await getTeamAgent(env, session.label, session);
+  await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
   const now = Date.now();
   const created = await root.createConversation({
     id: chatId,
@@ -2476,7 +2537,16 @@ async function handleApi(
 
   if (url.pathname === "/api/user-data" && request.method === "DELETE") {
     try {
-      const revoked = await attemptMemberAccountCleanup(env, session.label);
+      const root = await getTeamAgent(env, session.label, session);
+      const revoked = await attemptMemberAccountCleanup(
+        env,
+        session.label,
+        root,
+        Date.now(),
+        true,
+        true,
+        session.kind === "member" ? session : undefined,
+      );
       return jsonResponse({ ok: true, revoked }, 200, {
         "Set-Cookie": buildSessionCookie("", 0, url.protocol === "https:"),
       });
@@ -2533,10 +2603,26 @@ async function handleLogin(request: Request, env: Env, url: URL): Promise<Respon
 
   const now = Date.now();
   const ttl = numberEnv(env.SESSION_TTL_SECONDS, 2_592_000);
+  const sessionId = crypto.randomUUID();
+  let principal: PrincipalRouteV1;
+  try {
+    principal = await resolveOrCreatePrincipalForAlias(env, {
+      alias: label,
+      origin: "legacy",
+      operationId: `login:${sessionId}`,
+    });
+    principal = await ensurePrincipalAuthority(env, principal);
+  } catch {
+    return jsonResponse({ error: "identity_unavailable", message: "成员身份尚未完成协调，请稍后重试" }, 503);
+  }
   const session: Session = {
-    id: crypto.randomUUID(),
+    id: sessionId,
     label,
     kind: "member",
+    principalId: principal.principalId,
+    rootInstanceName: principal.rootInstanceName,
+    userStateInstanceName: principal.userStateInstanceName,
+    registryRevision: principal.registryRevision,
     createdAt: now,
     lastSeen: now,
     expiresAt: now + ttl * 1_000,
@@ -2662,6 +2748,15 @@ async function handleAdminApi(
     return handleAdminSetupSmoke(env);
   }
 
+  if (url.pathname === "/api/admin/identity" && request.method === "GET") {
+    return handleGetAdminIdentity(env, url);
+  }
+
+  if (url.pathname === "/api/admin/identity/reconcile" && request.method === "POST") {
+    requireInstanceFence(instanceFence);
+    return handleAdminIdentityReconcile(request, env);
+  }
+
   if (url.pathname === "/api/admin/members" && request.method === "GET") {
     return handleGetAdminMembers(env);
   }
@@ -2735,12 +2830,7 @@ async function handleAdminApi(
   }
 
   if (url.pathname === "/api/admin/access-codes" && request.method === "DELETE") {
-    const body = await readJson<{ expectedRevision?: unknown }>(request);
-    const conflict = await accessRevisionConflict(env, body.expectedRevision);
-    if (conflict) return conflict;
-    await env.CHAT_STORE.delete(ACCESS_CODES_KEY);
-    await appendAdminAudit(env, "access.reset");
-    return jsonResponse({ ok: true });
+    return handleResetAdminAccessCodes(request, env);
   }
 
   if (url.pathname === "/api/admin/stats" && request.method === "GET") {
@@ -2763,7 +2853,8 @@ async function handleAdminApi(
     return jsonResponse({ entries: await feedbackAuditService(env).listAdminAudit() });
   }
   if (url.pathname === "/api/admin/feedback" && request.method === "GET") {
-    return jsonResponse({ entries: await feedbackAuditService(env).listFeedback() });
+    const entries = (await feedbackAuditService(env).listFeedback()).map(({ principalId: _principalId, ...entry }) => entry);
+    return jsonResponse({ entries });
   }
 
   if (url.pathname === "/api/admin/sessions/revoke" && request.method === "POST") {
@@ -2844,6 +2935,163 @@ async function handleAdminApi(
   }
 
   return jsonResponse({ error: "not_found" }, 404);
+}
+
+async function handleGetAdminIdentity(env: Env, url: URL): Promise<Response> {
+  const rawLimit = url.searchParams.get("limit");
+  const limit = rawLimit === null ? 50 : finitePositiveInteger(rawLimit);
+  if (!limit || limit > 50) return jsonResponse({ error: "identity_limit_invalid" }, 400);
+  try {
+    const inspection = await env.IDENTITY_REGISTRY
+      .getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .inspect();
+    return jsonResponse({ ...inspection, limit });
+  } catch {
+    return jsonResponse({ error: "identity_inspection_unavailable" }, 503);
+  }
+}
+
+async function handleAdminIdentityReconcile(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<unknown>(request);
+  const input = decodeAdminIdentityReconcileRequest(body);
+  if (!input) return jsonResponse({ error: "identity_reconciliation_input_invalid" }, 400);
+  try {
+    const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+    const lookup = await registry.lookupActivePrincipalAlias({ version: 1, alias: input.label });
+    if (!lookup.found) return jsonResponse({ error: "identity_alias_missing" }, 404);
+    if (lookup.route.registryRevision !== input.expectedRegistryRevision) {
+      return jsonResponse({ error: "identity_registry_revision_conflict" }, 409);
+    }
+    let principal = lookup.route;
+    const session = memberSessionForRoute(principal);
+    const root = await getTeamAgent(env, principal.alias, session);
+    const allConversations = await root.listConversations();
+    const boundedConversations = allConversations.slice(0, input.limit);
+    for (const conversation of boundedConversations) {
+      const resourceLookup = await registry.lookupConversationResource({
+        version: 1,
+        principalId: principal.principalId,
+        conversationId: conversation.id,
+      });
+      const resource = resourceLookup.found
+        ? resourceLookup.route
+        : await ensureConversationResource(
+            env,
+            principal,
+            conversation.id,
+            principal.origin === "legacy"
+              ? await getTeamAgentConversationInstanceName(principal.alias, conversation.id)
+              : undefined,
+          );
+      await ensureConversationAuthority(env, session, resource);
+    }
+
+    if (allConversations.length <= input.limit) {
+      principal = await ensurePrincipalAuthority(env, principal);
+    } else {
+      const rootMarker = stableTeamAgentMarker(session, {
+        scope: "root",
+        resourceId: "",
+        resourceRegistryRevision: 0,
+        pinnedInstanceName: principal.rootInstanceName,
+      });
+      const [rootEvidence, userStateEvidence] = await Promise.all([
+        root.ensureStableIdentity(rootMarker),
+        getUserState(env, principal.alias, session).ensureStableIdentity(stablePrincipalMarker(session)),
+      ]);
+      await Promise.all([
+        registry.recordStableIdentityMarker({
+          version: 1,
+          entityType: "principal",
+          entityId: principal.principalId,
+          markerKind: "root",
+          pinnedInstanceName: principal.rootInstanceName,
+          expectedRegistryRevision: principal.registryRevision,
+          expectedPrincipalRevision: principal.registryRevision,
+          digest: rootEvidence.digest,
+          recordedAt: Date.now(),
+        }),
+        registry.recordStableIdentityMarker({
+          version: 1,
+          entityType: "principal",
+          entityId: principal.principalId,
+          markerKind: "user_state",
+          pinnedInstanceName: principal.userStateInstanceName,
+          expectedRegistryRevision: principal.registryRevision,
+          expectedPrincipalRevision: principal.registryRevision,
+          digest: userStateEvidence.digest,
+          recordedAt: Date.now(),
+        }),
+      ]);
+    }
+
+    const conversations = [];
+    for (const conversation of boundedConversations) {
+      const resource = await registry.resolveConversationResource({
+        version: 1,
+        principalId: principal.principalId,
+        conversationId: conversation.id,
+      });
+      conversations.push({
+        conversationId: resource.conversationId,
+        expectedAgentInstance: resource.agentInstanceName,
+      });
+    }
+    const result = await registry.reconcilePrincipalIdentity({
+      version: 1,
+      operationId: input.operationId,
+      principalId: principal.principalId,
+      expectedRegistryRevision: principal.registryRevision,
+      conversations,
+    });
+    await appendAdminAudit(env, "identity.reconcile", principal.principalId);
+    return jsonResponse(result);
+  } catch (error) {
+    return identityReconciliationErrorResponse(error);
+  }
+}
+
+function decodeAdminIdentityReconcileRequest(value: unknown): {
+  label: string;
+  operationId: string;
+  expectedRegistryRevision: number;
+  limit: number;
+} | undefined {
+  if (!isRecord(value) || Object.keys(value).length !== 4 || Object.keys(value).some((key) => (
+    key !== "label"
+    && key !== "operationId"
+    && key !== "expectedRegistryRevision"
+    && key !== "limit"
+  ))) return undefined;
+  const label = normalizeMemberAlias(value.label);
+  const operationId = normalizeWorkspaceOperationId(value.operationId);
+  const expectedRegistryRevision = finitePositiveInteger(value.expectedRegistryRevision);
+  const limit = finitePositiveInteger(value.limit);
+  return label && operationId && expectedRegistryRevision && limit <= 50
+    ? { label, operationId, expectedRegistryRevision, limit }
+    : undefined;
+}
+
+function identityReconciliationErrorResponse(error: unknown): Response {
+  const code = error instanceof Error ? error.message : "";
+  const status = code === "identity_registry_revision_conflict" || code.startsWith("identity_marker_")
+    || code.startsWith("identity_agent_")
+    ? 409
+    : code === "identity_alias_missing" || code === "identity_principal_missing"
+      ? 404
+      : 503;
+  const allowed = new Set([
+    "identity_alias_missing",
+    "identity_principal_missing",
+    "identity_registry_revision_conflict",
+    "identity_marker_route_conflict",
+    "identity_marker_conflict",
+    "identity_marker_missing",
+    "identity_reconciliation_input_invalid",
+    "identity_principal_reconciliation_incomplete",
+    "identity_resource_reconciliation_incomplete",
+  ]);
+  return jsonResponse({ error: allowed.has(code) ? code : "identity_reconciliation_unavailable" }, status);
 }
 
 type LegacySurfaceMutationAction = "advance" | "rollback";
@@ -3306,7 +3554,7 @@ async function buildSessionProjection(
       transport: "cloudflare-ai-chat",
       className: "team-agent",
       basePath: "agent",
-      instance: await getTeamAgentInstanceName(session.label),
+      instance: await getAgentClientInstanceName(session),
     },
   };
 }
@@ -3317,7 +3565,7 @@ async function readLegacyQuotaUsage(
   user: { dailyMessageLimit?: number },
 ): Promise<{ used: number; limit: number; remaining: number }> {
   const day = new Date().toISOString().slice(0, 10);
-  const used = positiveCount(await env.CHAT_STORE.get(usageKey(session.label, day)));
+  const used = await readPrincipalScopedLegacyDayCount(env, session.label, day, session);
   const limit = user.dailyMessageLimit || numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT);
   return { used, limit, remaining: Math.max(0, limit - used) };
 }
@@ -3356,6 +3604,14 @@ async function handleCreateAdminMemberAccess(request: Request, env: Env): Promis
   }
 
   const { config } = await loadEditableConfig(env);
+  const existingConfiguredMember = Object.keys(config.users || {}).some((key) => key.trim() === label);
+  await reserveMemberPrincipalBeforeCredential(
+    env,
+    label,
+    existingConfiguredMember ? "legacy" : "native",
+    "member-access-create",
+    current.revision,
+  );
   const accessCode = randomToken();
   const nextAccessCodes = serializeAccessCodes([...current.entries, { label, code: accessCode }]);
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes);
@@ -3379,6 +3635,13 @@ async function handleRotateAdminMemberAccess(request: Request, env: Env, rawLabe
   }
 
   const { config } = await loadEditableConfig(env);
+  await reserveMemberPrincipalBeforeCredential(
+    env,
+    label,
+    "legacy",
+    "member-access-rotate",
+    current.revision,
+  );
   const accessCode = randomToken();
   let replaced = false;
   const nextEntries: AccessEntry[] = [];
@@ -3425,9 +3688,17 @@ async function handleRevokeAdminMemberAccess(request: Request, env: Env, rawLabe
   }
 
   const { config } = await loadEditableConfig(env);
+  const principal = await reserveMemberPrincipalBeforeCredential(
+    env,
+    label,
+    "legacy",
+    "member-access-revoke",
+    current.revision,
+  );
   const nextAccessCodes = serializeAccessCodes(nextEntries);
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes);
   const sessionRevocation = await revokeMemberSessionsWithRetry(env, label);
+  await retireMemberPrincipalAlias(env, principal, "member-access-retire", current.revision);
   await appendAdminAudit(
     env,
     sessionRevocation.complete ? "member.access.revoke" : "member.access.revoke.sessions_incomplete",
@@ -4200,15 +4471,46 @@ async function handleGetAdminAccessCodes(env: Env): Promise<Response> {
 
 async function handlePutAdminAccessCodes(request: Request, env: Env): Promise<Response> {
   const body = await readJson<{ accessCodes?: unknown; expectedRevision?: unknown }>(request);
-  const conflict = await accessRevisionConflict(env, body.expectedRevision);
-  if (conflict) return conflict;
+  const current = await loadAccessCodeSnapshot(env);
+  if (typeof body.expectedRevision === "string" && body.expectedRevision !== current.revision) {
+    return jsonResponse({
+      error: "access_codes_conflict",
+      message: "访问码已在其他标签页或设备更新，请刷新后重试",
+      currentRevision: current.revision,
+    }, 409);
+  }
   const accessCodes = typeof body.accessCodes === "string" ? body.accessCodes.trim() : "";
   const entries = parseAccessCodes(accessCodes);
   if (!entries.length) {
     return jsonResponse({ error: "invalid_access_codes", message: "至少需要一个 label:code 访问码" }, 400);
   }
 
+  const { config } = await loadEditableConfig(env);
+  const configuredLabels = new Set(Object.keys(config.users || {}).map((label) => label.trim()));
+  const currentByLabel = new Map(current.entries.map((entry) => [entry.label, entry.code]));
+  const nextByLabel = new Map(entries.map((entry) => [entry.label, entry.code]));
+  const affected = new Map<string, PrincipalRouteV1>();
+  for (const label of new Set([...currentByLabel.keys(), ...nextByLabel.keys()])) {
+    const currentCode = currentByLabel.get(label);
+    const nextCode = nextByLabel.get(label);
+    if (currentCode === nextCode) continue;
+    const principal = await reserveMemberPrincipalBeforeCredential(
+      env,
+      label,
+      currentCode !== undefined || configuredLabels.has(label) ? "legacy" : "native",
+      "access-bulk-mutation",
+      current.revision,
+    );
+    affected.set(label, principal);
+  }
   await env.CHAT_STORE.put(ACCESS_CODES_KEY, accessCodes);
+  for (const [label, principal] of affected) {
+    if (!currentByLabel.has(label)) continue;
+    await revokeMemberSessionsWithRetry(env, label);
+    if (!nextByLabel.has(label)) {
+      await retireMemberPrincipalAlias(env, principal, "access-bulk-retire", current.revision);
+    }
+  }
   await appendAdminAudit(env, "access.update", `${entries.length} entries`);
   return jsonResponse({
     ok: true,
@@ -4248,11 +4550,15 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
   const memoryByLabel = new Map<string, string>();
   await Promise.all(
     labels.map(async (label) => {
-      await ensureAgentLegacyImport(env, label);
+      const principal = await ensureExistingMemberPrincipal(env, label, "admin-stats");
+      const session = memberSessionForRoute(principal);
+      if (principal.lifecycleState === "active") await ensureAgentLegacyImport(env, label, session);
       const [state, legacyUsage, memory] = await Promise.all([
-        getUserState(env, label).getStats(days),
-        Promise.all(days.map((dayKey) => env.CHAT_STORE.get(usageKey(label, dayKey)))),
-        getTeamAgent(env, label).then((root) => root.getMemory()),
+        getUserState(env, label, session).getStats(days),
+        principal.origin === "legacy"
+          ? Promise.all(days.map((dayKey) => env.CHAT_STORE.get(usageKey(label, dayKey))))
+          : Promise.resolve(days.map(() => null)),
+        getTeamAgent(env, label, session).then((root) => root.getMemory()),
       ]);
       stateByLabel.set(label, state);
       legacyUsageByLabel.set(
@@ -4377,8 +4683,8 @@ async function handleGetAdminStats(env: Env): Promise<Response> {
 }
 
 async function handleGetMemory(env: Env, session: Session): Promise<Response> {
-  await ensureAgentLegacyImport(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const root = await getTeamAgent(env, session.label, session);
   const record = await root.getMemory();
   return jsonResponse({
     ...record,
@@ -4409,8 +4715,8 @@ async function requireConfigMutationSnapshot(
 async function handlePutMemory(request: Request, env: Env, session: Session): Promise<Response> {
   const maxChars = numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS);
   const body = await readJson<{ memory?: unknown; expectedRevision?: unknown }>(request);
-  await ensureAgentLegacyImport(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const root = await getTeamAgent(env, session.label, session);
   const current = await root.getMemory();
   const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision : current.revision;
   const result = await root.putMemory(
@@ -4427,8 +4733,10 @@ async function handleAdminGetMemory(request: Request, env: Env, url: URL): Promi
   if (!label) {
     return jsonResponse({ error: "label_required" }, 400);
   }
-  await ensureAgentLegacyImport(env, label);
-  const root = await getTeamAgent(env, label);
+  const principal = await ensureExistingMemberPrincipal(env, label, "admin-memory-read");
+  const session = memberSessionForRoute(principal);
+  if (principal.lifecycleState === "active") await ensureAgentLegacyImport(env, label, session);
+  const root = await getTeamAgent(env, label, session);
   const record = await root.getMemory();
   return jsonResponse({
     label,
@@ -4447,9 +4755,11 @@ async function handleAdminPutMemory(request: Request, env: Env): Promise<Respons
   if (typeof body.expectedRevision !== "string") {
     return jsonResponse({ error: "expected_revision_required", message: "缺少记忆版本，请刷新后重试" }, 400);
   }
-  await ensureAgentLegacyImport(env, label);
+  const principal = await ensureExistingMemberPrincipal(env, label, "admin-memory-write");
+  const session = memberSessionForRoute(principal);
+  if (principal.lifecycleState === "active") await ensureAgentLegacyImport(env, label, session);
   const memory = typeof body.memory === "string" ? body.memory.trim().slice(0, maxChars) : "";
-  const root = await getTeamAgent(env, label);
+  const root = await getTeamAgent(env, label, session);
   const result = await root.putMemory(memory, body.expectedRevision);
   if (!result.ok) {
     return jsonResponse({
@@ -4478,9 +4788,11 @@ async function handleAdminResetUsage(request: Request, env: Env): Promise<Respon
     return jsonResponse({ error: "label_required" }, 400);
   }
   const day = new Date().toISOString().slice(0, 10);
+  const principal = await ensureExistingMemberPrincipal(env, label, "admin-usage-reset");
+  const session = memberSessionForRoute(principal);
   await Promise.all([
-    env.CHAT_STORE.delete(usageKey(label, day)),
-    getUserState(env, label).resetUsage(day),
+    ...(principal.origin === "legacy" ? [env.CHAT_STORE.delete(usageKey(label, day))] : []),
+    getUserState(env, label, session).resetUsage(day),
   ]);
   await appendAdminAudit(env, "usage.reset", label);
   return jsonResponse({ ok: true, label, day });
@@ -4502,6 +4814,13 @@ async function handleCreateAdminUser(request: Request, env: Env): Promise<Respon
   if (!validation.ok) return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
   const accessCode = randomToken();
   const nextAccessCodes = accessCodes.trim() ? `${accessCodes.trim()},${label}:${accessCode}` : `${label}:${accessCode}`;
+  await reserveMemberPrincipalBeforeCredential(
+    env,
+    label,
+    "native",
+    "admin-user-create",
+    await accessCodesFingerprint(accessCodes),
+  );
   await Promise.all([
     env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(nextConfig)),
     env.CHAT_STORE.put(ACCESS_CODES_KEY, nextAccessCodes),
@@ -4518,6 +4837,7 @@ async function handleCreateAdminUser(request: Request, env: Env): Promise<Respon
 }
 
 async function handleFeedback(request: Request, env: Env, session: Session): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "member_required" }, 403);
   const body = await readJson<{ rating?: unknown; reason?: unknown; routeId?: unknown; chatId?: unknown; messageId?: unknown }>(request);
   if (body.rating !== "up" && body.rating !== "down") return jsonResponse({ error: "invalid_rating" }, 400);
   const reason: FeedbackReason = body.rating === "down"
@@ -4533,6 +4853,7 @@ async function handleFeedback(request: Request, env: Env, session: Session): Pro
   if (!config.routes[routeId]) return jsonResponse({ error: "route_not_found" }, 404);
   await feedbackAuditService(env).upsertFeedback({
     label: session.label,
+    principalId: session.principalId,
     rating: body.rating,
     reason,
     routeId,
@@ -4562,8 +4883,8 @@ async function handleMemorySuggest(
     return jsonResponse({ error: "empty_messages" }, 400);
   }
 
-  await ensureAgentLegacyImport(env, session.label);
-  const existing = (await (await getTeamAgent(env, session.label)).getMemory()).memory.trim();
+  await ensureAgentLegacyImport(env, session.label, session);
+  const existing = (await (await getTeamAgent(env, session.label, session)).getMemory()).memory.trim();
   const transcript = formatTranscript(normalized).slice(0, 8_000);
   const prompt: ChatMessage[] = [
     {
@@ -4671,9 +4992,9 @@ async function handleSessionSummary(
 }
 
 async function handleListAgentConversations(env: Env, session: Session): Promise<Response> {
-  await ensureAgentLegacyImport(env, session.label);
-  await drainAgentConversationCleanup(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const root = await getTeamAgent(env, session.label, session);
+  await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
   const conversations = await root.listConversations();
   return jsonResponse({ conversations, maxConversations: MAX_AGENT_CONVERSATIONS });
 }
@@ -4695,10 +5016,10 @@ async function handleCreateAgentConversation(request: Request, env: Env, session
     true,
   );
   if (!settings.ok) return settings.response;
-  await ensureAgentLegacyImport(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
   const now = Date.now();
   const id = normalizeAgentConversationId(body.id) || crypto.randomUUID();
-  const root = await getTeamAgent(env, session.label);
+  const root = await getTeamAgent(env, session.label, session);
   const result = await root.createConversation({
     id,
     title: typeof body.title === "string" ? body.title : "新对话",
@@ -4711,6 +5032,9 @@ async function handleCreateAgentConversation(request: Request, env: Env, session
     skillIds: settings.skillIds || [],
   });
   if (!result.ok || !result.conversation) return agentConversationMutationError(result);
+  if (session.kind === "member") {
+    await resolveOrCreateConversationRoute(env, session, result.conversation.id);
+  }
   return jsonResponse({ ok: true, conversation: result.conversation }, result.created ? 201 : 200);
 }
 
@@ -4741,9 +5065,9 @@ async function handleCreateAgentConversationBranch(
     return jsonResponse({ error: "invalid_branch_request", message: "分支编辑内容无效" }, 400);
   }
 
-  await ensureAgentLegacyImport(env, session.label);
-  await drainAgentConversationCleanup(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const root = await getTeamAgent(env, session.label, session);
+  await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
   const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId);
   if (!source) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
   const settings = await repairAgentConversationSettings(
@@ -4781,7 +5105,10 @@ async function handleCreateAgentConversationBranch(
     return agentConversationBranchResponse(reservation.operation);
   }
 
-  const sourceAgent = await getTeamAgentConversation(env, session.label, sourceId);
+  const sourceAgent = await getTeamAgentConversation(env, session.label, sourceId, session);
+  const destinationResource = session.kind === "member"
+    ? await resolveOrCreateConversationRoute(env, session, reservation.operation.destinationId)
+    : undefined;
   const copied = await sourceAgent.copyConversationBranchTo({
     sourceMessageId,
     sourceMessageCount: reservation.operation.sourceMessageCount,
@@ -4791,11 +5118,12 @@ async function handleCreateAgentConversationBranch(
     requestId,
     fingerprint,
     destinationId: reservation.operation.destinationId,
-    destinationInstance: await getTeamAgentConversationInstanceName(session.label, reservation.operation.destinationId),
+    destinationInstance: destinationResource?.agentInstanceName
+      ?? await getTeamAgentConversationInstanceName(session.label, reservation.operation.destinationId),
     body: { routeId: settings.routeId, skillMode: settings.skillMode, skillIds: settings.skillIds },
   });
   if ("error" in copied) {
-    await failAgentConversationBranch(env, session.label, root, reservation.operation, fingerprint);
+    await failAgentConversationBranch(env, session, root, reservation.operation, fingerprint);
     return agentConversationBranchCopyError(copied.error);
   }
 
@@ -4834,8 +5162,8 @@ async function handleUpdateAgentConversation(
   if (!expectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
-  await ensureAgentLegacyImport(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const root = await getTeamAgent(env, session.label, session);
   const current = (await root.listConversations())
     .find((conversation) => conversation.id === id);
   if (!current) return jsonResponse({ error: "conversation_not_found", message: "会话不存在" }, 404);
@@ -4867,18 +5195,26 @@ async function handleDeleteAgentConversation(env: Env, session: Session, url: UR
   if (!expectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
-  await ensureAgentLegacyImport(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const root = await getTeamAgent(env, session.label, session);
   const result = await root.deleteConversation(id, expectedUpdatedAt);
   if (!result.ok) return agentConversationMutationError(result);
-  const cleanupPending = !(await attemptAgentConversationCleanup(env, session.label, id, root));
+  const cleanupPending = !(await attemptAgentConversationCleanup(
+    env,
+    session.label,
+    id,
+    root,
+    Date.now(),
+    true,
+    session,
+  ));
   const conversations = await root.listConversations();
   return jsonResponse({ ok: true, deleted: true, cleanupPending, conversations }, cleanupPending ? 202 : 200);
 }
 
 async function handleGetAgentMemory(env: Env, session: Session): Promise<Response> {
-  await ensureAgentLegacyImport(env, session.label);
-  const root = await getTeamAgent(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const root = await getTeamAgent(env, session.label, session);
   const record = await root.getMemory();
   return jsonResponse({ ...record, maxChars: numberEnv(env.MAX_MEMORY_CHARS, DEFAULT_MEMORY_CHARS) });
 }
@@ -4888,9 +5224,9 @@ async function handlePutAgentMemory(request: Request, env: Env, session: Session
   if (typeof body.expectedRevision !== "string") {
     return jsonResponse({ error: "expected_revision_required", message: "缺少记忆版本，请刷新后重试" }, 400);
   }
-  await ensureAgentLegacyImport(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
   const expectedRevision = body.expectedRevision;
-  const root = await getTeamAgent(env, session.label);
+  const root = await getTeamAgent(env, session.label, session);
   const result = await root.putMemory(
     typeof body.memory === "string" ? body.memory : "",
     expectedRevision,
@@ -4909,7 +5245,7 @@ async function handlePutAgentMemory(request: Request, env: Env, session: Session
 }
 
 async function handleListWorkspaceFiles(env: Env, session: Session, url: URL): Promise<Response> {
-  await ensureAgentLegacyImport(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
   const root = await getTeamAgent(env, session.label, session);
   await drainWorkspaceOperations(env, root, session.label);
   const result = await root.listWorkspaceFiles(
@@ -4921,7 +5257,7 @@ async function handleListWorkspaceFiles(env: Env, session: Session, url: URL): P
 }
 
 async function handleListWorkspaceFileVersions(env: Env, session: Session, fileId: string): Promise<Response> {
-  await ensureAgentLegacyImport(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
   const root = await getTeamAgent(env, session.label, session);
   await drainWorkspaceOperations(env, root, session.label);
   const result = await root.listWorkspaceFileVersions(fileId);
@@ -4936,6 +5272,9 @@ async function handleWorkspaceFileUpload(
   session: Session,
   fileId = "",
 ): Promise<Response> {
+  if (session.kind !== "member") {
+    return jsonResponse({ error: "workspace_member_required", message: "Workspace 仅对成员开放" }, 403);
+  }
   const contentLength = finitePositiveInteger(request.headers.get("Content-Length"));
   if (contentLength > MAX_WORKSPACE_FILE_BYTES + 256_000) {
     return jsonResponse({ error: "workspace_file_too_large", message: "文件不能超过 10 MB" }, 413);
@@ -4958,7 +5297,7 @@ async function handleWorkspaceFileUpload(
     return jsonResponse({ error: "workspace_operation_id_required", message: "缺少幂等操作标识" }, 400);
   }
 
-  await ensureAgentLegacyImport(env, session.label);
+  await ensureAgentLegacyImport(env, session.label, session);
   const root = await getTeamAgent(env, session.label, session);
   await drainWorkspaceOperations(env, root, session.label);
   const existing = fileId ? await root.listWorkspaceFileVersions(fileId) : undefined;
@@ -4991,7 +5330,7 @@ async function handleWorkspaceFileUpload(
   });
   if (!reservation.ok) return workspaceMutationError(reservation);
   if (reservation.reservation.completed) {
-    const queued = await enqueueWorkspaceDocument(env, root, session.label, reservation.reservation.file);
+    const queued = await enqueueWorkspaceDocument(env, root, session.label, reservation.reservation.file, session);
     return queued
       ? jsonResponse({ ok: true, file: reservation.reservation.file, existing: true })
       : jsonResponse({ error: "document_ingest_queue_unavailable", message: "文件已保存，解析任务可手动重试" }, 503);
@@ -5017,7 +5356,7 @@ async function handleWorkspaceFileUpload(
       reservation.reservation.generation,
     );
     if (!completed.ok) return workspaceMutationError(completed);
-    const queued = await enqueueWorkspaceDocument(env, root, session.label, completed.file);
+    const queued = await enqueueWorkspaceDocument(env, root, session.label, completed.file, session);
     if (!queued) {
       return jsonResponse({
         error: "document_ingest_queue_unavailable",
@@ -5041,11 +5380,17 @@ async function enqueueWorkspaceDocument(
   root: DurableObjectStub<TeamAgent>,
   ownerId: string,
   file: WorkspaceFileProjection,
+  session: Session,
 ): Promise<boolean> {
+  if (session.kind !== "member") return false;
   const version = file.currentVersion;
   if (!version || version.ingestStatus !== "queued") return version?.ingestStatus === "ready";
   const message: DocumentIngestMessage = {
     ownerId,
+    principalId: session.principalId,
+    rootInstanceName: session.rootInstanceName,
+    userStateInstanceName: session.userStateInstanceName,
+    registryRevision: session.registryRevision,
     fileId: file.id,
     versionId: version.id,
     generation: version.ingestGeneration,
@@ -5065,6 +5410,9 @@ async function handleWorkspaceDocumentIngestRetry(
   session: Session,
   fileId: string,
 ): Promise<Response> {
+  if (session.kind !== "member") {
+    return jsonResponse({ error: "workspace_member_required", message: "Workspace 仅对成员开放" }, 403);
+  }
   const body = await readJson<unknown>(request);
   if (!isRecord(body) || Object.keys(body).some((key) => key !== "versionId")) {
     return jsonResponse({ error: "document_ingest_retry_invalid", message: "解析重试参数无效" }, 400);
@@ -5262,9 +5610,9 @@ function isWorkspaceConversationRefInput(
 
 async function handleExportUserData(env: Env, session: Session): Promise<Response> {
   try {
-    await ensureAgentLegacyImport(env, session.label);
-    await drainAgentConversationCleanup(env, session.label);
-    const root = await getTeamAgent(env, session.label);
+    await ensureAgentLegacyImport(env, session.label, session);
+    const root = await getTeamAgent(env, session.label, session);
+    await drainAgentConversationCleanup(env, session.label, root, Date.now(), true, session);
     const [memory, conversations] = await Promise.all([
       root.getMemory(),
       root.listConversations(),
@@ -5294,7 +5642,7 @@ async function handleExportUserData(env: Env, session: Session): Promise<Respons
         truncated = true;
         break;
       }
-      const agent = await getTeamAgentConversation(env, session.label, conversation.id);
+      const agent = await getTeamAgentConversation(env, session.label, conversation.id, session);
       const result = await agent.exportMessages(
         Math.min(remainingBytes, MAX_USER_DATA_EXPORT_CONVERSATION_BYTES),
       );
@@ -5537,7 +5885,7 @@ function agentConversationBranchCopyError(error: string): Response {
 
 async function failAgentConversationBranch(
   env: Env,
-  label: string,
+  session: Session,
   root: DurableObjectStub<TeamAgent>,
   operation: AgentConversationBranchOperation,
   fingerprint: string,
@@ -5545,7 +5893,15 @@ async function failAgentConversationBranch(
   await root.markConversationBranchState(operation.requestId, fingerprint, "failed").catch(() => undefined);
   const deleted = await root.deleteConversation(operation.destinationId, operation.conversation.updatedAt).catch(() => ({ ok: false }));
   if (deleted && "ok" in deleted && deleted.ok) {
-    await attemptAgentConversationCleanup(env, label, operation.destinationId, root);
+    await attemptAgentConversationCleanup(
+      env,
+      session.label,
+      operation.destinationId,
+      root,
+      Date.now(),
+      true,
+      session,
+    );
   }
 }
 
@@ -5571,7 +5927,7 @@ function agentConversationMutationError(result: AgentConversationMutationResult)
 
 
 async function handleListChats(env: Env, session: Session): Promise<Response> {
-  const chats = await loadChatSessions(env, session.label);
+  const chats = await loadChatSessions(env, session.label, session);
   return jsonResponse({
     chats,
     maxSessions: MAX_CLOUD_SESSIONS,
@@ -5591,8 +5947,8 @@ async function handlePutChat(request: Request, env: Env, session: Session): Prom
     return jsonResponse({ error: "chat_too_large", message: "会话内容过大，请减少图片后重试" }, 413);
   }
 
-  await migrateLegacyChatIndex(env, session.label);
-  const state = getUserState(env, session.label);
+  await migrateLegacyChatIndex(env, session.label, session);
+  const state = getUserState(env, session.label, session);
   const result = await state.upsertChat(stored);
   let chats = await state.listChats();
   if (!result.accepted) {
@@ -5604,7 +5960,7 @@ async function handlePutChat(request: Request, env: Env, session: Session): Prom
       chats: chats.map(summarizeChat),
     });
   }
-  const syncState = await syncLegacyChatToAgent(env, session.label, chat);
+  const syncState = await syncLegacyChatToAgent(env, session.label, chat, getTeamAgent(env, session.label, session), session);
   if (syncState === "deleted") {
     await state.deleteChat(chat.id, 0);
     chats = await state.listChats();
@@ -5628,12 +5984,12 @@ async function handleDeleteChat(
   if (!normalizedExpectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
-  await migrateLegacyChatIndex(env, session.label);
-  await ensureAgentLegacyImport(env, session.label);
-  const state = getUserState(env, session.label);
+  await migrateLegacyChatIndex(env, session.label, session);
+  await ensureAgentLegacyImport(env, session.label, session);
+  const state = getUserState(env, session.label, session);
   const legacyChat = (await state.listChats()).find((chat) => chat.id === id);
-  if (legacyChat) await syncLegacyChatToAgent(env, session.label, legacyChat);
-  const root = await getTeamAgent(env, session.label);
+  if (legacyChat) await syncLegacyChatToAgent(env, session.label, legacyChat, getTeamAgent(env, session.label, session), session);
+  const root = await getTeamAgent(env, session.label, session);
   const agentResult = await root.deleteConversation(id, normalizedExpectedUpdatedAt);
   if (!agentResult.ok && agentResult.error === "conversation_conflict") {
     return jsonResponse({
@@ -5645,7 +6001,9 @@ async function handleDeleteChat(
   if (!agentResult.ok && agentResult.error !== "conversation_deleted") {
     return agentConversationMutationError(agentResult);
   }
-  if (agentResult.ok) await attemptAgentConversationCleanup(env, session.label, id, root);
+  if (agentResult.ok) {
+    await attemptAgentConversationCleanup(env, session.label, id, root, Date.now(), true, session);
+  }
   const result = await state.deleteChat(id, 0);
   const chats = await state.listChats();
   return jsonResponse({ ok: true, deleted: result.deleted || agentResult.ok || agentResult.error === "conversation_deleted", chats: chats.map(summarizeChat) });
@@ -5674,7 +6032,7 @@ async function handleMigrateChats(request: Request, env: Env, session: Session):
   const preparedIncoming = mode === "restore"
     ? incoming.map((chat, index) => ({ ...chat, updatedAt: restoreBase + index + 1 }))
     : incoming;
-  const state = getUserState(env, session.label);
+  const state = getUserState(env, session.label, session);
   const storedChats = preparedIncoming.map(toStoredChat) as StoredChat[];
   if (mode === "replace") {
     await state.replaceChats(storedChats);
@@ -5682,17 +6040,27 @@ async function handleMigrateChats(request: Request, env: Env, session: Session):
     for (const chat of storedChats) await state.upsertChat(chat);
   }
   for (const chat of preparedIncoming) {
-    if (await syncLegacyChatToAgent(env, session.label, chat) === "deleted") {
+    if (await syncLegacyChatToAgent(env, session.label, chat, getTeamAgent(env, session.label, session), session) === "deleted") {
       await state.deleteChat(chat.id, 0);
     }
   }
   if (mode === "replace") {
     const incomingIds = new Set(preparedIncoming.map((chat) => chat.id));
-    const root = await getTeamAgent(env, session.label);
+    const root = await getTeamAgent(env, session.label, session);
     for (const conversation of await root.listConversations()) {
       if (incomingIds.has(conversation.id)) continue;
       const deleted = await root.deleteConversation(conversation.id, conversation.updatedAt);
-      if (deleted.ok) await attemptAgentConversationCleanup(env, session.label, conversation.id, root);
+      if (deleted.ok) {
+        await attemptAgentConversationCleanup(
+          env,
+          session.label,
+          conversation.id,
+          root,
+          Date.now(),
+          true,
+          session,
+        );
+      }
     }
   }
   const chats = await state.listChats();
@@ -6185,7 +6553,9 @@ async function handleAdminMcpDiscovery(request: Request, env: Env): Promise<Resp
       return jsonResponse({ error: "mcp_oauth_not_available", message: "OAuth MCP 服务未启用" }, 404);
     }
     try {
-      const candidate = await getUserState(env, memberLabel).getMcpOAuthDiscoveryCandidate({
+      const principal = await ensureExistingMemberPrincipal(env, memberLabel, "admin-mcp-discovery");
+      const session = memberSessionForRoute(principal);
+      const candidate = await getUserState(env, memberLabel, session).getMcpOAuthDiscoveryCandidate({
         ownerLabel: memberLabel,
         serverId,
         configRevision: configured.auth.configRevision,
@@ -6239,12 +6609,68 @@ async function handleAdminMcpDiscovery(request: Request, env: Env): Promise<Resp
   }
 }
 
-async function loadChatSessions(env: Env, label: string): Promise<CloudChat[]> {
-  await migrateLegacyChatIndex(env, label);
-  return getUserState(env, label).listChats();
+async function loadChatSessions(env: Env, label: string, session?: Session): Promise<CloudChat[]> {
+  await migrateLegacyChatIndex(env, label, session);
+  return getUserState(env, label, session).listChats();
 }
 
-async function migrateLegacyChatIndex(env: Env, label: string): Promise<void> {
+async function resolveDocumentIngestOwnerSession(
+  env: Env,
+  message: DocumentIngestMessage,
+): Promise<Extract<Session, { kind: "member" }> | undefined> {
+  const lookup = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+    .lookupActivePrincipalAlias({ version: 1, alias: message.ownerId });
+  if (
+    !lookup.found
+    || lookup.route.principalId !== message.principalId
+    || lookup.route.rootInstanceName !== message.rootInstanceName
+    || lookup.route.userStateInstanceName !== message.userStateInstanceName
+    || lookup.route.registryRevision !== message.registryRevision
+  ) return undefined;
+  return memberSessionForRoute(lookup.route);
+}
+
+async function resolveDocumentIngestRoot(
+  env: Env,
+  message: DocumentIngestMessage,
+): Promise<DurableObjectStub<TeamAgent> | undefined> {
+  const root = env.TEAM_AGENT.getByName(message.rootInstanceName);
+  const marker = await root.getStableIdentity();
+  return marker
+    && marker.scope === "root"
+    && marker.resourceId === ""
+    && marker.principalId === message.principalId
+    && marker.rootInstanceName === message.rootInstanceName
+    && marker.userStateInstanceName === message.userStateInstanceName
+    && marker.registryRevision === message.registryRevision
+    ? root
+    : undefined;
+}
+
+async function handleResetAdminAccessCodes(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{ expectedRevision?: unknown }>(request);
+  const current = await requireAccessCodeMutationSnapshot(env, body.expectedRevision);
+  if (current instanceof Response) return current;
+  const principals = new Map<string, PrincipalRouteV1>();
+  for (const entry of current.entries) {
+    principals.set(entry.label, await reserveMemberPrincipalBeforeCredential(
+      env,
+      entry.label,
+      "legacy",
+      "access-reset",
+      current.revision,
+    ));
+  }
+  await env.CHAT_STORE.delete(ACCESS_CODES_KEY);
+  for (const [label, principal] of principals) {
+    await revokeMemberSessionsWithRetry(env, label);
+    await retireMemberPrincipalAlias(env, principal, "access-reset-retire", current.revision);
+  }
+  await appendAdminAudit(env, "access.reset");
+  return jsonResponse({ ok: true });
+}
+
+async function migrateLegacyChatIndex(env: Env, label: string, session?: Session): Promise<void> {
   const raw = await env.CHAT_STORE.get(chatIndexKey(label));
   if (!raw?.trim()) return;
   try {
@@ -6257,25 +6683,33 @@ async function migrateLegacyChatIndex(env: Env, label: string): Promise<void> {
       .slice(0, MAX_CLOUD_SESSIONS);
     const stored = chats.map(toStoredChat).filter((chat): chat is StoredChat => Boolean(chat));
     if (stored.length !== chats.length) return;
-    await getUserState(env, label).migrateLegacyChats(stored);
+    await getUserState(env, label, session).migrateLegacyChats(stored);
     await env.CHAT_STORE.delete(chatIndexKey(label));
   } catch {
     // Keep malformed legacy data for manual recovery instead of deleting it silently.
   }
 }
 
-async function ensureAgentLegacyImport(env: Env, label: string): Promise<void> {
+async function ensureAgentLegacyImport(env: Env, label: string, session?: Session): Promise<void> {
   const instanceFence = await acquireBackgroundInstanceOperation(env, "legacy-import");
   if (!instanceFence) return;
   try {
-    const root = await getTeamAgent(env, label);
+    const root = await getTeamAgent(env, label, session);
     if (await root.hasMigration(AGENT_LEGACY_MIGRATION_ID)) return;
+    if (session?.kind === "member") {
+      const principal = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+        .resolvePrincipalSession({ version: 1, principalId: session.principalId, alias: session.label });
+      if (principal.origin === "native") {
+        await root.completeMigration(AGENT_LEGACY_MIGRATION_ID);
+        return;
+      }
+    }
     const [chats, memory] = await Promise.all([
-      loadLegacyChatSessionsForAgent(env, label),
+      loadLegacyChatSessionsForAgent(env, label, session),
       env.CHAT_STORE.get(memoryKey(label)),
     ]);
     for (const chat of chats) {
-      await syncLegacyChatToAgent(env, label, chat, root);
+      await syncLegacyChatToAgent(env, label, chat, root, session);
     }
     await root.importLegacyMemory(memory || "");
     await root.completeMigration(AGENT_LEGACY_MIGRATION_ID);
@@ -6289,6 +6723,7 @@ async function syncLegacyChatToAgent(
   label: string,
   chat: CloudChat,
   root: DurableObjectStub<TeamAgent> | Promise<DurableObjectStub<TeamAgent>> = getTeamAgent(env, label),
+  session?: Session,
 ): Promise<"active" | "deleted" | "invalid"> {
   const agentRoot = await root;
   const messages = toAgentUiMessages(chat.messages);
@@ -6306,7 +6741,7 @@ async function syncLegacyChatToAgent(
   };
   const imported = await agentRoot.importLegacyConversation(conversation);
   if (imported.state !== "active") return imported.state;
-  const conversationAgent = await getTeamAgentConversation(env, label, chat.id);
+  const conversationAgent = await getTeamAgentConversation(env, label, chat.id, session);
   const synced = await conversationAgent.syncLegacyMessages(messages);
   if (synced.synced) await agentRoot.syncLegacyConversationMetadata(conversation, synced.messageCount);
   return "active";
@@ -6320,11 +6755,13 @@ async function drainAgentConversationCleanup(
   root: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
   now = Date.now(),
   scheduleFailures = true,
+  session?: Session,
 ): Promise<void> {
   const instanceFence = await acquireBackgroundInstanceOperation(env, "conversation-cleanup");
   if (!instanceFence) return;
   try {
     const agentRoot = await root;
+    const cleanupSession = session ?? await memberSessionFromRootStableIdentity(agentRoot, label);
     let pending;
     try {
       pending = await agentRoot.listPendingConversationCleanups(3, now, true);
@@ -6340,6 +6777,7 @@ async function drainAgentConversationCleanup(
       agentRoot,
       now,
       scheduleFailures,
+      cleanupSession,
     )));
     if (scheduleFailures) await agentRoot.refreshCleanupSchedule(now, true).catch(() => undefined);
   } finally {
@@ -6354,12 +6792,13 @@ async function attemptAgentConversationCleanup(
   root: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
   now = Date.now(),
   scheduleFailures = true,
+  session?: Session,
 ): Promise<boolean> {
   const agentRoot = await root;
   try {
-    const conversation = await getTeamAgentConversation(env, label, chatId);
+    const conversation = await getTeamAgentConversation(env, label, chatId, session);
     await conversation.clearConversation();
-    await getUserState(env, label).deleteChat(chatId, 0);
+    await getUserState(env, label, session).deleteChat(chatId, 0);
     await agentRoot.completeConversationCleanup(chatId);
     return true;
   } catch {
@@ -6373,9 +6812,30 @@ async function attemptAgentConversationCleanup(
   }
 }
 
-async function loadLegacyChatSessionsForAgent(env: Env, label: string): Promise<CloudChat[]> {
+async function memberSessionFromRootStableIdentity(
+  root: CleanupRoot,
+  label: string,
+): Promise<Extract<Session, { kind: "member" }> | undefined> {
+  const marker = await root.getStableIdentity();
+  if (!marker || marker.scope !== "root" || marker.resourceId !== "") return undefined;
+  const now = Date.now();
+  return {
+    id: `identity-cleanup-${marker.principalId}`,
+    label,
+    kind: "member",
+    principalId: marker.principalId,
+    rootInstanceName: marker.rootInstanceName,
+    userStateInstanceName: marker.userStateInstanceName,
+    registryRevision: marker.registryRevision,
+    createdAt: now,
+    lastSeen: now,
+    expiresAt: Number.MAX_SAFE_INTEGER,
+  };
+}
+
+async function loadLegacyChatSessionsForAgent(env: Env, label: string, session?: Session): Promise<CloudChat[]> {
   const merged = new Map<string, CloudChat>();
-  const durableChats = await getUserState(env, label).listChats();
+  const durableChats = await getUserState(env, label, session).listChats();
   for (const chat of durableChats) merged.set(chat.id, chat);
   const raw = await env.CHAT_STORE.get(chatIndexKey(label));
   if (raw?.trim()) {
@@ -6441,6 +6901,7 @@ async function purgeAgentUserData(
   rootInput: CleanupRoot | Promise<CleanupRoot> = getTeamAgent(env, label),
   now = Date.now(),
   scheduleFailures = true,
+  session?: Extract<Session, { kind: "member" }>,
 ): Promise<{ operationId: string; generation: number }> {
   const root = await rootInput;
   const purge = await root.beginWorkspaceAccountPurge(crypto.randomUUID());
@@ -6452,9 +6913,14 @@ async function purgeAgentUserData(
         throw new Error("workspace_account_purge_finalize_failed");
       }
     }
+    const cleanupSession = session ?? (
+      typeof root.getStableIdentity === "function"
+        ? await memberSessionFromRootStableIdentity(root, label)
+        : undefined
+    );
     const conversationIds = await root.getAllConversationIds();
     await Promise.all(conversationIds.map(async (chatId) => {
-      const conversation = await getTeamAgentConversation(env, label, chatId);
+      const conversation = await getTeamAgentConversation(env, label, chatId, cleanupSession);
       await conversation.clearConversation();
     }));
     await root.purgeRootData();
@@ -6478,23 +6944,37 @@ async function attemptMemberAccountCleanup(
   now = Date.now(),
   scheduleFailures = true,
   registerRequest = true,
+  session?: Extract<Session, { kind: "member" }>,
 ): Promise<number> {
   const root = await rootInput;
+  const cleanupSession = session ?? (
+    typeof root.getStableIdentity === "function"
+      ? await memberSessionFromRootStableIdentity(root, label)
+        : undefined
+  );
+  if (!cleanupSession) throw new Error("identity_cleanup_session_missing");
+  const legacyRoute = await isLegacyPrincipalSessionRoute(label, cleanupSession);
   let purge: { operationId: string; generation: number } | undefined;
   try {
     if (registerRequest) await root.registerAccountCleanupRequest(now);
-    purge = await purgeAgentUserData(env, label, root, now, scheduleFailures);
+    purge = await purgeAgentUserData(env, label, root, now, scheduleFailures, cleanupSession);
     const [revoked] = await Promise.all([
-      revokeSessionsByLabel(env, label),
-      getUserState(env, label).purgeUserData(),
+      revokeSessionsByPrincipal(env, cleanupSession),
+      getUserState(env, label, cleanupSession).purgeUserData(),
     ]);
     await Promise.all([
-      env.CHAT_STORE.delete(memoryKey(label)),
-      env.CHAT_STORE.delete(chatIndexKey(label)),
-      feedbackAuditService(env).removeFeedbackByLabel(label),
-      ...Array.from({ length: METRICS_DAYS }, (_, index) =>
-        env.CHAT_STORE.delete(usageKey(label, utcDayString(index))),
+      feedbackAuditService(env).removeFeedbackByPrincipal(
+        cleanupSession.principalId,
+        label,
+        legacyRoute,
       ),
+      ...(legacyRoute ? [
+        env.CHAT_STORE.delete(memoryKey(label)),
+        env.CHAT_STORE.delete(chatIndexKey(label)),
+        ...Array.from({ length: METRICS_DAYS }, (_, index) =>
+          env.CHAT_STORE.delete(usageKey(label, utcDayString(index))),
+        ),
+      ] : []),
     ]);
     if (!(await root.releaseWorkspaceAccountPurge(purge.operationId, purge.generation))) {
       throw new Error("workspace_account_purge_release_failed");
@@ -6801,7 +7281,7 @@ async function handleToolApproval(request: Request, env: Env, session: Session):
   if (!runId || !callId || (decision !== "once" && decision !== "conversation" && decision !== "deny")) {
     return jsonResponse({ error: "invalid_tool_approval" }, 400);
   }
-  const result = await getUserState(env, session.label).resolveToolApproval(runId, callId, decision);
+  const result = await getUserState(env, session.label, session).resolveToolApproval(runId, callId, decision);
   if (result.invalidDecision) return jsonResponse({ error: "invalid_tool_approval_decision" }, 400);
   if (!result.resolved) return jsonResponse({ error: "tool_approval_not_pending" }, 409);
   return jsonResponse({ ok: true });
@@ -6935,7 +7415,7 @@ async function handleChat(
     const chatId = normalizeCapabilityId(body.chatId, 80);
     if (!chatId) return jsonResponse({ error: "invalid_chat_id" }, 400);
     try {
-      const response = await getUserState(env, session.label).runCapabilityChat({
+      const response = await getUserState(env, session.label, session).runCapabilityChat({
         session,
         access,
         config,
@@ -7523,7 +8003,7 @@ export async function prepareTeamAgentTurn(
     initialRunDeadline,
     onProgress: (progress) => emitProviderProgress?.(progress),
   });
-  const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env, session.label);
+  const toolRuntime = createAgentCapabilityRuntime(toolDefinitions, env, session);
 
   return {
     ok: true,
@@ -8634,7 +9114,8 @@ function feedbackAuditService(env: Env) {
   });
 }
 
-function mcpRuntime(env: Env, ownerLabel?: string) {
+function mcpRuntime(env: Env, session?: Session) {
+  const ownerLabel = session?.kind === "member" ? session.label : undefined;
   const secrets = managedSecretService(env);
   return createMcpRuntime({
     resolveSecret: (secretRef) => secrets.resolve("mcp", secretRef),
@@ -8642,7 +9123,7 @@ function mcpRuntime(env: Env, ownerLabel?: string) {
       if (!ownerLabel || server.auth.type !== "oauth2") {
         throw new McpOAuthError("mcp_oauth_token_unavailable", "OAuth MCP 连接需要成员身份");
       }
-      return getUserState(env, ownerLabel).resolveMcpOAuthAccessToken({
+      return getUserState(env, ownerLabel, session).resolveMcpOAuthAccessToken({
         ownerLabel,
         serverId,
         auth: server.auth,
@@ -8687,8 +9168,8 @@ async function buildMessagesWithSystem(
   if (session.kind === "member") {
     let memory = longTermMemory?.trim() || "";
     if (longTermMemory === undefined) {
-      await ensureAgentLegacyImport(env, session.label);
-      memory = (await (await getTeamAgent(env, session.label)).getMemory()).memory.trim();
+      await ensureAgentLegacyImport(env, session.label, session);
+      memory = (await (await getTeamAgent(env, session.label, session)).getMemory()).memory.trim();
     }
     if (memory) {
       systemMessages.push({
@@ -8751,17 +9232,6 @@ function workspaceFileRouteFromUrl(url: URL): WorkspaceFileRoute | undefined {
       ? parts[1]
       : undefined;
   return action ? { fileId, action } : undefined;
-}
-
-function normalizeDocumentIngestQueueMessage(value: unknown): DocumentIngestMessage | undefined {
-  if (!isRecord(value)) return undefined;
-  const ownerId = typeof value.ownerId === "string" ? value.ownerId.trim() : "";
-  const fileId = normalizeWorkspaceEntityId(value.fileId);
-  const versionId = normalizeWorkspaceEntityId(value.versionId);
-  const generation = finitePositiveInteger(value.generation);
-  return ownerId && ownerId.length <= 120 && fileId && versionId && generation
-    ? { ownerId, fileId, versionId, generation }
-    : undefined;
 }
 
 async function completeWithUserRoute(
@@ -9799,10 +10269,10 @@ function toolTrustKey(definition: NormalizedToolDefinition): string {
 function createAgentCapabilityRuntime(
   definitions: NormalizedToolDefinition[],
   env: Env,
-  ownerLabel: string,
+  session: Session,
 ): { runTool: CapabilityToolRunner; close: () => Promise<void> } {
   const allowed = new Map(definitions.map((definition) => [definition.id, definition]));
-  const mcpExecution = mcpRuntime(env, ownerLabel).createExecution();
+  const mcpExecution = mcpRuntime(env, session).createExecution();
   let callCount = 0;
   let elapsedMs = 0;
   let closed = false;
@@ -10011,10 +10481,50 @@ function upstreamReliabilityOutcome(error: unknown): RouteReliabilityOutcome | u
 async function getSession(request: Request, env: Env): Promise<Session | null> {
   const token = getCookie(request, SESSION_COOKIE);
   if (!token) return null;
-  const session = await getStoredSession(env, token);
-  if (!session) {
+  const stored = await getStoredSession(env, token);
+  if (!stored) {
     await env.CHAT_STORE.delete(`session:${token}`);
     return null;
+  }
+  let session: Session;
+  if (stored.kind === "member") {
+    try {
+      let principal: PrincipalRouteV1;
+      if (isPrincipalBoundMemberSession(stored)) {
+        const lookup = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+          .lookupActivePrincipalAlias({ version: 1, alias: stored.label });
+        if (!lookup.found || lookup.route.principalId !== stored.principalId) {
+          throw new Error("identity_session_conflict");
+        }
+        principal = lookup.route;
+      } else {
+        principal = await resolveOrCreatePrincipalForAlias(env, {
+          alias: stored.label,
+          origin: "legacy",
+          operationId: `legacy-session:${stored.id}`,
+        });
+      }
+      if (!isPrincipalBoundMemberSession(stored) && principal.origin !== "legacy") {
+        throw new Error("identity_legacy_session_reuse_conflict");
+      }
+      principal = await ensurePrincipalAuthority(env, principal);
+      session = {
+        ...stored,
+        principalId: principal.principalId,
+        rootInstanceName: principal.rootInstanceName,
+        userStateInstanceName: principal.userStateInstanceName,
+        registryRevision: principal.registryRevision,
+      };
+      if (!isPrincipalBoundMemberSession(stored) || !sameSessionPrincipalRoute(stored, session)) {
+        const remainingTtl = Math.max(1, Math.ceil((stored.expiresAt - Date.now()) / 1_000));
+        await env.CHAT_STORE.put(`session:${token}`, JSON.stringify(session), { expirationTtl: remainingTtl });
+      }
+    } catch {
+      await env.CHAT_STORE.delete(`session:${token}`);
+      return null;
+    }
+  } else {
+    session = stored;
   }
   if (session.expiresAt <= Date.now()) {
     await env.CHAT_STORE.delete(`session:${token}`);
@@ -10033,7 +10543,7 @@ async function getSession(request: Request, env: Env): Promise<Session | null> {
   return session;
 }
 
-async function getStoredSession(env: Env, token: string): Promise<Session | null> {
+async function getStoredSession(env: Env, token: string): Promise<StoredSession | null> {
   const raw = await env.CHAT_STORE.get(`session:${token}`);
   if (!raw) return null;
   try {
@@ -10043,7 +10553,7 @@ async function getStoredSession(env: Env, token: string): Promise<Session | null
   }
 }
 
-function normalizeStoredSession(value: unknown): Session | null {
+function normalizeStoredSession(value: unknown): StoredSession | null {
   if (!isRecord(value)) return null;
   const id = typeof value.id === "string" ? value.id.trim() : "";
   const label = typeof value.label === "string" ? value.label.trim() : "";
@@ -10068,6 +10578,31 @@ function normalizeStoredSession(value: unknown): Session | null {
     return { id, label, kind: "guest", createdAt, lastSeen, expiresAt, sourceKey };
   }
   if (!isValidMemberLabel(label)) return null;
+  const principalId = typeof value.principalId === "string" ? value.principalId : "";
+  const rootInstanceName = typeof value.rootInstanceName === "string" ? value.rootInstanceName.trim() : "";
+  const userStateInstanceName = typeof value.userStateInstanceName === "string" ? value.userStateInstanceName.trim() : "";
+  const registryRevision = value.registryRevision;
+  if (
+    principalId || rootInstanceName || userStateInstanceName || registryRevision !== undefined
+  ) {
+    if (
+      !isPrincipalId(principalId) || !isIdentityInstanceName(rootInstanceName)
+      || !isIdentityInstanceName(userStateInstanceName)
+      || typeof registryRevision !== "number" || !Number.isSafeInteger(registryRevision) || registryRevision <= 0
+    ) return null;
+    return {
+      id,
+      label,
+      kind: "member",
+      principalId,
+      rootInstanceName,
+      userStateInstanceName,
+      registryRevision,
+      createdAt,
+      lastSeen,
+      expiresAt,
+    };
+  }
   return { id, label, kind: "member", createdAt, lastSeen, expiresAt };
 }
 
@@ -10241,6 +10776,7 @@ async function getAdminSession(request: Request, env: Env): Promise<AdminSession
 
 async function countActiveSessionsByLabel(env: Env): Promise<Map<string, number>> {
   const output = new Map<string, number>();
+  const activePrincipals = new Map<string, PrincipalRouteV1 | null>();
   let cursor: string | undefined;
 
   do {
@@ -10253,6 +10789,21 @@ async function countActiveSessionsByLabel(env: Env): Promise<Map<string, number>
       try {
         const session = normalizeStoredSession(JSON.parse(raw));
         if (!session || session.expiresAt <= Date.now()) continue;
+        if (session.kind === "member") {
+          let active = activePrincipals.get(session.label);
+          if (active === undefined) {
+            const lookup = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+              .lookupActivePrincipalAlias({ version: 1, alias: session.label });
+            active = lookup.found ? lookup.route : null;
+            activePrincipals.set(session.label, active);
+          }
+          if (!active) continue;
+          if (isPrincipalBoundMemberSession(session)) {
+            if (session.principalId !== active.principalId) continue;
+          } else if (active.origin !== "legacy") {
+            continue;
+          }
+        }
         output.set(session.label, (output.get(session.label) || 0) + 1);
       } catch {
         // Ignore malformed session records; getSession will clean them when encountered.
@@ -10634,7 +11185,13 @@ async function recordChatMetric(
     fallback?: boolean;
   },
 ): Promise<void> {
-  await getUserState(env, args.label).recordMetric(args);
+  let session: Extract<Session, { kind: "member" }> | undefined;
+  if (!args.label.startsWith(GUEST_LABEL_PREFIX)) {
+    const lookup = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .lookupActivePrincipalAlias({ version: 1, alias: args.label });
+    if (lookup.found) session = memberSessionForRoute(lookup.route);
+  }
+  await getUserState(env, args.label, session).recordMetric(args);
 }
 
 function normalizeSkillRegistry(value: unknown): Record<string, SkillConfig> {
@@ -10945,22 +11502,44 @@ async function appendAdminAudit(env: Env, action: string, target?: string): Prom
 }
 
 async function revokeSessionsByLabel(env: Env, label: string): Promise<number> {
+  return revokeSessionsMatching(env, (session) => session.label === label);
+}
+
+async function revokeSessionsByPrincipal(
+  env: Env,
+  principal: Extract<Session, { kind: "member" }>,
+): Promise<number> {
+  const active = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+    .lookupActivePrincipalAlias({ version: 1, alias: principal.label });
+  const includeLegacyUnbound = active.found && active.route.principalId === principal.principalId;
+  return revokeSessionsMatching(env, (session) => (
+    isPrincipalBoundMemberSession(session)
+      ? session.principalId === principal.principalId
+      : includeLegacyUnbound && session.kind === "member" && session.label === principal.label
+  ));
+}
+
+async function revokeSessionsMatching(
+  env: Env,
+  matches: (session: StoredSession) => boolean,
+): Promise<number> {
   let revoked = 0;
   let cursor: string | undefined;
   do {
     const result = await env.CHAT_STORE.list({ prefix: "session:", cursor, limit: 100 });
     cursor = result.list_complete ? undefined : result.cursor;
     const records = await Promise.all(result.keys.map(async (key) => ({ key: key.name, raw: await env.CHAT_STORE.get(key.name) })));
-    const matches = records.filter(({ raw }) => {
+    const matchedRecords = records.filter(({ raw }) => {
       if (!raw) return false;
       try {
-        return normalizeStoredSession(JSON.parse(raw))?.label === label;
+        const session = normalizeStoredSession(JSON.parse(raw));
+        return Boolean(session && matches(session));
       } catch {
         return false;
       }
     });
-    await Promise.all(matches.map(({ key }) => env.CHAT_STORE.delete(key)));
-    revoked += matches.length;
+    await Promise.all(matchedRecords.map(({ key }) => env.CHAT_STORE.delete(key)));
+    revoked += matchedRecords.length;
   } while (cursor);
   return revoked;
 }
@@ -11191,7 +11770,7 @@ async function handleMcpOAuthStart(
       mcpOAuthSessionFingerprint(request),
     ]);
     const callbackUrl = new URL(MCP_OAUTH_CALLBACK_PATH, url.origin).toString();
-    await getUserState(env, session.label).storeMcpOAuthState({
+    await getUserState(env, session.label, session).storeMcpOAuthState({
       ownerLabel: session.label,
       state: pkce.state,
       sessionFingerprint,
@@ -11225,7 +11804,7 @@ async function handleMcpOAuthCallback(
   if (session.kind !== "member") return redirectMcpOAuthResult(url, "error");
   const stateValue = url.searchParams.get("state") || "";
   const sessionFingerprint = await mcpOAuthSessionFingerprint(request);
-  const consumed = await getUserState(env, session.label).consumeMcpOAuthState({
+  const consumed = await getUserState(env, session.label, session).consumeMcpOAuthState({
     ownerLabel: session.label,
     state: stateValue,
     sessionFingerprint,
@@ -11258,7 +11837,7 @@ async function handleMcpOAuthCallback(
       verifier: consumed.verifier,
       clientSecret: clientSecret || undefined,
     });
-    const connection = await getUserState(env, session.label).storeMcpOAuthToken({
+    const connection = await getUserState(env, session.label, session).storeMcpOAuthToken({
       ownerLabel: session.label,
       serverId: consumed.serverId,
       auth: server.auth,
@@ -11287,8 +11866,8 @@ async function handleMcpOAuthDiscovery(request: Request, env: Env, session: Sess
     return jsonResponse({ error: "mcp_oauth_not_available", message: "OAuth MCP 服务未启用" }, 404);
   }
   try {
-    const discovery = await mcpRuntime(env, session.label).discoverTools(serverId, server, request.signal);
-    const candidate = await getUserState(env, session.label).storeMcpOAuthDiscoveryCandidate({
+    const discovery = await mcpRuntime(env, session).discoverTools(serverId, server, request.signal);
+    const candidate = await getUserState(env, session.label, session).storeMcpOAuthDiscoveryCandidate({
       ownerLabel: session.label,
       serverId,
       configRevision: server.auth.configRevision,
@@ -11308,7 +11887,7 @@ async function handleMcpOAuthRevoke(request: Request, env: Env, session: Session
   const body = await readJson<{ serverId?: unknown }>(request);
   const serverId = normalizeCapabilityId(body.serverId, 80);
   if (!serverId) return jsonResponse({ error: "invalid_mcp_server_id", message: "MCP Server ID 格式无效" }, 400);
-  await getUserState(env, session.label).revokeMcpOAuthConnection(session.label, serverId);
+  await getUserState(env, session.label, session).revokeMcpOAuthConnection(session.label, serverId);
   await appendAdminAudit(env, "mcp.oauth.revoke", serverId);
   return jsonResponse({ ok: true, serverId });
 }
@@ -11321,7 +11900,7 @@ async function listMcpOAuthConnections(env: Env, session: Session): Promise<Publ
       entry[1].enabled === true && entry[1].auth.type === "oauth2"
     ))
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
-  const state = getUserState(env, session.label);
+  const state = getUserState(env, session.label, session);
   return Promise.all(servers.map(async ([serverId, server]) => ({
     label: server.label,
     ...await state.getMcpOAuthConnection({
@@ -11390,10 +11969,20 @@ function positiveCount(value: string | null): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
+async function readPrincipalScopedLegacyDayCount(
+  env: Env,
+  label: string,
+  day: string,
+  session?: Session,
+): Promise<number> {
+  if (session?.kind === "member" && !(await isLegacyPrincipalSessionRoute(label, session))) return 0;
+  return positiveCount(await env.CHAT_STORE.get(usageKey(label, day)));
+}
+
 function quotaAdmissionService(env: Env) {
   return createQuotaAdmissionService({
-    getBucket: (label) => getUserState(env, label),
-    readLegacyDayCount: async (label, day) => positiveCount(await env.CHAT_STORE.get(usageKey(label, day))),
+    getBucket: (label, session) => getUserState(env, label, session),
+    readLegacyDayCount: (label, day, session) => readPrincipalScopedLegacyDayCount(env, label, day, session),
     defaultDailyLimit: numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT),
     defaultMinuteLimit: numberEnv(env.MINUTE_MESSAGE_LIMIT, DEFAULT_MINUTE_LIMIT),
     defaultGuestPolicy: {
@@ -11406,12 +11995,393 @@ function quotaAdmissionService(env: Env) {
   });
 }
 
-function getUserState(env: Env, label: string): DurableObjectStub<UserState> {
-  return env.USER_STATE.getByName(label);
+async function resolveOrCreatePrincipalForAlias(
+  env: Env,
+  input: { alias: string; origin: "legacy" | "native"; operationId: string },
+): Promise<PrincipalRouteV1> {
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  if (input.origin === "native") {
+    return registry.resolveOrCreatePrincipal({
+      version: 1,
+      operationId: input.operationId,
+      alias: input.alias,
+      origin: "native",
+    });
+  }
+  return registry.resolveOrCreatePrincipal({
+    version: 1,
+    operationId: input.operationId,
+    alias: input.alias,
+    origin: "legacy",
+    legacyRootInstance: await getTeamAgentInstanceName(input.alias),
+    legacyUserStateInstance: input.alias,
+  });
+}
+
+async function identityOperationId(kind: string, ...parts: string[]): Promise<string> {
+  return `${kind}:${await secretFingerprint(["chatus:identity-operation:v1", kind, ...parts].join(":"))}`;
+}
+
+async function ensureExistingMemberPrincipal(
+  env: Env,
+  label: string,
+  operationKind: string,
+): Promise<PrincipalRouteV1> {
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  const lookup = await registry.lookupActivePrincipalAlias({ version: 1, alias: label });
+  if (lookup.found) return ensurePrincipalAuthority(env, lookup.route);
+  const historical = await registry.lookupPrincipalAlias({ version: 1, alias: label });
+  if (historical.found) return historical.route;
+  const principal = await resolveOrCreatePrincipalForAlias(env, {
+    alias: label,
+    origin: "legacy",
+    operationId: await identityOperationId(operationKind, label),
+  });
+  return ensurePrincipalAuthority(env, principal);
+}
+
+async function reserveMemberPrincipalBeforeCredential(
+  env: Env,
+  label: string,
+  origin: "legacy" | "native",
+  operationKind: string,
+  mutationRevision: string,
+): Promise<PrincipalRouteV1> {
+  const principal = await resolveOrCreatePrincipalForAlias(env, {
+    alias: label,
+    origin,
+    operationId: await identityOperationId(operationKind, label, mutationRevision),
+  });
+  return ensurePrincipalAuthority(env, principal);
+}
+
+async function retireMemberPrincipalAlias(
+  env: Env,
+  principal: PrincipalRouteV1,
+  operationKind: string,
+  mutationRevision: string,
+): Promise<void> {
+  await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).retirePrincipalAlias({
+    version: 1,
+    operationId: await identityOperationId(operationKind, principal.principalId, mutationRevision),
+    principalId: principal.principalId,
+    alias: principal.alias,
+    retiredAt: Date.now(),
+  });
+}
+
+async function ensurePrincipalAuthority(env: Env, initial: PrincipalRouteV1): Promise<PrincipalRouteV1> {
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  let principal = await registry.resolvePrincipalSession({
+    version: 1,
+    principalId: initial.principalId,
+    alias: initial.alias,
+  });
+  await assertPrincipalRouteParity(principal);
+  let conversationsBackfilled = false;
+  for (let step = 0; step < 4; step += 1) {
+    const session = memberSessionForRoute(principal);
+    const root = await getTeamAgent(env, principal.alias, session);
+    if (!conversationsBackfilled) {
+      await ensureExistingConversationResources(env, principal, session, root);
+      conversationsBackfilled = true;
+    }
+    const rootMarker = stableTeamAgentMarker(session, {
+      scope: "root",
+      resourceId: "",
+      resourceRegistryRevision: 0,
+      pinnedInstanceName: principal.rootInstanceName,
+    });
+    const [rootEvidence, userStateEvidence] = await Promise.all([
+      root.ensureStableIdentity(rootMarker),
+      getUserState(env, principal.alias, session).ensureStableIdentity(stablePrincipalMarker(session)),
+    ]);
+    await Promise.all([
+      registry.recordStableIdentityMarker({
+        version: 1,
+        entityType: "principal",
+        entityId: principal.principalId,
+        markerKind: "root",
+        pinnedInstanceName: principal.rootInstanceName,
+        expectedRegistryRevision: principal.registryRevision,
+        expectedPrincipalRevision: principal.registryRevision,
+        digest: rootEvidence.digest,
+        recordedAt: Date.now(),
+      }),
+      registry.recordStableIdentityMarker({
+        version: 1,
+        entityType: "principal",
+        entityId: principal.principalId,
+        markerKind: "user_state",
+        pinnedInstanceName: principal.userStateInstanceName,
+        expectedRegistryRevision: principal.registryRevision,
+        expectedPrincipalRevision: principal.registryRevision,
+        digest: userStateEvidence.digest,
+        recordedAt: Date.now(),
+      }),
+    ]);
+    if (principal.migrationState === "authoritative") return principal;
+    const nextState = principal.migrationState === "backfilled" ? "reconciled" : "authoritative";
+    await registry.advanceIdentityState({
+      version: 1,
+      operationId: `principal-state:${principal.principalId}:${principal.registryRevision}:${nextState}`,
+      entityType: "principal",
+      entityId: principal.principalId,
+      expectedRegistryRevision: principal.registryRevision,
+      from: principal.migrationState,
+      to: nextState,
+    });
+    principal = await registry.resolvePrincipalSession({
+      version: 1,
+      principalId: principal.principalId,
+      alias: principal.alias,
+    });
+  }
+  throw new Error("identity_principal_reconciliation_incomplete");
+}
+
+async function ensureExistingConversationResources(
+  env: Env,
+  principal: PrincipalRouteV1,
+  session: Extract<Session, { kind: "member" }>,
+  root: DurableObjectStub<TeamAgent>,
+): Promise<void> {
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  const conversations = await root.listConversations();
+  for (const conversation of conversations) {
+    const lookup = await registry.lookupConversationResource({
+      version: 1,
+      principalId: principal.principalId,
+      conversationId: conversation.id,
+    });
+    let resource: ConversationResourceRouteV1;
+    if (lookup.found) {
+      resource = lookup.route;
+    } else {
+      const legacyAgentInstance = principal.origin === "legacy"
+        ? await getTeamAgentConversationInstanceName(principal.alias, conversation.id)
+        : undefined;
+      resource = await ensureConversationResource(env, principal, conversation.id, legacyAgentInstance);
+    }
+    await ensureConversationAuthority(env, session, resource);
+  }
+}
+
+async function resolveOrCreateConversationRoute(
+  env: Env,
+  session: Extract<Session, { kind: "member" }>,
+  conversationId: string,
+): Promise<ConversationResourceRouteV1> {
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  const lookup = await registry.lookupConversationResource({
+    version: 1,
+    principalId: session.principalId,
+    conversationId,
+  });
+  if (lookup.found) return ensureConversationAuthority(env, session, lookup.route);
+  const principal = await registry.resolvePrincipalSession({
+    version: 1,
+    principalId: session.principalId,
+    alias: session.label,
+  });
+  const resource = await ensureConversationResource(env, principal, conversationId);
+  return ensureConversationAuthority(env, session, resource);
+}
+
+async function ensureConversationResource(
+  env: Env,
+  principal: PrincipalRouteV1,
+  conversationId: string,
+  legacyAgentInstance?: string,
+): Promise<ConversationResourceRouteV1> {
+  const fingerprint = await secretFingerprint([
+    "chatus:identity-resource:v1",
+    principal.principalId,
+    conversationId,
+    legacyAgentInstance || "native",
+  ].join(":"));
+  return env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).ensureConversationResource({
+    version: 1,
+    operationId: `resource:${fingerprint}`,
+    principalId: principal.principalId,
+    conversationId,
+    ...(legacyAgentInstance ? { legacyAgentInstance } : {}),
+  });
+}
+
+async function ensureConversationAuthority(
+  env: Env,
+  session: Extract<Session, { kind: "member" }>,
+  initial: ConversationResourceRouteV1,
+): Promise<ConversationResourceRouteV1> {
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  const principal = await registry.resolvePrincipalSession({
+    version: 1,
+    principalId: session.principalId,
+    alias: session.label,
+  });
+  if (
+    principal.rootInstanceName !== session.rootInstanceName
+    || principal.userStateInstanceName !== session.userStateInstanceName
+    || principal.registryRevision !== session.registryRevision
+  ) throw new Error("identity_session_conflict");
+  let resource = initial;
+  for (let step = 0; step < 4; step += 1) {
+    await assertConversationRouteParity(principal, resource);
+    const props: TeamAgentProps = {
+      userLabel: session.label,
+      scope: "conversation",
+      chatId: resource.conversationId,
+      rootInstance: session.rootInstanceName,
+      ...teamAgentAccessProps(session),
+    };
+    const agent = await getAgentByName(env.TEAM_AGENT, resource.agentInstanceName, { props });
+    const legacyIdentity = await agent.ensureIdentity(props);
+    if (!legacyIdentity.ok) throw new Error(legacyIdentity.error);
+    const evidence = await agent.ensureStableIdentity(stableTeamAgentMarker(session, {
+      scope: "conversation",
+      resourceId: resource.resourceId,
+      resourceRegistryRevision: resource.registryRevision,
+      pinnedInstanceName: resource.agentInstanceName,
+    }));
+    await registry.recordStableIdentityMarker({
+      version: 1,
+      entityType: "resource",
+      entityId: resource.resourceId,
+      markerKind: "conversation",
+      pinnedInstanceName: resource.agentInstanceName,
+      expectedRegistryRevision: resource.registryRevision,
+      expectedPrincipalRevision: principal.registryRevision,
+      digest: evidence.digest,
+      recordedAt: Date.now(),
+    });
+    if (resource.migrationState === "authoritative") return resource;
+    const nextState = resource.migrationState === "backfilled" ? "reconciled" : "authoritative";
+    await registry.advanceIdentityState({
+      version: 1,
+      operationId: `resource-state:${resource.resourceId}:${resource.registryRevision}:${nextState}`,
+      entityType: "resource",
+      entityId: resource.resourceId,
+      expectedRegistryRevision: resource.registryRevision,
+      from: resource.migrationState,
+      to: nextState,
+    });
+    resource = await registry.resolveConversationResource({
+      version: 1,
+      principalId: session.principalId,
+      conversationId: resource.conversationId,
+    });
+  }
+  throw new Error("identity_resource_reconciliation_incomplete");
+}
+
+function stablePrincipalMarker(session: Extract<Session, { kind: "member" }>): StablePrincipalIdentityV1 {
+  return {
+    version: 1,
+    principalId: session.principalId,
+    rootInstanceName: session.rootInstanceName,
+    userStateInstanceName: session.userStateInstanceName,
+    registryRevision: session.registryRevision,
+  };
+}
+
+export async function assertPrincipalRouteParity(principal: PrincipalRouteV1): Promise<void> {
+  const expectedRoot = principal.origin === "legacy"
+    ? await getTeamAgentInstanceName(principal.alias)
+    : principalRootInstanceName(principal.principalId);
+  const expectedUserState = principal.origin === "legacy"
+    ? principal.alias
+    : principalUserStateInstanceName(principal.principalId);
+  if (
+    principal.rootInstanceName !== expectedRoot
+    || principal.userStateInstanceName !== expectedUserState
+  ) throw new Error("identity_principal_route_conflict");
+}
+
+export async function assertConversationRouteParity(
+  principal: PrincipalRouteV1,
+  resource: ConversationResourceRouteV1,
+): Promise<void> {
+  if (resource.principalId !== principal.principalId) {
+    throw new Error("identity_resource_owner_conflict");
+  }
+  const nativeRoute = conversationResourceInstanceName(resource.resourceId);
+  if (resource.agentInstanceName === nativeRoute) return;
+  const legacyRoute = principal.origin === "legacy"
+    ? await getTeamAgentConversationInstanceName(principal.alias, resource.conversationId)
+    : "";
+  if (resource.agentInstanceName !== legacyRoute) {
+    throw new Error("identity_resource_route_conflict");
+  }
+}
+
+function stableTeamAgentMarker(
+  session: Extract<Session, { kind: "member" }>,
+  input: Pick<
+    StableTeamAgentIdentityV1,
+    "scope" | "resourceId" | "resourceRegistryRevision" | "pinnedInstanceName"
+  >,
+): StableTeamAgentIdentityV1 {
+  return { ...stablePrincipalMarker(session), ...input };
+}
+
+function memberSessionForRoute(route: PrincipalRouteV1): Extract<Session, { kind: "member" }> {
+  const now = Date.now();
+  return {
+    id: `identity-${route.principalId}`,
+    label: route.alias,
+    kind: "member",
+    principalId: route.principalId,
+    rootInstanceName: route.rootInstanceName,
+    userStateInstanceName: route.userStateInstanceName,
+    registryRevision: route.registryRevision,
+    createdAt: now,
+    lastSeen: now,
+    expiresAt: Number.MAX_SAFE_INTEGER,
+  };
+}
+
+function isPrincipalBoundMemberSession(
+  session: StoredSession,
+): session is Extract<Session, { kind: "member" }> {
+  return session.kind === "member" && "principalId" in session && isPrincipalId(session.principalId);
+}
+
+function sameSessionPrincipalRoute(
+  left: Extract<Session, { kind: "member" }>,
+  right: Extract<Session, { kind: "member" }>,
+): boolean {
+  return left.principalId === right.principalId
+    && left.rootInstanceName === right.rootInstanceName
+    && left.userStateInstanceName === right.userStateInstanceName
+    && left.registryRevision === right.registryRevision;
+}
+
+function isIdentityInstanceName(value: string): boolean {
+  return value.length > 0 && value.length <= 160 && /^[A-Za-z0-9$][A-Za-z0-9$:._/-]*$/.test(value);
+}
+
+function getUserState(env: Env, label: string, session?: Session): DurableObjectStub<UserState> {
+  const instanceName = session?.kind === "member" ? session.userStateInstanceName : label;
+  return env.USER_STATE.getByName(instanceName);
 }
 
 export async function getTeamAgentInstanceName(label: string): Promise<string> {
   const digest = await secretFingerprint(`team-agent:${label.trim()}`);
+  return `member-${digest.slice(0, 48)}`;
+}
+
+async function isLegacyPrincipalSessionRoute(
+  label: string,
+  session: Extract<Session, { kind: "member" }>,
+): Promise<boolean> {
+  return session.rootInstanceName === await getTeamAgentInstanceName(label)
+    && session.userStateInstanceName === label;
+}
+
+async function getAgentClientInstanceName(session: Session): Promise<string> {
+  if (session.kind === "guest") return getTeamAgentInstanceName(session.label);
+  const digest = await secretFingerprint(`team-agent-client:${session.principalId}`);
   return `member-${digest.slice(0, 48)}`;
 }
 
@@ -11425,11 +12395,21 @@ async function getTeamAgent(
   label: string,
   session?: Session,
 ): Promise<DurableObjectStub<TeamAgent>> {
-  const instance = await getTeamAgentInstanceName(label);
+  const instance = session?.kind === "member"
+    ? session.rootInstanceName
+    : await getTeamAgentInstanceName(label);
   const props: TeamAgentProps = { userLabel: label, scope: "root", ...teamAgentAccessProps(session) };
   const agent = await getAgentByName(env.TEAM_AGENT, instance, { props });
   const identity = await agent.ensureIdentity(props);
   if (!identity.ok) throw new Error(identity.error);
+  if (session?.kind === "member") {
+    await agent.ensureStableIdentity(stableTeamAgentMarker(session, {
+      scope: "root",
+      resourceId: "",
+      resourceRegistryRevision: 0,
+      pinnedInstanceName: instance,
+    }));
+  }
   return agent;
 }
 
@@ -11439,10 +12419,15 @@ async function getTeamAgentConversation(
   chatId: string,
   session?: Session,
 ): Promise<DurableObjectStub<TeamAgent>> {
-  const [instance, rootInstance] = await Promise.all([
-    getTeamAgentConversationInstanceName(label, chatId),
-    getTeamAgentInstanceName(label),
-  ]);
+  const resource = session?.kind === "member"
+    ? await resolveOrCreateConversationRoute(env, session, chatId)
+    : undefined;
+  const [instance, rootInstance] = resource
+    ? [resource.agentInstanceName, session!.kind === "member" ? session!.rootInstanceName : ""]
+    : await Promise.all([
+        getTeamAgentConversationInstanceName(label, chatId),
+        getTeamAgentInstanceName(label),
+      ]);
   const props: TeamAgentProps = {
     userLabel: label,
     scope: "conversation",
@@ -11453,6 +12438,14 @@ async function getTeamAgentConversation(
   const agent = await getAgentByName(env.TEAM_AGENT, instance, { props });
   const identity = await agent.ensureIdentity(props);
   if (!identity.ok) throw new Error(identity.error);
+  if (session?.kind === "member" && resource) {
+    await agent.ensureStableIdentity(stableTeamAgentMarker(session, {
+      scope: "conversation",
+      resourceId: resource.resourceId,
+      resourceRegistryRevision: resource.registryRevision,
+      pinnedInstanceName: instance,
+    }));
+  }
   return agent;
 }
 
@@ -11475,6 +12468,25 @@ async function sourceIdentityDigest(request: Request): Promise<string> {
     || "unknown";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function sameStablePrincipalIdentity(
+  left: StablePrincipalIdentityV1,
+  right: StablePrincipalIdentityV1,
+): boolean {
+  return left.principalId === right.principalId
+    && left.rootInstanceName === right.rootInstanceName
+    && left.userStateInstanceName === right.userStateInstanceName;
+}
+
+function stablePrincipalIdentityDigest(marker: StablePrincipalIdentityV1): Promise<string> {
+  return secretFingerprint([
+    "chatus:stable-principal-identity:v1",
+    marker.principalId,
+    marker.rootInstanceName,
+    marker.userStateInstanceName,
+    String(marker.registryRevision),
+  ].join(":"));
 }
 
 function secondsUntilNextUtcDay(nowMs = Date.now()): number {

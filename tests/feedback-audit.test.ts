@@ -8,6 +8,8 @@ import {
 } from "../src/services/feedback-audit";
 
 const NOW = "2026-07-26T14:00:00.000Z";
+const PRINCIPAL_ONE = "prn_11111111-1111-4111-8111-111111111111";
+const PRINCIPAL_TWO = "prn_22222222-2222-4222-8222-222222222222";
 
 describe("feedback and audit persistence", () => {
   it("loads only exact, valid, unique records from KV", async () => {
@@ -71,10 +73,24 @@ describe("feedback and audit persistence", () => {
     await service.upsertFeedback({ label: "bill", routeId: "model", chatId: "chat", messageId: "one", rating: "up", reason: "" });
     await service.upsertFeedback({ label: "alice", routeId: "model", chatId: "chat", messageId: "two", rating: "down", reason: "format" });
 
-    await service.removeFeedbackByLabel("bill");
+    await service.removeFeedbackByPrincipal(PRINCIPAL_ONE, "bill", true);
 
     await expect(service.listFeedback()).resolves.toMatchObject([
       { label: "alice", messageId: "two" },
+    ]);
+  });
+
+  it("removes only the selected principal when a retired label is reused", async () => {
+    const store = new MemoryFeedbackAuditStore();
+    const service = createService(store);
+    const shared = { label: "reused", routeId: "model", chatId: "chat", messageId: "same", rating: "up" as const, reason: "" as const };
+    await service.upsertFeedback({ ...shared, principalId: PRINCIPAL_ONE });
+    await service.upsertFeedback({ ...shared, principalId: PRINCIPAL_TWO });
+
+    await service.removeFeedbackByPrincipal(PRINCIPAL_ONE, "reused", false);
+
+    await expect(service.listFeedback()).resolves.toEqual([
+      expect.objectContaining({ principalId: PRINCIPAL_TWO, label: "reused" }),
     ]);
   });
 

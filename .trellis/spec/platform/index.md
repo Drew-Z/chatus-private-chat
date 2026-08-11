@@ -21,3 +21,4 @@
 | [Future Product Governance Decision Gates](./future-governance-decisions.md) | Non-runtime gates for ACL, Provider finance, recovery objectives, and legacy retirement |
 | [Legacy Surface Governance](./legacy-surface-governance.md) | Code-owned per-surface manifest, durable phase/evidence control plane, admin projection, and recovery boundary |
 | [Delivery Governance](./delivery-governance.md) | Pull-request checks, path-aware browser suites, SHA artifacts, deployment skipping, and Trellis archive evidence gates |
+| [Stable Principal And Resource Identity](./identity-registry.md) | Immutable member principal/resource routing, exact Queue identity, bounded reconciliation, and alias-reuse isolation |

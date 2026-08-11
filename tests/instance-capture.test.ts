@@ -3,6 +3,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { getAgentByName } from "agents";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TEAM_AGENT_SCHEMA_VERSION, type TeamAgent } from "../src/agent/team-agent";
+import { IDENTITY_REGISTRY_SCHEMA_VERSION } from "../src/contracts/identity";
+import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../src/identity-registry";
 import type { InstanceCoordinator } from "../src/instance-coordinator";
 import {
   createChatStoreCaptureAdapters,
@@ -1192,6 +1194,16 @@ describe("instance capture contracts", () => {
         instanceName: conversationName,
         rootInstanceName: rootName,
         schemaVersion: `team-agent-v${TEAM_AGENT_SCHEMA_VERSION}`,
+        stateClass: "authoritative" as const,
+        restoreBehavior: "restore" as const,
+        registeredAt: 1,
+      },
+      {
+        version: 1 as const,
+        kind: "identity_registry" as const,
+        instanceName: IDENTITY_REGISTRY_INSTANCE_NAME,
+        rootInstanceName: "",
+        schemaVersion: `identity-registry-v${IDENTITY_REGISTRY_SCHEMA_VERSION}` as const,
         stateClass: "authoritative" as const,
         restoreBehavior: "restore" as const,
         registeredAt: 1,

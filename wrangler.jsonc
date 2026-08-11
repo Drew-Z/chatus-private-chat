@@ -62,6 +62,10 @@
       {
         "name": "INSTANCE_COORDINATOR",
         "class_name": "InstanceCoordinator"
+      },
+      {
+        "name": "IDENTITY_REGISTRY",
+        "class_name": "IdentityRegistry"
       }
     ]
   },
@@ -85,6 +89,10 @@
     {
       "tag": "v5",
       "new_sqlite_classes": ["ProviderAttemptLedger"]
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": ["IdentityRegistry"]
     }
   ],
   "vars": {

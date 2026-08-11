@@ -50,6 +50,17 @@ describe("isolated restore engine", () => {
       className: "ProviderAttemptLedger",
       migrationTag: "v5",
     }));
+    expect(fixture.manifest.entries).toContainEqual(expect.objectContaining({
+      store: "identity_registry",
+      schemaVersion: "identity-registry-v1",
+      stateClass: "authoritative",
+      restoreBehavior: "restore",
+    }));
+    expect(fixture.target.bindings).toContainEqual(expect.objectContaining({
+      bindingName: "IDENTITY_REGISTRY",
+      className: "IdentityRegistry",
+      migrationTag: "v6",
+    }));
     expect(result.reconciliation.unresolvedReferences).toBe(0);
     expect(result.acceptance.writesOpen).toBe(false);
     expect(result.checkpoints.map(({ phase }) => phase)).toEqual([...INSTANCE_RESTORE_PHASES]);

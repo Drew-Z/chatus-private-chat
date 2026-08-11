@@ -41,6 +41,7 @@ const baseConfig = {
       { name: "PROVIDER_COORDINATOR", class_name: "ProviderCoordinator" },
       { name: "PROVIDER_ATTEMPT_LEDGER", class_name: "ProviderAttemptLedger" },
       { name: "INSTANCE_COORDINATOR", class_name: "InstanceCoordinator" },
+      { name: "IDENTITY_REGISTRY", class_name: "IdentityRegistry" },
     ],
   },
   migrations: [
@@ -49,6 +50,7 @@ const baseConfig = {
     { tag: "v3", new_sqlite_classes: ["ProviderCoordinator"] },
     { tag: "v4", new_sqlite_classes: ["InstanceCoordinator"] },
     { tag: "v5", new_sqlite_classes: ["ProviderAttemptLedger"] },
+    { tag: "v6", new_sqlite_classes: ["IdentityRegistry"] },
   ],
 };
 
@@ -173,6 +175,16 @@ describe("deployment configuration", () => {
       ...baseConfig,
       migrations: baseConfig.migrations.filter(({ tag }) => tag !== "v5"),
     }, instance)).toThrow(/migration v5/);
+    expect(() => buildDeploymentConfig({
+      ...baseConfig,
+      durable_objects: {
+        bindings: baseConfig.durable_objects.bindings.filter(({ name }) => name !== "IDENTITY_REGISTRY"),
+      },
+    }, instance)).toThrow(/IDENTITY_REGISTRY/);
+    expect(() => buildDeploymentConfig({
+      ...baseConfig,
+      migrations: baseConfig.migrations.filter(({ tag }) => tag !== "v6"),
+    }, instance)).toThrow(/migration v6/);
   });
 
   it("requires distinct document ingest Queue and DLQ names", () => {
@@ -416,6 +428,10 @@ describe("repository deployment contract", () => {
     expect(config.migrations).toContainEqual({
       tag: "v5",
       new_sqlite_classes: ["ProviderAttemptLedger"],
+    });
+    expect(config.migrations).toContainEqual({
+      tag: "v6",
+      new_sqlite_classes: ["IdentityRegistry"],
     });
     expect(config.migrations.some((migration: Record<string, unknown>) => "new_classes" in migration)).toBe(false);
   });

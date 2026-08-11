@@ -3,6 +3,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { getAgentByName } from "agents";
 import { describe, expect, it } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
+import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../src/identity-registry";
 import {
   DOCUMENT_INGEST_LEASE_MS,
   MAX_DOCUMENT_UPLOAD_BATCH_FILES,
@@ -10,16 +11,36 @@ import {
   MAX_WORKSPACE_FILE_BYTES,
   MAX_WORKSPACE_MEMBER_BYTES,
   workspaceDocumentByteLimit,
+  decodeDocumentIngestMessage,
   type DocumentIngestMessage,
 } from "../src/contracts/workspace-file";
 import { getTeamAgentInstanceName } from "../src/worker";
 
 async function getRootAgent(label = `ingest-${crypto.randomUUID()}`) {
-  const instance = await getTeamAgentInstanceName(label);
-  const root = await getAgentByName(env.TEAM_AGENT, instance, {
+  const legacyInstance = await getTeamAgentInstanceName(label);
+  const principal = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).resolveOrCreatePrincipal({
+    version: 1,
+    operationId: `ingest-principal:${crypto.randomUUID()}`,
+    alias: label,
+    origin: "legacy",
+    legacyRootInstance: legacyInstance,
+    legacyUserStateInstance: `ingest-state-${crypto.randomUUID()}`,
+  });
+  const root = await getAgentByName(env.TEAM_AGENT, principal.rootInstanceName, {
     props: { userLabel: label, scope: "root" },
   }) as DurableObjectStub<TeamAgent>;
-  return { label, root };
+  await root.ensureStableIdentity({
+    version: 1,
+    principalId: principal.principalId,
+    rootInstanceName: principal.rootInstanceName,
+    userStateInstanceName: principal.userStateInstanceName,
+    registryRevision: principal.registryRevision,
+    scope: "root",
+    resourceId: "",
+    resourceRegistryRevision: 0,
+    pinnedInstanceName: principal.rootInstanceName,
+  });
+  return { label, root, principal };
 }
 
 async function createReadyVersion(root: DurableObjectStub<TeamAgent>, suffix = crypto.randomUUID(), size = 12) {
@@ -43,10 +64,15 @@ async function createReadyVersion(root: DurableObjectStub<TeamAgent>, suffix = c
 function ingestMessage(
   ownerId: string,
   version: Awaited<ReturnType<typeof createReadyVersion>>,
+  principal: Awaited<ReturnType<typeof getRootAgent>>["principal"],
   generation = 1,
 ): DocumentIngestMessage {
   return {
     ownerId,
+    principalId: principal.principalId,
+    rootInstanceName: principal.rootInstanceName,
+    userStateInstanceName: principal.userStateInstanceName,
+    registryRevision: principal.registryRevision,
     fileId: version.fileId,
     versionId: version.versionId,
     generation,
@@ -54,6 +80,27 @@ function ingestMessage(
 }
 
 describe("document ingest contracts", () => {
+  it("requires an exact principal-bound queue route", () => {
+    const message = {
+      ownerId: "member-1",
+      principalId: `prn_${crypto.randomUUID()}`,
+      rootInstanceName: "root-principal",
+      userStateInstanceName: "state-principal",
+      registryRevision: 1,
+      fileId: crypto.randomUUID(),
+      versionId: crypto.randomUUID(),
+      generation: 1,
+    };
+    expect(decodeDocumentIngestMessage(message)).toEqual(message);
+    expect(decodeDocumentIngestMessage({ ...message, injected: "route" })).toBeUndefined();
+    expect(decodeDocumentIngestMessage({
+      ...message,
+      principalId: "prn_not-a-uuid",
+    })).toBeUndefined();
+    const { principalId: _principalId, ...legacyMessage } = message;
+    expect(decodeDocumentIngestMessage(legacyMessage)).toBeUndefined();
+  });
+
   it("locks upload, batch, member, and turn limits", () => {
     expect(MAX_TEXT_DOCUMENT_BYTES).toBe(1 * 1024 * 1024);
     expect(MAX_WORKSPACE_FILE_BYTES).toBe(10 * 1024 * 1024);
@@ -94,9 +141,9 @@ describe("document ingest contracts", () => {
   });
 
   it("uses generation CAS for duplicate, transient, and completed deliveries", async () => {
-    const { label, root } = await getRootAgent();
+    const { label, root, principal } = await getRootAgent();
     const version = await createReadyVersion(root);
-    const message = ingestMessage(label, version);
+    const message = ingestMessage(label, version, principal);
 
     const beginnings = await Promise.all([
       root.beginDocumentIngest(message),
@@ -135,9 +182,9 @@ describe("document ingest contracts", () => {
   });
 
   it("reclaims an extracting generation only after its processing lease expires", async () => {
-    const { label, root } = await getRootAgent();
+    const { label, root, principal } = await getRootAgent();
     const version = await createReadyVersion(root);
-    const message = ingestMessage(label, version);
+    const message = ingestMessage(label, version, principal);
     await expect(root.beginDocumentIngest(message)).resolves.toMatchObject({ action: "process", attempt: 1 });
     await expect(root.beginDocumentIngest(message)).resolves.toMatchObject({
       action: "retry",
@@ -155,17 +202,17 @@ describe("document ingest contracts", () => {
   });
 
   it("uses a new generation for manual retry and ignores stale DLQ and completion messages", async () => {
-    const { label, root } = await getRootAgent();
+    const { label, root, principal } = await getRootAgent();
     const version = await createReadyVersion(root);
-    const firstMessage = ingestMessage(label, version);
+    const firstMessage = ingestMessage(label, version, principal);
     await root.beginDocumentIngest(firstMessage);
     await expect(root.recordDocumentIngestFailure(firstMessage, "document_active_content", false)).resolves.toBe(true);
 
     const retry = await root.retryDocumentIngest(version.fileId, version.versionId);
-    expect(retry).toEqual({ ok: true, message: ingestMessage(label, version, 2) });
+    expect(retry).toEqual({ ok: true, message: ingestMessage(label, version, principal, 2) });
     await expect(root.beginDocumentIngest(firstMessage)).resolves.toEqual({ action: "ack", status: "stale" });
     await expect(root.recordDocumentIngestDlq(firstMessage, "stale_dlq")).resolves.toBe(false);
-    const secondMessage = ingestMessage(label, version, 2);
+    const secondMessage = ingestMessage(label, version, principal, 2);
     const second = await root.beginDocumentIngest(secondMessage);
     expect(second).toMatchObject({ action: "process", attempt: 1 });
     await expect(root.recordDocumentIngestDlq(secondMessage, "retry_exhausted")).resolves.toBe(true);
@@ -185,9 +232,9 @@ describe("document ingest contracts", () => {
   });
 
   it("makes deleted terminal and includes original and extracted objects in cleanup", async () => {
-    const { label, root } = await getRootAgent();
+    const { label, root, principal } = await getRootAgent();
     const version = await createReadyVersion(root);
-    const message = ingestMessage(label, version);
+    const message = ingestMessage(label, version, principal);
     const begun = await root.beginDocumentIngest(message);
     expect(begun.action).toBe("process");
     const current = await root.listWorkspaceFileVersions(version.fileId);

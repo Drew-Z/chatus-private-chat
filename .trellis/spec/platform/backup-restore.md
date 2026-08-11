@@ -92,8 +92,8 @@ A future instance backup/restore implementation is ready only when all of these 
 1. **Manifest:** a versioned manifest records source account/Worker/KV identity, applied schema/migration versions, export timestamp, included and excluded key prefixes/object classes, stable Durable Object identifiers, counts, sizes, and integrity checks.
 2. **Consistency:** capture uses a documented stop-write/maintenance boundary or an equivalent protocol. There is no global transaction across KV and multiple Durable Objects.
 3. **Confidentiality:** archives are encrypted, logs remain secret-free, and decryption keys have an external custody/rotation policy. The archive cannot be the only copy of `ROUTE_KEYS_MASTER_KEY`.
-4. **Provisioning:** the target has compatible bindings and append-only Durable Object migrations before import. The current exact Durable Object mapping is `USER_STATE/UserState/v1`, `TEAM_AGENT/TeamAgent/v2`, `PROVIDER_COORDINATOR/ProviderCoordinator/v3`, `INSTANCE_COORDINATOR/InstanceCoordinator/v4`, and `PROVIDER_ATTEMPT_LEDGER/ProviderAttemptLedger/v5`. Existing migration tags are never rewritten.
-5. **Identity mapping:** every user label and chat ID maps deterministically to the intended root/conversation object. Importing data into differently derived object names is not recovery.
+4. **Provisioning:** the target has compatible bindings and append-only Durable Object migrations before import. The current exact Durable Object mapping is `USER_STATE/UserState/v1`, `TEAM_AGENT/TeamAgent/v2`, `PROVIDER_COORDINATOR/ProviderCoordinator/v3`, `INSTANCE_COORDINATOR/InstanceCoordinator/v4`, `PROVIDER_ATTEMPT_LEDGER/ProviderAttemptLedger/v5`, and `IDENTITY_REGISTRY/IdentityRegistry/v6`. Existing migration tags are never rewritten.
+5. **Identity mapping:** the `IDENTITY_REGISTRY/IdentityRegistry/v6` binding preserves every immutable principal/resource ID, alias tombstone, pinned route, and marker revision. Importing data into recomputed label-derived object names is not recovery.
 6. **Restore order:** validate/decrypt the archive; provision schema; restore durable KV configuration and transitional sources; restore `UserState` and Agent objects using the manifest mapping; leave sessions/leases empty; then reopen writes.
 7. **Reconciliation:** compare manifest counts/checksums and run product acceptance for authentication, user isolation, conversations, memory, managed configuration, and permanent deletion.
 8. **Drill:** retain evidence of a successful restore rehearsal. A readable archive alone does not establish recoverability.
@@ -320,6 +320,7 @@ The export may be truncated and excludes configuration, credentials, Durable Obj
 
 ```text
 Use user export/import only for bounded user portability. Preserve instance identity for deployment rollback. Treat full-instance disaster recovery as unavailable until every readiness gate in this contract passes.
+```
 
 ## Scenario: Isolated restore drill
 
@@ -438,4 +439,68 @@ if (receipt) return reuseReceipt(receipt);
 const committed = await adapter.restoreEntries(input); // atomically records receipt
 await checkpoints.write(checkpointFromReceipt(committed));
 ```
+
+## Scenario: Stable Identity Registry Capture And Restore
+
+### 1. Scope / Trigger
+
+Use this contract whenever capture/restore or permanent deletion touches the
+stable principal/resource registry, stable Agent markers, or principal-pinned
+Workspace/OAuth/quota stores.
+
+### 2. Signatures
+
+```text
+IDENTITY_REGISTRY.captureInstanceState(epoch)
+IdentityRegistry.inspect()
+```
+
+### 3. Contracts
+
+- Capture inventories the singleton registry tables
+  `principals`, `principal_aliases`, `conversation_resources`,
+  `identity_migration_markers`, and `identity_operations` as authoritative
+  content-free SQLite state.
+- Restore validates unique immutable principal/resource IDs, active/retired
+  alias history, pinned route names, marker revisions/digests, and every
+  root/conversation reference before any UserState, Agent, R2, or Queue write.
+- Alias reuse never maps restored data to the replacement principal. Stable
+  markers remain bound to the original principal/resource or the restore fails.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Missing/duplicate principal, resource, alias, marker, or operation row | Reject the complete archive |
+| Pinned route, marker revision, or digest differs | Reject before target mutation |
+| Queue body lacks its stable principal route | Regenerate only from the exact version row; never infer from label |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a restored registry preserves a retired alias tombstone and the
+  replacement alias resolves to a new principal with new stable routes.
+- Base: an empty registry restores as valid schema state with zero content.
+- Bad: restore by recomputing a Root name from a browser label or by copying a
+  prior principal's UserState into a new principal.
+
+### 6. Tests Required
+
+- Capture/restore tests assert registry schema/table inventory, marker parity,
+  alias retirement, resource route uniqueness, and no secrets/content in
+  evidence.
+- Permanent deletion tests assert old stable IDs remain non-authoritative and
+  delayed Queue/OAuth/usage cleanup cannot resurrect them.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```typescript
+const root = env.TEAM_AGENT.getByName(await getTeamAgentInstanceName(alias));
+```
+
+#### Correct
+
+```typescript
+const root = env.TEAM_AGENT.getByName(restoredPrincipal.rootInstanceName);
 ```

@@ -93,6 +93,7 @@ import {
   type DocumentIngestMessage,
   type DocumentIngestRetryResult,
   type DocumentIngestStatus,
+  decodeDocumentIngestMessage,
   normalizeWorkspaceChecksum,
   normalizeWorkspaceEntityId,
   normalizeWorkspaceMediaType,
@@ -103,6 +104,11 @@ import {
 } from "../contracts/workspace-file";
 import type { Session } from "../contracts/session";
 import { createProviderTurnId } from "../contracts/provider-attempt";
+import {
+  decodeStableTeamAgentIdentity,
+  type StableTeamAgentIdentityV1,
+} from "../contracts/identity";
+import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../identity-registry";
 import { createAgentToolSet } from "../services/agent-tools";
 import {
   acquireInstanceOperationFence,
@@ -127,6 +133,7 @@ const MAX_SELECTED_SKILLS = 3;
 export const TEAM_AGENT_SCHEMA_VERSION = 7;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const AGENT_IDENTITY_STORAGE_KEY = "chatus:agent-identity:v1";
+const STABLE_AGENT_IDENTITY_STORAGE_KEY = "chatus:stable-agent-identity:v1";
 const GUEST_CLEANUP_TICKET_STORAGE_KEY = "chatus:guest-cleanup-ticket:v1";
 const ACCOUNT_CLEANUP_REQUEST_STORAGE_KEY = "chatus:account-cleanup-request:v1";
 const CLEANUP_SCHEDULE_CALLBACK = "runCleanupSchedule";
@@ -690,6 +697,89 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       }
       throw error;
     }
+  }
+
+  async ensureStableIdentity(input: unknown): Promise<{
+    ok: true;
+    digest: string;
+    registryRevision: number;
+  }> {
+    const marker = decodeStableTeamAgentIdentity(input);
+    if (
+      !marker || marker.pinnedInstanceName !== this.name || marker.scope !== this.scope
+      || marker.rootInstanceName !== (this.scope === "root" ? this.name : this.rootInstance)
+      || (this.scope === "root" ? marker.resourceId !== "" : !marker.resourceId)
+    ) throw new Error("agent_stable_identity_invalid");
+    const storedValue = await this.ctx.storage.get<unknown>(STABLE_AGENT_IDENTITY_STORAGE_KEY);
+    const stored = storedValue === undefined ? undefined : decodeStableTeamAgentIdentity(storedValue);
+    if (storedValue !== undefined && !stored) throw new Error("agent_stable_identity_corrupt");
+    if (stored && !sameStableTeamAgentIdentity(stored, marker)) {
+      throw new Error("agent_stable_identity_conflict");
+    }
+    if (stored && (
+      marker.registryRevision < stored.registryRevision
+      || marker.resourceRegistryRevision < stored.resourceRegistryRevision
+    )) {
+      throw new Error("agent_stable_identity_stale");
+    }
+    const active = stored
+      && stored.registryRevision === marker.registryRevision
+      && stored.resourceRegistryRevision === marker.resourceRegistryRevision
+      ? stored
+      : marker;
+    if (!stored
+      || active.registryRevision !== stored.registryRevision
+      || active.resourceRegistryRevision !== stored.resourceRegistryRevision) {
+      await this.ctx.storage.put(STABLE_AGENT_IDENTITY_STORAGE_KEY, active);
+    }
+    return {
+      ok: true,
+      digest: await stableTeamAgentIdentityDigest(active),
+      registryRevision: active.registryRevision,
+    };
+  }
+
+  async getStableIdentity(): Promise<StableTeamAgentIdentityV1 | null> {
+    const storedValue = await this.ctx.storage.get<unknown>(STABLE_AGENT_IDENTITY_STORAGE_KEY);
+    if (storedValue === undefined) return null;
+    const stored = decodeStableTeamAgentIdentity(storedValue);
+    if (!stored) throw new Error("agent_stable_identity_corrupt");
+    return stored;
+  }
+
+  private async matchesDocumentIngestIdentity(message: DocumentIngestMessage): Promise<boolean> {
+    const stable = await this.getStableIdentity();
+    return Boolean(
+      stable
+      && stable.scope === "root"
+      && stable.resourceId === ""
+      && stable.principalId === message.principalId
+      && stable.rootInstanceName === message.rootInstanceName
+      && stable.userStateInstanceName === message.userStateInstanceName
+      && stable.registryRevision === message.registryRevision
+    );
+  }
+
+  private async matchesActiveStableIdentity(marker: StableTeamAgentIdentityV1): Promise<boolean> {
+    const registry = this.env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+    const principal = await registry.lookupActivePrincipalAlias({ version: 1, alias: this.userLabel });
+    if (
+      !principal.found
+      || principal.route.principalId !== marker.principalId
+      || principal.route.rootInstanceName !== marker.rootInstanceName
+      || principal.route.userStateInstanceName !== marker.userStateInstanceName
+      || principal.route.registryRevision !== marker.registryRevision
+    ) return false;
+    if (marker.scope === "root") return marker.resourceId === "" && marker.resourceRegistryRevision === 0;
+    const resource = await registry.lookupConversationResource({
+      version: 1,
+      principalId: marker.principalId,
+      conversationId: this.chatId,
+    });
+    return resource.found
+      && resource.route.resourceId === marker.resourceId
+      && resource.route.agentInstanceName === marker.pinnedInstanceName
+      && resource.route.registryRevision === marker.resourceRegistryRevision;
   }
 
   async healthCheck(): Promise<{ ok: true; runtime: "cloudflare-ai-chat"; storage: true; version: 1 }> {
@@ -1326,6 +1416,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.requireRootScope();
     const message = normalizeDocumentIngestMessage(messageValue);
     if (!message || message.ownerId !== this.userLabel) return { action: "ack", status: "stale" };
+    if (!await this.matchesDocumentIngestIdentity(message)) return { action: "ack", status: "stale" };
     const file = this.getWorkspaceFileRow(message.fileId);
     if (!file || file.deleted_at !== 0) return { action: "ack", status: "deleted" };
     const version = this.getWorkspaceVersionRow(message.versionId);
@@ -1396,6 +1487,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const message = normalizeDocumentIngestMessage(messageValue);
     const artifact = normalizeDocumentIngestArtifact(artifactValue);
     if (!message || message.ownerId !== this.userLabel || !artifact) return false;
+    if (!await this.matchesDocumentIngestIdentity(message)) return false;
     const file = this.getWorkspaceFileRow(message.fileId);
     const version = this.getWorkspaceVersionRow(message.versionId);
     if (
@@ -1423,6 +1515,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.requireRootScope();
     const message = normalizeDocumentIngestMessage(messageValue);
     if (!message || message.ownerId !== this.userLabel) return false;
+    if (!await this.matchesDocumentIngestIdentity(message)) return false;
     const error = boundedString(errorValue, 80) || "document_ingest_failed";
     this.sql`
       UPDATE workspace_file_versions
@@ -1437,6 +1530,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.requireRootScope();
     const message = normalizeDocumentIngestMessage(messageValue);
     if (!message || message.ownerId !== this.userLabel) return false;
+    if (!await this.matchesDocumentIngestIdentity(message)) return false;
     const error = boundedString(errorValue, 80) || "document_ingest_retry_exhausted";
     this.sql`
       UPDATE workspace_file_versions
@@ -1463,6 +1557,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (normalizeDocumentIngestStatus(version.ingest_status) !== "failed") {
       return { ok: false, error: "document_ingest_not_retryable" };
     }
+    const stable = await this.getStableIdentity();
+    if (!stable || stable.scope !== "root" || stable.resourceId !== "") {
+      return { ok: false, error: "document_ingest_not_retryable" };
+    }
     const generation = Math.max(1, version.ingest_generation) + 1;
     this.sql`
       UPDATE workspace_file_versions
@@ -1472,9 +1570,20 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         updated_at = ${Date.now()}
       WHERE id = ${version.id} AND file_id = ${file.id} AND state = 'ready' AND ingest_status = 'failed'
     `;
-    return this.lastSqlChangeCount() === 1
-      ? { ok: true, message: { ownerId: this.userLabel, fileId: file.id, versionId: version.id, generation } }
-      : { ok: false, error: "document_ingest_not_retryable" };
+    if (this.lastSqlChangeCount() !== 1) return { ok: false, error: "document_ingest_not_retryable" };
+    return {
+      ok: true,
+      message: {
+        ownerId: this.userLabel,
+        principalId: stable.principalId,
+        rootInstanceName: stable.rootInstanceName,
+        userStateInstanceName: stable.userStateInstanceName,
+        registryRevision: stable.registryRevision,
+        fileId: file.id,
+        versionId: version.id,
+        generation,
+      },
+    };
   }
 
   async recordWorkspaceOperationFailure(
@@ -2004,6 +2113,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       this.sql`DELETE FROM chatus_migrations`;
       this.sql`DELETE FROM capability_tool_trust`;
     });
+    await this.ctx.storage.delete(STABLE_AGENT_IDENTITY_STORAGE_KEY);
     return { conversationIds };
   }
 
@@ -2030,6 +2140,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     await this.ctx.storage.delete([
       ACCOUNT_CLEANUP_REQUEST_STORAGE_KEY,
       AGENT_IDENTITY_STORAGE_KEY,
+      STABLE_AGENT_IDENTITY_STORAGE_KEY,
     ]);
     return true;
   }
@@ -2128,6 +2239,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     await this.ctx.storage.delete([
       GUEST_CLEANUP_TICKET_STORAGE_KEY,
       AGENT_IDENTITY_STORAGE_KEY,
+      STABLE_AGENT_IDENTITY_STORAGE_KEY,
     ]);
     return true;
   }
@@ -2505,7 +2617,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   async clearConversation(): Promise<void> {
     this.requireConversationScope();
     this.clearPersistedChatState();
-    await this.ctx.storage.delete(AGENT_IDENTITY_STORAGE_KEY);
+    await this.ctx.storage.delete([
+      AGENT_IDENTITY_STORAGE_KEY,
+      STABLE_AGENT_IDENTITY_STORAGE_KEY,
+    ]);
   }
 
   async getConversationMessageCount(): Promise<number> {
@@ -2574,6 +2689,25 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const requestedBody = isRecord(options?.body) ? options.body : {};
     const body = Object.keys(requestedBody).length ? requestedBody : this.getPendingBranchBody();
     const now = Date.now();
+    const stableIdentityValue = this.accessKind === "member"
+      ? await this.ctx.storage.get<unknown>(STABLE_AGENT_IDENTITY_STORAGE_KEY)
+      : undefined;
+    const stableIdentity = stableIdentityValue === undefined
+      ? undefined
+      : decodeStableTeamAgentIdentity(stableIdentityValue);
+    if (this.accessKind === "member" && (
+      !stableIdentity || stableIdentity.scope !== "conversation"
+      || stableIdentity.pinnedInstanceName !== this.name
+    )) return fail("agent_identity_unavailable", 401, "identity");
+    if (this.accessKind === "member") {
+      try {
+        if (!await this.matchesActiveStableIdentity(stableIdentity!)) {
+          return fail("agent_identity_unavailable", 401, "identity");
+        }
+      } catch {
+        return fail("agent_identity_unavailable", 503, "identity");
+      }
+    }
     const session: Session = this.accessKind === "guest"
       ? {
           id: this.name,
@@ -2588,6 +2722,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           id: this.name,
           label: this.userLabel,
           kind: "member",
+          principalId: stableIdentity!.principalId,
+          rootInstanceName: stableIdentity!.rootInstanceName,
+          userStateInstanceName: stableIdentity!.userStateInstanceName,
+          registryRevision: stableIdentity!.registryRevision,
           createdAt: now,
           lastSeen: now,
           expiresAt: this.sessionExpiresAt,
@@ -3883,14 +4021,7 @@ function normalizeDocumentIngestStatus(value: unknown): DocumentIngestStatus {
 }
 
 function normalizeDocumentIngestMessage(value: unknown): DocumentIngestMessage | undefined {
-  if (!isRecord(value)) return undefined;
-  const ownerId = typeof value.ownerId === "string" ? value.ownerId.trim() : "";
-  const fileId = normalizeWorkspaceEntityId(value.fileId);
-  const versionId = normalizeWorkspaceEntityId(value.versionId);
-  const generation = finitePositiveInteger(value.generation);
-  return ownerId && ownerId.length <= 120 && fileId && versionId && generation
-    ? { ownerId, fileId, versionId, generation }
-    : undefined;
+  return decodeDocumentIngestMessage(value);
 }
 
 function normalizeDocumentIngestArtifact(value: unknown): DocumentIngestArtifact | undefined {
@@ -4018,6 +4149,32 @@ async function contentFingerprint(value: string): Promise<string> {
   if (!value) return "";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function sameStableTeamAgentIdentity(
+  left: StableTeamAgentIdentityV1,
+  right: StableTeamAgentIdentityV1,
+): boolean {
+  return left.principalId === right.principalId
+    && left.rootInstanceName === right.rootInstanceName
+    && left.userStateInstanceName === right.userStateInstanceName
+    && left.scope === right.scope
+    && left.resourceId === right.resourceId
+    && left.pinnedInstanceName === right.pinnedInstanceName;
+}
+
+function stableTeamAgentIdentityDigest(marker: StableTeamAgentIdentityV1): Promise<string> {
+  return contentFingerprint([
+    "chatus:stable-agent-identity:v1",
+    marker.principalId,
+    marker.rootInstanceName,
+    marker.userStateInstanceName,
+    marker.scope,
+    marker.resourceId,
+    String(marker.resourceRegistryRevision),
+    marker.pinnedInstanceName,
+    String(marker.registryRevision),
+  ].join(":"));
 }
 
 async function contentFingerprintBytes(value: ArrayBuffer): Promise<string> {

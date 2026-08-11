@@ -502,6 +502,7 @@ function fixtureObjects(principalCount: number): InstanceObjectRegistrationV1[] 
     );
   }
   objects.push(
+    objectRegistration("identity_registry", "$identity-registry", ""),
     objectRegistration("provider_attempt_ledger", "source-provider-ledger", ""),
     objectRegistration("provider_coordinator", "source-provider", ""),
   );
@@ -520,6 +521,8 @@ function objectRegistration(
     rootInstanceName,
     schemaVersion: kind === "provider_attempt_ledger"
       ? "provider-attempt-ledger-v3"
+      : kind === "identity_registry"
+        ? "identity-registry-v1"
       : `${kind}-schema-v1`,
     stateClass: "authoritative",
     restoreBehavior: "restore",
@@ -529,7 +532,9 @@ function objectRegistration(
 
 function fixtureMappings(objects: InstanceObjectRegistrationV1[]): RestoreObjectMappingV1[] {
   return objects.map((object) => {
-    const principalSuffix = object.kind === "provider_coordinator" || object.kind === "provider_attempt_ledger"
+    const principalSuffix = object.kind === "provider_coordinator"
+      || object.kind === "provider_attempt_ledger"
+      || object.kind === "identity_registry"
       ? object.kind.replaceAll("_", "-")
       : /-(\d+)$/.exec(object.instanceName)?.[1] || "1";
     const conversation = object.kind === "conversation_team_agent";
@@ -551,6 +556,7 @@ function fixtureTarget(manifest: CaptureManifestV1): RestoreTargetIdentityV1 {
     { kind: "kv", bindingName: "CHAT_STORE", physicalId: "target-kv", className: "", migrationTag: "" },
     { kind: "queue", bindingName: "DOCUMENT_INGEST", physicalId: "target-queue", className: "", migrationTag: "" },
     { kind: "dlq", bindingName: "DOCUMENT_INGEST_DLQ", physicalId: "target-dlq", className: "", migrationTag: "" },
+    { kind: "durable_object", bindingName: "IDENTITY_REGISTRY", physicalId: "target-identity-do", className: "IdentityRegistry", migrationTag: "v6" },
     { kind: "durable_object", bindingName: "INSTANCE_COORDINATOR", physicalId: "target-instance-do", className: "InstanceCoordinator", migrationTag: "v4" },
     { kind: "durable_object", bindingName: "PROVIDER_ATTEMPT_LEDGER", physicalId: "target-provider-attempt-do", className: "ProviderAttemptLedger", migrationTag: "v5" },
     { kind: "durable_object", bindingName: "PROVIDER_COORDINATOR", physicalId: "target-provider-do", className: "ProviderCoordinator", migrationTag: "v3" },

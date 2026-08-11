@@ -28,11 +28,12 @@ DR manifest + stop-write capture
         -> cost/reconciliation/capacity
         -> budget engine and scoped enforcement
         -> bounded Provider-run deadline + fallback progress/correlation
-        -> legacy surface disable/observation
-        -> separately approved destructive cleanup
+        -> legacy identity-source census + deployed handoff
         -> stable principal/resource identity
         -> sharing/revocation
         -> transfer/deletion/export/tool policy
+
+legacy surface disable/observation -> separately approved destructive cleanup
 ```
 
 Provider feedback is not on the critical path to budget or capacity governance
@@ -177,6 +178,12 @@ ACL stays disabled while routing depends on mutable labels. The migration first
 creates immutable opaque principals and aliases, then stable owner-independent
 conversation resource IDs, migration markers, one-to-one reconciliation, and
 resource-derived routing with dual-read compatibility.
+
+This identity foundation may start after the exact legacy identity sources it
+migrates have a deployed caller/route handoff. It does not wait for unrelated
+legacy read-disable, observation, or destructive-cleanup gates. Any unresolved
+source mapping blocks authority for that record, while the independent legacy
+retirement stream continues its full observation and cleanup sequence.
 
 ### 6.2 Authorization contract
 

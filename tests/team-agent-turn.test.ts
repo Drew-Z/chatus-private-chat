@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
 import { PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS } from "../src/contracts/provider-finance";
 import type { ProviderTurnProgressV1 } from "../src/contracts/provider-turn-progress";
+import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../src/identity-registry";
 import { createAgentToolSet } from "../src/services/agent-tools";
 import {
   loadProviderRouteReliability,
@@ -30,6 +31,38 @@ function turnContext() {
       kind: "provider_turn" as const,
       startedAt: Date.now(),
     },
+  };
+}
+
+async function createMemberSession(
+  label: string,
+  now = Date.now(),
+): Promise<Extract<Session, { kind: "member" }>> {
+  const principal = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME).resolveOrCreatePrincipal({
+    version: 1,
+    operationId: `test-principal:${crypto.randomUUID()}`,
+    alias: label,
+    origin: "native",
+  });
+  const marker = {
+    version: 1 as const,
+    principalId: principal.principalId,
+    rootInstanceName: principal.rootInstanceName,
+    userStateInstanceName: principal.userStateInstanceName,
+    registryRevision: principal.registryRevision,
+  };
+  await env.USER_STATE.getByName(principal.userStateInstanceName).ensureStableIdentity(marker);
+  return {
+    id: crypto.randomUUID(),
+    label,
+    kind: "member",
+    principalId: principal.principalId,
+    rootInstanceName: principal.rootInstanceName,
+    userStateInstanceName: principal.userStateInstanceName,
+    registryRevision: principal.registryRevision,
+    createdAt: now,
+    lastSeen: now,
+    expiresAt: now + 60_000,
   };
 }
 
@@ -101,14 +134,7 @@ describe("prepared TeamAgent turn", () => {
       return openAiStreamResponse("备用线路完成任务");
     });
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label: `agent-stream-${crypto.randomUUID()}`,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(`agent-stream-${crypto.randomUUID()}`, now);
 
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "整理三条发布检查事项" }],
@@ -197,14 +223,7 @@ describe("prepared TeamAgent turn", () => {
       headers: { "Content-Type": "text/event-stream" },
     }));
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label: `agent-progressive-${crypto.randomUUID()}`,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(`agent-progressive-${crypto.randomUUID()}`, now);
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "用两段合成内容回答" }],
     });
@@ -288,14 +307,7 @@ describe("prepared TeamAgent turn", () => {
     }));
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label: `agent-tools-${crypto.randomUUID()}`,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(`agent-tools-${crypto.randomUUID()}`, now);
 
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "统计这段文字" }],
@@ -351,14 +363,7 @@ describe("prepared TeamAgent turn", () => {
       },
     }));
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
 
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "继续旧会话" }],
@@ -443,14 +448,7 @@ describe("prepared TeamAgent turn", () => {
       return openAiCompletionResponse('{"skillIds":["analysis","analysis","unknown"]}');
     });
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
 
     const context = turnContext();
     const prepared = await prepareTeamAgentTurn(env, session, { ...context,
@@ -548,14 +546,7 @@ describe("prepared TeamAgent turn", () => {
       openAiCompletionResponse('{"skillIds":["analysis"]}'),
     );
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
 
     const admitted = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Consume the only message unit" }],
@@ -628,14 +619,7 @@ describe("prepared TeamAgent turn", () => {
       openAiCompletionResponse('{"skillIds":["analysis"]}'),
     );
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
     const context = turnContext();
 
     await expect(prepareTeamAgentTurn(env, session, {
@@ -706,14 +690,7 @@ describe("prepared TeamAgent turn", () => {
       openAiCompletionResponse('{"skillIds":["analysis"]}'),
     );
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
     const controller = new AbortController();
     controller.abort(new DOMException("cancelled by user", "AbortError"));
 
@@ -781,14 +758,7 @@ describe("prepared TeamAgent turn", () => {
       });
     });
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
     const controller = new AbortController();
 
     const preparing = prepareTeamAgentTurn(env, session, { ...turnContext(),
@@ -846,14 +816,7 @@ describe("prepared TeamAgent turn", () => {
       openAiCompletionResponse('{"skillIds":["analysis"]}'),
     );
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
     const input = {
       ...turnContext(),
       messages: [{ role: "user" as const, content: "Continue with automatic selection" }],
@@ -922,14 +885,7 @@ describe("prepared TeamAgent turn", () => {
     });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(openAiStreamResponse("must not run"));
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
     const context = turnContext();
     const initial = await prepareTeamAgentTurn(env, session, {
       ...context,
@@ -985,14 +941,7 @@ describe("prepared TeamAgent turn", () => {
     }));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(openAiCompletionResponse("not json"));
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
 
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Continue the draft" }],
@@ -1038,14 +987,7 @@ describe("prepared TeamAgent turn", () => {
       setTimeout(() => resolve(openAiCompletionResponse('{"skillIds":["writing"]}')), 5_250);
     }));
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
     const startedAt = Date.now();
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Analyze and draft the result" }],
@@ -1110,14 +1052,7 @@ describe("prepared TeamAgent turn", () => {
       return openAiCompletionResponse('{"skillIds":["writing"]}');
     });
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(label, now);
     const prepared = await prepareTeamAgentTurn(env, session, { ...turnContext(),
       messages: [{ role: "user", content: "Draft a report" }],
       skillMode: "automatic",
@@ -1192,14 +1127,7 @@ describe("prepared TeamAgent turn", () => {
       },
     }));
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label: `agent-continuation-${crypto.randomUUID()}`,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(`agent-continuation-${crypto.randomUUID()}`, now);
     const input = { ...turnContext(), messages: [{ role: "user" as const, content: "继续完成这个任务" }] };
 
     const initial = await prepareTeamAgentTurn(env, session, input);
@@ -1254,14 +1182,7 @@ describe("prepared TeamAgent turn", () => {
       },
     }));
     const now = Date.now();
-    const session: Session = {
-      id: crypto.randomUUID(),
-      label: `agent-tool-stream-${crypto.randomUUID()}`,
-      kind: "member",
-      createdAt: now,
-      lastSeen: now,
-      expiresAt: now + 60_000,
-    };
+    const session = await createMemberSession(`agent-tool-stream-${crypto.randomUUID()}`, now);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       const payload = JSON.parse(String(init?.body || "{}")) as { tools?: Array<{ function?: { name?: string } }> };
       const name = payload.tools?.[0]?.function?.name || "tool";

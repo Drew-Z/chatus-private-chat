@@ -1,3 +1,8 @@
+import {
+  decodeStablePrincipalIdentity,
+  normalizeMemberAlias,
+} from "./identity";
+
 export const MAX_WORKSPACE_PATH_CHARS = 1_024;
 export const MAX_WORKSPACE_SEGMENT_CHARS = 255;
 export const MAX_WORKSPACE_FILE_BYTES = 10 * 1024 * 1024;
@@ -18,10 +23,44 @@ export function workspaceExtractedObjectKey(sourceObjectKey: string, generation:
 
 export type DocumentIngestMessage = {
   ownerId: string;
+  principalId: string;
+  rootInstanceName: string;
+  userStateInstanceName: string;
+  registryRevision: number;
   fileId: string;
   versionId: string;
   generation: number;
 };
+
+export function decodeDocumentIngestMessage(value: unknown): DocumentIngestMessage | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "ownerId", "principalId", "rootInstanceName", "userStateInstanceName", "registryRevision",
+    "fileId", "versionId", "generation",
+  ])) return undefined;
+  const ownerId = normalizeMemberAlias(value.ownerId);
+  const stable = decodeStablePrincipalIdentity({
+    version: 1,
+    principalId: value.principalId,
+    rootInstanceName: value.rootInstanceName,
+    userStateInstanceName: value.userStateInstanceName,
+    registryRevision: value.registryRevision,
+  });
+  const fileId = normalizeWorkspaceEntityId(value.fileId);
+  const versionId = normalizeWorkspaceEntityId(value.versionId);
+  const generation = finitePositiveInteger(value.generation);
+  return ownerId && stable && fileId && versionId && generation
+    ? {
+        ownerId,
+        principalId: stable.principalId,
+        rootInstanceName: stable.rootInstanceName,
+        userStateInstanceName: stable.userStateInstanceName,
+        registryRevision: stable.registryRevision,
+        fileId,
+        versionId,
+        generation,
+      }
+    : undefined;
+}
 
 export type DocumentIngestBeginResult =
   | {
@@ -331,4 +370,18 @@ export function workspaceDocumentByteLimit(mediaTypeValue: unknown, nameValue: u
     || extension === ".pptx"
   ) return MAX_WORKSPACE_FILE_BYTES;
   return 0;
+}
+
+function finitePositiveInteger(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  if (Object.keys(value).length !== expected.length) return false;
+  const keys = new Set(expected);
+  return Object.keys(value).every((key) => keys.has(key));
 }
