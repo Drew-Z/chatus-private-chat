@@ -8,9 +8,10 @@ updates:
       time: "03:00"
       timezone: Asia/Shanghai
     groups:
-      development-dependencies:
-        dependency-type: development
-    open-pull-requests-limit: 5
+      all-npm:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 1
 
   - package-ecosystem: github-actions
     directory: /
@@ -19,4 +20,8 @@ updates:
       day: monday
       time: "03:30"
       timezone: Asia/Shanghai
-    open-pull-requests-limit: 3
+    groups:
+      all-github-actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 1

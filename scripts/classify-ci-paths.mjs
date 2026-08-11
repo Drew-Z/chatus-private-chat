@@ -65,7 +65,7 @@ const TRELLIS_RECORD_EXTENSIONS = new Set([".json", ".jsonl", ".md"]);
 export function classifyChangedPaths(inputPaths, options = {}) {
   const paths = [...new Set(inputPaths.map(normalizePath).filter(Boolean))].sort();
   if (options.all === true) {
-    return { workspace: true, agent: true, deploy: true, docsOnly: false, paths };
+    return { workspace: true, agent: true, deploy: true, quality: true, docsOnly: false, paths };
   }
 
   const docsOnly = paths.length > 0 && paths.every(isDocumentationPath);
@@ -78,6 +78,7 @@ export function classifyChangedPaths(inputPaths, options = {}) {
     workspace,
     agent,
     deploy: paths.length === 0 || !docsOnly,
+    quality: paths.length === 0 || !docsOnly,
     docsOnly,
     paths,
   };
@@ -121,7 +122,7 @@ async function main() {
   const manifestPath = readArg(args, "--manifest");
   const input = await readStdin();
   const result = classifyChangedPaths(input.split(/\r?\n/u), { all });
-  const output = ["workspace", "agent", "deploy", "docsOnly"]
+  const output = ["workspace", "agent", "deploy", "quality", "docsOnly"]
     .map((key) => `${key}=${String(result[key])}`)
     .join("\n") + "\n";
 

@@ -1,0 +1,65 @@
+{
+  "id": "08-10-github-actions-minute-optimization",
+  "name": "08-10-github-actions-minute-optimization",
+  "title": "Optimize GitHub Actions minute usage",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhang",
+  "assignee": "zhang",
+  "createdAt": "2026-08-10",
+  "completedAt": null,
+  "branch": "codex/actions-minute-optimization",
+  "base_branch": "codex/actions-minute-optimization",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "frontend checks passed",
+        "at": "2026-08-11T00:04:43.204962+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "742 tests passed",
+        "at": "2026-08-11T00:04:44.249984+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "TypeScript checks passed",
+        "at": "2026-08-11T00:04:45.377204+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker dry-run passed without deployment",
+        "at": "2026-08-11T00:04:46.413524+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "diff whitespace check passed",
+        "at": "2026-08-11T00:04:47.563791+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Trellis consistency passed",
+        "at": "2026-08-11T00:04:48.682746+00:00"
+      }
+    ]
+  }
+}
