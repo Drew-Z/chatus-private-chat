@@ -1694,3 +1694,35 @@ Added a single 90-second pre-visible Provider run deadline, secret-free ephemera
 ### Next Steps
 
 - None - task complete
+
+
+## Session 45: Stable principal and resource identity
+
+**Date**: 2026-08-11
+**Task**: Stable principal and resource identity
+
+### Summary
+
+Added and deployed the v6 IdentityRegistry foundation, principal-bound session and Queue routing, fail-closed Agent revalidation, principal-scoped cleanup/recovery, full fake-runtime coverage, PR #61 evidence, and archived the completed Trellis task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b36294dc97bc053f0153b03abca75ebcec712284` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
