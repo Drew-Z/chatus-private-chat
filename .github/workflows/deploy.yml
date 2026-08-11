@@ -1,9 +1,6 @@
 name: Deploy to Cloudflare
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -14,53 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      deploy: ${{ steps.classify.outputs.deploy }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Classify deployment paths
-        id: classify
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-        run: |
-          mkdir -p artifacts/path-classification
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            node scripts/classify-ci-paths.mjs --all --github-output "$GITHUB_OUTPUT" --manifest artifacts/path-classification/paths.json
-          elif [ -z "$BASE_SHA" ] || [[ "$BASE_SHA" =~ ^0+$ ]]; then
-            git diff-tree --root --no-commit-id --name-only -r "$HEAD_SHA" | node scripts/classify-ci-paths.mjs --github-output "$GITHUB_OUTPUT" --manifest artifacts/path-classification/paths.json
-          else
-            git diff --name-only "$BASE_SHA" "$HEAD_SHA" | node scripts/classify-ci-paths.mjs --github-output "$GITHUB_OUTPUT" --manifest artifacts/path-classification/paths.json
-          fi
-
-      - name: Retain deployment path classification
-        uses: actions/upload-artifact@v7
-        with:
-          name: deployment-paths-${{ github.sha }}
-          path: artifacts/path-classification/paths.json
-          if-no-files-found: error
-          retention-days: 30
-
-  deployment-skipped:
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.deploy != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Record docs and Trellis-only skip
-        run: echo "Deployment skipped because this commit changes only documentation or tracked Trellis records." >> "$GITHUB_STEP_SUMMARY"
-
   deploy:
-    needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
@@ -72,6 +23,12 @@ jobs:
       CHATUS_DOCUMENT_INGEST_DLQ_NAME: ${{ vars.CHATUS_DOCUMENT_INGEST_DLQ_NAME }}
       CHATUS_PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
     steps:
+      - name: Refuse non-main dispatch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Production deployment can only be dispatched from refs/heads/main" >&2
+          exit 1
+
       - name: Checkout deployment revision
         uses: actions/checkout@v7
         with:

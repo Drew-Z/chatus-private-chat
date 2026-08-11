@@ -5,6 +5,7 @@ import { parseDocument } from "yaml";
 import ciWorkflowRaw from "../.github/workflows/ci.yml?raw";
 import deployWorkflowRaw from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.yml?raw";
+import dependabotRaw from "../.github/dependabot.yml?raw";
 import checkFrontendSourceRaw from "../scripts/check-frontend.mjs?raw";
 import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
 import packageSourceRaw from "../package.json?raw";
@@ -56,6 +57,14 @@ type Workflow = {
 const parsedCiWorkflow = parseWorkflow(ciWorkflow, "ci.yml");
 const parsedDeployWorkflow = parseWorkflow(deployWorkflow, "deploy.yml");
 const parsedAcceptanceWorkflow = parseWorkflow(acceptanceWorkflow, "production-acceptance.yml");
+const dependabotDocument = parseDocument(normalizeText(dependabotRaw), {
+  prettyErrors: true,
+  uniqueKeys: true,
+});
+if (dependabotDocument.errors.length > 0) throw new Error("dependabot.yml is invalid");
+const parsedDependabot = dependabotDocument.toJS() as {
+  updates?: Array<Record<string, unknown>>;
+};
 
 describe("Vitest runtime and coverage governance", () => {
   it("keeps the full Cloudflare suite in one serial Workers pool", () => {
@@ -98,6 +107,7 @@ describe("delivery path classification", () => {
       workspace: true,
       agent: true,
       deploy: true,
+      quality: true,
       docsOnly: false,
     });
   });
@@ -134,6 +144,7 @@ describe("delivery path classification", () => {
       workspace: false,
       agent: false,
       deploy: false,
+      quality: false,
       docsOnly: true,
       paths: [...paths].sort(),
     });
@@ -143,6 +154,7 @@ describe("delivery path classification", () => {
     expect(classifyChangedPaths(["README.md", "src/worker.ts"])).toMatchObject({
       agent: true,
       deploy: true,
+      quality: true,
       docsOnly: false,
     });
   });
@@ -183,6 +195,7 @@ describe("delivery path classification", () => {
       workspace: true,
       agent: true,
       deploy: true,
+      quality: true,
       docsOnly: false,
       paths: ["README.md", "client/src/main.tsx"],
     });
@@ -193,6 +206,7 @@ describe("delivery path classification", () => {
       workspace: false,
       agent: false,
       deploy: true,
+      quality: true,
       docsOnly: false,
       paths: [],
     });
@@ -207,6 +221,7 @@ describe("delivery path classification", () => {
       workspace: true,
       agent: true,
       deploy: true,
+      quality: true,
       docsOnly: false,
     });
   });
@@ -227,6 +242,18 @@ describe("pull-request delivery workflow", () => {
       "  duplicate:",
       "    runs-on: ubuntu-latest",
     ].join("\n"), "duplicate.yml")).toThrow();
+  });
+
+  it("cancels obsolete PR runs and gates baseline quality on classification", () => {
+    expect(parsedCiWorkflow.concurrency).toEqual({
+      group: "chatus-pr-quality-${{ github.event.pull_request.number || github.ref }}",
+      "cancel-in-progress": true,
+    });
+    const changes = getJob(parsedCiWorkflow, "changes");
+    expect(changes.outputs).toMatchObject({
+      quality: "${{ steps.classify.outputs.quality }}",
+    });
+    expect(getJob(parsedCiWorkflow, "quality").if).toBe("needs.changes.outputs.quality == 'true'");
   });
 
   it("keeps the five quality gates ordered and excludes production operations", () => {
@@ -250,6 +277,7 @@ describe("pull-request delivery workflow", () => {
       workspace: "${{ steps.classify.outputs.workspace }}",
       agent: "${{ steps.classify.outputs.agent }}",
       deploy: "${{ steps.classify.outputs.deploy }}",
+      quality: "${{ steps.classify.outputs.quality }}",
     });
 
     const workspace = getJob(parsedCiWorkflow, "workspace-browser");
@@ -307,6 +335,22 @@ describe("pull-request delivery workflow", () => {
   });
 });
 
+describe("dependency update governance", () => {
+  it("batches npm and Actions updates into one weekly PR per ecosystem", () => {
+    expect(parsedDependabot.updates).toHaveLength(2);
+    for (const [ecosystem, group] of [
+      ["npm", "all-npm"],
+      ["github-actions", "all-github-actions"],
+    ]) {
+      const update = parsedDependabot.updates?.find(
+        (candidate) => candidate["package-ecosystem"] === ecosystem,
+      );
+      expect(update?.["open-pull-requests-limit"]).toBe(1);
+      expect(update?.groups).toEqual({ [group]: { patterns: ["*"] } });
+    }
+  });
+});
+
 describe("workflow structural governance", () => {
   it("enforces bounded job timeouts", () => {
     expectJobTimeouts(parsedCiWorkflow, {
@@ -316,8 +360,6 @@ describe("workflow structural governance", () => {
       "agent-browser": 20,
     });
     expectJobTimeouts(parsedDeployWorkflow, {
-      changes: 5,
-      "deployment-skipped": 5,
       deploy: 30,
     });
     expectJobTimeouts(parsedAcceptanceWorkflow, { acceptance: 15 });
@@ -367,11 +409,6 @@ describe("workflow structural governance", () => {
       retentionDays: 14,
       always: true,
     });
-    expectArtifact(parsedDeployWorkflow, "changes", "Retain deployment path classification", {
-      name: "deployment-paths-${{ github.sha }}",
-      path: "artifacts/path-classification/paths.json",
-      retentionDays: 30,
-    });
     expectArtifact(parsedDeployWorkflow, "deploy", "Retain deployment manifest", {
       name: "production-deployment-${{ github.sha }}",
       path: "artifacts/deployment/manifest.json",
@@ -396,23 +433,16 @@ describe("workflow structural governance", () => {
 });
 
 describe("main deployment governance", () => {
-  it("keeps docs-only skip and non-canceling exact-main deployment structure", () => {
+  it("keeps manual main-only and non-canceling exact-main deployment structure", () => {
     expect(parsedDeployWorkflow.concurrency).toEqual({
       group: "chatus-production-mutation",
       "cancel-in-progress": false,
     });
-    const changes = getJob(parsedDeployWorkflow, "changes");
-    expect(changes.outputs).toEqual({ deploy: "${{ steps.classify.outputs.deploy }}" });
-    expect(joinJobRuns(changes)).toContain("classify-ci-paths.mjs");
-
-    const skipped = getJob(parsedDeployWorkflow, "deployment-skipped");
-    expect(skipped.needs).toBe("changes");
-    expect(skipped.if).toBe("github.event_name == 'push' && needs.changes.outputs.deploy != 'true'");
+    expect(parsedDeployWorkflow.on).toEqual({ workflow_dispatch: null });
 
     const deploy = getJob(parsedDeployWorkflow, "deploy");
-    expect(deploy.needs).toBe("changes");
-    expect(deploy.if).toBe("github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true'");
     expect(deploy.environment).toBe("production");
+    expect(getNamedStep(deploy, "Refuse non-main dispatch").if).toBe("github.ref != 'refs/heads/main'");
     expect(getNamedStep(deploy, "Checkout deployment revision").with).toEqual({ "fetch-depth": 0 });
 
     const firstGuard = getNamedStepIndex(deploy, "Refuse a stale main revision");

@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: chatus-pr-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -17,6 +21,7 @@ jobs:
       workspace: ${{ steps.classify.outputs.workspace }}
       agent: ${{ steps.classify.outputs.agent }}
       deploy: ${{ steps.classify.outputs.deploy }}
+      quality: ${{ steps.classify.outputs.quality }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -47,6 +52,7 @@ jobs:
 
   quality:
     needs: changes
+    if: needs.changes.outputs.quality == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

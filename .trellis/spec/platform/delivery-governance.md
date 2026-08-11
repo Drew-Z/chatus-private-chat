@@ -9,7 +9,7 @@ Production remains GitHub-Actions-only. Pull requests use local fixtures and fak
 ## 2. Signatures
 
 - PR workflow: `.github/workflows/ci.yml`
-- Main workflow: `.github/workflows/deploy.yml`
+- Main workflow: `.github/workflows/deploy.yml` (manual `workflow_dispatch` from `main` only)
 - Production acceptance: `.github/workflows/production-acceptance.yml`
 - Path classifier: `node scripts/classify-ci-paths.mjs [--all] --github-output <path> --manifest <path>`
 - Exact-main guard: `node scripts/assert-main-tip.mjs` with required `GITHUB_SHA`
@@ -26,7 +26,7 @@ python ./.trellis/scripts/task.py add-waiver <task> <gate> <approver> <reason>
 
 ## 3. Contracts
 
-PR quality always runs, in order, `npm run check:frontend`, one complete `npm test -- --coverage` Istanbul run, `npm run typecheck`, `npx wrangler deploy --dry-run`, and a base-to-head `git diff --check`. Local `npm test` remains uninstrumented for feedback and performance baselines; PR quality must not run a second complete Vitest suite only for coverage. The Workspace and fake-Provider Agent Playwright jobs keep stable job names and are gated by the shared path classifier. Frontend paths affect both browser suites; Agent/runtime paths affect Agent acceptance; `package.json`, `package-lock.json`, `tsconfig.json`, and `wrangler.jsonc` affect both. Delivery-governance paths (`.github/**`, the classifier, the exact-main guard, and their owning test) affect both browser suites so a gate change exercises the jobs it controls.
+PR quality runs, in order, `npm run check:frontend`, one complete `npm test -- --coverage` Istanbul run, `npm run typecheck`, `npx wrangler deploy --dry-run`, and a base-to-head `git diff --check` for executable changes. The classifier emits `quality=false` for documentation/Trellis-record-only changes and fails closed to `quality=true` for empty, unknown, or manual-all classifications. Local `npm test` remains uninstrumented for feedback and performance baselines; PR quality must not run a second complete Vitest suite only for coverage. The Workspace and fake-Provider Agent Playwright jobs keep stable job names and are gated by the shared path classifier. Frontend paths affect both browser suites; Agent/runtime paths affect Agent acceptance; `package.json`, `package-lock.json`, `tsconfig.json`, and `wrangler.jsonc` affect both. Delivery-governance paths (`.github/**`, the classifier, the exact-main guard, and their owning test) affect both browser suites so a gate change exercises the jobs it controls.
 
 Parse all workflow YAML with the declared `yaml` dependency and duplicate-key rejection before inspecting jobs or steps. Structural tests own job names, `needs`, `if`, outputs, step order, artifact inputs, and job timeouts. String checks are insufficient for YAML-owned structure because the same text can exist under the wrong job or mapping.
 
@@ -47,7 +47,7 @@ one exact surface and cannot reuse another surface's observation, owner approval
 or rollback result. Production deployment and acceptance use the exact merged
 main SHA through GitHub Actions; local tests never mutate a production registry.
 
-Main deployment preserves the early and late remote-main SHA guards and the non-canceling production-mutation concurrency group. Both guards call `scripts/assert-main-tip.mjs`, which accepts only a lowercase 40-character `GITHUB_SHA`, requires exactly one valid `refs/heads/main` result, compares by exact equality, and emits bounded errors without command output. The early guard runs after Node setup but before provisioning or secret preparation; the late guard is the step immediately before `Deploy Worker`. The deploy job checks out full history before comparing `GITHUB_SHA^` to `GITHUB_SHA`; the default one-commit checkout makes the parent revision ambiguous and must not be used with this gate. Documentation/Trellis-record-only commits publish explicit path-classification evidence and a skip summary. A real deploy and manual production acceptance each retain an exact-SHA manifest.
+Main deployment is manual and accepts only `workflow_dispatch` runs from `refs/heads/main`; non-main dispatches fail before checkout or mutation. It preserves the early and late remote-main SHA guards and the non-canceling production-mutation concurrency group. Both guards call `scripts/assert-main-tip.mjs`, which accepts only a lowercase 40-character `GITHUB_SHA`, requires exactly one valid `refs/heads/main` result, compares by exact equality, and emits bounded errors without command output. The early guard runs after Node setup but before provisioning or secret preparation; the late guard is the step immediately before `Deploy Worker`. The deploy job checks out full history before comparing `GITHUB_SHA^` to `GITHUB_SHA`; the default one-commit checkout makes the parent revision ambiguous and must not be used with this gate. A real deploy and manual production acceptance each retain an exact-SHA manifest.
 
 Deployment preparation must copy the GitHub Actions `GITHUB_SHA` into the
 server-only `DEPLOYMENT_SHA` Worker variable. The preparation script rejects an
