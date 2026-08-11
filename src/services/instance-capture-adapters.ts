@@ -134,13 +134,17 @@ export function createDocumentIngestCaptureAdapter(
 export async function createRegisteredDurableObjectCaptureAdapters(
   env: Pick<
     Env,
-    "INSTANCE_COORDINATOR" | "USER_STATE" | "TEAM_AGENT" | "PROVIDER_COORDINATOR" | "PROVIDER_ATTEMPT_LEDGER"
+    "INSTANCE_COORDINATOR" | "USER_STATE" | "TEAM_AGENT" | "PROVIDER_COORDINATOR"
+      | "PROVIDER_ATTEMPT_LEDGER" | "IDENTITY_REGISTRY"
   >,
   coordinatorName: string,
 ): Promise<CaptureStoreAdapter[]> {
   const registry = await env.INSTANCE_COORDINATOR.getByName(coordinatorName).listRegisteredObjects();
   if (!registry.ok) throw new InstanceCaptureError(registry.error);
   if (!registry.baselineComplete) throw new InstanceCaptureError("capture_object_registry_incomplete");
+  if (!registry.objects.some((object) => object.kind === "identity_registry")) {
+    throw new InstanceCaptureError("capture_object_registry_incomplete");
+  }
   const assertRegistryUnchanged = async () => {
     const current = await env.INSTANCE_COORDINATOR.getByName(coordinatorName).listRegisteredObjects();
     if (!current.ok) throw new InstanceCaptureError(current.error);
@@ -207,7 +211,9 @@ export async function createRegisteredDurableObjectCaptureAdapters(
         ? env.PROVIDER_COORDINATOR.getByName(object.instanceName)
         : object.kind === "provider_attempt_ledger"
           ? env.PROVIDER_ATTEMPT_LEDGER.getByName(object.instanceName)
-        : env.TEAM_AGENT.getByName(object.instanceName);
+          : object.kind === "identity_registry"
+            ? env.IDENTITY_REGISTRY.getByName(object.instanceName)
+            : env.TEAM_AGENT.getByName(object.instanceName);
     adapters.push(createRegistryObjectAdapter(
       object,
       stub as unknown as CaptureDurableObjectStub,

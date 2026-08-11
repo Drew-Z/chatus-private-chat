@@ -9,6 +9,7 @@ export type FeedbackReason = "" | "inaccurate" | "misunderstood" | "verbose" | "
 export type FeedbackRecord = {
   id: string;
   label: string;
+  principalId?: string;
   rating: FeedbackRating;
   reason?: FeedbackReason;
   routeId: string;
@@ -40,7 +41,7 @@ export type FeedbackAuditDependencies = {
 export type FeedbackAuditService = {
   listFeedback(): Promise<FeedbackRecord[]>;
   upsertFeedback(input: FeedbackRecordInput): Promise<FeedbackRecord>;
-  removeFeedbackByLabel(label: string): Promise<void>;
+  removeFeedbackByPrincipal(principalId: string, legacyLabel: string, includeLegacyLabel: boolean): Promise<void>;
   listAdminAudit(): Promise<AdminAuditRecord[]>;
   appendAdminAudit(action: string, target?: string): Promise<void>;
 };
@@ -64,7 +65,7 @@ export function createFeedbackAuditService(
     upsertFeedback: async (input) => {
       const record = normalizeFeedbackRecord({
         ...input,
-        id: `${input.label}:${input.chatId}:${input.messageId}`,
+        id: `${input.principalId || `legacy:${input.label}`}:${input.chatId}:${input.messageId}`,
         at: dependencies.nowIso(),
       });
       if (!record) throw new TypeError("Invalid feedback record");
@@ -73,11 +74,14 @@ export function createFeedbackAuditService(
       await dependencies.store.put(FEEDBACK_STORAGE_KEY, JSON.stringify(next));
       return record;
     },
-    removeFeedbackByLabel: async (label) => {
+    removeFeedbackByPrincipal: async (principalId, legacyLabel, includeLegacyLabel) => {
       const records = await listFeedback();
       await dependencies.store.put(
         FEEDBACK_STORAGE_KEY,
-        JSON.stringify(records.filter((item) => item.label !== label)),
+        JSON.stringify(records.filter((item) => (
+          item.principalId !== principalId
+          && !(includeLegacyLabel && item.principalId === undefined && item.label === legacyLabel)
+        ))),
       );
     },
     listAdminAudit,
@@ -128,9 +132,10 @@ async function loadRecordList<T extends { id: string }>(
 function normalizeFeedbackRecord(value: unknown): FeedbackRecord | null {
   if (
     !isRecord(value)
-    || !hasOnlyKeys(value, ["id", "label", "rating", "reason", "routeId", "chatId", "messageId", "at"])
+    || !hasOnlyKeys(value, ["id", "label", "principalId", "rating", "reason", "routeId", "chatId", "messageId", "at"])
     || !isBoundedText(value.id, 512)
     || !isBoundedText(value.label, 160)
+    || (value.principalId !== undefined && !isPrincipalId(value.principalId))
     || (value.rating !== "up" && value.rating !== "down")
     || !isBoundedText(value.routeId, 100)
     || !isBoundedText(value.chatId, 100)
@@ -142,6 +147,7 @@ function normalizeFeedbackRecord(value: unknown): FeedbackRecord | null {
   return {
     id: value.id,
     label: value.label,
+    ...(value.principalId !== undefined ? { principalId: value.principalId } : {}),
     rating: value.rating,
     ...(value.reason !== undefined ? { reason: value.reason as FeedbackReason } : {}),
     routeId: value.routeId,
@@ -187,6 +193,11 @@ function isBoundedText(value: unknown, maxChars: number): value is string {
 
 function isIsoDate(value: unknown): value is string {
   return typeof value === "string" && Boolean(value.trim()) && Number.isFinite(Date.parse(value));
+}
+
+function isPrincipalId(value: unknown): value is string {
+  return typeof value === "string"
+    && /^prn_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -3,16 +3,16 @@
   "name": "acl-stable-principal-resource-identity",
   "title": "ACL stable principal and resource identity",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
-  "scope": null,
+  "scope": "platform",
   "package": null,
   "priority": "P2",
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-05",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/acl-stable-principal-resource-identity",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
@@ -22,5 +22,56 @@
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite client build and frontend structure checks passed.",
+        "at": "2026-08-11T12:38:20.478903+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "49 files and 758 fake-runtime tests passed.",
+        "at": "2026-08-11T12:38:21.479516+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright passed: 90 passed, 55 path-filtered skips.",
+        "at": "2026-08-11T12:38:22.480877+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-Provider Agent Playwright passed: 3 passed.",
+        "at": "2026-08-11T12:38:23.565229+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-11T12:38:24.585871+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 dry-run passed with IdentityRegistry binding.",
+        "at": "2026-08-11T12:38:25.611919+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Diff whitespace check passed; only line-ending notices emitted.",
+        "at": "2026-08-11T12:38:26.712857+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed.",
+        "at": "2026-08-11T12:38:27.779471+00:00"
+      }
+    ]
+  }
 }

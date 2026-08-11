@@ -9,10 +9,7 @@ import {
   MAX_WORKSPACE_FILE_BYTES,
   MAX_WORKSPACE_MEMBER_BYTES,
 } from "../src/contracts/workspace-file";
-import {
-  getTeamAgentConversationInstanceName,
-  getTeamAgentInstanceName,
-} from "../src/worker";
+import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../src/identity-registry";
 import { minimalPdfSource } from "./document-fixtures";
 
 const ACCESS_CODES_KEY = "config:access_codes";
@@ -41,20 +38,43 @@ function apiRequest(path: string, cookie: string, init: RequestInit = {}) {
   return exports.default.fetch(new Request(`https://example.test${path}`, { ...init, headers }));
 }
 
+async function getMemberRoute(label: string) {
+  const lookup = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+    .lookupActivePrincipalAlias({ version: 1, alias: label });
+  if (!lookup.found) throw new Error("identity_alias_missing");
+  return lookup.route;
+}
+
 async function getRootAgent(label: string) {
-  const instance = await getTeamAgentInstanceName(label);
-  return getAgentByName(env.TEAM_AGENT, instance, {
-    props: { userLabel: label, scope: "root" },
+  const principal = await getMemberRoute(label);
+  return getAgentByName(env.TEAM_AGENT, principal.rootInstanceName, {
+    props: {
+      userLabel: label,
+      scope: "root",
+      accessKind: "member",
+      sessionExpiresAt: Number.MAX_SAFE_INTEGER,
+    },
   }) as DurableObjectStub<TeamAgent>;
 }
 
 async function getConversationAgent(label: string, chatId: string) {
-  const [instance, rootInstance] = await Promise.all([
-    getTeamAgentConversationInstanceName(label, chatId),
-    getTeamAgentInstanceName(label),
-  ]);
-  return getAgentByName(env.TEAM_AGENT, instance, {
-    props: { userLabel: label, scope: "conversation", chatId, rootInstance },
+  const principal = await getMemberRoute(label);
+  const resource = await env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+    .lookupConversationResource({
+      version: 1,
+      principalId: principal.principalId,
+      conversationId: chatId,
+    });
+  if (!resource.found) throw new Error("identity_resource_missing");
+  return getAgentByName(env.TEAM_AGENT, resource.route.agentInstanceName, {
+    props: {
+      userLabel: label,
+      scope: "conversation",
+      chatId,
+      rootInstance: principal.rootInstanceName,
+      accessKind: "member",
+      sessionExpiresAt: Number.MAX_SAFE_INTEGER,
+    },
   }) as DurableObjectStub<TeamAgent>;
 }
 
@@ -740,7 +760,7 @@ describe("workspace file API and R2 recovery", () => {
     });
 
     await evictDurableObject(root);
-    const instance = await getTeamAgentInstanceName(member.label);
+    const instance = (await getMemberRoute(member.label)).rootInstanceName;
     const restored = await getAgentByName(env.TEAM_AGENT, instance) as DurableObjectStub<TeamAgent>;
     await expect(runDurableObjectAlarm(restored)).resolves.toBe(true);
     await expect(env.CHAT_STORE.get(`session:${member.cookie.split("=", 2)[1]}`)).resolves.toBeNull();
@@ -764,7 +784,7 @@ describe("workspace file API and R2 recovery", () => {
     });
 
     await evictDurableObject(root);
-    const instance = await getTeamAgentInstanceName(member.label);
+    const instance = (await getMemberRoute(member.label)).rootInstanceName;
     const restored = await getAgentByName(env.TEAM_AGENT, instance) as DurableObjectStub<TeamAgent>;
     await expect(runDurableObjectAlarm(restored)).resolves.toBe(true);
     expect((await apiRequest("/api/session", member.cookie)).status).toBe(401);

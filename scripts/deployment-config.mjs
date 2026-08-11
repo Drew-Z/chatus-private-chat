@@ -410,6 +410,7 @@ export function buildDeploymentConfig(baseConfig, instance) {
     ["PROVIDER_COORDINATOR", "ProviderCoordinator", "v3"],
     ["INSTANCE_COORDINATOR", "InstanceCoordinator", "v4"],
     ["PROVIDER_ATTEMPT_LEDGER", "ProviderAttemptLedger", "v5"],
+    ["IDENTITY_REGISTRY", "IdentityRegistry", "v6"],
   ];
   const migrations = Array.isArray(config.migrations) ? config.migrations : [];
   for (const [bindingName, className, migrationTag] of requiredDurableObjects) {

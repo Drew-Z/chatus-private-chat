@@ -67,7 +67,16 @@ Queue bindings and messages:
 
 ```typescript
 DOCUMENT_INGEST: Queue<DocumentIngestMessage>
-type DocumentIngestMessage = { ownerId: string; fileId: string; versionId: string; generation: number };
+type DocumentIngestMessage = {
+  ownerId: string;
+  principalId: string;
+  rootInstanceName: string;
+  userStateInstanceName: string;
+  registryRevision: number;
+  fileId: string;
+  versionId: string;
+  generation: number;
+};
 type DocumentIngestStatus = "queued" | "extracting" | "ready" | "failed" | "deleted";
 ```
 
@@ -108,8 +117,13 @@ type WorkspaceTrackedUsage = {
 
 ### Async Document Ingest
 
-- Upload finalization persists `queued`, generation `1`, and the deterministic key `workspaceExtractedObjectKey(originalKey, generation)`, then sends the exact `{ ownerId, fileId, versionId, generation }` message. A Queue send failure marks that generation failed and returns a retryable `503`; the HTTP response never returns the internal message.
+- Upload finalization persists `queued`, generation `1`, and the deterministic key `workspaceExtractedObjectKey(originalKey, generation)`, then sends the exact principal-bound eight-field message defined above. A Queue send failure marks that generation failed and returns a retryable `503`; the HTTP response never returns the internal message.
 - Instance maintenance is checked before Queue-name dispatch, and every main/DLQ message execution owns an independent durable `document_ingest` fence. Admission failure retries the message; a fence is held through parse/R2/finalize or DLQ recording and released only after the handler settles.
+- Every Queue message is decoded as an exact principal-bound route. `ownerId` is
+  retained only for the Root's legacy identity assertion; `principalId`, the
+  pinned Root/UserState names, and `registryRevision` are mandatory authority
+  fields. A stale/mismatched marker is acknowledged as stale without R2 or
+  Provider I/O; label-only messages are never routed.
 - The main consumer is locked to batch size `1`, concurrency `1`, and `max_retries: 3` (initial delivery plus three retries). Transient failures return the state to `queued`; permanent parser failures become `failed` and ack; the DLQ marks only the matching queued/extracting generation failed.
 - `extracting` owns a 60-second processing lease. A duplicate delivery retries after the remaining lease instead of doing parallel work; an expired lease increments attempts and reclaims only the same file/version/generation. This prevents a Worker termination between begin and failure recording from leaving a version permanently stuck.
 - Manual retry is current-version-only and changes only `failed -> queued`, increments generation, clears artifact metadata, and sends a new message. Old main/DLQ/completion messages cannot change the new generation.

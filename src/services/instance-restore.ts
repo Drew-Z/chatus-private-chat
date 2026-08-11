@@ -825,6 +825,7 @@ async function validateKnownPayloads(
         "conversation_team_agent",
         "provider_coordinator",
         "provider_attempt_ledger",
+        "identity_registry",
       ].includes(entry.store)) {
         const snapshot = decodeDurableObjectCaptureSnapshot(bytes, entry.schemaVersion);
         const itemCount = snapshot.tables.reduce((count, table) => count + table.rows.length, snapshot.storage.length);
@@ -1049,6 +1050,7 @@ function normalizeRestoreTargetIdentity(value: unknown): RestoreTargetIdentityV1
     ["durable_object:PROVIDER_COORDINATOR", { className: "ProviderCoordinator", migrationTag: "v3" }],
     ["durable_object:INSTANCE_COORDINATOR", { className: "InstanceCoordinator", migrationTag: "v4" }],
     ["durable_object:PROVIDER_ATTEMPT_LEDGER", { className: "ProviderAttemptLedger", migrationTag: "v5" }],
+    ["durable_object:IDENTITY_REGISTRY", { className: "IdentityRegistry", migrationTag: "v6" }],
   ]);
   if (normalized.length !== required.size) return undefined;
   for (const binding of normalized) {
@@ -1668,7 +1670,8 @@ function isTargetBindingKind(value: unknown): value is RestoreTargetBindingKind 
 
 function isObjectKind(value: unknown): value is InstanceObjectKind {
   return value === "user_state" || value === "root_team_agent" || value === "conversation_team_agent"
-    || value === "provider_coordinator" || value === "provider_attempt_ledger";
+    || value === "provider_coordinator" || value === "provider_attempt_ledger"
+    || value === "identity_registry";
 }
 
 function isRestorePhase(value: unknown): value is InstanceRestorePhase {
