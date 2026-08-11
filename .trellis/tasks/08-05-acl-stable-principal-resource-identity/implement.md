@@ -41,8 +41,10 @@
 - `git diff --check` passed with line-ending notices only.
 - `python ./.trellis/scripts/task.py validate-all` reported repository
   consistency OK.
-- Remaining in the final checklist item: work commit, PR/CI, exact-main GitHub
-  Actions deployment/acceptance evidence, final AC10 completion, and archive.
+- Work commit `05bdc8461fbd200a600922428796e5e3aa27d25b` and draft PR
+  `https://github.com/Drew-Z/chatus-private-chat/pull/61` are recorded.
+- Remaining in the final checklist item: PR CI, exact-main GitHub Actions
+  deployment/acceptance evidence, final AC10 completion, and archive.
 
 ## Validation Commands
 

@@ -131,7 +131,9 @@ remain unavailable until later children.
 - AC10 local portion: `npm run check:frontend`; 49 files / 758 Vitest tests;
   Workspace Playwright 90 passed with 55 project-filtered skips; Agent local
   fake-Provider Playwright 3 passed; typecheck; Wrangler 4.110.0 dry-run; diff
-  check; and Trellis repository consistency all passed. Work commit, PR/CI,
+  check; and Trellis repository consistency all passed. Work commit
+  `05bdc8461fbd200a600922428796e5e3aa27d25b` and draft PR
+  `https://github.com/Drew-Z/chatus-private-chat/pull/61` are recorded; PR CI,
   exact-main GitHub Actions deployment evidence, and archive remain pending.
 
 ## Out Of Scope
