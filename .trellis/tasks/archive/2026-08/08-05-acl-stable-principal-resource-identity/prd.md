@@ -98,7 +98,7 @@ remain unavailable until later children.
       Durable Object data without rebinding.
 - [x] AC9. Capture/restore, permanent deletion, access revocation, and recovery
       contracts include the new registry and preserve anti-resurrection behavior.
-- [ ] AC10. Focused/full fake-runtime tests, impacted Workspace and Agent
+- [x] AC10. Focused/full fake-runtime tests, impacted Workspace and Agent
       Playwright, specs, PR/commit/exact-SHA deployment evidence, and Trellis
       archive consistency pass.
 
@@ -128,13 +128,17 @@ remain unavailable until later children.
   restore validates the v6 binding/schema before mutation. Principal-scoped
   cleanup, feedback, usage, Workspace, export, and revocation tests preserve
   anti-resurrection behavior.
-- AC10 local portion: `npm run check:frontend`; 49 files / 758 Vitest tests;
+- AC10: `npm run check:frontend`; 49 files / 758 Vitest tests;
   Workspace Playwright 90 passed with 55 project-filtered skips; Agent local
   fake-Provider Playwright 3 passed; typecheck; Wrangler 4.110.0 dry-run; diff
-  check; and Trellis repository consistency all passed. Work commit
-  `05bdc8461fbd200a600922428796e5e3aa27d25b` and draft PR
-  `https://github.com/Drew-Z/chatus-private-chat/pull/61` are recorded; PR CI,
-  exact-main GitHub Actions deployment evidence, and archive remain pending.
+  check; and Trellis repository consistency passed. PR
+  `https://github.com/Drew-Z/chatus-private-chat/pull/61` merged after CI run
+  `31492825909` passed all four jobs and retained path, quality/coverage,
+  Workspace, and Agent artifacts. Exact main/work commit
+  `b36294dc97bc053f0153b03abca75ebcec712284` deployed through GitHub Actions run
+  `31493897115`; production smoke passed and artifact
+  `production-deployment-b36294dc97bc053f0153b03abca75ebcec712284` is retained
+  through 2026-11-09. No waiver was used.
 
 ## Out Of Scope
 

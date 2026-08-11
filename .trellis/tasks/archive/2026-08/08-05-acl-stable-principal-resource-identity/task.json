@@ -3,7 +3,7 @@
   "name": "acl-stable-principal-resource-identity",
   "title": "ACL stable principal and resource identity",
   "description": "",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": "platform",
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "zhang",
   "assignee": "zhang",
   "createdAt": "2026-08-05",
-  "completedAt": null,
+  "completedAt": "2026-08-11",
   "branch": "codex/acl-stable-principal-resource-identity",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "05bdc8461fbd200a600922428796e5e3aa27d25b",
+  "commit": "b36294dc97bc053f0153b03abca75ebcec712284",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/61",
   "subtasks": [],
   "children": [],
@@ -71,6 +71,18 @@
         "status": "passed",
         "summary": "Repository consistency passed.",
         "at": "2026-08-11T12:38:27.779471+00:00"
+      },
+      {
+        "command": "GitHub Actions PR run 31492825909",
+        "status": "passed",
+        "summary": "PR #61 changes, quality, Workspace, and local fake-Provider Agent jobs passed with retained artifacts.",
+        "at": "2026-08-11T13:06:08.230705+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 31493897115",
+        "status": "passed",
+        "summary": "Exact main b36294dc97bc053f0153b03abca75ebcec712284 deployed and production smoke passed; manifest retained 90 days.",
+        "at": "2026-08-11T13:06:09.283661+00:00"
       }
     ]
   }

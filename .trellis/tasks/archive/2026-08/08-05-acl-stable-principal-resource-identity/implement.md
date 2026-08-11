@@ -25,11 +25,11 @@
       explicit absence tests for ACL/share/transfer/discovery/shared execution.
 - [x] Update identity, Agent, member access, OAuth, Workspace, deletion, recovery,
       deployment, capture/restore, and compatibility specs with `ACL-01` evidence.
-- [ ] Run focused tests, `trellis-check`, Workspace and local fake-Provider Agent
+- [x] Run focused tests, `trellis-check`, Workspace and local fake-Provider Agent
       Playwright, full shipping baseline, diff/Trellis consistency, PR/CI,
       exact-main GitHub Actions deployment evidence, AC, and archive checks.
 
-## Local Validation Evidence
+## Validation And Delivery Evidence
 
 - `npm run check:frontend` passed (Vite build and frontend structure checks).
 - `npm test` passed: 49 files, 758 tests.
@@ -41,10 +41,16 @@
 - `git diff --check` passed with line-ending notices only.
 - `python ./.trellis/scripts/task.py validate-all` reported repository
   consistency OK.
-- Work commit `05bdc8461fbd200a600922428796e5e3aa27d25b` and draft PR
-  `https://github.com/Drew-Z/chatus-private-chat/pull/61` are recorded.
-- Remaining in the final checklist item: PR CI, exact-main GitHub Actions
-  deployment/acceptance evidence, final AC10 completion, and archive.
+- PR `https://github.com/Drew-Z/chatus-private-chat/pull/61` merged after GitHub
+  Actions run `31492825909` passed `changes`, `quality`, `workspace-browser`, and
+  `agent-browser`. Path classification, quality/coverage, Workspace Playwright,
+  and Agent fake-Provider artifacts were retained for the PR merge revision.
+- Exact main/work commit `b36294dc97bc053f0153b03abca75ebcec712284`
+  deployed only through GitHub Actions run `31493897115`. Main-tip checks,
+  release validation, Wrangler deploy, and production smoke passed.
+- Deployment artifact
+  `production-deployment-b36294dc97bc053f0153b03abca75ebcec712284`
+  is retained through 2026-11-09. No waiver was used.
 
 ## Validation Commands
 
