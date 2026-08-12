@@ -16,6 +16,9 @@ const AGENT_ERROR_MESSAGES = {
   agent_identity_corrupt: "Agent 会话状态无法恢复，请刷新页面重新连接。",
   agent_context_invalid: "工具续接上下文无法恢复，请刷新页面后重试。",
   conversation_not_found: "当前会话不存在或已删除，请新建会话后重试。",
+  conversation_action_denied: "当前共享角色不允许执行这项操作。",
+  conversation_access_revision_conflict: "会话共享状态已更新，请刷新后重试。",
+  conversation_acl_unavailable: "会话共享授权服务暂时不可用，请稍后重试。",
   workspace_context_unavailable: "工作区上下文暂时无法加载，请稍后重试。",
   instance_maintenance: "实例正在维护，请稍后重试。",
   session_expired: "登录会话已过期，请重新登录。",
@@ -120,6 +123,12 @@ export function parseAgentErrorEnvelope(value: string): AgentErrorEnvelope | und
 
 export function projectAgentStreamError(error: unknown): AgentErrorCode {
   const chain = errorChain(error);
+  if (chain.some((item) => item.code === "conversation_not_found")) return "conversation_not_found";
+  if (chain.some((item) => item.code === "conversation_action_denied")) return "conversation_action_denied";
+  if (chain.some((item) => item.code === "conversation_access_revision_conflict")) {
+    return "conversation_access_revision_conflict";
+  }
+  if (chain.some((item) => item.code === "conversation_acl_unavailable")) return "conversation_acl_unavailable";
   if (chain.some((item) => item.code === "provider_budget_exceeded")) return "provider_budget_exceeded";
   if (chain.some((item) => item.code === "provider_budget_policy_unknown")) return "provider_budget_policy_unknown";
   if (hasName(chain, "ProviderAttemptLedgerError")) return "provider_budget_unavailable";

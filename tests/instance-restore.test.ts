@@ -52,7 +52,7 @@ describe("isolated restore engine", () => {
     }));
     expect(fixture.manifest.entries).toContainEqual(expect.objectContaining({
       store: "identity_registry",
-      schemaVersion: "identity-registry-v1",
+      schemaVersion: "identity-registry-v2",
       stateClass: "authoritative",
       restoreBehavior: "restore",
     }));
@@ -61,6 +61,18 @@ describe("isolated restore engine", () => {
       className: "IdentityRegistry",
       migrationTag: "v6",
     }));
+    const identityRestoreEntry = adapter.restoredEntries
+      .flatMap(({ entries }) => entries)
+      .find(({ store }) => store === "identity_registry");
+    expect(identityRestoreEntry).toBeDefined();
+    const identitySnapshot = decodeDurableObjectCaptureSnapshot(
+      identityRestoreEntry!.bytes,
+      "identity-registry-v2",
+    );
+    expect(identitySnapshot.tables.map(({ name }) => name)).toEqual([
+      "conversation_acl_entries",
+      "conversation_acl_events",
+    ]);
     expect(result.reconciliation.unresolvedReferences).toBe(0);
     expect(result.acceptance.writesOpen).toBe(false);
     expect(result.checkpoints.map(({ phase }) => phase)).toEqual([...INSTANCE_RESTORE_PHASES]);

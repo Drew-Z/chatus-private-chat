@@ -36,15 +36,18 @@ import {
   isAdminSetupStatus,
   isAgentConversation,
   isAgentConversationBranchResult,
+  isConversationGrantList,
   isAgentMemory,
   isSessionProjection,
   isWorkspaceFile,
   isWorkspaceFileVersion,
   listWorkspaceFiles,
+  listConversationShares,
   logout,
   migrateAdminLegacyRoutes,
   retryWorkspaceDocumentIngest,
   rollbackAdminLegacySurface,
+  revokeConversationShare,
   setConversationWorkspaceFiles,
   submitFeedback,
   isUserDataExport,
@@ -52,6 +55,7 @@ import {
   runAdminSetupSmoke,
   updateWorkspaceFile,
   updateAgentConversation,
+  upsertConversationShare,
   uploadWorkspaceFile,
 } from "../client/src/lib/api";
 import { DEFAULT_FILE_INPUT_POLICY } from "../src/contracts/file";
@@ -1597,6 +1601,9 @@ describe("React client runtime validation", () => {
       skillIds: ["coding"],
       messageCount: 2,
       workspaceFiles: [],
+      resourceId: "res_11111111-1111-4111-8111-111111111111",
+      accessRole: "owner",
+      accessRevision: 1,
     };
     expect(isAgentConversation(conversation)).toBe(true);
     expect(isAgentConversation({ ...conversation, updatedAt: 9 })).toBe(false);
@@ -1606,6 +1613,30 @@ describe("React client runtime validation", () => {
     expect(isAgentConversation(missingMode)).toBe(false);
     expect(isAgentConversation({ ...conversation, skillIds: ["coding", "coding"] })).toBe(false);
     expect(isAgentConversation({ ...conversation, objectKey: "private" })).toBe(false);
+    expect(isAgentConversation({ ...conversation, accessRole: "viewer", workspaceFiles: [{ private: true }] })).toBe(false);
+    expect(isAgentConversation({ ...conversation, accessRole: "viewer", parentChatId: "owner-branch" })).toBe(false);
+    expect(isAgentConversation({ ...conversation, accessRole: "viewer", workspaceFiles: [] })).toBe(true);
+    expect(isAgentConversation({ ...conversation, accessRole: undefined })).toBe(false);
+  });
+
+  it("decodes exact content-free conversation grants", () => {
+    const grants = {
+      version: 1,
+      resourceId: "res_11111111-1111-4111-8111-111111111111",
+      accessRevision: 3,
+      grants: [{
+        principalId: "prn_22222222-2222-4222-8222-222222222222",
+        alias: "collaborator",
+        role: "editor",
+        grantRevision: 3,
+        grantedAt: 10,
+        updatedAt: 20,
+      }],
+    };
+    expect(isConversationGrantList(grants)).toBe(true);
+    expect(isConversationGrantList({ ...grants, ownerLabel: "private" })).toBe(false);
+    expect(isConversationGrantList({ ...grants, grants: [{ ...grants.grants[0], role: "owner" }] })).toBe(false);
+    expect(isConversationGrantList({ ...grants, grants: [grants.grants[0], grants.grants[0]] })).toBe(false);
   });
 
   it("decodes only bounded public automatic Skill metadata", () => {
@@ -1643,6 +1674,9 @@ describe("React client runtime validation", () => {
       skillIds: ["coding"],
       messageCount: 0,
       workspaceFiles: [],
+      resourceId: "res_11111111-1111-4111-8111-111111111111",
+      accessRole: "owner" as const,
+      accessRevision: 1,
     };
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, conversation }), {
@@ -1667,6 +1701,77 @@ describe("React client runtime validation", () => {
       skillMode: "manual",
       skillIds: [],
       expectedUpdatedAt: 20,
+      resourceId: conversation.resourceId,
+    });
+    fetchSpy.mockRestore();
+  });
+
+  it("serializes exact resource-scoped share mutations", async () => {
+    const conversation = {
+      id: "share-chat",
+      title: "Shared work",
+      createdAt: 10,
+      updatedAt: 20,
+      summary: "",
+      pinned: false,
+      routeId: "primary",
+      skillMode: "automatic" as const,
+      skillIds: [],
+      messageCount: 0,
+      workspaceFiles: [],
+      resourceId: "res_11111111-1111-4111-8111-111111111111",
+      accessRole: "owner" as const,
+      accessRevision: 1,
+    };
+    const grants = {
+      version: 1,
+      resourceId: conversation.resourceId,
+      accessRevision: 2,
+      grants: [{
+        principalId: "prn_22222222-2222-4222-8222-222222222222",
+        alias: "collaborator",
+        role: "viewer" as const,
+        grantRevision: 2,
+        grantedAt: 10,
+        updatedAt: 10,
+      }],
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(grants), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(listConversationShares(conversation)).resolves.toEqual(grants);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain(`resourceId=${encodeURIComponent(conversation.resourceId)}`);
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, operationId: "share-op", changed: true, ...grants }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(upsertConversationShare({
+      conversation,
+      operationId: "share-op",
+      granteeLabel: "collaborator",
+      role: "viewer",
+      expectedAccessRevision: 1,
+    })).resolves.toMatchObject({ operationId: "share-op", accessRevision: 2 });
+    expect(JSON.parse(String((fetchSpy.mock.calls[1][1] as RequestInit).body))).toEqual({
+      version: 1,
+      operationId: "share-op",
+      resourceId: conversation.resourceId,
+      granteeLabel: "collaborator",
+      role: "viewer",
+      expectedAccessRevision: 1,
+    });
+
+    const revoked = { ...grants, accessRevision: 3, grants: [] };
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, operationId: "revoke-op", changed: true, ...revoked }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(revokeConversationShare({
+      conversation,
+      operationId: "revoke-op",
+      granteePrincipalId: grants.grants[0].principalId,
+      expectedAccessRevision: 2,
+    })).resolves.toMatchObject({ operationId: "revoke-op", accessRevision: 3, grants: [] });
+    expect(JSON.parse(String((fetchSpy.mock.calls[2][1] as RequestInit).body))).toEqual({
+      version: 1,
+      operationId: "revoke-op",
+      resourceId: conversation.resourceId,
+      granteePrincipalId: grants.grants[0].principalId,
+      expectedAccessRevision: 2,
     });
     fetchSpy.mockRestore();
   });
@@ -1685,6 +1790,9 @@ describe("React client runtime validation", () => {
       skillIds: ["coding"],
       messageCount: 2,
       workspaceFiles: [],
+      resourceId: "res_11111111-1111-4111-8111-111111111111",
+      accessRole: "owner",
+      accessRevision: 1,
     };
     const branch = {
       ok: true,

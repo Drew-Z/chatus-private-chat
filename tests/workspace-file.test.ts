@@ -4,6 +4,10 @@ import { getAgentByName } from "agents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamAgent } from "../src/agent/team-agent";
 import {
+  CONVERSATION_AGENT_ACCESS_BODY_KEY,
+  type ConversationAgentAccessContextV1,
+} from "../src/contracts/agent";
+import {
   normalizeWorkspacePath,
   MAX_TEXT_DOCUMENT_BYTES,
   MAX_WORKSPACE_FILE_BYTES,
@@ -76,6 +80,59 @@ async function getConversationAgent(label: string, chatId: string) {
       sessionExpiresAt: Number.MAX_SAFE_INTEGER,
     },
   }) as DurableObjectStub<TeamAgent>;
+}
+
+async function getConversationAccessContext(
+  label: string,
+  chatId: string,
+): Promise<ConversationAgentAccessContextV1> {
+  const principal = await getMemberRoute(label);
+  const registry = env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME);
+  const resource = await registry.lookupConversationResource({
+    version: 1,
+    principalId: principal.principalId,
+    conversationId: chatId,
+  });
+  if (!resource.found) throw new Error("identity_resource_missing");
+  const access = await registry.resolveConversationAccess({
+    version: 1,
+    actorPrincipalId: principal.principalId,
+    resourceId: resource.route.resourceId,
+    conversationId: chatId,
+    action: "conversation.message.send",
+  });
+  return {
+    version: 1,
+    access,
+    actor: {
+      label,
+      principalId: principal.principalId,
+      rootInstanceName: principal.rootInstanceName,
+      userStateInstanceName: principal.userStateInstanceName,
+      registryRevision: principal.registryRevision,
+      sessionExpiresAt: Date.now() + 60_000,
+    },
+  };
+}
+
+async function runConversationAgentTurn(
+  agent: DurableObjectStub<TeamAgent>,
+  label: string,
+  chatId: string,
+  requestId?: string,
+) {
+  const access = await getConversationAccessContext(label, chatId);
+  return runInDurableObject(agent, async (instance) => {
+    const response = await instance.onChatMessage(async () => undefined, {
+      ...(requestId ? { requestId } : {}),
+      body: { [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access },
+    });
+    return {
+      status: response.status,
+      requestId: response.headers.get("X-Request-ID"),
+      body: await response.text(),
+    };
+  });
 }
 
 async function createConversation(cookie: string, chatId = crypto.randomUUID()) {
@@ -325,7 +382,7 @@ describe("workspace file API and R2 recovery", () => {
         ).toArray().map((row) => row.name),
       };
     });
-    expect(schema.versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(schema.versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(schema.tables).toEqual([
       "conversation_file_refs",
       "workspace_file_operations",
@@ -633,10 +690,7 @@ describe("workspace file API and R2 recovery", () => {
       role: "user",
       parts: [{ type: "text", text: "Use the selected workspace file." }],
     }]);
-    const result = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, {});
-      return { status: response.status, body: await response.text() };
-    });
+    const result = await runConversationAgentTurn(agent, member.label, conversation.id);
     expect(result.status, result.body).toBe(200);
     expect(JSON.stringify(providerBody)).toContain("old exact workspace content");
     expect(JSON.stringify(providerBody)).not.toContain("new content must not leak");
@@ -943,10 +997,7 @@ describe("workspace file API and R2 recovery", () => {
       role: "user",
       parts: [{ type: "text", text: "Use the selected document." }],
     }]);
-    const result = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, {});
-      return { status: response.status, body: await response.text() };
-    });
+    const result = await runConversationAgentTurn(agent, member.label, conversation.id);
     expect(result.status, result.body).toBe(200);
     const serialized = JSON.stringify(providerBody);
     expect(serialized).toContain("attached_file_unavailable");
@@ -1041,10 +1092,7 @@ describe("workspace file API and R2 recovery", () => {
       role: "user",
       parts: [{ type: "text", text: "Use the ready document." }],
     }]);
-    const result = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, {});
-      return { status: response.status, body: await response.text() };
-    });
+    const result = await runConversationAgentTurn(agent, member.label, conversation.id);
     expect(result.status, result.body).toBe(200);
     const serialized = JSON.stringify(providerBody);
     expect(serialized).toContain("ready extracted PDF context");
@@ -1092,14 +1140,7 @@ describe("workspace file API and R2 recovery", () => {
       parts: [{ type: "text", text: "Use the selected file." }],
     }]);
     const requestId = "turn_workspace-123";
-    const result = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, { requestId });
-      return {
-        status: response.status,
-        requestId: response.headers.get("X-Request-ID"),
-        body: await response.text(),
-      };
-    });
+    const result = await runConversationAgentTurn(agent, member.label, conversation.id, requestId);
     expect(result.status).toBe(503);
     expect(result.requestId).toBe(requestId);
     expect(result.body).toContain("workspace_context_unavailable");
@@ -1213,10 +1254,7 @@ describe("workspace file API and R2 recovery", () => {
       role: "user",
       parts: [{ type: "text", text: "Use all ten exact files." }],
     }]);
-    const first = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, {});
-      return { status: response.status, body: await response.text() };
-    });
+    const first = await runConversationAgentTurn(agent, member.label, conversation.id);
     expect(first.status, first.body).toBe(200);
     expect(providerFetch).toHaveBeenCalledOnce();
     const serialized = JSON.stringify(providerBody);
@@ -1224,10 +1262,7 @@ describe("workspace file API and R2 recovery", () => {
     for (let index = 0; index < 10; index += 1) expect(serialized).toContain(`turn-file-${index}`);
     expect(serialized).not.toContain("turn-file-10");
 
-    const second = await runInDurableObject(agent, async (instance) => {
-      const response = await instance.onChatMessage(async () => undefined, {});
-      return { status: response.status, body: await response.text() };
-    });
+    const second = await runConversationAgentTurn(agent, member.label, conversation.id);
     expect(second.status).toBe(429);
     expect(providerFetch).toHaveBeenCalledOnce();
   });

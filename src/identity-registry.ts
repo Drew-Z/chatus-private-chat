@@ -5,16 +5,33 @@ import {
   createConversationResourceId,
   createPrincipalId,
   decodeAdvanceIdentityStateInput,
+  decodeAssertConversationMutationCommitInput,
   decodeEnsureConversationResourceInput,
+  decodeListConversationAccessRoutesInput,
+  decodeListConversationGrantsInput,
+  decodeLookupConversationResourceByIdInput,
   decodeRecordStableIdentityMarkerInput,
   decodeReconcilePrincipalIdentityInput,
+  decodeResolveConversationAccessInput,
   decodeResolveActivePrincipalAliasInput,
   decodeResolveConversationResourceInput,
   decodeResolveOrCreatePrincipalInput,
   decodeResolvePrincipalSessionInput,
+  decodeRevokeConversationGrantInput,
   decodeRetirePrincipalAliasInput,
+  decodeUpsertConversationGrantInput,
+  conversationAccessRoleAllowsAction,
   principalRootInstanceName,
   principalUserStateInstanceName,
+  type ConversationAccessActionV1,
+  type ConversationAccessRoleV1,
+  type ConversationAccessRouteListV1,
+  type ConversationAccessSnapshotV1,
+  type ConversationGrantListV1,
+  type ConversationGrantMutationResultV1,
+  type ConversationGrantRoleV1,
+  type ConversationGrantStateV1,
+  type ConversationGrantV1,
   type ConversationResourceRouteV1,
   type IdentityLifecycleState,
   type IdentityMigrationState,
@@ -34,6 +51,8 @@ const IDENTITY_REGISTRY_TABLES = new Set([
   "principals",
   "principal_aliases",
   "conversation_resources",
+  "conversation_acl_entries",
+  "conversation_acl_events",
   "identity_migration_markers",
   "identity_operations",
 ]);
@@ -73,8 +92,31 @@ type ConversationResourceRow = {
   agent_instance_name: string;
   migration_state: IdentityMigrationState;
   revision: number;
+  access_revision: number;
   created_at: number;
   updated_at: number;
+};
+
+type ConversationAclEntryRow = {
+  resource_id: string;
+  grantee_principal_id: string;
+  role: ConversationGrantRoleV1;
+  state: ConversationGrantStateV1;
+  grant_revision: number;
+  revoke_revision: number | null;
+  granted_by_principal_id: string;
+  revoked_by_principal_id: string | null;
+  created_at: number;
+  updated_at: number;
+  revoked_at: number | null;
+};
+
+type ConversationGrantRow = ConversationAclEntryRow & { alias: string };
+
+type ConversationAccessRouteRow = ConversationResourceRow & {
+  role: ConversationAccessRoleV1;
+  grant_revision: number;
+  owner_root_instance_name: string;
 };
 
 type IdentityOperationRow = {
@@ -97,6 +139,7 @@ export type IdentityRegistryInspectionV1 = {
   principals: { active: number; retired: number };
   aliases: { active: number; retired: number };
   resources: number;
+  acl: { active: number; revoked: number; events: number };
   migration: Record<IdentityMigrationState, number>;
 };
 
@@ -298,6 +341,9 @@ export class IdentityRegistry extends DurableObject<IdentityRegistryEnv> {
         normalized.retiredAt,
         normalized.principalId,
       );
+      if (remaining === 0) {
+        this.revokeActiveGrantsForRetiredPrincipal(normalized.principalId, normalized.retiredAt);
+      }
       const revision = this.readPrincipal(normalized.principalId)?.revision;
       if (!revision) throw new Error("identity_principal_missing");
       const result = {
@@ -402,6 +448,289 @@ export class IdentityRegistry extends DurableObject<IdentityRegistryEnv> {
     return resource
       ? { version: 1, found: true, route: conversationRouteFromRow(resource) }
       : { version: 1, found: false };
+  }
+
+  async lookupConversationResourceById(input: unknown): Promise<ConversationResourceLookupResultV1> {
+    const normalized = decodeLookupConversationResourceByIdInput(input);
+    if (!normalized) throw new Error("identity_resource_lookup_input_invalid");
+    await this.registerObject();
+    const resource = this.readResourceById(normalized.resourceId);
+    return resource
+      ? { version: 1, found: true, route: conversationRouteFromRow(resource) }
+      : { version: 1, found: false };
+  }
+
+  async resolveConversationAccess(input: unknown): Promise<ConversationAccessSnapshotV1> {
+    const normalized = decodeResolveConversationAccessInput(input);
+    if (!normalized) throw new Error("conversation_access_input_invalid");
+    await this.registerObject();
+    return this.resolveAccessSnapshot(
+      normalized.actorPrincipalId,
+      normalized.resourceId,
+      normalized.conversationId,
+      normalized.action,
+      normalized.expectedAccessRevision,
+    );
+  }
+
+  async listConversationAccessRoutes(input: unknown): Promise<ConversationAccessRouteListV1> {
+    const normalized = decodeListConversationAccessRoutesInput(input);
+    if (!normalized) throw new Error("conversation_access_list_input_invalid");
+    await this.registerObject();
+    const actor = this.readPrincipal(normalized.actorPrincipalId);
+    if (!actor || actor.lifecycle_state !== "active") throw new Error("conversation_not_found");
+    const rows = this.ctx.storage.sql.exec<ConversationAccessRouteRow>(
+      `SELECT r.*, owner.root_instance_name AS owner_root_instance_name,
+         CASE WHEN r.principal_id = ? THEN 'owner' ELSE a.role END AS role,
+         CASE WHEN r.principal_id = ? THEN 0 ELSE a.grant_revision END AS grant_revision
+       FROM conversation_resources r
+       JOIN principals owner ON owner.principal_id = r.principal_id AND owner.lifecycle_state = 'active'
+       LEFT JOIN conversation_acl_entries a
+         ON a.resource_id = r.resource_id
+        AND a.grantee_principal_id = ?
+        AND a.state = 'active'
+       WHERE r.resource_id > ?
+         AND (r.principal_id = ? OR a.grantee_principal_id IS NOT NULL)
+       ORDER BY r.resource_id ASC
+       LIMIT ?`,
+      normalized.actorPrincipalId,
+      normalized.actorPrincipalId,
+      normalized.actorPrincipalId,
+      normalized.cursor ?? "",
+      normalized.actorPrincipalId,
+      normalized.limit + 1,
+    ).toArray();
+    const hasMore = rows.length > normalized.limit;
+    const page = hasMore ? rows.slice(0, normalized.limit) : rows;
+    const routes = page.map(conversationAccessRouteFromRow);
+    return {
+      version: 1,
+      routes,
+      ...(hasMore && routes.length > 0 ? { nextCursor: routes[routes.length - 1].resourceId } : {}),
+    };
+  }
+
+  async listConversationGrants(input: unknown): Promise<ConversationGrantListV1> {
+    const normalized = decodeListConversationGrantsInput(input);
+    if (!normalized) throw new Error("conversation_acl_list_input_invalid");
+    await this.registerObject();
+    const resource = this.readResourceById(normalized.resourceId);
+    if (!resource) throw new Error("conversation_not_found");
+    this.resolveAccessSnapshot(
+      normalized.actorPrincipalId,
+      resource.resource_id,
+      resource.conversation_id,
+      "conversation.acl.read",
+    );
+    return this.readGrantList(resource);
+  }
+
+  async upsertConversationGrant(input: unknown): Promise<ConversationGrantMutationResultV1> {
+    const normalized = decodeUpsertConversationGrantInput(input);
+    if (!normalized) throw new Error("conversation_acl_input_invalid");
+    await this.registerObject();
+    const fingerprint = await operationFingerprint("conversation.acl-upsert", normalized);
+    const now = Date.now();
+    return this.ctx.storage.transactionSync(() => {
+      const replay = this.readOperation<ConversationGrantMutationResultV1>(
+        normalized.operationId,
+        "conversation.acl-upsert",
+        fingerprint,
+        "conversation_acl_operation_conflict",
+      );
+      if (replay) return replay;
+      const resource = this.requireAclMutationAuthority(
+        normalized.actorPrincipalId,
+        normalized.resourceId,
+        normalized.expectedAccessRevision,
+      );
+      if (normalized.targetPrincipalId === resource.principal_id) {
+        throw new Error("conversation_acl_target_invalid");
+      }
+      const target = this.readPrincipal(normalized.targetPrincipalId);
+      if (!target || target.lifecycle_state !== "active") {
+        throw new Error("conversation_acl_target_unavailable");
+      }
+      const existing = this.readAclEntry(resource.resource_id, normalized.targetPrincipalId);
+      if (existing?.state === "active" && existing.role === normalized.role) {
+        const unchanged: ConversationGrantMutationResultV1 = {
+          ...this.readGrantList(resource),
+          operationId: normalized.operationId,
+          changed: false,
+        };
+        this.writeOperation(
+          normalized.operationId,
+          "conversation.acl-upsert",
+          fingerprint,
+          unchanged,
+          now,
+        );
+        return unchanged;
+      }
+      const accessRevision = resource.access_revision + 1;
+      this.ctx.storage.sql.exec(
+        "UPDATE conversation_resources SET access_revision = ?, updated_at = ? WHERE resource_id = ?",
+        accessRevision,
+        now,
+        resource.resource_id,
+      );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO conversation_acl_entries(
+          resource_id, grantee_principal_id, role, state, grant_revision, revoke_revision,
+          granted_by_principal_id, revoked_by_principal_id, created_at, updated_at, revoked_at
+        ) VALUES (?, ?, ?, 'active', ?, NULL, ?, NULL, ?, ?, NULL)
+        ON CONFLICT(resource_id, grantee_principal_id) DO UPDATE SET
+          role = excluded.role,
+          state = 'active',
+          grant_revision = excluded.grant_revision,
+          revoke_revision = NULL,
+          granted_by_principal_id = excluded.granted_by_principal_id,
+          revoked_by_principal_id = NULL,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          revoked_at = NULL`,
+        resource.resource_id,
+        normalized.targetPrincipalId,
+        normalized.role,
+        accessRevision,
+        normalized.actorPrincipalId,
+        now,
+        now,
+      );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO conversation_acl_events(
+          operation_id, resource_id, actor_principal_id, target_principal_id, event_type,
+          before_role, after_role, access_revision, occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        normalized.operationId,
+        resource.resource_id,
+        normalized.actorPrincipalId,
+        normalized.targetPrincipalId,
+        existing?.state === "active" ? "role_change" : "grant",
+        existing?.state === "active" ? existing.role : null,
+        normalized.role,
+        accessRevision,
+        now,
+      );
+      const updatedResource = { ...resource, access_revision: accessRevision, updated_at: now };
+      const result: ConversationGrantMutationResultV1 = {
+        ...this.readGrantList(updatedResource),
+        operationId: normalized.operationId,
+        changed: true,
+      };
+      this.writeOperation(
+        normalized.operationId,
+        "conversation.acl-upsert",
+        fingerprint,
+        result,
+        now,
+      );
+      return result;
+    });
+  }
+
+  async revokeConversationGrant(input: unknown): Promise<ConversationGrantMutationResultV1> {
+    const normalized = decodeRevokeConversationGrantInput(input);
+    if (!normalized) throw new Error("conversation_acl_input_invalid");
+    await this.registerObject();
+    const fingerprint = await operationFingerprint("conversation.acl-revoke", normalized);
+    const now = Date.now();
+    return this.ctx.storage.transactionSync(() => {
+      const replay = this.readOperation<ConversationGrantMutationResultV1>(
+        normalized.operationId,
+        "conversation.acl-revoke",
+        fingerprint,
+        "conversation_acl_operation_conflict",
+      );
+      if (replay) return replay;
+      const resource = this.requireAclMutationAuthority(
+        normalized.actorPrincipalId,
+        normalized.resourceId,
+        normalized.expectedAccessRevision,
+      );
+      if (normalized.targetPrincipalId === resource.principal_id) {
+        throw new Error("conversation_acl_target_invalid");
+      }
+      const existing = this.readAclEntry(resource.resource_id, normalized.targetPrincipalId);
+      if (!existing || existing.state !== "active") {
+        const unchanged: ConversationGrantMutationResultV1 = {
+          ...this.readGrantList(resource),
+          operationId: normalized.operationId,
+          changed: false,
+        };
+        this.writeOperation(
+          normalized.operationId,
+          "conversation.acl-revoke",
+          fingerprint,
+          unchanged,
+          now,
+        );
+        return unchanged;
+      }
+      const accessRevision = resource.access_revision + 1;
+      this.ctx.storage.sql.exec(
+        "UPDATE conversation_resources SET access_revision = ?, updated_at = ? WHERE resource_id = ?",
+        accessRevision,
+        now,
+        resource.resource_id,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE conversation_acl_entries
+         SET state = 'revoked', revoke_revision = ?, revoked_by_principal_id = ?,
+             updated_at = ?, revoked_at = ?
+         WHERE resource_id = ? AND grantee_principal_id = ?`,
+        accessRevision,
+        normalized.actorPrincipalId,
+        now,
+        now,
+        resource.resource_id,
+        normalized.targetPrincipalId,
+      );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO conversation_acl_events(
+          operation_id, resource_id, actor_principal_id, target_principal_id, event_type,
+          before_role, after_role, access_revision, occurred_at
+        ) VALUES (?, ?, ?, ?, 'revoke', ?, NULL, ?, ?)`,
+        normalized.operationId,
+        resource.resource_id,
+        normalized.actorPrincipalId,
+        normalized.targetPrincipalId,
+        existing.role,
+        accessRevision,
+        now,
+      );
+      const updatedResource = { ...resource, access_revision: accessRevision, updated_at: now };
+      const result: ConversationGrantMutationResultV1 = {
+        ...this.readGrantList(updatedResource),
+        operationId: normalized.operationId,
+        changed: true,
+      };
+      this.writeOperation(
+        normalized.operationId,
+        "conversation.acl-revoke",
+        fingerprint,
+        result,
+        now,
+      );
+      return result;
+    });
+  }
+
+  async assertConversationMutationCommit(input: unknown): Promise<ConversationAccessSnapshotV1> {
+    const normalized = decodeAssertConversationMutationCommitInput(input);
+    if (!normalized) throw new Error("conversation_access_commit_input_invalid");
+    await this.registerObject();
+    const snapshot = this.resolveAccessSnapshot(
+      normalized.actorPrincipalId,
+      normalized.resourceId,
+      normalized.conversationId,
+      normalized.action,
+      normalized.accessRevision,
+    );
+    if (snapshot.grantRevision !== normalized.grantRevision) {
+      throw new Error("conversation_access_revision_conflict");
+    }
+    return snapshot;
   }
 
   async recordStableIdentityMarker(input: unknown): Promise<{ created: boolean }> {
@@ -620,6 +949,17 @@ export class IdentityRegistry extends DurableObject<IdentityRegistryEnv> {
       resources: this.ctx.storage.sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM conversation_resources",
       ).one().count,
+      acl: {
+        active: this.ctx.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM conversation_acl_entries WHERE state = 'active'",
+        ).one().count,
+        revoked: this.ctx.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM conversation_acl_entries WHERE state = 'revoked'",
+        ).one().count,
+        events: this.ctx.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM conversation_acl_events",
+        ).one().count,
+      },
       migration: {
         backfilled: migrationCounts.find((row) => row.migration_state === "backfilled")?.count ?? 0,
         reconciled: migrationCounts.find((row) => row.migration_state === "reconciled")?.count ?? 0,
@@ -635,6 +975,146 @@ export class IdentityRegistry extends DurableObject<IdentityRegistryEnv> {
       `identity-registry-v${IDENTITY_REGISTRY_SCHEMA_VERSION}`,
       (table) => IDENTITY_REGISTRY_TABLES.has(table),
     );
+  }
+
+  private resolveAccessSnapshot(
+    actorPrincipalId: string,
+    resourceId: string,
+    conversationId: string,
+    action: ConversationAccessActionV1,
+    expectedAccessRevision?: number,
+  ): ConversationAccessSnapshotV1 {
+    const actor = this.readPrincipal(actorPrincipalId);
+    const resource = this.readResourceById(resourceId);
+    if (
+      !actor || actor.lifecycle_state !== "active" || !resource
+      || resource.conversation_id !== conversationId
+    ) throw new Error("conversation_not_found");
+    const owner = this.readPrincipal(resource.principal_id);
+    if (!owner || owner.lifecycle_state !== "active") throw new Error("conversation_not_found");
+    let role: ConversationAccessRoleV1;
+    let grantRevision: number;
+    if (actorPrincipalId === resource.principal_id) {
+      role = "owner";
+      grantRevision = 0;
+    } else {
+      const grant = this.readAclEntry(resource.resource_id, actorPrincipalId);
+      if (!grant || grant.state !== "active") throw new Error("conversation_not_found");
+      role = grant.role;
+      grantRevision = grant.grant_revision;
+    }
+    if (
+      expectedAccessRevision !== undefined
+      && resource.access_revision !== expectedAccessRevision
+    ) throw new Error("conversation_access_revision_conflict");
+    if (!conversationAccessRoleAllowsAction(role, action)) {
+      throw new Error("conversation_action_denied");
+    }
+    return {
+      version: 1,
+      resourceId: resource.resource_id,
+      conversationId: resource.conversation_id,
+      ownerPrincipalId: resource.principal_id,
+      actorPrincipalId,
+      role,
+      accessRevision: resource.access_revision,
+      grantRevision,
+      agentInstanceName: resource.agent_instance_name,
+      ownerRootInstanceName: owner.root_instance_name,
+    };
+  }
+
+  private requireAclMutationAuthority(
+    actorPrincipalId: string,
+    resourceId: string,
+    expectedAccessRevision: number,
+  ): ConversationResourceRow {
+    const resource = this.readResourceById(resourceId);
+    if (!resource) throw new Error("conversation_not_found");
+    this.resolveAccessSnapshot(
+      actorPrincipalId,
+      resource.resource_id,
+      resource.conversation_id,
+      "conversation.acl.mutate",
+      expectedAccessRevision,
+    );
+    return resource;
+  }
+
+  private readAclEntry(
+    resourceId: string,
+    targetPrincipalId: string,
+  ): ConversationAclEntryRow | undefined {
+    return this.ctx.storage.sql.exec<ConversationAclEntryRow>(
+      `SELECT * FROM conversation_acl_entries
+       WHERE resource_id = ? AND grantee_principal_id = ?`,
+      resourceId,
+      targetPrincipalId,
+    ).toArray()[0];
+  }
+
+  private readGrantList(resource: ConversationResourceRow): ConversationGrantListV1 {
+    const rows = this.ctx.storage.sql.exec<ConversationGrantRow>(
+      `SELECT acl.*, aliases.alias
+       FROM conversation_acl_entries acl
+       JOIN principals p
+         ON p.principal_id = acl.grantee_principal_id AND p.lifecycle_state = 'active'
+       JOIN principal_aliases aliases
+         ON aliases.principal_id = acl.grantee_principal_id AND aliases.state = 'active'
+       WHERE acl.resource_id = ? AND acl.state = 'active'
+       ORDER BY aliases.alias ASC, acl.grantee_principal_id ASC`,
+      resource.resource_id,
+    ).toArray();
+    return {
+      version: 1,
+      resourceId: resource.resource_id,
+      accessRevision: resource.access_revision,
+      grants: rows.map(conversationGrantFromRow),
+    };
+  }
+
+  private revokeActiveGrantsForRetiredPrincipal(principalId: string, retiredAt: number): void {
+    const grants = this.ctx.storage.sql.exec<ConversationAclEntryRow>(
+      `SELECT * FROM conversation_acl_entries
+       WHERE grantee_principal_id = ? AND state = 'active'
+       ORDER BY resource_id ASC`,
+      principalId,
+    ).toArray();
+    for (const grant of grants) {
+      const resource = this.readResourceById(grant.resource_id);
+      if (!resource) throw new Error("identity_resource_missing");
+      const accessRevision = resource.access_revision + 1;
+      this.ctx.storage.sql.exec(
+        "UPDATE conversation_resources SET access_revision = ?, updated_at = ? WHERE resource_id = ?",
+        accessRevision,
+        retiredAt,
+        resource.resource_id,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE conversation_acl_entries
+         SET state = 'revoked', revoke_revision = ?, revoked_by_principal_id = NULL,
+             updated_at = ?, revoked_at = ?
+         WHERE resource_id = ? AND grantee_principal_id = ?`,
+        accessRevision,
+        retiredAt,
+        retiredAt,
+        resource.resource_id,
+        principalId,
+      );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO conversation_acl_events(
+          operation_id, resource_id, actor_principal_id, target_principal_id, event_type,
+          before_role, after_role, access_revision, occurred_at
+        ) VALUES (?, ?, ?, ?, 'revoke', ?, NULL, ?, ?)`,
+        `principal-retire:${principalId}:${resource.resource_id}:${accessRevision}`,
+        resource.resource_id,
+        null,
+        principalId,
+        grant.role,
+        accessRevision,
+        retiredAt,
+      );
+    }
   }
 
   private readPrincipal(principalId: string): PrincipalRow | undefined {
@@ -701,14 +1181,19 @@ export class IdentityRegistry extends DurableObject<IdentityRegistryEnv> {
     if (requiredKinds.some((kind) => !actual.has(kind))) throw new Error("identity_marker_missing");
   }
 
-  private readOperation<T>(operationId: string, operationKind: string, fingerprint: string): T | undefined {
+  private readOperation<T>(
+    operationId: string,
+    operationKind: string,
+    fingerprint: string,
+    conflictCode = "identity_operation_conflict",
+  ): T | undefined {
     const row = this.ctx.storage.sql.exec<IdentityOperationRow>(
       "SELECT operation_kind, fingerprint, result_json FROM identity_operations WHERE operation_id = ?",
       operationId,
     ).toArray()[0];
     if (!row) return undefined;
     if (row.operation_kind !== operationKind || row.fingerprint !== fingerprint) {
-      throw new Error("identity_operation_conflict");
+      throw new Error(conflictCode);
     }
     return JSON.parse(row.result_json) as T;
   }
@@ -821,6 +1306,60 @@ export class IdentityRegistry extends DurableObject<IdentityRegistryEnv> {
           Date.now(),
         );
       }
+      if (current < 2) {
+        this.ctx.storage.sql.exec(`
+          ALTER TABLE conversation_resources
+            ADD COLUMN access_revision INTEGER NOT NULL DEFAULT 1;
+          CREATE TABLE conversation_acl_entries(
+            resource_id TEXT NOT NULL,
+            grantee_principal_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('editor', 'viewer')),
+            state TEXT NOT NULL CHECK(state IN ('active', 'revoked')),
+            grant_revision INTEGER NOT NULL CHECK(grant_revision > 0),
+            revoke_revision INTEGER CHECK(revoke_revision IS NULL OR revoke_revision > grant_revision),
+            granted_by_principal_id TEXT NOT NULL,
+            revoked_by_principal_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            revoked_at INTEGER,
+            PRIMARY KEY(resource_id, grantee_principal_id),
+            CHECK(
+              (state = 'active' AND revoke_revision IS NULL
+                AND revoked_by_principal_id IS NULL AND revoked_at IS NULL)
+              OR
+              (state = 'revoked' AND revoke_revision IS NOT NULL AND revoked_at IS NOT NULL)
+            )
+          );
+          CREATE INDEX conversation_acl_active_grantee_idx
+            ON conversation_acl_entries(grantee_principal_id, resource_id)
+            WHERE state = 'active';
+          CREATE TABLE conversation_acl_events(
+            operation_id TEXT PRIMARY KEY,
+            resource_id TEXT NOT NULL,
+            actor_principal_id TEXT,
+            target_principal_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN ('grant', 'role_change', 'revoke')),
+            before_role TEXT CHECK(before_role IS NULL OR before_role IN ('editor', 'viewer')),
+            after_role TEXT CHECK(after_role IS NULL OR after_role IN ('editor', 'viewer')),
+            access_revision INTEGER NOT NULL CHECK(access_revision > 1),
+            occurred_at INTEGER NOT NULL,
+            CHECK(
+              (event_type = 'grant' AND before_role IS NULL AND after_role IS NOT NULL)
+              OR
+              (event_type = 'role_change' AND before_role IS NOT NULL AND after_role IS NOT NULL
+                AND before_role <> after_role)
+              OR
+              (event_type = 'revoke' AND before_role IS NOT NULL AND after_role IS NULL)
+            )
+          );
+          CREATE UNIQUE INDEX conversation_acl_events_resource_revision_idx
+            ON conversation_acl_events(resource_id, access_revision);
+        `);
+        this.ctx.storage.sql.exec(
+          "INSERT INTO identity_schema_migrations(version, applied_at) VALUES (2, ?)",
+          Date.now(),
+        );
+      }
     });
   }
 }
@@ -848,6 +1387,31 @@ function conversationRouteFromRow(row: ConversationResourceRow): ConversationRes
     migrationState: row.migration_state,
     agentInstanceName: row.agent_instance_name,
     registryRevision: row.revision,
+  };
+}
+
+function conversationAccessRouteFromRow(row: ConversationAccessRouteRow) {
+  return {
+    version: 1 as const,
+    resourceId: row.resource_id,
+    conversationId: row.conversation_id,
+    ownerPrincipalId: row.principal_id,
+    role: row.role,
+    accessRevision: row.access_revision,
+    grantRevision: row.grant_revision,
+    agentInstanceName: row.agent_instance_name,
+    ownerRootInstanceName: row.owner_root_instance_name,
+  };
+}
+
+function conversationGrantFromRow(row: ConversationGrantRow): ConversationGrantV1 {
+  return {
+    principalId: row.grantee_principal_id,
+    alias: row.alias,
+    role: row.role,
+    grantRevision: row.grant_revision,
+    grantedAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

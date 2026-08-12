@@ -3,7 +3,15 @@ import {
   type ChatResponseResult,
   type OnChatMessageOptions,
 } from "@cloudflare/ai-chat";
-import { getAgentByName } from "agents";
+import {
+  getAgentByName,
+  getCurrentAgent,
+  type Connection,
+  type ConnectionContext,
+  type WSMessage,
+} from "agents";
+import { parseProtocolMessage } from "agents/chat";
+import { MessageType } from "@cloudflare/ai-chat/types";
 import {
   convertToModelMessages,
   stepCountIs,
@@ -14,7 +22,11 @@ import {
   type UIMessage,
 } from "ai";
 import {
+  CONVERSATION_AGENT_ACCESS_BODY_KEY,
+  CONVERSATION_AGENT_ACCESS_HEADER,
   MAX_AGENT_CONVERSATIONS,
+  decodeConversationAgentAccessContext,
+  decodeConversationAgentAccessRevision,
   type AgentExportMessage,
   type AgentExportMessagesResult,
   type AgentExportPart,
@@ -40,6 +52,8 @@ import {
   type AgentMemoryRecord,
   type AgentMessageMetadata,
   type AgentSkillSelectionMetadata,
+  type ConversationAgentAccessContextV1,
+  type ConversationAgentAccessRevisionV1,
   type ConversationSkillMode,
   type TeamAgentIdentityError,
   type TeamAgentIdentityResult,
@@ -106,6 +120,8 @@ import type { Session } from "../contracts/session";
 import { createProviderTurnId } from "../contracts/provider-attempt";
 import {
   decodeStableTeamAgentIdentity,
+  type ConversationAccessActionV1,
+  type ConversationAccessSnapshotV1,
   type StableTeamAgentIdentityV1,
 } from "../contracts/identity";
 import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../identity-registry";
@@ -130,7 +146,7 @@ const MAX_EXPORT_MESSAGE_TEXT_CHARS = 20_000;
 const MAX_EXPORT_MESSAGE_PARTS = 32;
 const MAX_CONVERSATION_TITLE_CHARS = 80;
 const MAX_SELECTED_SKILLS = 3;
-export const TEAM_AGENT_SCHEMA_VERSION = 7;
+export const TEAM_AGENT_SCHEMA_VERSION = 8;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const AGENT_IDENTITY_STORAGE_KEY = "chatus:agent-identity:v1";
 const STABLE_AGENT_IDENTITY_STORAGE_KEY = "chatus:stable-agent-identity:v1";
@@ -187,7 +203,186 @@ type ConversationRow = {
 type PendingConversationActivity = {
   routeId?: string;
   requestId: string;
+  access?: ConversationAgentAccessContextV1;
+  skillSnapshotIds?: string[];
 };
+
+type ConversationAgentConnectionState = {
+  access?: ConversationAgentAccessContextV1;
+};
+
+type ConversationAccessTurnRow = {
+  request_id: string;
+  actor_principal_id: string;
+  resource_id: string;
+  role: "editor";
+  access_revision: number;
+  grant_revision: number;
+  baseline_message_count: number;
+  state: "active" | "stale" | "fenced";
+  created_at: number;
+  updated_at: number;
+};
+
+const MAX_CONVERSATION_ACCESS_HEADER_CHARS = 16_384;
+const MAX_EDITOR_CHAT_REQUEST_BODY_CHARS = 2_000_000;
+
+function decodeConversationAccessHeader(value: string | null): ConversationAgentAccessContextV1 | undefined {
+  if (!value || value.length > MAX_CONVERSATION_ACCESS_HEADER_CHARS) return undefined;
+  try {
+    return decodeConversationAgentAccessContext(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeConversationAccessState(value: unknown): ConversationAgentAccessContextV1 | undefined {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || !("access" in value)) return undefined;
+  return decodeConversationAgentAccessContext(value.access);
+}
+
+function decodeConversationAccessBody(value: unknown): ConversationAgentAccessContextV1 | undefined {
+  return isRecord(value)
+    ? decodeConversationAgentAccessContext(value[CONVERSATION_AGENT_ACCESS_BODY_KEY])
+    : undefined;
+}
+
+function editorChatRequestIsIsolated(bodyValue: unknown, baseline: UIMessage[]): boolean {
+  return decodeEditorChatRequestMessages(bodyValue, baseline) !== undefined;
+}
+
+function rewriteConversationAgentAccessMessage(
+  message: WSMessage,
+  access: ConversationAgentAccessContextV1,
+  baseline: UIMessage[],
+): WSMessage {
+  if (typeof message !== "string") return message;
+  try {
+    const envelope: unknown = JSON.parse(message);
+    if (!isRecord(envelope) || envelope.type !== "chat-request" || !isRecord(envelope.init)) return message;
+    const bodyValue = envelope.init.body;
+    if (typeof bodyValue !== "string") return message;
+    const parsedBody: unknown = JSON.parse(bodyValue);
+    if (!isRecord(parsedBody)) return message;
+    let body: Record<string, unknown>;
+    if (access.access.role === "editor") {
+      const messages = decodeEditorChatRequestMessages(bodyValue, baseline);
+      if (!messages) return message;
+      const submitted = messages[messages.length - 1];
+      if (!submitted.parts.every(isEditorTextPart)) return message;
+      body = {
+        messages: [
+          ...baseline,
+          {
+            id: submitted.id,
+            role: "user",
+            parts: submitted.parts.map((part) => ({ type: "text" as const, text: part.text })),
+          },
+        ],
+        trigger: "submit-message",
+        [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access,
+      };
+    } else {
+      body = { ...parsedBody, [CONVERSATION_AGENT_ACCESS_BODY_KEY]: access };
+    }
+    return JSON.stringify({
+      ...envelope,
+      init: { ...envelope.init, body: JSON.stringify(body) },
+    });
+  } catch {
+    return message;
+  }
+}
+
+function decodeEditorChatRequestMessages(bodyValue: unknown, baseline: UIMessage[]): UIMessage[] | undefined {
+  if (
+    typeof bodyValue !== "string"
+    || bodyValue.length === 0
+    || bodyValue.length > MAX_EDITOR_CHAT_REQUEST_BODY_CHARS
+  ) return undefined;
+  try {
+    const body: unknown = JSON.parse(bodyValue);
+    if (!isRecord(body) || !Array.isArray(body.messages)) return undefined;
+    if (body.trigger !== undefined && body.trigger !== "submit-message") return undefined;
+    if (body.clientTools !== undefined && (!Array.isArray(body.clientTools) || body.clientTools.length > 0)) {
+      return undefined;
+    }
+    if (body.messages.length !== baseline.length + 1) return undefined;
+    const prefix = body.messages.slice(0, -1);
+    if (!prefix.every((message, index) => sameUiMessage(message as UIMessage, baseline[index]))) {
+      return undefined;
+    }
+    const submitted = body.messages[body.messages.length - 1];
+    if (
+      !isRecord(submitted)
+      || typeof submitted.id !== "string"
+      || submitted.id.length === 0
+      || submitted.id.length > 160
+      || /[\u0000-\u001f\u007f]/u.test(submitted.id)
+      || submitted.role !== "user"
+      || !Array.isArray(submitted.parts)
+      || submitted.parts.length === 0
+      || !submitted.parts.every(isEditorTextPart)
+    ) return undefined;
+    return body.messages as UIMessage[];
+  } catch {
+    return undefined;
+  }
+}
+
+function isEditorTextPart(part: UIMessage["parts"][number]): part is Extract<
+  UIMessage["parts"][number],
+  { type: "text" }
+> {
+  return isRecord(part) && part.type === "text" && typeof part.text === "string";
+}
+
+function sameConversationAccessSnapshot(
+  left: ConversationAccessSnapshotV1,
+  right: ConversationAccessSnapshotV1,
+): boolean {
+  return left.version === right.version
+    && left.resourceId === right.resourceId
+    && left.conversationId === right.conversationId
+    && left.ownerPrincipalId === right.ownerPrincipalId
+    && left.actorPrincipalId === right.actorPrincipalId
+    && left.role === right.role
+    && left.accessRevision === right.accessRevision
+    && left.grantRevision === right.grantRevision
+    && left.agentInstanceName === right.agentInstanceName
+    && left.ownerRootInstanceName === right.ownerRootInstanceName;
+}
+
+function sameConversationAccessContext(
+  left: ConversationAgentAccessContextV1,
+  right: ConversationAgentAccessContextV1,
+): boolean {
+  return sameConversationAccessSnapshot(left.access, right.access)
+    && left.actor.label === right.actor.label
+    && left.actor.principalId === right.actor.principalId
+    && left.actor.rootInstanceName === right.actor.rootInstanceName
+    && left.actor.userStateInstanceName === right.actor.userStateInstanceName
+    && left.actor.registryRevision === right.actor.registryRevision
+    && left.actor.sessionExpiresAt === right.actor.sessionExpiresAt;
+}
+
+function conversationAccessAgentError(error: unknown): AgentErrorCode {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "conversation_not_found") return "conversation_not_found";
+  if (code === "conversation_action_denied") return "conversation_action_denied";
+  if (
+    code === "conversation_access_revision_conflict"
+    || code === "conversation_access_turn_conflict"
+  ) return "conversation_access_revision_conflict";
+  return "conversation_acl_unavailable";
+}
+
+function conversationAccessAgentErrorStatus(error: AgentErrorCode): 403 | 404 | 409 | 503 {
+  if (error === "conversation_action_denied") return 403;
+  if (error === "conversation_not_found") return 404;
+  if (error === "conversation_access_revision_conflict") return 409;
+  return 503;
+}
 
 function responseWithAbortController(response: Response, controller: AbortController): Response {
   const reader = response.body?.getReader();
@@ -364,6 +559,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
   private sourceKey = "";
   private pendingActivities = new Map<string, PendingConversationActivity>();
   private pendingAttachmentValidationErrors = new Map<string, AttachmentValidationErrorCode>();
+  private conversationAccessGuardInstalled = false;
+  private activeSharedTurnControllers = new Map<string, {
+    actorPrincipalId: string;
+    accessRevision: number;
+    controller: AbortController;
+  }>();
 
   async onStart(props?: TeamAgentProps): Promise<void> {
     await super.onStart(props);
@@ -381,8 +582,328 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         stateClass: "authoritative",
         restoreBehavior: "restore",
         registeredAt: Date.now(),
-      });
+    });
     if (!registered.ok) throw new Error(registered.error);
+    this.installConversationAccessGuard();
+  }
+
+  async onConnect(
+    connection: Connection<ConversationAgentConnectionState>,
+    ctx: ConnectionContext,
+  ): Promise<void> {
+    if (this.scope !== "conversation" || this.accessKind !== "member") return;
+    const access = decodeConversationAccessHeader(ctx.request.headers.get(CONVERSATION_AGENT_ACCESS_HEADER));
+    if (!access || !await this.matchesConversationAccessContext(access, "conversation.read")) {
+      connection.close(4003, "Conversation access unavailable");
+      return;
+    }
+    connection.setState({ access });
+    this.setConnectionReadonly(connection, access.access.role === "viewer");
+  }
+
+  async applyConversationAccessRevision(input: unknown): Promise<{ ok: true }> {
+    this.requireConversationScope();
+    const revision = decodeConversationAgentAccessRevision(input);
+    if (!revision) throw new Error("conversation_access_revision_input_invalid");
+    const stable = await this.getStableIdentity();
+    if (!stable || stable.scope !== "conversation" || stable.resourceId !== revision.resourceId) {
+      throw new Error("conversation_not_found");
+    }
+    const current = this.sql<{ access_revision: number }>`
+      SELECT access_revision FROM chatus_conversation_access_state WHERE singleton = 1 LIMIT 1
+    `[0]?.access_revision || 0;
+    if (revision.accessRevision <= current) return { ok: true };
+    const now = Date.now();
+    this.sql`
+      INSERT INTO chatus_conversation_access_state(singleton, resource_id, access_revision, updated_at)
+      VALUES (1, ${revision.resourceId}, ${revision.accessRevision}, ${now})
+      ON CONFLICT(singleton) DO UPDATE SET
+        resource_id = excluded.resource_id,
+        access_revision = excluded.access_revision,
+        updated_at = excluded.updated_at
+    `;
+    this.sql`DELETE FROM capability_tool_trust WHERE conversation_id = ${this.chatId}`;
+    this.sql`
+      UPDATE chatus_conversation_access_turns
+      SET state = 'stale', updated_at = ${now}
+      WHERE state = 'active' AND access_revision < ${revision.accessRevision}
+    `;
+    for (const active of this.activeSharedTurnControllers.values()) {
+      if (active.accessRevision < revision.accessRevision && !active.controller.signal.aborted) {
+        active.controller.abort("conversation_access_revision_conflict");
+      }
+    }
+    for (const connection of this.getConnections<ConversationAgentConnectionState>()) {
+      const access = decodeConversationAccessState(connection.state);
+      if (
+        access && access.access.role !== "owner"
+        && access.access.resourceId === revision.resourceId
+        && access.access.accessRevision < revision.accessRevision
+      ) {
+        connection.close(4003, "Conversation access changed");
+      }
+    }
+    return { ok: true };
+  }
+
+  private installConversationAccessGuard(): void {
+    if (this.conversationAccessGuardInstalled) return;
+    this.conversationAccessGuardInstalled = true;
+    const sdkOnMessage = this.onMessage.bind(this);
+    this.onMessage = async (connection: Connection, message: WSMessage) => {
+      const authorized = await this.authorizeConversationProtocolMessage(
+        connection as Connection<ConversationAgentConnectionState>,
+        message,
+      );
+      if (authorized === null) return;
+      await sdkOnMessage(connection, authorized);
+    };
+  }
+
+  private async authorizeConversationProtocolMessage(
+    connection: Connection<ConversationAgentConnectionState>,
+    message: WSMessage,
+  ): Promise<WSMessage | null> {
+    if (this.scope !== "conversation" || this.accessKind !== "member" || typeof message !== "string") {
+      return message;
+    }
+    const access = decodeConversationAccessState(connection.state);
+    if (!access) {
+      this.sendConversationProtocolError(connection, "conversation_not_found", undefined);
+      return null;
+    }
+    const event = parseProtocolMessage(message);
+    if (!event) return message;
+
+    if (event.type === "chat-request") {
+      if (access.access.role === "viewer") {
+        this.sendConversationProtocolError(connection, "conversation_action_denied", event.id);
+        return null;
+      }
+      if (access.access.role === "owner") {
+        if (this.hasActiveSharedTurn()) {
+          this.sendConversationProtocolError(connection, "concurrent_turn", event.id);
+          return null;
+        }
+        return rewriteConversationAgentAccessMessage(message, access, this.messages);
+      }
+      if (!editorChatRequestIsIsolated(event.init.body, this.messages)) {
+        this.sendConversationProtocolError(connection, "file_not_supported", event.id);
+        return null;
+      }
+      if (this.hasActiveSharedTurn()) {
+        this.sendConversationProtocolError(connection, "concurrent_turn", event.id);
+        return null;
+      }
+      try {
+        await this.waitUntilStable();
+        if (!await this.matchesConversationAccessContext(access, "conversation.message.send")) {
+          this.sendConversationProtocolError(connection, "conversation_not_found", event.id);
+          return null;
+        }
+        this.registerConversationAccessTurn(event.id, access.access, this.messages.length);
+      } catch (error) {
+        this.sendConversationProtocolError(connection, conversationAccessAgentError(error), event.id);
+        return null;
+      }
+      return rewriteConversationAgentAccessMessage(message, access, this.messages);
+    }
+
+    if (event.type === "cancel" && access.access.role === "editor") {
+      const turn = this.getConversationAccessTurn(event.id);
+      if (
+        turn?.state === "active"
+        && turn.actor_principal_id === access.access.actorPrincipalId
+        && turn.resource_id === access.access.resourceId
+      ) return message;
+      this.sendConversationProtocolError(connection, "conversation_action_denied", event.id);
+      return null;
+    }
+    if (event.type === "stream-resume-request" || event.type === "stream-resume-ack") return message;
+    if (access.access.role !== "owner") {
+      const requestId = "id" in event && typeof event.id === "string" ? event.id : undefined;
+      this.sendConversationProtocolError(connection, "conversation_action_denied", requestId);
+      return null;
+    }
+    return message;
+  }
+
+  private sendConversationProtocolError(
+    connection: Connection,
+    error: AgentErrorCode,
+    requestIdValue: unknown,
+  ): void {
+    const requestId = normalizeAgentRequestId(requestIdValue);
+    try {
+      connection.send(JSON.stringify({
+        type: MessageType.CF_AGENT_CHAT_MESSAGES,
+        messages: this.messages,
+      }));
+      if (requestId) {
+        connection.send(JSON.stringify({
+          type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+          id: requestId,
+          body: serializeAgentErrorEnvelope(error, requestId),
+          done: true,
+          error: true,
+        }));
+      }
+    } catch {
+      // A closed connection cannot receive the rejection, but no mutation proceeds.
+    }
+  }
+
+  private async matchesConversationAccessContext(
+    context: ConversationAgentAccessContextV1,
+    action: ConversationAccessActionV1,
+  ): Promise<boolean> {
+    const stable = await this.getStableIdentity();
+    if (
+      !stable || stable.scope !== "conversation"
+      || stable.resourceId !== context.access.resourceId
+      || stable.principalId !== context.access.ownerPrincipalId
+      || stable.rootInstanceName !== context.access.ownerRootInstanceName
+      || stable.pinnedInstanceName !== context.access.agentInstanceName
+      || context.access.agentInstanceName !== this.name
+      || context.access.conversationId !== this.chatId
+    ) return false;
+    const resolved = await this.env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .resolveConversationAccess({
+        version: 1,
+        actorPrincipalId: context.access.actorPrincipalId,
+        resourceId: context.access.resourceId,
+        conversationId: context.access.conversationId,
+        action,
+        expectedAccessRevision: context.access.accessRevision,
+      });
+    return sameConversationAccessSnapshot(resolved, context.access);
+  }
+
+  private hasActiveSharedTurn(): boolean {
+    return this.sql<{ active: number }>`
+      SELECT 1 AS active FROM chatus_conversation_access_turns WHERE state = 'active' LIMIT 1
+    `.length > 0;
+  }
+
+  private registerConversationAccessTurn(
+    requestIdValue: unknown,
+    access: ConversationAccessSnapshotV1,
+    baselineMessageCount: number,
+  ): void {
+    const requestId = normalizeAgentRequestId(requestIdValue);
+    if (!requestId || access.role !== "editor" || !Number.isSafeInteger(baselineMessageCount)) {
+      throw new Error("conversation_access_turn_invalid");
+    }
+    const existing = this.getConversationAccessTurn(requestId);
+    if (existing) {
+      if (
+        existing.state !== "active"
+        || existing.actor_principal_id !== access.actorPrincipalId
+        || existing.resource_id !== access.resourceId
+        || existing.access_revision !== access.accessRevision
+        || existing.grant_revision !== access.grantRevision
+        || existing.baseline_message_count !== baselineMessageCount
+      ) throw new Error("conversation_access_turn_conflict");
+      return;
+    }
+    const now = Date.now();
+    this.sql`
+      INSERT INTO chatus_conversation_access_turns(
+        request_id, actor_principal_id, resource_id, role, access_revision,
+        grant_revision, baseline_message_count, state, created_at, updated_at
+      ) VALUES (
+        ${requestId}, ${access.actorPrincipalId}, ${access.resourceId}, 'editor',
+        ${access.accessRevision}, ${access.grantRevision}, ${baselineMessageCount},
+        'active', ${now}, ${now}
+      )
+    `;
+  }
+
+  private getConversationAccessTurn(requestId: string): ConversationAccessTurnRow | undefined {
+    return this.sql<ConversationAccessTurnRow>`
+      SELECT request_id, actor_principal_id, resource_id, role, access_revision,
+        grant_revision, baseline_message_count, state, created_at, updated_at
+      FROM chatus_conversation_access_turns WHERE request_id = ${requestId} LIMIT 1
+    `[0];
+  }
+
+  private markConversationAccessTurn(requestId: string, state: "stale" | "fenced"): void {
+    this.sql`
+      UPDATE chatus_conversation_access_turns
+      SET state = ${state}, updated_at = ${Date.now()}
+      WHERE request_id = ${requestId}
+    `;
+  }
+
+  private async assertConversationAccessCommit(
+    access: ConversationAccessSnapshotV1,
+  ): Promise<void> {
+    const resolved = await this.env.IDENTITY_REGISTRY.getByName(IDENTITY_REGISTRY_INSTANCE_NAME)
+      .assertConversationMutationCommit({
+        version: 1,
+        actorPrincipalId: access.actorPrincipalId,
+        resourceId: access.resourceId,
+        conversationId: access.conversationId,
+        action: "conversation.message.send",
+        accessRevision: access.accessRevision,
+        grantRevision: access.grantRevision,
+      });
+    if (!sameConversationAccessSnapshot(resolved, access)) {
+      throw new Error("conversation_access_revision_conflict");
+    }
+  }
+
+  private async restoreConversationAccessTurn(turn: ConversationAccessTurnRow): Promise<void> {
+    const baseline = Math.max(0, Math.min(turn.baseline_message_count, this.messages.length));
+    await this.persistMessages(this.messages.slice(0, baseline), [], { _deleteStaleRows: true });
+    this.sql`DELETE FROM chatus_provider_turn_state`;
+    this.pendingActivities.delete(turn.request_id);
+  }
+
+  private fenceConversationResponse(
+    response: Response,
+    access: ConversationAccessSnapshotV1,
+    requestId: string,
+    turnAbortController: AbortController,
+  ): Response {
+    const reader = response.body?.getReader();
+    if (!reader) return response;
+    const failFence = async (error: unknown): Promise<never> => {
+      this.markConversationAccessTurn(requestId, "stale");
+      const code = conversationAccessAgentError(error);
+      if (!turnAbortController.signal.aborted) turnAbortController.abort(code);
+      await reader.cancel(code).catch(() => undefined);
+      throw new Error(serializeAgentErrorEnvelope(code, requestId));
+    };
+    const assertFence = async (final: boolean) => {
+      try {
+        await this.assertConversationAccessCommit(access);
+        if (final) this.markConversationAccessTurn(requestId, "fenced");
+      } catch (error) {
+        await failFence(error);
+      }
+    };
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const next = await reader.read();
+        if (next.done) {
+          await assertFence(true);
+          controller.close();
+          return;
+        }
+        await assertFence(false);
+        controller.enqueue(next.value);
+      },
+      async cancel(reason) {
+        if (!turnAbortController.signal.aborted) turnAbortController.abort(reason);
+        await reader.cancel(reason).catch(() => undefined);
+      },
+    }, { highWaterMark: 0 });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   }
 
   async getCaptureSchemaVersion(): Promise<string> {
@@ -675,6 +1196,35 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         `;
         this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (7, ${Date.now()})`;
       }
+      if (version < 8) {
+        this.sql`
+          CREATE TABLE IF NOT EXISTS chatus_conversation_access_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            resource_id TEXT NOT NULL,
+            access_revision INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `;
+        this.sql`
+          CREATE TABLE IF NOT EXISTS chatus_conversation_access_turns (
+            request_id TEXT PRIMARY KEY,
+            actor_principal_id TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role = 'editor'),
+            access_revision INTEGER NOT NULL,
+            grant_revision INTEGER NOT NULL,
+            baseline_message_count INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('active', 'stale', 'fenced')),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `;
+        this.sql`
+          CREATE INDEX IF NOT EXISTS chatus_conversation_access_turns_state
+          ON chatus_conversation_access_turns(state, updated_at)
+        `;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (8, ${Date.now()})`;
+      }
     });
   }
 
@@ -797,6 +1347,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       ORDER BY pinned DESC, updated_at DESC
       LIMIT ${MAX_AGENT_CONVERSATIONS}
     `.map((row) => this.conversationSummary(row));
+  }
+
+  async getConversationSummary(idValue: string): Promise<AgentConversationSummary | undefined> {
+    this.requireRootScope();
+    const id = normalizeConversationId(idValue);
+    const row = id ? this.getConversationRow(id) : undefined;
+    return row && row.deleted_at === 0 ? this.conversationSummary(row) : undefined;
   }
 
   async createConversation(input: AgentConversationInput): Promise<AgentConversationMutationResult> {
@@ -2671,6 +3228,22 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       return fail("agent_identity_unavailable", 401, "identity");
     }
 
+    const requestedBody = isRecord(options?.body) ? options.body : {};
+    const body = Object.keys(requestedBody).length ? requestedBody : this.getPendingBranchBody();
+    const connectionAccess = decodeConversationAccessState(getCurrentAgent().connection?.state);
+    const bodyAccess = decodeConversationAccessBody(body);
+    let conversationAccess: ConversationAgentAccessContextV1 | undefined;
+    if (this.accessKind === "member") {
+      if (connectionAccess && bodyAccess && !sameConversationAccessContext(connectionAccess, bodyAccess)) {
+        return fail("conversation_access_revision_conflict", 409, "identity");
+      }
+      conversationAccess = connectionAccess || bodyAccess;
+      if (!conversationAccess) return fail("conversation_not_found", 404, "identity");
+      if (conversationAccess.access.role === "viewer") {
+        return fail("conversation_action_denied", 403, "identity");
+      }
+    }
+
     const attachmentRejection = this.takePendingAttachmentValidationError();
     if (attachmentRejection) {
       const rejectedIds = new Set(attachmentRejection.messageIds);
@@ -2686,8 +3259,6 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       );
     }
 
-    const requestedBody = isRecord(options?.body) ? options.body : {};
-    const body = Object.keys(requestedBody).length ? requestedBody : this.getPendingBranchBody();
     const now = Date.now();
     const stableIdentityValue = this.accessKind === "member"
       ? await this.ctx.storage.get<unknown>(STABLE_AGENT_IDENTITY_STORAGE_KEY)
@@ -2700,12 +3271,25 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       || stableIdentity.pinnedInstanceName !== this.name
     )) return fail("agent_identity_unavailable", 401, "identity");
     if (this.accessKind === "member") {
-      try {
-        if (!await this.matchesActiveStableIdentity(stableIdentity!)) {
-          return fail("agent_identity_unavailable", 401, "identity");
+      if (conversationAccess!.access.role === "owner") {
+        try {
+          if (!await this.matchesActiveStableIdentity(stableIdentity!)) {
+            return fail("agent_identity_unavailable", 401, "identity");
+          }
+        } catch {
+          return fail("agent_identity_unavailable", 503, "identity");
         }
-      } catch {
-        return fail("agent_identity_unavailable", 503, "identity");
+      }
+      try {
+        if (!await this.matchesConversationAccessContext(
+          conversationAccess!,
+          "conversation.message.send",
+        )) {
+          return fail("conversation_not_found", 404, "identity");
+        }
+      } catch (error) {
+        const code = conversationAccessAgentError(error);
+        return fail(code, conversationAccessAgentErrorStatus(code), "identity");
       }
     }
     const session: Session = this.accessKind === "guest"
@@ -2720,16 +3304,25 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         }
       : {
           id: this.name,
-          label: this.userLabel,
+          label: conversationAccess!.actor.label,
           kind: "member",
-          principalId: stableIdentity!.principalId,
-          rootInstanceName: stableIdentity!.rootInstanceName,
-          userStateInstanceName: stableIdentity!.userStateInstanceName,
-          registryRevision: stableIdentity!.registryRevision,
+          principalId: conversationAccess!.actor.principalId,
+          rootInstanceName: conversationAccess!.actor.rootInstanceName,
+          userStateInstanceName: conversationAccess!.actor.userStateInstanceName,
+          registryRevision: conversationAccess!.actor.registryRevision,
           createdAt: now,
           lastSeen: now,
-          expiresAt: this.sessionExpiresAt,
+          expiresAt: conversationAccess!.actor.sessionExpiresAt,
         };
+    const sharedEditorAccess = conversationAccess?.access.role === "editor"
+      ? conversationAccess.access
+      : undefined;
+    if (sharedEditorAccess && sdkRequestId) {
+      this.pendingActivities.set(sdkRequestId, {
+        requestId,
+        access: conversationAccess,
+      });
+    }
     let longTermMemory = "";
     let workspaceContext = "";
     let memoryRecord: AgentMemoryRecord | undefined;
@@ -2737,11 +3330,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     let conversationSettings: AgentConversationSummary;
     try {
       root = await this.getRootAgent();
-      const conversations = await root.listConversations();
-      const storedConversation = conversations.find((conversation) => conversation.id === this.chatId);
+      const storedConversation = await root.getConversationSummary(this.chatId);
       if (!storedConversation) return fail("conversation_not_found", 404, "workspace_context");
       conversationSettings = storedConversation;
-      if (this.accessKind === "member") {
+      if (this.accessKind === "member" && !sharedEditorAccess) {
         const [loadedMemory, workspaceFiles] = await Promise.all([
           root.getMemory(),
           root.resolveConversationWorkspaceFiles(this.chatId),
@@ -2753,6 +3345,37 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     } catch {
       return fail("workspace_context_unavailable", 503, "workspace_context");
     }
+    const turnAbortController = new AbortController();
+    const abortFromRequest = () => {
+      if (!turnAbortController.signal.aborted) turnAbortController.abort(options?.abortSignal?.reason);
+    };
+    if (options?.abortSignal?.aborted) abortFromRequest();
+    else options?.abortSignal?.addEventListener("abort", abortFromRequest, { once: true });
+    const removeRequestAbort = () => options?.abortSignal?.removeEventListener("abort", abortFromRequest);
+    if (sharedEditorAccess) {
+      if (!sdkRequestId) {
+        removeRequestAbort();
+        return fail("conversation_acl_unavailable", 503, "prepare");
+      }
+      const turn = this.getConversationAccessTurn(sdkRequestId);
+      if (
+        !turn
+        || turn.state !== "active"
+        || turn.actor_principal_id !== sharedEditorAccess.actorPrincipalId
+        || turn.resource_id !== sharedEditorAccess.resourceId
+        || turn.access_revision !== sharedEditorAccess.accessRevision
+        || turn.grant_revision !== sharedEditorAccess.grantRevision
+      ) {
+        if (turn) this.markConversationAccessTurn(sdkRequestId, "stale");
+        removeRequestAbort();
+        return fail("conversation_access_revision_conflict", 409, "prepare");
+      }
+      this.activeSharedTurnControllers.set(sdkRequestId, {
+        actorPrincipalId: sharedEditorAccess.actorPrincipalId,
+        accessRevision: sharedEditorAccess.accessRevision,
+        controller: turnAbortController,
+      });
+    }
     const instanceFence = await acquireInstanceOperationFence(
       this.env.INSTANCE_COORDINATOR.getByName(INSTANCE_MAINTENANCE_COORDINATOR),
       {
@@ -2762,7 +3385,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         startedAt: Date.now(),
       },
     );
-    if (!instanceFence) return fail("instance_maintenance", 503, "prepare");
+    if (!instanceFence) {
+      removeRequestAbort();
+      return fail("instance_maintenance", 503, "prepare");
+    }
     const providerTurnId = this.resolveProviderTurnId(options?.continuation === true);
     let prepared: Awaited<ReturnType<typeof prepareTeamAgentTurn>>;
     try {
@@ -2772,11 +3398,13 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         routeId: conversationSettings.routeId || boundedString(body.routeId, 80),
         skillMode: conversationSettings.skillMode,
         skillIds: conversationSettings.skillIds,
-        userApiKey: boundedString(body.userApiKey, 8_192),
-        sessionSummary: boundedString(body.sessionSummary, 1_200),
-        temperature: finiteNumber(body.temperature),
+        userApiKey: sharedEditorAccess ? undefined : boundedString(body.userApiKey, 8_192),
+        sessionSummary: sharedEditorAccess ? undefined : boundedString(body.sessionSummary, 1_200),
+        temperature: sharedEditorAccess ? undefined : finiteNumber(body.temperature),
         longTermMemory,
         workspaceContext,
+        allowFileInput: !sharedEditorAccess,
+        disableTools: Boolean(sharedEditorAccess),
         requestId,
         onProviderProgress: (progress) => {
           try {
@@ -2785,13 +3413,21 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
             // Ephemeral progress must never change turn execution.
           }
         },
-        abortSignal: options?.abortSignal,
+        abortSignal: turnAbortController.signal,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
         turnId: providerTurnId,
         operation: instanceFence.operation,
       });
     } catch (error) {
+      removeRequestAbort();
       await instanceFence.release().catch(() => undefined);
+      if (
+        sharedEditorAccess
+        && (
+          turnAbortController.signal.aborted
+          || this.getConversationAccessTurn(sdkRequestId!)?.state === "stale"
+        )
+      ) return fail("conversation_access_revision_conflict", 409, "prepare");
       const projected = projectAgentStreamError(error);
       const budgetStatus = providerBudgetErrorHttpStatus(projected);
       if (budgetStatus) return fail(projected, budgetStatus, "prepare");
@@ -2799,14 +3435,48 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     }
 
     if (!prepared.ok) {
+      removeRequestAbort();
       await instanceFence.release().catch(() => undefined);
       return fail(prepared.error, prepared.status, "prepare", prepared.routeId);
     }
     if (sdkRequestId) {
-      this.pendingActivities.set(sdkRequestId, { routeId: prepared.routeId, requestId });
+      const pending = this.pendingActivities.get(sdkRequestId);
+      this.pendingActivities.set(sdkRequestId, {
+        ...pending,
+        routeId: prepared.routeId,
+        requestId,
+        ...(sharedEditorAccess && prepared.skillSnapshotIds
+          ? { skillSnapshotIds: prepared.skillSnapshotIds }
+          : {}),
+      });
     }
-    if (prepared.skillSnapshotIds) {
+    if (prepared.skillSnapshotIds && !sharedEditorAccess) {
       await root.recordAutomaticSkillSelection(this.chatId, prepared.skillSnapshotIds).catch(() => false);
+    }
+
+    let finalized = false;
+    const finalize = async () => {
+      if (finalized) return;
+      finalized = true;
+      removeRequestAbort();
+      await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn(), instanceFence.release()]);
+    };
+    if (sharedEditorAccess) {
+      const turn = this.getConversationAccessTurn(sdkRequestId!);
+      if (turnAbortController.signal.aborted || turn?.state !== "active") {
+        if (turn) this.markConversationAccessTurn(sdkRequestId!, "stale");
+        await finalize();
+        return fail("conversation_access_revision_conflict", 409, "prepare", prepared.routeId);
+      }
+      try {
+        await this.assertConversationAccessCommit(sharedEditorAccess);
+      } catch (error) {
+        this.markConversationAccessTurn(sdkRequestId!, "stale");
+        const code = conversationAccessAgentError(error);
+        if (!turnAbortController.signal.aborted) turnAbortController.abort(code);
+        await finalize();
+        return fail(code, conversationAccessAgentErrorStatus(code), "prepare", prepared.routeId);
+      }
     }
 
     const tools = createAgentToolSet({
@@ -2842,25 +3512,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           ...(await convertToModelMessages(this.messages, { tools })),
         ];
       } catch {
-        await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn(), instanceFence.release()]);
+        await finalize();
         return fail("agent_context_invalid", 409, "continuation", prepared.routeId);
       }
     }
-
-    const turnAbortController = new AbortController();
-    const abortFromRequest = () => {
-      if (!turnAbortController.signal.aborted) turnAbortController.abort(options?.abortSignal?.reason);
-    };
-    if (options?.abortSignal?.aborted) abortFromRequest();
-    else options?.abortSignal?.addEventListener("abort", abortFromRequest, { once: true });
-    let finalized = false;
-    const removeRequestAbort = () => options?.abortSignal?.removeEventListener("abort", abortFromRequest);
-    const finalize = async () => {
-      if (finalized) return;
-      finalized = true;
-      removeRequestAbort();
-      await Promise.allSettled([prepared.closeTools(), prepared.releaseTurn(), instanceFence.release()]);
-    };
     let streamFailureLogged = false;
     const projectStreamFailure = (error: unknown): AgentErrorCode => {
       const code = projectAgentStreamError(error);
@@ -2892,7 +3547,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         },
       });
 
-      return responseWithAbortController(result.toUIMessageStreamResponse({
+      const response = responseWithAbortController(result.toUIMessageStreamResponse({
         originalMessages: this.messages,
         messageMetadata: ({ part }) => part.type === "finish"
           ? {
@@ -2907,6 +3562,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         },
         onError: (error) => serializeAgentErrorEnvelope(projectStreamFailure(error), requestId),
       }), turnAbortController);
+      return sharedEditorAccess
+        ? this.fenceConversationResponse(response, sharedEditorAccess, sdkRequestId!, turnAbortController)
+        : response;
     } catch (error) {
       await finalize();
       await prepared.recordStreamFailure();
@@ -2920,9 +3578,31 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (this.scope !== "conversation" || !this.chatId || !this.rootInstance) return;
     const sdkRequestId = normalizeAgentRequestId(result.requestId);
     const activity = sdkRequestId ? this.pendingActivities.get(sdkRequestId) : undefined;
-    if (sdkRequestId) this.pendingActivities.delete(sdkRequestId);
+    let accessTurn = sdkRequestId ? this.getConversationAccessTurn(sdkRequestId) : undefined;
     try {
+      if (accessTurn) {
+        if (accessTurn.state === "active") {
+          if (!activity?.access || activity.access.access.role !== "editor") {
+            this.markConversationAccessTurn(accessTurn.request_id, "stale");
+          } else {
+            try {
+              await this.assertConversationAccessCommit(activity.access.access);
+              this.markConversationAccessTurn(accessTurn.request_id, "fenced");
+            } catch {
+              this.markConversationAccessTurn(accessTurn.request_id, "stale");
+            }
+          }
+          accessTurn = this.getConversationAccessTurn(accessTurn.request_id);
+        }
+        if (accessTurn?.state !== "fenced") {
+          if (accessTurn) await this.restoreConversationAccessTurn(accessTurn);
+          return;
+        }
+      }
       const root = await this.getRootAgent();
+      if (accessTurn && activity?.skillSnapshotIds?.length) {
+        await root.recordAutomaticSkillSelection(this.chatId, activity.skillSnapshotIds).catch(() => false);
+      }
       await root.recordConversationActivity({
         id: this.chatId,
         messageCount: this.messages.length,
@@ -2939,6 +3619,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         });
       }
       // The transcript is authoritative; the root index can be repaired on the next request.
+    } finally {
+      if (sdkRequestId) {
+        this.pendingActivities.delete(sdkRequestId);
+        this.activeSharedTurnControllers.delete(sdkRequestId);
+        this.sql`DELETE FROM chatus_conversation_access_turns WHERE request_id = ${sdkRequestId}`;
+      }
     }
   }
 
@@ -3361,8 +4047,11 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.sql`DELETE FROM capability_tool_trust`;
     this.sql`DELETE FROM chatus_conversation_branch_launches`;
     this.sql`DELETE FROM chatus_provider_turn_state`;
+    this.sql`DELETE FROM chatus_conversation_access_turns`;
+    this.sql`DELETE FROM chatus_conversation_access_state`;
     this.messages = [];
     this.pendingActivities.clear();
+    this.activeSharedTurnControllers.clear();
   }
 
   private resolveProviderTurnId(continuation: boolean): string {

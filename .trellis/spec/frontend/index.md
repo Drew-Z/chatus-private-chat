@@ -26,6 +26,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 | [R2 Workspace Files](./workspace-files.md) | R2 immutable versions, Root SQLite metadata, exact conversation references, alarm-backed cleanup reconciliation, React workspace, and purge locking | Ready |
 | [Member And Registry Capabilities](./capability-assignment.md) | Per-member assignment plus typed Skill, tool, MCP, secret, and discovery administration contracts | Ready |
 | [Public Guest Access](./public-guest-access.md) | Restricted anonymous sessions, single public route enforcement, guest capability denial, quotas, durable marker/alarm cleanup, and workspace projection | Ready |
+| [Conversation Sharing](./conversation-sharing.md) | Shared-resource decoding, owner dialog replay, role-gated controls, refresh fencing, and access recovery | Ready |
 
 ---
 
@@ -36,6 +37,7 @@ These guidelines describe the transitional legacy browser frontend, the typed Re
 - Read `type-safety.md` for Worker/API/storage contract changes.
 - Read `capability-assignment.md` for user capability fields, Skill selection, or administration assignment changes.
 - Read `public-guest-access.md` for anonymous access, public route gating, guest capability projection, quotas, or cleanup changes.
+- Read `conversation-sharing.md` for resource ACL fields, shared Agent connections, share management, role gating, or access recovery.
 - Read `agent-streaming.md` for AIChat, provider routing, fallback, cancellation, or stream telemetry changes.
 - Read `multimodal-image-input.md` for image policy, composer attachments, Agent file parts, provider image conversion, or image export/deletion changes.
 - Read `file-attachments.md` for generic file upload, `fileInput` policy, mixed attachment drafts, deterministic attached-file text, Agent persistence, or guest file denial changes.

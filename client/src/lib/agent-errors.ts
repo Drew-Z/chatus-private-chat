@@ -42,3 +42,9 @@ export function resolveAgentError(message: string, online: boolean): AgentErrorP
 export function friendlyAgentError(message: string, online: boolean): string {
   return resolveAgentError(message, online).message;
 }
+
+export function isConversationAccessRefreshError(message: string): boolean {
+  const envelope = parseAgentErrorEnvelope(message);
+  return envelope?.error === "conversation_not_found"
+    || envelope?.error === "conversation_access_revision_conflict";
+}

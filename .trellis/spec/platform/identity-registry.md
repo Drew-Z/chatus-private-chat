@@ -51,7 +51,7 @@ recordStableIdentityMarker(input: {
 
 - `IDENTITY_REGISTRY` is the singleton `$identity-registry` SQLite Durable
   Object. Its append-only schema migration is v6 in Wrangler; its own SQLite
-  schema is `identity-registry-v1`.
+  schema is `identity-registry-v2`.
 - A member session carries `principalId`, `rootInstanceName`,
   `userStateInstanceName`, and `registryRevision`. Every authenticated request
   revalidates the exact principal/alias binding before storage or Provider I/O.
@@ -96,10 +96,11 @@ recordStableIdentityMarker(input: {
   operation ID and expected revision, and returns only IDs, revisions, counts,
   migration state, a digest, and closed issue codes. It never returns labels,
   object names, conversation content, credentials, tokens, or raw exceptions.
-- ACL grants, sharing, transfer, cross-principal discovery, shared files/tools,
+- Resource-scoped viewer/editor grants and authoritative revocation follow
+  `conversation-acl.md`. Transfer, owner deletion disposition, shared files/tools,
   and shared exports remain unsupported.
 - Capture requires a registered `identity_registry` object with an actual
-  `identity-registry-v1` Durable Object snapshot. Missing registration fails
+  `identity-registry-v2` Durable Object snapshot. Missing registration fails
   `capture_object_registry_incomplete`; placeholder empty inventory must never
   stand in for authoritative registry state. Restore validates the v6 binding
   and snapshot before target mutation.
@@ -137,7 +138,9 @@ recordStableIdentityMarker(input: {
 - Registry tests cover legacy/native route creation, marker transitions, alias
   retirement/reuse, duplicate operation replay, bounded reconciliation issues,
   cross-principal-revision marker history, retired-state transition denial, and
-  exact response privacy.
+  exact response privacy. ACL tests additionally prove lifecycle-derived grant
+  revocation increments the resource access revision and records a null-actor
+  content-free event.
 - Worker tests cover admin inspection/reconciliation, stale revisions, injected
   identity fields, no-label/no-route response projections, and idempotent replay.
 - Session and deletion tests prove a reused label receives a different

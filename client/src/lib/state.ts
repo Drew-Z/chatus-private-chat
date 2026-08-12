@@ -6,6 +6,60 @@ export function conversationAgentClientName(rootInstance: string, chatId: string
   return JSON.stringify([rootInstance, chatId]);
 }
 
+export type ConversationAccessPermissions = {
+  canSend: boolean;
+  canRename: boolean;
+  canManageSettings: boolean;
+  canBranch: boolean;
+  canDelete: boolean;
+  canManageShares: boolean;
+  canUseWorkspace: boolean;
+  canUseConversationTools: boolean;
+  canSubmitFeedback: boolean;
+};
+
+export function resolveConversationAccessPermissions(
+  role: ConversationAccessRoleV1 | undefined,
+): ConversationAccessPermissions {
+  if (!role || role === "owner") {
+    return {
+      canSend: true,
+      canRename: true,
+      canManageSettings: true,
+      canBranch: true,
+      canDelete: true,
+      canManageShares: true,
+      canUseWorkspace: true,
+      canUseConversationTools: true,
+      canSubmitFeedback: true,
+    };
+  }
+  if (role === "editor") {
+    return {
+      canSend: true,
+      canRename: true,
+      canManageSettings: false,
+      canBranch: false,
+      canDelete: false,
+      canManageShares: false,
+      canUseWorkspace: false,
+      canUseConversationTools: false,
+      canSubmitFeedback: false,
+    };
+  }
+  return {
+    canSend: false,
+    canRename: false,
+    canManageSettings: false,
+    canBranch: false,
+    canDelete: false,
+    canManageShares: false,
+    canUseWorkspace: false,
+    canUseConversationTools: false,
+    canSubmitFeedback: false,
+  };
+}
+
 export function resolveLoadedMemoryDraft(
   currentDraft: string,
   serverMemory: string,
@@ -115,6 +169,7 @@ export function resolveMessageActionAvailability({
   hasText,
   canContinue,
   toolApprovalPending,
+  accessRole,
 }: {
   phase: TurnPhase;
   role: string;
@@ -127,14 +182,16 @@ export function resolveMessageActionAvailability({
   hasText: boolean;
   canContinue: boolean;
   toolApprovalPending: boolean;
+  accessRole?: ConversationAccessRoleV1;
 }): MessageActionAvailability {
+  const permissions = resolveConversationAccessPermissions(accessRole);
   const stable = phase === "idle" || phase === "completed" || phase === "stopped" || phase === "failed";
   const interactionReady = online && !blocked && stable;
   const generationReady = interactionReady && routeAvailable;
-  const userActionsVisible = messageActionsEnabled && role === "user";
-  const assistantActionsVisible = messageActionsEnabled && role === "assistant";
-  const feedbackVisible = feedbackEnabled && role === "assistant";
-  const retryVisible = messageActionsEnabled && phase === "failed" && isLatestMessage;
+  const userActionsVisible = messageActionsEnabled && permissions.canBranch && role === "user";
+  const assistantActionsVisible = messageActionsEnabled && permissions.canBranch && role === "assistant";
+  const feedbackVisible = feedbackEnabled && permissions.canSubmitFeedback && role === "assistant";
+  const retryVisible = messageActionsEnabled && permissions.canBranch && phase === "failed" && isLatestMessage;
 
   return {
     copy: actionState(hasText, hasText),
@@ -144,7 +201,10 @@ export function resolveMessageActionAvailability({
     continue: actionState(assistantActionsVisible && canContinue, generationReady),
     branch: actionState(userActionsVisible || assistantActionsVisible, interactionReady),
     feedback: actionState(feedbackVisible, generationReady),
-    approveTool: actionState(toolApprovalPending, online && !blocked && phase === "tool-running"),
+    approveTool: actionState(
+      permissions.canUseConversationTools && toolApprovalPending,
+      online && !blocked && phase === "tool-running",
+    ),
     retry: actionState(retryVisible, generationReady),
   };
 }
@@ -204,3 +264,4 @@ function isVisibleAssistantPart(part: TurnMessagePart): boolean {
 function isToolPart(part: TurnMessagePart): boolean {
   return part.type === "dynamic-tool" || part.type.startsWith("tool-");
 }
+import type { ConversationAccessRoleV1 } from "../../../src/contracts/identity";

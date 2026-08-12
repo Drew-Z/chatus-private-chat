@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Download, LogOut, MessageSquarePlus, Pencil, Plug, Search, Settings2, Sparkles, Trash2, Wrench, X } from "lucide-react";
+import { Check, Download, LogOut, MessageSquarePlus, Pencil, Plug, Search, Settings2, Share2, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
+import { resolveConversationAccessPermissions } from "../lib/state";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
+import { ConversationShareDialog } from "./ConversationShareDialog";
 
 export type SidebarView = "history" | "files" | "settings";
 
@@ -23,6 +25,7 @@ export function ConversationSidebar({
   onCreate,
   onRename,
   onDelete,
+  onAccessChanged,
   onConversationUpdated,
   onRouteChange,
   onSkillModeChange,
@@ -47,6 +50,7 @@ export function ConversationSidebar({
   onCreate: () => Promise<void>;
   onRename: (conversation: AgentConversation, title: string) => Promise<void>;
   onDelete: (conversation: AgentConversation) => Promise<void>;
+  onAccessChanged: (conversation: AgentConversation, accessRevision: number) => void;
   onConversationUpdated: (conversation: AgentConversation) => void;
   onRouteChange: (routeId: string) => void;
   onSkillModeChange: (skillMode: ConversationSkillMode) => void;
@@ -61,6 +65,7 @@ export function ConversationSidebar({
   const [pendingId, setPendingId] = useState("");
   const [accountDialog, setAccountDialog] = useState<"sessions" | "delete" | null>(null);
   const [conversationToDelete, setConversationToDelete] = useState<AgentConversation | null>(null);
+  const [conversationToShare, setConversationToShare] = useState<AgentConversation | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountMessage, setAccountMessage] = useState("");
   const [accountError, setAccountError] = useState("");
@@ -82,6 +87,12 @@ export function ConversationSidebar({
       : []),
     [routeSupportsTools, session.skills, skillIds],
   );
+  const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
+  const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
+
+  useEffect(() => {
+    if (view !== "history" && !activePermissions.canManageSettings) onViewChange("history");
+  }, [activePermissions.canManageSettings, onViewChange, view]);
 
   useEffect(() => {
     if (!open || !window.matchMedia("(max-width: 780px)").matches) {
@@ -200,8 +211,8 @@ export function ConversationSidebar({
       <div className="sidebar-topbar">
         <div className="sidebar-tabs" role="group" aria-label="侧栏视图">
           <button type="button" aria-pressed={view === "history"} onClick={() => onViewChange("history")}>对话</button>
-          {session.access === "member" && <button type="button" aria-pressed={view === "files"} onClick={() => onViewChange("files")}>文件</button>}
-          <button type="button" aria-pressed={view === "settings"} onClick={() => onViewChange("settings")}>设置</button>
+          {session.access === "member" && activePermissions.canUseWorkspace && <button type="button" aria-pressed={view === "files"} onClick={() => onViewChange("files")}>文件</button>}
+          {activePermissions.canManageSettings && <button type="button" aria-pressed={view === "settings"} onClick={() => onViewChange("settings")}>设置</button>}
         </div>
         <button className="icon-button mobile-only" data-sidebar-initial-focus type="button" onClick={onClose} title="关闭侧栏" aria-label="关闭侧栏"><X size={18} /></button>
       </div>
@@ -222,6 +233,7 @@ export function ConversationSidebar({
             {visible.map((conversation) => {
               const active = conversation.id === activeId;
               const editing = conversation.id === editingId;
+              const permissions = resolveConversationAccessPermissions(conversation.accessRole);
               return (
                 <div className={`conversation-row ${active ? "active" : ""}`} key={conversation.id}>
                   {editing ? (
@@ -246,25 +258,33 @@ export function ConversationSidebar({
                         title={busy && !active ? "请先停止当前任务" : conversation.title}
                       >
                         <strong>{conversation.title}</strong>
-                        <span>{formatConversationDate(conversation.updatedAt)} · {conversation.messageCount} 条消息</span>
+                        <span>{formatConversationDate(conversation.updatedAt)} · {conversation.messageCount} 条消息{conversation.accessRole && conversation.accessRole !== "owner" ? ` · ${conversation.accessRole === "editor" ? "编辑者" : "查看者"}` : ""}</span>
                       </button>
                       <div className="conversation-actions">
-                        <button
+                        {permissions.canRename && <button
                           className="icon-button"
                           type="button"
                           disabled={busy || pendingId === conversation.id}
                           onClick={() => { setEditingId(conversation.id); setTitleDraft(conversation.title); }}
                           title="重命名"
                           aria-label="重命名"
-                        ><Pencil size={14} /></button>
-                        <button
+                        ><Pencil size={14} /></button>}
+                        {permissions.canManageShares && conversation.resourceId && <button
+                          className="icon-button"
+                          type="button"
+                          disabled={busy || pendingId === conversation.id}
+                          onClick={() => setConversationToShare(conversation)}
+                          title="管理共享"
+                          aria-label="管理共享"
+                        ><Share2 size={14} /></button>}
+                        {permissions.canDelete && <button
                           className="icon-button danger"
                           type="button"
                           disabled={busy || pendingId === conversation.id}
                           onClick={() => setConversationToDelete(conversation)}
                           title="删除会话"
                           aria-label="删除会话"
-                        ><Trash2 size={14} /></button>
+                        ><Trash2 size={14} /></button>}
                       </div>
                     </>
                   )}
@@ -273,7 +293,7 @@ export function ConversationSidebar({
             })}
           </div>
         </>
-      ) : view === "files" && session.access === "member" ? (
+      ) : view === "files" && session.access === "member" && activePermissions.canUseWorkspace ? (
         <FileWorkspacePanel
           conversation={conversations.find((conversation) => conversation.id === activeId) || null}
           busy={busy}
@@ -283,9 +303,11 @@ export function ConversationSidebar({
         <div className="settings-view">
           <section className="settings-section">
             <div className="settings-heading"><Settings2 size={16} /><strong>模型线路</strong></div>
-            {session.access === "guest" ? (
+            {session.access === "guest" || !activePermissions.canManageSettings ? (
               <div className="fixed-route-label">
-                {session.routes[0] ? `${session.routes[0].label} · ${session.routes[0].model}` : "尚未配置可用线路"}
+                {session.routes.find((route) => route.id === routeId)
+                  ? `${session.routes.find((route) => route.id === routeId)?.label} · ${session.routes.find((route) => route.id === routeId)?.model}`
+                  : "尚未配置可用线路"}
               </div>
             ) : (
               <select value={routeId} onChange={(event) => onRouteChange(event.target.value)} disabled={busy || session.routes.length === 0}>
@@ -298,7 +320,7 @@ export function ConversationSidebar({
               ? "请联系管理员配置模型线路"
               : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}</small>
           </section>
-          {session.access === "member" && (
+          {session.access === "member" && activePermissions.canManageSettings && (
             <>
               <section className="settings-section">
                 <div className="settings-heading"><Sparkles size={16} /><strong>Skills</strong><span>{skillIds.length}/3</span></div>
@@ -400,6 +422,16 @@ export function ConversationSidebar({
           busy={pendingId === conversationToDelete.id}
           onClose={() => { if (pendingId !== conversationToDelete.id) setConversationToDelete(null); }}
           onConfirm={() => void confirmRemove(conversationToDelete)}
+        />
+      )}
+      {conversationToShare && (
+        <ConversationShareDialog
+          conversation={conversationToShare}
+          onClose={() => setConversationToShare(null)}
+          onAccessChanged={(accessRevision) => {
+            onAccessChanged(conversationToShare, accessRevision);
+            setConversationToShare((current) => current ? { ...current, accessRevision } : current);
+          }}
         />
       )}
     </aside>

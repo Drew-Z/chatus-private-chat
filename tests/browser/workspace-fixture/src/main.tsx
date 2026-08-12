@@ -15,6 +15,7 @@ import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/co
 import {
   isActiveTurnPhase,
   isPendingToolApprovalPart,
+  resolveConversationAccessPermissions,
   resolveMessageActionAvailability,
   type TurnPhase,
 } from "../../../../client/src/lib/state";
@@ -593,6 +594,33 @@ const operationsSnapshot: AdminOperationsSnapshot = {
 
 const fixturePixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
+type FixtureAccessRole = "owner" | "editor" | "viewer";
+
+const aclConversations: AgentConversation[] = ([
+  ["owner", "我拥有的共享对话", "res_11111111-1111-4111-8111-111111111111"],
+  ["editor", "编辑者共享对话", "res_22222222-2222-4222-8222-222222222222"],
+  ["viewer", "查看者共享对话", "res_33333333-3333-4333-8333-333333333333"],
+] as const).map(([accessRole, title, resourceId], index) => ({
+  id: `acl-${accessRole}`,
+  title,
+  createdAt: now - (index + 1) * 86_400_000,
+  updatedAt: now - index * 60_000,
+  summary: "Synthetic ACL visual fixture",
+  pinned: false,
+  routeId: "reasoning",
+  skillMode: "manual",
+  skillIds: accessRole === "owner" ? ["project"] : [],
+  messageCount: 4 + index,
+  workspaceFiles: [],
+  resourceId,
+  accessRole,
+  accessRevision: 1,
+}));
+
+function readFixtureAccessRole(value: string | null): FixtureAccessRole | null {
+  return value === "owner" || value === "editor" || value === "viewer" ? value : null;
+}
+
 function fixtureAttachments(mode: string | null): DraftAttachment[] {
   if (mode !== "states") return [];
   return [{
@@ -640,12 +668,16 @@ function fixtureAttachments(mode: string | null): DraftAttachment[] {
 
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
-  const initialActiveId = params.get("branch") === "present"
+  const fixtureAccessRole = readFixtureAccessRole(params.get("acl"));
+  const startingConversations = fixtureAccessRole ? aclConversations : initialConversations;
+  const initialActiveId = fixtureAccessRole
+    ? `acl-${fixtureAccessRole}`
+    : params.get("branch") === "present"
     ? "visual-branch"
     : params.get("branch") === "missing"
       ? "visual-orphan"
       : initialConversations[0].id;
-  const [conversations, setConversations] = useState(initialConversations);
+  const [conversations, setConversations] = useState(startingConversations);
   const [activeId, setActiveId] = useState(initialActiveId);
   const [sidebarOpen, setSidebarOpen] = useState(params.get("drawer") === "open");
   const [sidebarView, setSidebarView] = useState<SidebarView>("history");
@@ -700,6 +732,7 @@ function WorkspaceFixture() {
   const session = params.get("access") === "guest" ? guestSession : memberSession;
   const routeId = session.defaultRoute || "reasoning";
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
+  const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
   const skillMode = session.access === "member" ? activeConversation?.skillMode || "automatic" : "manual";
   const skillIds = session.access === "member" ? activeConversation?.skillIds || [] : [];
   const parentConversation = activeConversation?.parentChatId
@@ -716,7 +749,10 @@ function WorkspaceFixture() {
       files,
       session.imageInput,
       session.fileInput,
-      { imagesSupported: session.capabilities.imageInput, filesSupported: session.capabilities.fileInput },
+      {
+        imagesSupported: activePermissions.canUseWorkspace && session.capabilities.imageInput,
+        filesSupported: activePermissions.canUseWorkspace && session.capabilities.fileInput,
+      },
     );
     setAttachments(next);
     for (const attachment of next) {
@@ -946,6 +982,9 @@ function WorkspaceFixture() {
           onCreate={async () => undefined}
           onRename={async (conversation, title) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, title } : item))}
           onDelete={async (conversation) => setConversations((current) => current.filter((item) => item.id !== conversation.id))}
+          onAccessChanged={(conversation, accessRevision) => setConversations((current) => current.map((item) => (
+            item.id === conversation.id ? { ...item, accessRevision } : item
+          )))}
           onConversationUpdated={(conversation) => setConversations((current) => current.map((item) => item.id === conversation.id ? conversation : item))}
           onRouteChange={() => undefined}
           onSkillModeChange={(nextSkillMode) => setConversations((current) => current.map((conversation) => (
@@ -988,19 +1027,20 @@ function WorkspaceFixture() {
                       hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
                       canContinue: message.role === "assistant",
                       toolApprovalPending: message.parts.some(isPendingToolApprovalPart),
+                      accessRole: activeConversation?.accessRole,
                     })}
                   />
                 ))}
                 {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>{progressText || (turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出")}</span></div>}
               </div>
             </div>
-            <MessageComposer
+            {activePermissions.canSend ? <MessageComposer
               value={input}
               attachments={attachments}
               imagePolicy={session.imageInput}
               filePolicy={session.fileInput}
-              imagesSupported={session.capabilities.imageInput && params.get("images") !== "0"}
-              filesSupported={session.capabilities.fileInput}
+              imagesSupported={activePermissions.canUseWorkspace && session.capabilities.imageInput && params.get("images") !== "0"}
+              filesSupported={activePermissions.canUseWorkspace && session.capabilities.fileInput}
               onChange={setInput}
               onAddAttachments={addAttachments}
               onRemoveAttachment={(id: string) => setAttachments((current) => {
@@ -1020,7 +1060,7 @@ function WorkspaceFixture() {
               agentReady
               placeholder="输入消息"
               statusText={turnBusy ? "Agent 正在继续处理" : ""}
-            />
+            /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
           </div>
         </section>
       </div>

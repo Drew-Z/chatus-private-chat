@@ -43,7 +43,7 @@ chatus:agent-identity:v1
 
 | Operation | Current support | Contract |
 | --- | --- | --- |
-| User export/import | Supported with limits | `chatus-user-data` v1 is secret-free and may be truncated. Chat `merge`, `restore`, and `replace` operate on selected user chats, not an instance archive. |
+| User export/import | Supported with limits | `chatus-user-data` v1 is secret-free, owner-scoped, excludes shared conversations/grants, and may be truncated. Chat `merge`, `restore`, and `replace` operate on selected user chats, not an instance archive. |
 | Code/configuration rollback | Supported | Revert Git history and publish through GitHub Actions while preserving the Cloudflare account, Worker name, and KV namespace. Durable Object migration tags are append-only and are not rolled back by code. |
 | Full-instance disaster recovery | Not implemented | Do not claim support until capture, transport, a versioned manifest, stable object mapping, reconciliation, and a restore drill exist. |
 
@@ -54,6 +54,9 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
 - Stable instance identity: Cloudflare account, Worker name, KV namespace, Durable Object bindings/classes, and applied migration history.
 - `CHAT_STORE` configuration and security state: `config:routes_config`, `config:access_codes`, `route-secret:*`, `mcp-secret:*`, administrator audit state, feedback, and any other non-expiring operational records.
 - Root `TeamAgent` state: conversation index, durable memory, migration markers, cleanup queue (including due time, attempts, stable error and terminal metadata), guest cleanup tickets/schedules, branch reservations, and capability trust.
+- IdentityRegistry state: resource `access_revision`, active/revoked conversation
+  ACL rows, append-only ACL events, and idempotency evidence. Capture/restore must
+  preserve exact revision history; public inspection exposes counts only.
 - Workspace-file state: the `WORKSPACE_FILES` R2 bucket plus root `TeamAgent` file, immutable-version, exact-reference, and operation/outbox tables. A future backup manifest must inventory object keys indirectly, sizes, SHA-256 checksums, version/generation ownership, and include/exclude decisions without exposing keys to users.
 - Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
@@ -265,6 +268,7 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 | Condition | Required result |
 | --- | --- |
 | User export reaches a size limit | Return the valid bounded envelope with `truncated` / `messagesTruncated`; never describe it as complete |
+| Grantee exports account data | Export only conversations owned by that principal; omit shared transcripts and ACL metadata |
 | Import version/envelope is unsupported | Reject it; do not coerce it into partial state |
 | Worker name, KV namespace, or account changes | Treat the target as a new instance boundary, not restored data |
 | Original `ROUTE_KEYS_MASTER_KEY` is unavailable | Old managed provider-key ciphertext is unrecoverable; require keys to be re-entered |
@@ -294,7 +298,10 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 
 ## 6. Tests Required
 
-- Prove the user export envelope remains bounded, secret-free, and explicit about truncation.
+- Prove the user export envelope remains bounded, secret-free, explicit about
+  truncation, and excludes shared conversations plus ACL metadata.
+- Prove IdentityRegistry capture/restore includes ACL entries/events and resource
+  access revisions, with no label, content, credential, or token projection.
 - Prove permanent deletion revokes sessions and removes Agent conversations/memory, legacy KV chat/memory, branch launches, and root/conversation identity records.
 - Prove permanent deletion snapshots and deletes every member-owned R2 version before clearing its metadata, leaves no file operation/outbox row after success, and remains idempotent after partial R2 failure.
 - Prove empty and non-empty workspace purges persist the same account lock, block uploads after the object snapshot and root purge, and release only after the complete user-data path succeeds.

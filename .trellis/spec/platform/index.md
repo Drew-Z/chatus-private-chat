@@ -18,7 +18,8 @@
 | [Public Error Projection And Correlation](./public-error-governance.md) | Canonical browser errors, per-turn references, redacted logs/audits, and passive correlation |
 | [Feedback And Administrative Audit Persistence](./feedback-audit-persistence.md) | KV record ownership, exact decoding, privacy, retention, deletion, and failure policies |
 | [Backup, Restore, And Permanent Deletion](./backup-restore.md) | Recovery meanings, data inventory, readiness gates, key custody, autonomous durable purge retry, and purge invariants |
-| [Future Product Governance Decision Gates](./future-governance-decisions.md) | Non-runtime gates for ACL, Provider finance, recovery objectives, and legacy retirement |
+| [Future Product Governance Decision Gates](./future-governance-decisions.md) | Remaining ACL/transfer gates, Provider finance, recovery objectives, and legacy retirement |
 | [Legacy Surface Governance](./legacy-surface-governance.md) | Code-owned per-surface manifest, durable phase/evidence control plane, admin projection, and recovery boundary |
 | [Delivery Governance](./delivery-governance.md) | Pull-request checks, path-aware browser suites, SHA artifacts, deployment skipping, and Trellis archive evidence gates |
 | [Stable Principal And Resource Identity](./identity-registry.md) | Immutable member principal/resource routing, exact Queue identity, bounded reconciliation, and alias-reuse isolation |
+| [Conversation ACL And Authoritative Revocation](./conversation-acl.md) | Resource-scoped owner/editor/viewer authorization, idempotent sharing, context isolation, and revision commit fences |

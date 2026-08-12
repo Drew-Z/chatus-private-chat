@@ -22,7 +22,7 @@ import {
   type SessionProjection,
 } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
-import { resolveAgentError } from "../lib/agent-errors";
+import { isConversationAccessRefreshError, resolveAgentError } from "../lib/agent-errors";
 import {
   conversationAgentClientName,
   findRetrySourceMessageId,
@@ -30,6 +30,7 @@ import {
   isActiveTurnPhase,
   isPendingToolApprovalPart,
   resolveMessageActionAvailability,
+  resolveConversationAccessPermissions,
   resolvePendingDraftAction,
   resolveTurnPhase,
   restoreRejectedDraft,
@@ -99,8 +100,10 @@ export function ChatWorkspace({
   const logoutInFlight = useRef(false);
   const mcpRefresh = useRef<Promise<void> | null>(null);
   const conversationSnapshots = useRef(new Map<string, AgentConversation>());
+  const conversationRefreshGeneration = useRef(0);
   const settingsQueues = useRef(new Map<string, Promise<void>>());
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
+  const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
   const logoutPending = logoutState.status === "pending";
   const accountActionBusy = accountBusy || logoutPending;
   const accountOperationBusy = accountActionBusy || Boolean(mcpBusyServerId);
@@ -183,7 +186,9 @@ export function ChatWorkspace({
   }
 
   const refreshConversations = useCallback(async (preferredId?: string) => {
+    const generation = ++conversationRefreshGeneration.current;
     const next = await listAgentConversations();
+    if (generation !== conversationRefreshGeneration.current) return null;
     conversationSnapshots.current = new Map(next.map((conversation) => [conversation.id, conversation]));
     setConversations(next);
     setActiveId((current) => {
@@ -197,6 +202,7 @@ export function ChatWorkspace({
     setWorkspaceError("");
     try {
       const created = await createAgentConversation({ routeId: session.defaultRoute });
+      conversationRefreshGeneration.current += 1;
       conversationSnapshots.current.set(created.id, created);
       setConversations((current) => [created, ...current.filter((conversation) => conversation.id !== created.id)]);
       setActiveId(created.id);
@@ -212,7 +218,7 @@ export function ChatWorkspace({
     void (async () => {
       try {
         const next = await refreshConversations();
-        if (!next.length) await createConversation();
+        if (next && !next.length) await createConversation();
       } catch (error) {
         setWorkspaceError(errorMessage(error, "暂时无法读取会话，请重试。"));
       } finally {
@@ -233,7 +239,12 @@ export function ChatWorkspace({
     localStorage.setItem(activeConversationKey(session.user), activeConversation.id);
   }, [activeConversation, session.access, session.defaultRoute, session.routes, session.skills, session.user]);
 
+  useEffect(() => {
+    if (sidebarView === "files" && !activePermissions.canUseWorkspace) setSidebarView("history");
+  }, [activePermissions.canUseWorkspace, sidebarView]);
+
   const updateConversationInList = useCallback((updated: AgentConversation) => {
+    conversationRefreshGeneration.current += 1;
     conversationSnapshots.current.set(updated.id, updated);
     setConversations((current) => {
       const exists = current.some((conversation) => conversation.id === updated.id);
@@ -250,7 +261,9 @@ export function ChatWorkspace({
     sourceMessageId: string,
     editedText?: string,
   ) => {
-    if (busy || accountOperationBusy) throw new Error("请先停止当前任务。");
+    if (busy || accountOperationBusy || !resolveConversationAccessPermissions(source.accessRole).canBranch) {
+      throw new Error("当前共享角色不允许创建分支。");
+    }
     setWorkspaceError("");
     const currentSource = conversationSnapshots.current.get(source.id) || source;
     const result = await createAgentConversationBranch(currentSource, {
@@ -264,7 +277,28 @@ export function ChatWorkspace({
     setSidebarOpen(false);
   }, [accountOperationBusy, busy, updateConversationInList]);
 
+  const refreshAfterAccessChange = useCallback(async (conversationId: string) => {
+    await refreshConversations(conversationId).catch((error) => {
+      setWorkspaceError(errorMessage(error, "共享状态已更新，但会话列表刷新失败。"));
+    });
+  }, [refreshConversations]);
+  const handleConversationAccessInvalidated = useCallback((conversationId: string) => {
+    void refreshAfterAccessChange(conversationId);
+  }, [refreshAfterAccessChange]);
+
+  const recoverConversationAccess = useCallback(async (error: unknown, conversationId: string): Promise<boolean> => {
+    if (!(error instanceof ApiError) || (
+      error.code !== "conversation_not_found"
+      && error.code !== "conversation_access_revision_conflict"
+    )) return false;
+    await refreshAfterAccessChange(conversationId);
+    return true;
+  }, [refreshAfterAccessChange]);
+
   const renameConversation = async (conversation: AgentConversation, title: string) => {
+    if (!resolveConversationAccessPermissions(conversation.accessRole).canRename) {
+      throw new Error("当前共享角色不允许重命名。");
+    }
     setWorkspaceError("");
     try {
       await settingsQueues.current.get(conversation.id);
@@ -272,17 +306,23 @@ export function ChatWorkspace({
       updateConversationInList(await updateAgentConversation(current, { title }));
     } catch (error) {
       setWorkspaceError(errorMessage(error, "重命名失败，请刷新后重试。"));
-      if (error instanceof ApiError && error.code === "conversation_conflict") await refreshConversations(conversation.id);
+      if (!(await recoverConversationAccess(error, conversation.id)) && error instanceof ApiError && error.code === "conversation_conflict") {
+        await refreshConversations(conversation.id);
+      }
       throw error;
     }
   };
 
   const removeConversation = async (conversation: AgentConversation) => {
+    if (!resolveConversationAccessPermissions(conversation.accessRole).canDelete) {
+      throw new Error("当前共享角色不允许删除会话。");
+    }
     setWorkspaceError("");
     try {
       await settingsQueues.current.get(conversation.id);
       const current = conversationSnapshots.current.get(conversation.id) || conversation;
       const remaining = await deleteAgentConversation(current);
+      conversationRefreshGeneration.current += 1;
       conversationSnapshots.current = new Map(remaining.map((item) => [item.id, item]));
       setConversations(remaining);
       if (activeId === conversation.id) {
@@ -292,7 +332,9 @@ export function ChatWorkspace({
       localStorage.removeItem(conversationDraftKey(session.user, conversation.id));
     } catch (error) {
       setWorkspaceError(errorMessage(error, "删除失败，请刷新后重试。"));
-      if (error instanceof ApiError && error.code === "conversation_conflict") await refreshConversations(conversation.id);
+      if (!(await recoverConversationAccess(error, conversation.id)) && error instanceof ApiError && error.code === "conversation_conflict") {
+        await refreshConversations(conversation.id);
+      }
       throw error;
     }
   };
@@ -303,7 +345,7 @@ export function ChatWorkspace({
     skillIds?: string[];
   }): Promise<void> => {
     const conversationId = activeConversation?.id;
-    if (!conversationId) return Promise.resolve();
+    if (!conversationId || !activePermissions.canManageSettings) return Promise.resolve();
     setWorkspaceError("");
     const previous = settingsQueues.current.get(conversationId) || Promise.resolve();
     let task: Promise<void>;
@@ -314,7 +356,9 @@ export function ChatWorkspace({
         updateConversationInList(await updateAgentConversation(current, patch));
       } catch (error) {
         setWorkspaceError(errorMessage(error, "会话设置保存失败，请重试。"));
-        await refreshConversations(conversationId).catch(() => undefined);
+        if (!(await recoverConversationAccess(error, conversationId))) {
+          await refreshConversations(conversationId).catch(() => undefined);
+        }
       }
     }).finally(() => {
       if (settingsQueues.current.get(conversationId) === task) settingsQueues.current.delete(conversationId);
@@ -451,6 +495,10 @@ export function ChatWorkspace({
           onCreate={createConversation}
           onRename={renameConversation}
           onDelete={removeConversation}
+          onAccessChanged={(conversation, accessRevision) => {
+            updateConversationInList({ ...conversation, accessRevision });
+            void refreshAfterAccessChange(conversation.id);
+          }}
           onConversationUpdated={updateConversationInList}
           onRouteChange={(nextRouteId) => { setRouteId(nextRouteId); void persistSettings({ routeId: nextRouteId }); }}
           onSkillModeChange={(nextSkillMode) => {
@@ -478,7 +526,7 @@ export function ChatWorkspace({
             <div className="chat-loading">正在恢复会话...</div>
           ) : activeConversation ? (
             <ConversationChat
-              key={activeConversation.id}
+              key={`${activeConversation.resourceId || activeConversation.id}:${activeConversation.accessRevision || 0}`}
               session={session}
               conversation={activeConversation}
               routeId={routeId}
@@ -488,6 +536,7 @@ export function ChatWorkspace({
               onBusyChange={setBusy}
               onConnectionStateChange={setConnectionState}
               onConversationChanged={handleConversationChanged}
+              onAccessInvalidated={handleConversationAccessInvalidated}
               onBranch={handleBranch}
             />
           ) : (
@@ -525,6 +574,7 @@ function ConversationChat({
   onBusyChange,
   onConnectionStateChange,
   onConversationChanged,
+  onAccessInvalidated,
   onBranch,
 }: {
   session: SessionProjection;
@@ -536,6 +586,7 @@ function ConversationChat({
   onBusyChange: (busy: boolean) => void;
   onConnectionStateChange: (state: ConnectionState) => void;
   onConversationChanged: () => void;
+  onAccessInvalidated: (conversationId: string) => void;
   onBranch: (
     source: AgentConversation,
     action: AgentConversationBranchAction,
@@ -572,12 +623,17 @@ function ConversationChat({
   attachmentsRef.current = attachments;
   pendingSubmissionRef.current = pendingSubmission;
   lastSubmittedAttachmentsRef.current = lastSubmittedAttachments;
+  const permissions = resolveConversationAccessPermissions(conversation.accessRole);
+  const sharedConversation = Boolean(conversation.accessRole && conversation.accessRole !== "owner");
   const agent = useAgent({
     agent: "TeamAgent",
-    name: conversationAgentClientName(session.agent.instance, conversation.id),
+    name: conversationAgentClientName(conversation.resourceId || session.agent.instance, conversation.id),
     basePath: session.agent.basePath,
-    query: { chatId: conversation.id },
-    queryDeps: [conversation.id],
+    query: {
+      chatId: conversation.id,
+      ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
+    },
+    queryDeps: [conversation.id, conversation.resourceId],
     defaultCallTimeout: 30_000,
   });
   const chat = useAgentChat({
@@ -585,7 +641,13 @@ function ConversationChat({
     credentials: "include",
     resume: true,
     cancelOnClientAbort: false,
-    body: () => ({ routeId, skillMode, skillIds, chatId: conversation.id }),
+    body: () => ({
+      routeId,
+      skillMode,
+      skillIds,
+      chatId: conversation.id,
+      ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
+    }),
   });
   const turnPhase = resolveTurnPhase({
     status: chat.status,
@@ -601,9 +663,9 @@ function ConversationChat({
   waitingFirstOutputRef.current = waitingFirstOutput;
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
-  const routeAvailable = Boolean(selectedRoute);
-  const imagesSupported = session.capabilities.imageInput && selectedRoute?.supportsImages === true;
-  const filesSupported = session.capabilities.fileInput;
+  const routeAvailable = sharedConversation || Boolean(selectedRoute);
+  const imagesSupported = permissions.canUseWorkspace && session.capabilities.imageInput && selectedRoute?.supportsImages === true;
+  const filesSupported = permissions.canUseWorkspace && session.capabilities.fileInput;
   const connectionState: ConnectionState = agent.connectionError ? "error" : agent.identified ? "ready" : "connecting";
   const latestMessageId = chat.messages.at(-1)?.id;
   const retrySourceMessageId = findRetrySourceMessageId(chat.messages);
@@ -619,8 +681,15 @@ function ConversationChat({
     hasText: false,
     canContinue: false,
     toolApprovalPending: false,
+    accessRole: conversation.accessRole,
   }).retry;
   const errorPresentation = chat.error ? resolveAgentError(chat.error.message, online) : null;
+
+  useEffect(() => {
+    if (chat.error && isConversationAccessRefreshError(chat.error.message)) {
+      onAccessInvalidated(conversation.id);
+    }
+  }, [chat.error, conversation.id, onAccessInvalidated]);
 
   useEffect(() => {
     onBusyChange(busy);
@@ -775,6 +844,7 @@ function ConversationChat({
       || attachments.some((attachment) => attachment.status !== "ready")
       || unsupportedAttachments
       || interactionBlocked
+      || !permissions.canSend
       || !online
       || !routeAvailable
     ) return;
@@ -869,6 +939,7 @@ function ConversationChat({
   };
 
   const stop = () => {
+    if (!permissions.canSend) return;
     setStopRequested(true);
     localTurnStartedAtRef.current = 0;
     setProviderProgress(null);
@@ -902,16 +973,17 @@ function ConversationChat({
               hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
               canContinue,
               toolApprovalPending: message.parts.some((part) => isPendingToolApprovalPart(part)),
+              accessRole: conversation.accessRole,
             });
             return (
               <MessageView
                 key={message.id}
                 message={message}
                 onApprove={chat.addToolApprovalResponse}
-                onAction={session.capabilities.messageActions
+                onAction={session.capabilities.messageActions && permissions.canBranch
                   ? (action, editedText) => handleMessageAction(message, action, editedText)
                   : undefined}
-                onFeedback={session.capabilities.feedback
+                onFeedback={session.capabilities.feedback && permissions.canSubmitFeedback
                   ? (rating) => handleFeedback(message, rating)
                   : undefined}
                 availability={availability}
@@ -940,7 +1012,7 @@ function ConversationChat({
           onReconnect={() => window.location.reload()}
         />
       )}
-      <MessageComposer
+      {permissions.canSend ? <MessageComposer
         value={input}
         attachments={attachments}
         imagePolicy={session.imageInput}
@@ -967,7 +1039,7 @@ function ConversationChat({
           : turnPhase === "tool-running"
             ? hasPendingToolApprovalAfterLatestUser(chat.messages) ? "等待工具确认" : "Agent 正在调用工具"
             : chat.isServerStreaming ? "Agent 正在继续处理" : ""}
-      />
+      /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
     </div>
   );
 }
