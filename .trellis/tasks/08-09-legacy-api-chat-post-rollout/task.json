@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/legacy-api-chat-post-observation",
+  "branch": "codex/fix-production-legacy-census",
   "base_branch": "main",
   "worktree_path": null,
   "commit": "02bf9b3c51275363a18e2c520160f52282438644",
