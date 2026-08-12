@@ -26,6 +26,8 @@ import {
   type LegacySurfaceAllowedActionV1,
   type LegacySurfaceBlockerCode,
   type LegacySurfaceCaptureSnapshotV1,
+  type LegacySurfaceCensusResult,
+  type LegacySurfaceCensusRowV1,
   type LegacySurfaceDailyCountV1,
   type LegacySurfaceEvidenceReferenceV1,
   type LegacySurfaceEventV1,
@@ -320,6 +322,50 @@ export class InstanceCoordinator extends DurableObject<Record<string, never>> {
           blockerCodes: projection.blockerCodes,
         } };
       });
+    } catch {
+      return { ok: false, error: "legacy_surface_state_invalid" };
+    }
+  }
+
+  censusLegacySurface(days: unknown): LegacySurfaceCensusResult {
+    if (typeof days !== "number" || !Number.isSafeInteger(days) || days < 1 || days > LEGACY_SURFACE_DAILY_RETENTION_DAYS) {
+      return { ok: false, error: "legacy_surface_conflict" };
+    }
+    const requestedDays = days as number;
+    try {
+      const stored = this.readLegacySurfaceRows(false);
+      if (!stored) return { ok: false, error: "legacy_surface_not_found" };
+      const firstDay = new Date(Date.now() - (requestedDays - 1) * 24 * 60 * 60 * 1_000)
+        .toISOString()
+        .slice(0, 10);
+      const rows: LegacySurfaceCensusRowV1[] = [];
+      for (const row of this.ctx.storage.sql.exec<LegacySurfaceDailyRow>(
+        `SELECT day, caller_class, access, count, last_occurred_at, deployment_sha
+         FROM legacy_surface_daily
+         WHERE day >= ?
+         ORDER BY day, caller_class, access`,
+        firstDay,
+      ).toArray()) {
+        const count = decodeLegacySurfaceDailyCount({
+          version: 1,
+          day: row.day,
+          callerClass: row.caller_class,
+          access: row.access,
+          count: row.count,
+          lastOccurredAt: row.last_occurred_at,
+          deploymentSha: row.deployment_sha,
+        });
+        if (!count) return { ok: false, error: "legacy_surface_state_invalid" };
+        rows.push({
+          day: count.day,
+          callerClass: count.callerClass,
+          access: count.access,
+          count: count.count,
+          lastOccurredAt: count.lastOccurredAt,
+          deploymentSha: count.deploymentSha,
+        });
+      }
+      return { ok: true, rows };
     } catch {
       return { ok: false, error: "legacy_surface_state_invalid" };
     }

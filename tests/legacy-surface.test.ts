@@ -5,6 +5,7 @@ import {
   LEGACY_SURFACE_PHASES,
   LEGACY_SURFACE_PHASE_EVIDENCE,
   decodeLegacySurfaceAdvanceInput,
+  decodeLegacySurfaceCensusSnapshot,
   decodeLegacySurfaceManifest,
   decodeLegacySurfaceRollbackInput,
   decodeLegacySurfaceUseInput,
@@ -462,6 +463,42 @@ describe("InstanceCoordinator legacy surface state", () => {
       deployment_sha: "f".repeat(40),
     }]);
     expect(JSON.stringify(rows)).not.toContain("SECRET_MARKER");
+
+    await expect(stub.censusLegacySurface(1)).resolves.toEqual({
+      ok: true,
+      rows: [{
+        day: new Date(occurredAt).toISOString().slice(0, 10),
+        callerClass: "worker_api",
+        access: "read",
+        count: 3,
+        lastOccurredAt: occurredAt,
+        deploymentSha: "f".repeat(40),
+      }],
+    });
+    await expect(stub.censusLegacySurface(0)).resolves.toEqual({
+      ok: false,
+      error: "legacy_surface_conflict",
+    });
+    const census = {
+      version: 1,
+      surfaceId: manifest.surfaceId,
+      generatedAt: occurredAt,
+      days: 1,
+      rows: [{
+        day: new Date(occurredAt).toISOString().slice(0, 10),
+        callerClass: "worker_api",
+        access: "read",
+        count: 3,
+        lastOccurredAt: occurredAt,
+        deploymentSha: "f".repeat(40),
+      }],
+    } as const;
+    expect(decodeLegacySurfaceCensusSnapshot(census)).toEqual(census);
+    expect(decodeLegacySurfaceCensusSnapshot({ ...census, prompt: "SECRET_MARKER" })).toBeUndefined();
+    expect(decodeLegacySurfaceCensusSnapshot({
+      ...census,
+      rows: [{ ...census.rows[0], response: "SECRET_MARKER" }],
+    })).toBeUndefined();
   });
 
   it("fails closed when durable manifest storage is malformed", async () => {

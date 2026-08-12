@@ -8,6 +8,8 @@
 - [x] Add deterministic legacy-versus-Agent parity fixtures using local fake
       Provider/MCP only.
 - [x] Persist identity migration/parity evidence for the ACL start gate.
+- [x] Expose a strict read-only production census API and retain exact-SHA,
+      content-free census artifacts through a main-only GitHub Actions workflow.
 - [ ] After shell read observation and full caller migration, rehearse routing
       rollback and disable legacy POST writes with zero hidden side effects.
 - [ ] Retain 30-day write evidence, refresh recovery proof, disable route reads,
@@ -38,6 +40,8 @@ conversation/accounting evidence, and restart the affected observation window.
   without rebinding. It deliberately leaves production census, rollback, and
   observation gates open.
 - Identity migration evidence and delivery/PR evidence are now retained.
+  A follow-up delivery adds the production census projection and evidence
+  workflow without changing the surface phase ceiling or observation clocks.
   Production caller census, rollback rehearsal, the 30-day write/read
   observation windows, route read-disable, cleanup approval, and archive checks
   remain future gates and are intentionally unchecked.

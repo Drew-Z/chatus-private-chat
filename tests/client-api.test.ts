@@ -7,6 +7,7 @@ import {
   deleteWorkspaceFile,
   exportUserData,
   fetchAdminLegacySurfaces,
+  fetchAdminLegacySurfaceCensus,
   fetchAdminSetupStatus,
   getAgentSkillSelectionMetadata,
   isAdminConfigSnapshot,
@@ -548,6 +549,30 @@ describe("legacy surface control-plane client contract", () => {
     await expect(fetchAdminLegacySurfaces(1)).resolves.toEqual(legacySurfaceSnapshot);
     expect(fetchSpy.mock.calls[0]?.[0]).toBe("/api/admin/legacy-surfaces?limit=1");
 
+    const censusLastOccurredAt = 1_785_031_200_100;
+    const census = {
+      version: 1,
+      surfaceId: legacySurfaceProjection.surfaceId,
+      generatedAt: 1_785_032_000_100,
+      days: 30,
+      rows: [{
+        day: new Date(censusLastOccurredAt).toISOString().slice(0, 10),
+        callerClass: "worker_api",
+        access: "write",
+        count: 2,
+        lastOccurredAt: censusLastOccurredAt,
+        deploymentSha: "a".repeat(40),
+      }],
+    } as const;
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(census), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(fetchAdminLegacySurfaceCensus(legacySurfaceProjection.surfaceId, 30)).resolves.toEqual(census);
+    expect(fetchSpy.mock.calls[1]?.[0]).toBe(
+      "/api/admin/legacy-surfaces/legacy.surface-alpha/census?days=30",
+    );
+
     const advanceInput = {
       version: 1 as const,
       surfaceId: legacySurfaceProjection.surfaceId,
@@ -564,8 +589,8 @@ describe("legacy surface control-plane client contract", () => {
       projection: advancedProjection,
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     await expect(advanceAdminLegacySurface(advanceInput)).resolves.toMatchObject({ projection: advancedProjection });
-    expect(fetchSpy.mock.calls[1]?.[0]).toBe("/api/admin/legacy-surfaces/legacy.surface-alpha/advance");
-    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual(advanceInput);
+    expect(fetchSpy.mock.calls[2]?.[0]).toBe("/api/admin/legacy-surfaces/legacy.surface-alpha/advance");
+    expect(JSON.parse(String(fetchSpy.mock.calls[2]?.[1]?.body))).toEqual(advanceInput);
 
     const rollbackInput = {
       version: 1 as const,
@@ -600,13 +625,18 @@ describe("legacy surface control-plane client contract", () => {
       projection: rolledBackProjection,
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
     await expect(rollbackAdminLegacySurface(rollbackInput)).resolves.toMatchObject({ projection: rolledBackProjection });
-    expect(fetchSpy.mock.calls[2]?.[0]).toBe("/api/admin/legacy-surfaces/legacy.surface-alpha/rollback");
+    expect(fetchSpy.mock.calls[3]?.[0]).toBe("/api/admin/legacy-surfaces/legacy.surface-alpha/rollback");
   });
 
   it("rejects malformed local requests and mismatched successful responses", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     await expect(fetchAdminLegacySurfaces(101)).rejects.toMatchObject({
       code: "invalid_legacy_surface_limit",
+      status: 400,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await expect(fetchAdminLegacySurfaceCensus(legacySurfaceProjection.surfaceId, 0)).rejects.toMatchObject({
+      code: "invalid_legacy_surface_census_request",
       status: 400,
     });
     expect(fetchSpy).not.toHaveBeenCalled();
