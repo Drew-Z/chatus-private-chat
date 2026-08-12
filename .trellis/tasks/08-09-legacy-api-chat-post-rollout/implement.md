@@ -13,6 +13,9 @@
 - [x] Schedule the 30-day chat-post census daily, serialize census runs, retain
       artifacts before a content-free nonzero/caller/SHA anomaly failure, and
       preserve manual bounded collection for other bundled surfaces.
+- [x] Keep manual collection exact-main while allowing scheduled collection to
+      use only an unchanged production SHA that is current main or its Git
+      ancestor, so docs-only main commits cannot suppress daily monitoring.
 - [ ] After shell read observation and full caller migration, rehearse routing
       rollback and disable legacy POST writes with zero hidden side effects.
 - [ ] Retain 30-day write evidence, refresh recovery proof, disable route reads,
