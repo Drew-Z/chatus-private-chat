@@ -80,13 +80,29 @@
 - [x] Run `trellis-update-spec`; update authorization, identity, privacy, Agent
       streaming, workspace/file, memory, tool/OAuth/export and backup/restore
       contracts, and append `ACL-03` / partial `ACL-04` evidence.
-- [ ] Commit the coherent work, open a PR, wait for exact-head required CI, merge,
+- [x] Commit the coherent work, open a PR, wait for exact-head required CI, merge,
       wait for exact-main GitHub Actions deployment/production smoke, and retain
       SHA/artifact/expiry evidence. Never deploy production locally.
-- [ ] Record validations/work commit/PR/deployment evidence, verify every AC and
+- [x] Record validations/work commit/PR/deployment evidence, verify every AC and
       risk item, archive this child, update the parent roadmap and journal, commit
       documentation-only records directly without triggering deployment, then run
       final full consistency validation.
+
+## Validation and delivery evidence
+
+- Local shipping gates passed: frontend check; 49 files and 770 Vitest tests;
+  Workspace Playwright 110 passed with 55 viewport skips; local fake-Provider
+  Agent Playwright 3 passed; typecheck; Wrangler dry-run; diff check; and Trellis
+  repository consistency.
+- PR #62 exact-head run `31531082055` passed all four required jobs for
+  `e50cedc51e090fd25e4cf3138378a196e6021da4` and retained path, quality/coverage,
+  Workspace and Agent artifacts through 2026-08-26.
+- Exact-main commit `4f1b27b9177556a3e28ad63c542a0db9636def68` deployed
+  through GitHub Actions run `31550193047`; production smoke and deployment
+  manifest retention passed.
+- Production acceptance run `31550547411` passed deployed-revision verification
+  and temporary-member acceptance. Deployment and acceptance manifests are
+  retained through 2026-11-10. No waiver or local production deployment was used.
 
 ## Risky files and rollback points
 

@@ -15,12 +15,81 @@
   "branch": "codex/acl-sharing-revocation",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "4f1b27b9177556a3e28ad63c542a0db9636def68",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/62",
   "subtasks": [],
   "children": [],
   "parent": "08-05-post-hardening-roadmap",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite client build and frontend structure checks passed with the existing bundle-size warning only.",
+        "at": "2026-08-12T00:37:20.047998+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "49 files and 770 deterministic fake-runtime tests passed.",
+        "at": "2026-08-12T00:37:20.229920+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright passed: 110 passed and 55 viewport skips.",
+        "at": "2026-08-12T00:37:20.406172+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-Provider Agent Playwright passed: 3 passed.",
+        "at": "2026-08-12T00:37:20.572069+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client and browser TypeScript checks passed.",
+        "at": "2026-08-12T00:37:20.756950+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker bundle dry-run passed; production deployment remained GitHub Actions-only.",
+        "at": "2026-08-12T00:37:20.926652+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Diff whitespace validation passed.",
+        "at": "2026-08-12T00:37:21.099350+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed before delivery.",
+        "at": "2026-08-12T00:37:21.268885+00:00"
+      },
+      {
+        "command": "GitHub Actions PR run 31531082055",
+        "status": "passed",
+        "summary": "PR #62 exact-head changes, quality, Workspace and local fake-Provider Agent jobs passed with retained artifacts.",
+        "at": "2026-08-12T00:37:21.437558+00:00"
+      },
+      {
+        "command": "GitHub Actions deploy run 31550193047",
+        "status": "passed",
+        "summary": "Exact main 4f1b27b9177556a3e28ad63c542a0db9636def68 deployed and production smoke passed; manifest retained through 2026-11-10.",
+        "at": "2026-08-12T00:37:21.612005+00:00"
+      },
+      {
+        "command": "GitHub Actions production acceptance run 31550547411",
+        "status": "passed",
+        "summary": "Exact deployed revision and temporary-member production acceptance passed; manifest retained through 2026-11-10.",
+        "at": "2026-08-12T00:37:21.788978+00:00"
+      }
+    ]
+  }
 }

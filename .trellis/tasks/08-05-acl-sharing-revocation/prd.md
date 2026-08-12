@@ -194,7 +194,7 @@ trust. Pin mutation is not a supported current surface and is not added here.
 - [x] AC8. React tests and Workspace Playwright cover owner share management,
       viewer read-only state, editor bounded controls, role change, revoke and
       reload/error recovery without `window.confirm`.
-- [ ] AC9. `ACL-03` and partial `ACL-04` evidence is appended to specs/risk records;
+- [x] AC9. `ACL-03` and partial `ACL-04` evidence is appended to specs/risk records;
       all full gates, fake Provider/MCP tests, PR/CI, exact-main deployment,
       production acceptance, artifact retention and Trellis archive checks pass.
 
@@ -211,6 +211,24 @@ trust. Pin mutation is not a supported current surface and is not added here.
   `python ./.trellis/scripts/task.py validate-all`: passed.
 - All Provider/MCP coverage used local deterministic fakes. No local production
   deployment, live Provider/MCP call, or synthetic production probe was run.
+
+## Delivery evidence
+
+- PR `https://github.com/Drew-Z/chatus-private-chat/pull/62` merged after
+  exact-head GitHub Actions run `31531082055` passed `changes`, `quality`,
+  `workspace-browser` and `agent-browser` for work commit
+  `e50cedc51e090fd25e4cf3138378a196e6021da4`. The retained PR artifacts use
+  GitHub's pull-request merge revision `ce8fc52ffd951dcde5e9f5a21ad32ef8cdec266b`
+  and expire on 2026-08-26.
+- Squash merge commit `4f1b27b9177556a3e28ad63c542a0db9636def68` was the
+  exact `main` tip deployed only through GitHub Actions run `31550193047`.
+  Main-tip checks, full quality gates, Wrangler deployment and production smoke
+  passed. Artifact `production-deployment-4f1b27b9177556a3e28ad63c542a0db9636def68`
+  (`9124029413`) is retained through 2026-11-10.
+- Production member acceptance run `31550547411` verified the same exact deployed
+  revision and passed temporary-member acceptance. Artifact
+  `production-acceptance-4f1b27b9177556a3e28ad63c542a0db9636def68`
+  (`9124098901`) is retained through 2026-11-10. No waiver was used.
 
 ## Out of scope and remaining unsupported behavior
 
