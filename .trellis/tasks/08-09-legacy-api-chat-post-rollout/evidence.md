@@ -128,3 +128,9 @@ does not prove which production callers exist or start either 30-day window.
   path classification, full quality, Workspace Playwright, and isolated
   fake-Provider Agent Playwright. It squash-merged as exact main SHA
   `81ee52c65ff90504f6238aa6063493d677781605`.
+- PR [#69](https://github.com/Drew-Z/chatus-private-chat/pull/69) passed all four
+  jobs in [run 31619333414](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31619333414)
+  and squash-merged as exact main SHA
+  `971cc53dbae0e856f55477435a0b289e8ee26111`. It closes the false stale-release
+  failure caused by later record-only main commits without weakening ancestry or
+  before/after deployment-stability checks.
