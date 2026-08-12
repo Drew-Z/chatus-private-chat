@@ -2,16 +2,15 @@
 
 This is a deployment evidence handoff for `legacy.api.chat-post`. It records the
 caller and identity boundaries proven by source review and local fake-Provider
-tests, plus the exact merged-main deployment identity. It does not claim a
-production caller census, a rollback rehearsal, or completion of either
-observation window.
+tests, plus exact merged-main deployment and census evidence. It does not claim
+a rollback rehearsal or completion of either observation window.
 
 ## Review identity
 
-- Review head: `b199fb3f25b1ed8bba2829e2b5cc8c4f01e0317b`
+- Review head: `48affb8c7f957e8afef168b0c2874810f77397ee`
 - Surface manifest: `legacy.api.chat-post`, manifest version `2`, owner `data`
 - Caller classes in the code-owned manifest: `browser`, `test`, `worker_api`
-- Production deployment SHA: `a0f8b30a4549dbf832827d6e54de4fbbb48790b3`
+- Production deployment SHA: `48affb8c7f957e8afef168b0c2874810f77397ee`
 
 ## Caller census map
 
@@ -74,6 +73,18 @@ implementation.
   `09624a59-5546-4a47-bd71-29c51d9a285f`.
 - Retained deployment artifacts: `9052343216` through 2026-09-09 and
   `9052434350` through 2026-11-08.
+- Census fix PR #65 merged as
+  `48affb8c7f957e8afef168b0c2874810f77397ee`; PR CI run `31562742368`
+  passed `changes`, `quality`, and fake-Provider `agent-browser` (the
+  path-classified Workspace job was skipped).
+- Exact-main deployment run `31565553898` passed all quality, stale-main,
+  deploy, and production verification steps. Its production artifact is
+  `9129387942`, retained through 2026-11-10.
+- Exact-SHA census run `31565995047` passed on the same SHA. Artifact
+  `9129468576` (`production-legacy-census-legacy.api.chat-post-48affb8c7f957e8afef168b0c2874810f77397ee`)
+  is 240 bytes and retained through 2026-11-10. The validated projection has
+  `surfaceId=legacy.api.chat-post`, `days=30`, and `rowCount=0`; no row content
+  was printed or retained in this record.
 - Census projection PR #63 merged as
   `393f0578e1cb6a3cee3a832b715b3a4fdfed60b9`; exact-main deployment run
   `31560695880` passed all deployment and production verification steps.
@@ -91,7 +102,7 @@ does not prove which production callers exist or start either 30-day window.
 | Gate | Status | Why |
 | --- | --- | --- |
 | Static caller map and parity contract | Prepared | Source and local fake-runtime evidence above |
-| Production exact-SHA caller census | Open | First exact-SHA collection exposed a cold-start 404; no artifact was retained |
+| Production exact-SHA caller census | Prepared | Run `31565995047` passed and retained a canonical 30-day artifact with zero rows |
 | Routing rollback rehearsal | Open | Requires the deployed control-plane operation and retained rollback evidence |
 | 30-day write observation | Open | The API ceiling remains `instrumented` |
 | Read disable and 30-day read observation | Open | Depends on shell migration and write observation |

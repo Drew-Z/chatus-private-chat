@@ -78,3 +78,8 @@ conversation/accounting evidence, and restart the affected observation window.
   targeted the same SHA but failed before artifact upload because the bundled
   surface had no initialized coordinator and the read-only endpoint returned
   HTTP 404. No census artifact or observation claim was produced.
+- PR #65 merged as `48affb8c7f957e8afef168b0c2874810f77397ee` and fixed the
+  cold-start projection without coordinator initialization. Exact-main deploy
+  run `31565553898` passed, and census run `31565995047` passed with canonical
+  30-day artifact `9129468576` containing zero rows, retained through
+  2026-11-10.
