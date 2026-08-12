@@ -12,10 +12,10 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/schedule-legacy-census",
+  "branch": "codex/record-scheduled-census-evidence",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "66105d39c28dfffb789107374f430f22668f9e90",
+  "commit": "81ee52c65ff90504f6238aa6063493d677781605",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/67",
   "subtasks": [],
   "children": [],
@@ -131,6 +131,12 @@
         "status": "passed",
         "summary": "Repository task and workspace consistency passed.",
         "at": "2026-08-12T16:17:31.255060+00:00"
+      },
+      {
+        "command": "gh run view 31617086427",
+        "status": "passed",
+        "summary": "PR 67 passed changes, quality, Workspace Playwright, and fake-Provider Agent Playwright on the merged delivery.",
+        "at": "2026-08-12T16:29:12.048123+00:00"
       }
     ],
     "delivery": {
