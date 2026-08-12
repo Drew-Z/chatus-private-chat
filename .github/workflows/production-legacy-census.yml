@@ -1,6 +1,8 @@
 name: Production legacy surface census
 
 on:
+  schedule:
+    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       surface_id:
@@ -21,12 +23,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: chatus-production-legacy-census
+  cancel-in-progress: false
+
 jobs:
   census:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 10
+    env:
+      LEGACY_SURFACE_ID: ${{ inputs.surface_id || 'legacy.api.chat-post' }}
+      CENSUS_DAYS: ${{ inputs.days || '30' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -50,8 +59,6 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
           EXPECTED_RELEASE_SHA: ${{ github.sha }}
-          LEGACY_SURFACE_ID: ${{ inputs.surface_id }}
-          CENSUS_DAYS: ${{ inputs.days }}
           CENSUS_OUTPUT: artifacts/legacy-surface-census/census.json
         run: node scripts/collect-production-legacy-census.mjs
 
@@ -63,7 +70,15 @@ jobs:
       - name: Retain production legacy census
         uses: actions/upload-artifact@v7
         with:
-          name: production-legacy-census-${{ inputs.surface_id }}-${{ github.sha }}
+          name: production-legacy-census-${{ env.LEGACY_SURFACE_ID }}-${{ github.sha }}
           path: artifacts/legacy-surface-census/census.json
           if-no-files-found: error
           retention-days: 90
+
+      - name: Check census anomalies
+        if: github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post'
+        env:
+          CENSUS_INPUT: artifacts/legacy-surface-census/census.json
+          EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          MAX_CENSUS_TOTAL_COUNT: "0"
+        run: node scripts/check-production-legacy-census.mjs

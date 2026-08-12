@@ -37,3 +37,11 @@ content-free rows for 90 days. This evidence delivery does not start, shorten,
 or satisfy either 30-day observation window by itself. A bundled surface with
 no initialized coordinator is projected as an empty census without creating or
 synchronizing control-plane state.
+
+The workflow runs daily at an off-round UTC minute and keeps manual bounded
+collection. Scheduled/manual census jobs serialize without cancellation. For
+`legacy.api.chat-post`, the retained artifact precedes a content-free anomaly
+gate that compares aggregate count, declared caller classes, and row deployment
+SHAs against the expected exact release. Any nonzero use or identity drift fails
+the run for operator attention while preserving the artifact; it does not mutate
+the coordinator, change runtime behavior, or advance an observation gate.

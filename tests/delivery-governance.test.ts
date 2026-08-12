@@ -47,6 +47,7 @@ type WorkflowJob = {
   steps?: WorkflowStep[];
   "runs-on"?: string;
   "timeout-minutes"?: number;
+  env?: Record<string, unknown>;
 };
 
 type Workflow = {
@@ -426,7 +427,7 @@ describe("workflow structural governance", () => {
       always: true,
     });
     expectArtifact(parsedLegacyCensusWorkflow, "census", "Retain production legacy census", {
-      name: "production-legacy-census-${{ inputs.surface_id }}-${{ github.sha }}",
+      name: "production-legacy-census-${{ env.LEGACY_SURFACE_ID }}-${{ github.sha }}",
       path: "artifacts/legacy-surface-census/census.json",
       retentionDays: 90,
     });
@@ -490,24 +491,49 @@ describe("main deployment governance", () => {
   });
 
   it("keeps production census main-only, read-only, and exact-SHA", () => {
-    expect(parsedLegacyCensusWorkflow.on).toMatchObject({ workflow_dispatch: expect.any(Object) });
+    expect(parsedLegacyCensusWorkflow.on).toMatchObject({
+      schedule: [{ cron: "17 2 * * *" }],
+      workflow_dispatch: {
+        inputs: {
+          surface_id: expect.objectContaining({ default: "legacy.api.chat-post" }),
+          days: expect.objectContaining({ default: "30" }),
+        },
+      },
+    });
     expect(parsedLegacyCensusWorkflow.permissions).toEqual({ contents: "read" });
-    expect(parsedLegacyCensusWorkflow.concurrency).toBeUndefined();
+    expect(parsedLegacyCensusWorkflow.concurrency).toEqual({
+      group: "chatus-production-legacy-census",
+      "cancel-in-progress": false,
+    });
     const census = getJob(parsedLegacyCensusWorkflow, "census");
     expect(census.if).toBe("github.ref == 'refs/heads/main'");
     expect(census.environment).toBe("production");
+    expect(census.env).toEqual({
+      LEGACY_SURFACE_ID: "${{ inputs.surface_id || 'legacy.api.chat-post' }}",
+      CENSUS_DAYS: "${{ inputs.days || '30' }}",
+    });
     expectCommandsInOrder(census, [
       "assert-main-tip.mjs",
       "collect-production-legacy-census.mjs",
       "assert-main-tip.mjs",
+      "check-production-legacy-census.mjs",
     ]);
     const collector = getNamedStep(census, "Collect content-free census");
     expect(collector.env).toMatchObject({
       ADMIN_TOKEN: "${{ secrets.ADMIN_TOKEN }}",
       EXPECTED_RELEASE_SHA: "${{ github.sha }}",
-      LEGACY_SURFACE_ID: "${{ inputs.surface_id }}",
-      CENSUS_DAYS: "${{ inputs.days }}",
     });
+    const anomalyGate = getNamedStep(census, "Check census anomalies");
+    expect(anomalyGate.if).toBe(
+      "github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post'",
+    );
+    expect(anomalyGate.env).toEqual({
+      CENSUS_INPUT: "artifacts/legacy-surface-census/census.json",
+      EXPECTED_RELEASE_SHA: "${{ github.sha }}",
+      MAX_CENSUS_TOTAL_COUNT: "0",
+    });
+    expect(getNamedStepIndex(census, "Retain production legacy census"))
+      .toBeLessThan(getNamedStepIndex(census, "Check census anomalies"));
     expect(joinWorkflowRuns(parsedLegacyCensusWorkflow)).not.toMatch(/wrangler deploy|acceptance:production|api\/chat/i);
   });
 

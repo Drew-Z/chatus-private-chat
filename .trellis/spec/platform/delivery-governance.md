@@ -33,14 +33,20 @@ Parse all workflow YAML with the declared `yaml` dependency and duplicate-key re
 
 Every executable job has an explicit upper bound: classification and skip jobs use 5 minutes, PR quality and both browser jobs use 20 minutes, production deploy uses 30 minutes, and production acceptance uses 15 minutes. Official JavaScript actions use the approved Node 24 majors `actions/checkout@v7`, `actions/setup-node@v7`, and `actions/upload-artifact@v7`; tests enumerate every `uses` value and reject older or unapproved references.
 
-Production legacy census is a separate manual, main-only, `production`
-environment job with a 10-minute timeout and read-only repository permissions.
-It uses `ADMIN_TOKEN`, verifies the deployed release SHA before and after the
-read, refuses stale remote main before and after collection, logs out the
-temporary admin session, and retains exactly one strict content-free JSON census
-for 90 days. It never deploys, mutates legacy registry state, calls `/api/chat`,
-or uploads cookies, tokens, prompts, responses, conversations, headers, or raw
-logs.
+Production legacy census is a separate manual and daily scheduled, main-only,
+`production` environment job with a 10-minute timeout, read-only repository
+permissions, and non-canceling census concurrency. Scheduled runs use the exact
+`legacy.api.chat-post` / 30-day defaults; manual inputs remain available for
+bounded bundled-surface investigation. It uses `ADMIN_TOKEN`, verifies the
+deployed release SHA before and after the read, refuses stale remote main before
+and after collection, logs out the temporary admin session, and retains exactly
+one strict content-free JSON census for 90 days. The artifact is retained before
+the chat-post anomaly gate evaluates only aggregate row/count, declared caller,
+and deployment-SHA agreement. Any nonzero chat-post count, unknown caller class,
+or mismatched deployment SHA fails the run for attention without advancing the
+surface or starting an observation window. It never deploys, mutates legacy
+registry state, calls `/api/chat`, or uploads cookies, tokens, prompts, responses,
+conversations, headers, or raw logs.
 
 Structural source checks normalize CRLF and bare CR to LF at the text-read boundary before exact multi-line assertions. This applies to executable check scripts as well as Vitest raw imports so a Windows checkout cannot fail a source contract that is semantically unchanged. Byte-exact hashing paths must keep the original bytes.
 
