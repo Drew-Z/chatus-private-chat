@@ -100,3 +100,9 @@ conversation/accounting evidence, and restart the affected observation window.
   `81ee52c65ff90504f6238aa6063493d677781605`. The delivery schedules daily
   chat-post census and aggregate anomaly detection only; it performs no local
   or workflow-triggered production deploy and advances no rollout phase.
+- PR #69 fixed the docs-only-main release edge before the first scheduled run.
+  Run `31619333414` passed `changes`, `quality`, `workspace-browser`, and
+  `agent-browser`; the PR squash-merged as exact main SHA
+  `971cc53dbae0e856f55477435a0b289e8ee26111`. Scheduled runs now accept only
+  the unchanged deployed current-main-or-ancestor SHA, while manual runs retain
+  exact-main equality and no production deploy was performed.
