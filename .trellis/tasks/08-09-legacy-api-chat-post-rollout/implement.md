@@ -10,6 +10,9 @@
 - [x] Persist identity migration/parity evidence for the ACL start gate.
 - [x] Expose a strict read-only production census API and retain exact-SHA,
       content-free census artifacts through a main-only GitHub Actions workflow.
+- [x] Schedule the 30-day chat-post census daily, serialize census runs, retain
+      artifacts before a content-free nonzero/caller/SHA anomaly failure, and
+      preserve manual bounded collection for other bundled surfaces.
 - [ ] After shell read observation and full caller migration, rehearse routing
       rollback and disable legacy POST writes with zero hidden side effects.
 - [ ] Retain 30-day write evidence, refresh recovery proof, disable route reads,
@@ -48,6 +51,12 @@ conversation/accounting evidence, and restart the affected observation window.
   Production caller census, rollback rehearsal, the 30-day write/read
   observation windows, route read-disable, cleanup approval, and archive checks
   remain future gates and are intentionally unchecked.
+- The census workflow now has daily 02:17 UTC collection with exact scheduled
+  defaults and non-canceling serialization. Its chat-post anomaly gate reads the
+  retained strict artifact and emits only aggregate counts/status; any nonzero
+  use, unknown declared caller, or deployment-SHA mismatch fails for attention.
+  This monitoring optimization neither advances the surface nor claims that a
+  30-day observation window has begun or completed.
 
 ## Delivery Evidence
 

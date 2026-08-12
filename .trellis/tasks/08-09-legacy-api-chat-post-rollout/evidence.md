@@ -107,3 +107,15 @@ does not prove which production callers exist or start either 30-day window.
 | 30-day write observation | Open | The API ceiling remains `instrumented` |
 | Read disable and 30-day read observation | Open | Depends on shell migration and write observation |
 | Destructive cleanup | Forbidden | No route, asset, conversation, or storage data is deleted by this task |
+
+## Scheduled census monitoring
+
+- The production census workflow is scheduled daily at 02:17 UTC and remains
+  manually dispatchable. Both entry paths serialize through a non-canceling,
+  census-only concurrency group.
+- Scheduled runs use exact `legacy.api.chat-post` and 30-day defaults. The strict
+  content-free artifact is uploaded before an aggregate anomaly gate checks
+  nonzero count, declared caller classes, and exact deployment-SHA agreement.
+- A gate failure preserves the artifact and exposes only bounded aggregate
+  counts/status. It does not call `/api/chat`, deploy, mutate coordinator state,
+  start an observation clock, or close rollback/read-disable/cleanup gates.
