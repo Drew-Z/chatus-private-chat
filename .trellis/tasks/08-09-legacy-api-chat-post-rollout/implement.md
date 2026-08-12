@@ -92,3 +92,8 @@ conversation/accounting evidence, and restart the affected observation window.
   run `31565553898` passed, and census run `31565995047` passed with canonical
   30-day artifact `9129468576` containing zero rows, retained through
   2026-11-10.
+- PR #67 passed `changes`, `quality`, `workspace-browser`, and `agent-browser`
+  in run `31617086427`, then squash-merged as exact main SHA
+  `81ee52c65ff90504f6238aa6063493d677781605`. The delivery schedules daily
+  chat-post census and aggregate anomaly detection only; it performs no local
+  or workflow-triggered production deploy and advances no rollout phase.

@@ -119,3 +119,8 @@ does not prove which production callers exist or start either 30-day window.
 - A gate failure preserves the artifact and exposes only bounded aggregate
   counts/status. It does not call `/api/chat`, deploy, mutate coordinator state,
   start an observation clock, or close rollback/read-disable/cleanup gates.
+- PR [#67](https://github.com/Drew-Z/chatus-private-chat/pull/67) passed all four
+  jobs in [run 31617086427](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31617086427):
+  path classification, full quality, Workspace Playwright, and isolated
+  fake-Provider Agent Playwright. It squash-merged as exact main SHA
+  `81ee52c65ff90504f6238aa6063493d677781605`.
