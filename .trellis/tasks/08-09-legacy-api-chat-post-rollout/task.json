@@ -12,10 +12,10 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/record-scheduled-census-evidence",
+  "branch": "codex/fix-scheduled-census-release",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "81ee52c65ff90504f6238aa6063493d677781605",
+  "commit": "e7a26ea5bfa8a6f7bfa397f7c78a3c510ca2df2d",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/67",
   "subtasks": [],
   "children": [],
@@ -85,36 +85,6 @@
         "at": "2026-08-12T04:15:05.795213+00:00"
       },
       {
-        "command": "npm run check:frontend",
-        "status": "passed",
-        "summary": "Client build and frontend structure checks passed.",
-        "at": "2026-08-12T16:17:29.911583+00:00"
-      },
-      {
-        "command": "npm test",
-        "status": "passed",
-        "summary": "50 Vitest files and 776 tests passed.",
-        "at": "2026-08-12T16:17:30.098424+00:00"
-      },
-      {
-        "command": "npm run typecheck",
-        "status": "passed",
-        "summary": "Worker, client, and browser TypeScript checks passed.",
-        "at": "2026-08-12T16:17:30.285090+00:00"
-      },
-      {
-        "command": "npx wrangler deploy --dry-run",
-        "status": "passed",
-        "summary": "Wrangler dry-run completed without a production deploy.",
-        "at": "2026-08-12T16:17:30.479371+00:00"
-      },
-      {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "Working diff contains no whitespace errors.",
-        "at": "2026-08-12T16:17:30.674196+00:00"
-      },
-      {
         "command": "npm run test:browser:workspace",
         "status": "passed",
         "summary": "Workspace Playwright passed 110 tests with 55 configured skips across five viewports.",
@@ -127,16 +97,46 @@
         "at": "2026-08-12T16:17:31.065634+00:00"
       },
       {
-        "command": "python ./.trellis/scripts/task.py validate-all",
-        "status": "passed",
-        "summary": "Repository task and workspace consistency passed.",
-        "at": "2026-08-12T16:17:31.255060+00:00"
-      },
-      {
         "command": "gh run view 31617086427",
         "status": "passed",
         "summary": "PR 67 passed changes, quality, Workspace Playwright, and fake-Provider Agent Playwright on the merged delivery.",
         "at": "2026-08-12T16:29:12.048123+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Client build and frontend structure checks passed after scheduled release ancestry fix.",
+        "at": "2026-08-12T16:44:10.694200+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "50 Vitest files and 777 tests passed after scheduled release ancestry fix.",
+        "at": "2026-08-12T16:44:10.881153+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-12T16:44:11.065010+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler dry-run completed without a production deploy.",
+        "at": "2026-08-12T16:44:11.256715+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Working diff contains no whitespace errors.",
+        "at": "2026-08-12T16:44:11.447429+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task and workspace consistency passed.",
+        "at": "2026-08-12T16:44:11.643398+00:00"
       }
     ],
     "delivery": {
