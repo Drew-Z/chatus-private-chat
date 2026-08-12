@@ -12,10 +12,10 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/fix-production-legacy-census",
+  "branch": "codex/record-production-legacy-census",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "54fbb1890846fa023458183114ce23f570feecdd",
+  "commit": "48affb8c7f957e8afef168b0c2874810f77397ee",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/65",
   "subtasks": [],
   "children": [],
@@ -24,6 +24,24 @@
   "notes": "",
   "meta": {
     "validation": [
+      {
+        "command": "gh run view 31562742368",
+        "status": "passed",
+        "summary": "PR 65 checks passed on the cold-start census fix: changes, quality, and fake-Provider Agent browser; Workspace browser skipped by path classification.",
+        "at": "2026-08-12T04:21:36+00:00"
+      },
+      {
+        "command": "gh run view 31565553898",
+        "status": "passed",
+        "summary": "Exact-main deployment passed on 48affb8c7f957e8afef168b0c2874810f77397ee with production verification.",
+        "at": "2026-08-12T05:12:38+00:00"
+      },
+      {
+        "command": "gh run view 31565995047",
+        "status": "passed",
+        "summary": "Exact-SHA 30-day census passed for legacy.api.chat-post; canonical artifact 9129468576 retained through 2026-11-10 with zero rows.",
+        "at": "2026-08-12T05:16:31+00:00"
+      },
       {
         "command": "gh run view 31353207727",
         "status": "passed",
