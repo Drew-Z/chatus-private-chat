@@ -27,3 +27,11 @@ Current capture/restore evidence must include transitional conversation state.
 `routing_switch` rollback restores the unchanged route and reconciles any
 in-flight fence without mixing restored/source data. A late caller resets the
 relevant 30-day window.
+
+## Production Census Evidence
+
+The coordinator exposes a read-only, bounded daily census projection through an
+authenticated admin endpoint. A main-only GitHub Actions workflow verifies the
+exact deployed SHA before and after collection and retains only canonical
+content-free rows for 90 days. This evidence delivery does not start, shorten,
+or satisfy either 30-day observation window by itself.

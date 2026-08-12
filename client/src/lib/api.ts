@@ -29,8 +29,10 @@ import {
   decodeLegacySurfaceAdvanceInput,
   decodeLegacySurfaceProjection,
   decodeLegacySurfaceRollbackInput,
+  decodeLegacySurfaceCensusSnapshot,
   type LegacySurfaceAdvanceInputV1,
   type LegacySurfaceAdminSnapshotV1,
+  type LegacySurfaceCensusSnapshotV1,
   type LegacySurfaceAllowedActionV1,
   type LegacySurfaceEvidenceKind,
   type LegacySurfaceEvidenceReferenceV1,
@@ -665,6 +667,7 @@ export type AdminLegacySurfacePhase = LegacySurfacePhase;
 export type AdminLegacySurfaceAction = LegacySurfaceAllowedActionV1;
 export type AdminLegacySurfaceProjection = LegacySurfaceProjectionV1;
 export type AdminLegacySurfaceSnapshot = LegacySurfaceAdminSnapshotV1;
+export type AdminLegacySurfaceCensusSnapshot = LegacySurfaceCensusSnapshotV1;
 export type AdminLegacySurfaceAdvanceInput = LegacySurfaceAdvanceInputV1;
 export type AdminLegacySurfaceRollbackInput = LegacySurfaceRollbackInputV1;
 export type AdminLegacySurfaceMutationResult = Extract<LegacySurfaceTransitionResult, { ok: true }>;
@@ -1210,6 +1213,23 @@ export async function fetchAdminLegacySurfaces(
     throw new ApiError("invalid_admin_legacy_surface_response", "旧功能面治理数据格式无效。", 502);
   }
   return data;
+}
+
+export async function fetchAdminLegacySurfaceCensus(
+  surfaceId: string,
+  days = 30,
+): Promise<AdminLegacySurfaceCensusSnapshot> {
+  if (!surfaceId || !Number.isSafeInteger(days) || days < 1 || days > 100) {
+    throw new ApiError("invalid_legacy_surface_census_request", "旧功能面 census 请求格式无效。", 400);
+  }
+  const data = await requestJson(
+    `/api/admin/legacy-surfaces/${encodeURIComponent(surfaceId)}/census?days=${days}`,
+  );
+  const snapshot = decodeLegacySurfaceCensusSnapshot(data);
+  if (!snapshot || snapshot.surfaceId !== surfaceId || snapshot.days !== days) {
+    throw new ApiError("invalid_admin_legacy_surface_census_response", "旧功能面 census 数据格式无效。", 502);
+  }
+  return snapshot;
 }
 
 export async function advanceAdminLegacySurface(

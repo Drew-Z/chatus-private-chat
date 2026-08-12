@@ -7290,6 +7290,9 @@ describe("Worker API", () => {
       "https://example.test/api/admin/legacy-surfaces",
     ))).status).toBe(401);
     expect((await exports.default.fetch(new Request(
+      "https://example.test/api/admin/legacy-surfaces/legacy.api.chat-post/census?days=30",
+    ))).status).toBe(401);
+    expect((await exports.default.fetch(new Request(
       `https://example.test/api/admin/legacy-surfaces/${LEGACY_SURFACE_MANIFEST[0].surfaceId}/advance`,
       { method: "POST" },
     ))).status).toBe(401);
@@ -7360,6 +7363,65 @@ describe("Worker API", () => {
       });
       expect(surface.manifestDigest).toBe(snapshot.manifestDigest);
     }
+
+    const censusSurface = LEGACY_SURFACE_MANIFEST[0];
+    const censusOccurredAt = Date.now();
+    const censusStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(censusSurface.surfaceId));
+    await censusStub.recordLegacySurfaceUse({
+      version: 1,
+      surfaceId: censusSurface.surfaceId,
+      callerClass: "worker_api",
+      access: "write",
+      occurredAt: censusOccurredAt,
+      deploymentSha: "d".repeat(40),
+    });
+    const censusResponse = await apiRequest(
+      `/api/admin/legacy-surfaces/${encodeURIComponent(censusSurface.surfaceId)}/census?days=30`,
+      cookie,
+    );
+    expect(censusResponse.status, await censusResponse.clone().text()).toBe(200);
+    const census = await censusResponse.json() as {
+      version: number;
+      surfaceId: string;
+      generatedAt: number;
+      days: number;
+      rows: Array<Record<string, unknown>>;
+    };
+    expect(Object.keys(census).sort()).toEqual(["days", "generatedAt", "rows", "surfaceId", "version"]);
+    expect(census).toMatchObject({
+      version: 1,
+      surfaceId: censusSurface.surfaceId,
+      generatedAt: expect.any(Number),
+      days: 30,
+    });
+    expect(census.rows).toContainEqual({
+      day: new Date(censusOccurredAt).toISOString().slice(0, 10),
+      callerClass: "worker_api",
+      access: "write",
+      count: 1,
+      lastOccurredAt: censusOccurredAt,
+      deploymentSha: "d".repeat(40),
+    });
+    expect(census.rows.every((row) => (
+      JSON.stringify(Object.keys(row).sort()) === JSON.stringify([
+        "access", "callerClass", "count", "day", "deploymentSha", "lastOccurredAt",
+      ])
+    ))).toBe(true);
+    expect(JSON.stringify(census)).not.toMatch(/prompt|response|conversation|cookie|token/i);
+    for (const query of ["", "?days=0", "?days=01", "?days=101", "?days=30&days=31", "?days=30&extra=1"]) {
+      const invalid = await apiRequest(
+        `/api/admin/legacy-surfaces/${encodeURIComponent(censusSurface.surfaceId)}/census${query}`,
+        cookie,
+      );
+      expect(invalid.status, query).toBe(400);
+      await expect(invalid.json(), query).resolves.toEqual({ error: "invalid_days" });
+    }
+    const unknownCensus = await apiRequest(
+      "/api/admin/legacy-surfaces/not-bundled/census?days=30",
+      cookie,
+    );
+    expect(unknownCensus.status).toBe(404);
+    await expect(unknownCensus.json()).resolves.toEqual({ error: "legacy_surface_not_found" });
 
     const limited = await apiRequest("/api/admin/legacy-surfaces?limit=1", cookie);
     expect(limited.status).toBe(200);

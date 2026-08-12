@@ -5,6 +5,7 @@ import { parseDocument } from "yaml";
 import ciWorkflowRaw from "../.github/workflows/ci.yml?raw";
 import deployWorkflowRaw from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.yml?raw";
+import legacyCensusWorkflowRaw from "../.github/workflows/production-legacy-census.yml?raw";
 import dependabotRaw from "../.github/dependabot.yml?raw";
 import checkFrontendSourceRaw from "../scripts/check-frontend.mjs?raw";
 import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
@@ -22,6 +23,7 @@ const normalizeText = (source: string) => source.replace(/\r\n?/gu, "\n");
 const ciWorkflow = normalizeText(ciWorkflowRaw);
 const deployWorkflow = normalizeText(deployWorkflowRaw);
 const acceptanceWorkflow = normalizeText(acceptanceWorkflowRaw);
+const legacyCensusWorkflow = normalizeText(legacyCensusWorkflowRaw);
 const checkFrontendSource = normalizeText(checkFrontendSourceRaw);
 const agentRunnerSource = normalizeText(agentRunnerSourceRaw);
 const packageSource = normalizeText(packageSourceRaw);
@@ -57,6 +59,7 @@ type Workflow = {
 const parsedCiWorkflow = parseWorkflow(ciWorkflow, "ci.yml");
 const parsedDeployWorkflow = parseWorkflow(deployWorkflow, "deploy.yml");
 const parsedAcceptanceWorkflow = parseWorkflow(acceptanceWorkflow, "production-acceptance.yml");
+const parsedLegacyCensusWorkflow = parseWorkflow(legacyCensusWorkflow, "production-legacy-census.yml");
 const dependabotDocument = parseDocument(normalizeText(dependabotRaw), {
   prettyErrors: true,
   uniqueKeys: true,
@@ -363,6 +366,7 @@ describe("workflow structural governance", () => {
       deploy: 30,
     });
     expectJobTimeouts(parsedAcceptanceWorkflow, { acceptance: 15 });
+    expectJobTimeouts(parsedLegacyCensusWorkflow, { census: 10 });
   });
 
   it("uses only approved Node 24 official action majors", () => {
@@ -371,7 +375,7 @@ describe("workflow structural governance", () => {
       "actions/setup-node@v7",
       "actions/upload-artifact@v7",
     ]);
-    const used = [parsedCiWorkflow, parsedDeployWorkflow, parsedAcceptanceWorkflow]
+    const used = [parsedCiWorkflow, parsedDeployWorkflow, parsedAcceptanceWorkflow, parsedLegacyCensusWorkflow]
       .flatMap((workflow) => Object.values(workflow.jobs))
       .flatMap((job) => job.steps ?? [])
       .flatMap((step) => step.uses ? [step.uses] : []);
@@ -420,6 +424,11 @@ describe("workflow structural governance", () => {
       path: "artifacts/production-acceptance/manifest.json",
       retentionDays: 90,
       always: true,
+    });
+    expectArtifact(parsedLegacyCensusWorkflow, "census", "Retain production legacy census", {
+      name: "production-legacy-census-${{ inputs.surface_id }}-${{ github.sha }}",
+      path: "artifacts/legacy-surface-census/census.json",
+      retentionDays: 90,
     });
     expectAlwaysStepBefore(parsedCiWorkflow, "quality", "Write quality manifest", "Retain quality manifest");
     expectAlwaysStepBefore(parsedDeployWorkflow, "deploy", "Write deployment manifest", "Retain deployment manifest");
@@ -478,6 +487,28 @@ describe("main deployment governance", () => {
     expect(getNamedStep(acceptance, "Write acceptance manifest").env).toEqual({
       DELIVERY_STATUS: "release=${{ steps.release.outcome }},acceptance=${{ steps.acceptance.outcome }}",
     });
+  });
+
+  it("keeps production census main-only, read-only, and exact-SHA", () => {
+    expect(parsedLegacyCensusWorkflow.on).toMatchObject({ workflow_dispatch: expect.any(Object) });
+    expect(parsedLegacyCensusWorkflow.permissions).toEqual({ contents: "read" });
+    expect(parsedLegacyCensusWorkflow.concurrency).toBeUndefined();
+    const census = getJob(parsedLegacyCensusWorkflow, "census");
+    expect(census.if).toBe("github.ref == 'refs/heads/main'");
+    expect(census.environment).toBe("production");
+    expectCommandsInOrder(census, [
+      "assert-main-tip.mjs",
+      "collect-production-legacy-census.mjs",
+      "assert-main-tip.mjs",
+    ]);
+    const collector = getNamedStep(census, "Collect content-free census");
+    expect(collector.env).toMatchObject({
+      ADMIN_TOKEN: "${{ secrets.ADMIN_TOKEN }}",
+      EXPECTED_RELEASE_SHA: "${{ github.sha }}",
+      LEGACY_SURFACE_ID: "${{ inputs.surface_id }}",
+      CENSUS_DAYS: "${{ inputs.days }}",
+    });
+    expect(joinWorkflowRuns(parsedLegacyCensusWorkflow)).not.toMatch(/wrangler deploy|acceptance:production|api\/chat/i);
   });
 
   it("validates the remote main revision without leaking command failures", async () => {

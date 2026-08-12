@@ -1,0 +1,69 @@
+name: Production legacy surface census
+
+on:
+  workflow_dispatch:
+    inputs:
+      surface_id:
+        description: Bundled legacy surface ID
+        required: true
+        default: legacy.api.chat-post
+        type: string
+      days:
+        description: UTC census window in days
+        required: true
+        default: "30"
+        type: choice
+        options:
+          - "30"
+          - "60"
+          - "90"
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Refuse a stale main revision
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/assert-main-tip.mjs
+
+      - name: Collect content-free census
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
+          EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          LEGACY_SURFACE_ID: ${{ inputs.surface_id }}
+          CENSUS_DAYS: ${{ inputs.days }}
+          CENSUS_OUTPUT: artifacts/legacy-surface-census/census.json
+        run: node scripts/collect-production-legacy-census.mjs
+
+      - name: Refuse a stale main revision after census
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/assert-main-tip.mjs
+
+      - name: Retain production legacy census
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-legacy-census-${{ inputs.surface_id }}-${{ github.sha }}
+          path: artifacts/legacy-surface-census/census.json
+          if-no-files-found: error
+          retention-days: 90

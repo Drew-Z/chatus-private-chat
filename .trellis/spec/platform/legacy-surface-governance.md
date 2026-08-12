@@ -21,6 +21,7 @@ surface's caller, parity, recovery, observation, owner, and rollback evidence.
 
 ```text
 GET  /api/admin/legacy-surfaces?limit=1..100
+GET  /api/admin/legacy-surfaces/:surfaceId/census?days=1..100
 POST /api/admin/legacy-surfaces/:surfaceId/advance
 POST /api/admin/legacy-surfaces/:surfaceId/rollback
 ```
@@ -31,6 +32,7 @@ legacySurfaceObjectName(surfaceId)
 
 InstanceCoordinator.syncLegacySurfaceManifest(input)
 InstanceCoordinator.inspectLegacySurface(expectedManifest?)
+InstanceCoordinator.censusLegacySurface(days)
 InstanceCoordinator.advanceLegacySurface(input)
 InstanceCoordinator.rollbackLegacySurface(input)
 InstanceCoordinator.recordLegacySurfaceUse(input)
@@ -120,6 +122,14 @@ Surface-use input is exact and content-free:
   deploymentSha
 }
 ```
+
+The authenticated census projection is also exact and content-free. It returns
+only `day`, `callerClass`, `access`, `count`, `lastOccurredAt`, and
+`deploymentSha`, in canonical day/caller/access order. `days` is required,
+unique, and bounded to 1..100; unknown query keys, unknown surface IDs, malformed
+stored rows, duplicate identities, or policy drift fail closed. The read-only
+endpoint inspects the exact bundled manifest and never synchronizes or mutates
+the coordinator as a side effect.
 
 The caller class must be declared by the manifest. Events older than seven days
 or more than five minutes in the future reject. Counts retain at most 100 UTC day

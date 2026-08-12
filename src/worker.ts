@@ -73,10 +73,12 @@ import {
   LEGACY_SURFACE_MANIFEST,
   decodeLegacySurfaceAdvanceInput,
   decodeLegacySurfaceRollbackInput,
+  decodeLegacySurfaceCensusSnapshot,
   legacySurfaceManifestDigest,
   legacySurfaceObjectName,
   type LegacySurfaceAdvanceInputV1,
   type LegacySurfaceAdminSnapshotV1,
+  type LegacySurfaceCensusSnapshotV1,
   type LegacySurfaceCallerClass,
   type LegacySurfaceManifestRecordV1,
   type LegacySurfaceProjectionV1,
@@ -2964,6 +2966,11 @@ async function handleAdminApi(
     return handleGetAdminLegacySurfaces(env, url, requestId);
   }
 
+  const legacySurfaceCensus = legacySurfaceCensusFromAdminPath(url.pathname);
+  if (legacySurfaceCensus && request.method === "GET") {
+    return handleGetAdminLegacySurfaceCensus(env, url, legacySurfaceCensus.surfaceId);
+  }
+
   const legacySurfaceMutation = legacySurfaceMutationFromAdminPath(url.pathname);
   if (legacySurfaceMutation && request.method === "POST") {
     requireInstanceFence(instanceFence);
@@ -3317,6 +3324,55 @@ function parseLegacySurfaceAdminLimit(url: URL): number | undefined {
   if (values.length === 0) return LEGACY_SURFACE_ADMIN_LIMIT;
   if (values.length !== 1 || !/^(?:[1-9]|[1-9][0-9]|100)$/.test(values[0])) return undefined;
   return Number(values[0]);
+}
+
+function legacySurfaceCensusFromAdminPath(pathname: string): { surfaceId: string } | undefined {
+  const match = /^\/api\/admin\/legacy-surfaces\/([^/]+)\/census$/.exec(pathname);
+  if (!match) return undefined;
+  try {
+    const surfaceId = decodeURIComponent(match[1]);
+    return surfaceId && !surfaceId.includes("/") ? { surfaceId } : { surfaceId: "" };
+  } catch {
+    return { surfaceId: "" };
+  }
+}
+
+function parseLegacySurfaceCensusDays(url: URL): number | undefined {
+  if ([...url.searchParams.keys()].some((key) => key !== "days")) return undefined;
+  const values = url.searchParams.getAll("days");
+  if (values.length !== 1 || !/^(?:[1-9]|[1-9][0-9]|100)$/.test(values[0])) return undefined;
+  return Number(values[0]);
+}
+
+async function handleGetAdminLegacySurfaceCensus(
+  env: Env,
+  url: URL,
+  surfaceId: string,
+): Promise<Response> {
+  const days = parseLegacySurfaceCensusDays(url);
+  if (days === undefined) return jsonResponse({ error: "invalid_days" }, 400);
+  if (!surfaceId) return legacySurfaceErrorResponse("legacy_surface_not_found");
+  const manifest = LEGACY_SURFACE_MANIFEST.find((record) => record.surfaceId === surfaceId);
+  if (!manifest) return legacySurfaceErrorResponse("legacy_surface_not_found");
+  try {
+    const manifestDigest = await legacySurfaceManifestDigest();
+    const coordinator = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(surfaceId));
+    const inspected = await coordinator.inspectLegacySurface({ version: 1, manifest, manifestDigest });
+    if (!inspected.ok) return legacySurfaceErrorResponse(inspected.error);
+    const result = await coordinator.censusLegacySurface(days);
+    if (!result.ok) return legacySurfaceErrorResponse(result.error);
+    const snapshot: LegacySurfaceCensusSnapshotV1 = {
+      version: 1,
+      surfaceId,
+      generatedAt: Date.now(),
+      days,
+      rows: result.rows,
+    };
+    if (!decodeLegacySurfaceCensusSnapshot(snapshot)) return legacySurfaceErrorResponse("legacy_surface_state_invalid");
+    return jsonResponse(snapshot);
+  } catch {
+    return legacySurfaceErrorResponse("legacy_surface_unavailable");
+  }
 }
 
 function legacySurfaceAuditTarget(

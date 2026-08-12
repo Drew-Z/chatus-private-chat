@@ -11,6 +11,7 @@ Production remains GitHub-Actions-only. Pull requests use local fixtures and fak
 - PR workflow: `.github/workflows/ci.yml`
 - Main workflow: `.github/workflows/deploy.yml` (manual `workflow_dispatch` from `main` only)
 - Production acceptance: `.github/workflows/production-acceptance.yml`
+- Production legacy census: `.github/workflows/production-legacy-census.yml`
 - Path classifier: `node scripts/classify-ci-paths.mjs [--all] --github-output <path> --manifest <path>`
 - Exact-main guard: `node scripts/assert-main-tip.mjs` with required `GITHUB_SHA`
 - Delivery manifest: `node scripts/write-delivery-manifest.mjs --kind <kind> --status <status> --output <path>`
@@ -32,6 +33,15 @@ Parse all workflow YAML with the declared `yaml` dependency and duplicate-key re
 
 Every executable job has an explicit upper bound: classification and skip jobs use 5 minutes, PR quality and both browser jobs use 20 minutes, production deploy uses 30 minutes, and production acceptance uses 15 minutes. Official JavaScript actions use the approved Node 24 majors `actions/checkout@v7`, `actions/setup-node@v7`, and `actions/upload-artifact@v7`; tests enumerate every `uses` value and reject older or unapproved references.
 
+Production legacy census is a separate manual, main-only, `production`
+environment job with a 10-minute timeout and read-only repository permissions.
+It uses `ADMIN_TOKEN`, verifies the deployed release SHA before and after the
+read, refuses stale remote main before and after collection, logs out the
+temporary admin session, and retains exactly one strict content-free JSON census
+for 90 days. It never deploys, mutates legacy registry state, calls `/api/chat`,
+or uploads cookies, tokens, prompts, responses, conversations, headers, or raw
+logs.
+
 Structural source checks normalize CRLF and bare CR to LF at the text-read boundary before exact multi-line assertions. This applies to executable check scripts as well as Vitest raw imports so a Windows checkout cannot fail a source contract that is semantically unchanged. Byte-exact hashing paths must keep the original bytes.
 
 Documentation-only deployment skipping is narrow. Markdown files and approved documentation assets under `docs/**` may skip Worker deployment. Tracked Trellis task/spec/workspace records may skip only when their extension is `.md`, `.json`, or `.jsonl`. Executable `.trellis/scripts/**`, executable or unknown files below record roots, workflows, runtime configuration, and application code are code changes even though they live near documentation. Unknown paths fail closed to deployment.
@@ -44,7 +54,7 @@ fake-Provider Agent Playwright evidence in addition to focused state-machine and
 restore tests. Foundation delivery evidence must prove all bundled records remain
 `discovered` and no runtime caller was wired. A later rollout records evidence for
 one exact surface and cannot reuse another surface's observation, owner approval,
-or rollback result. Production deployment and acceptance use the exact merged
+or rollback result. Production deployment, acceptance, and census use the exact merged
 main SHA through GitHub Actions; local tests never mutate a production registry.
 
 Main deployment is manual and accepts only `workflow_dispatch` runs from `refs/heads/main`; non-main dispatches fail before checkout or mutation. It preserves the early and late remote-main SHA guards and the non-canceling production-mutation concurrency group. Both guards call `scripts/assert-main-tip.mjs`, which accepts only a lowercase 40-character `GITHUB_SHA`, requires exactly one valid `refs/heads/main` result, compares by exact equality, and emits bounded errors without command output. The early guard runs after Node setup but before provisioning or secret preparation; the late guard is the step immediately before `Deploy Worker`. The deploy job checks out full history before comparing `GITHUB_SHA^` to `GITHUB_SHA`; the default one-commit checkout makes the parent revision ambiguous and must not be used with this gate. A real deploy and manual production acceptance each retain an exact-SHA manifest.

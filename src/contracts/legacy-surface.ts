@@ -212,6 +212,17 @@ export type LegacySurfaceProjectionResult =
         | "legacy_surface_manifest_conflict";
     };
 
+export type LegacySurfaceCensusResult =
+  | { ok: true; rows: LegacySurfaceCensusRowV1[] }
+  | {
+      ok: false;
+      error:
+        | "legacy_surface_not_found"
+        | "legacy_surface_conflict"
+        | "legacy_surface_state_invalid"
+        | "legacy_surface_manifest_conflict";
+    };
+
 export type LegacySurfaceUseRecordResult =
   | { ok: true; projection: LegacySurfaceUseResultV1 }
   | {
@@ -268,6 +279,19 @@ export type LegacySurfaceDailyCountV1 = {
   count: number;
   lastOccurredAt: number;
   deploymentSha: string;
+};
+
+export type LegacySurfaceCensusRowV1 = Pick<
+  LegacySurfaceDailyCountV1,
+  "day" | "callerClass" | "access" | "count" | "lastOccurredAt" | "deploymentSha"
+>;
+
+export type LegacySurfaceCensusSnapshotV1 = {
+  version: 1;
+  surfaceId: string;
+  generatedAt: number;
+  days: number;
+  rows: LegacySurfaceCensusRowV1[];
 };
 
 export type LegacySurfaceCaptureSnapshotV1 = {
@@ -902,6 +926,41 @@ export function decodeLegacySurfaceDailyCount(value: unknown): LegacySurfaceDail
     lastOccurredAt: value.lastOccurredAt,
     deploymentSha,
   };
+}
+
+export function decodeLegacySurfaceCensusRow(value: unknown): LegacySurfaceCensusRowV1 | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "day", "callerClass", "access", "count", "lastOccurredAt", "deploymentSha",
+  ])) return undefined;
+  const row = decodeLegacySurfaceDailyCount({ version: 1, ...value });
+  return row ? {
+    day: row.day,
+    callerClass: row.callerClass,
+    access: row.access,
+    count: row.count,
+    lastOccurredAt: row.lastOccurredAt,
+    deploymentSha: row.deploymentSha,
+  } : undefined;
+}
+
+export function decodeLegacySurfaceCensusSnapshot(value: unknown): LegacySurfaceCensusSnapshotV1 | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, ["version", "surfaceId", "generatedAt", "days", "rows"])) return undefined;
+  const surfaceId = normalizeSurfaceId(value.surfaceId);
+  const days = isPositiveSafeInteger(value.days) && value.days <= LEGACY_SURFACE_DAILY_RETENTION_DAYS
+    ? value.days
+    : undefined;
+  const rows = days ? decodeArray(value.rows, days * 20, decodeLegacySurfaceCensusRow) : undefined;
+  if (
+    value.version !== 1 || !surfaceId || !isPositiveSafeInteger(value.generatedAt)
+    || !days || !rows
+  ) return undefined;
+  const keys = rows.map((row) => `${row.day}|${row.callerClass}|${row.access}`);
+  if (
+    new Set(keys).size !== keys.length
+    || keys.some((key, index) => index > 0 && keys[index - 1]! >= key)
+    || rows.some(({ day, lastOccurredAt }) => new Date(lastOccurredAt).toISOString().slice(0, 10) !== day)
+  ) return undefined;
+  return { version: 1, surfaceId, generatedAt: value.generatedAt, days, rows };
 }
 
 export function decodeLegacySurfaceCaptureSnapshot(value: unknown): LegacySurfaceCaptureSnapshotV1 | undefined {
