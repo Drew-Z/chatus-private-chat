@@ -74,6 +74,14 @@ implementation.
   `09624a59-5546-4a47-bd71-29c51d9a285f`.
 - Retained deployment artifacts: `9052343216` through 2026-09-09 and
   `9052434350` through 2026-11-08.
+- Census projection PR #63 merged as
+  `393f0578e1cb6a3cee3a832b715b3a4fdfed60b9`; exact-main deployment run
+  `31560695880` passed all deployment and production verification steps.
+- The first 30-day census run `31561044924` targeted that exact SHA but failed
+  before artifact upload with HTTP 404 because the bundled surface had no
+  initialized coordinator. The failure retained no census rows and starts no
+  observation clock. A follow-up makes this cold state a valid empty, read-only
+  projection without synchronizing or creating coordinator state.
 
 Deployment proves the shipped identity and route instrumentation are live. It
 does not prove which production callers exist or start either 30-day window.
@@ -83,7 +91,7 @@ does not prove which production callers exist or start either 30-day window.
 | Gate | Status | Why |
 | --- | --- | --- |
 | Static caller map and parity contract | Prepared | Source and local fake-runtime evidence above |
-| Production exact-SHA caller census | Open | Deployment SHA is assigned; caller observation evidence is not yet retained |
+| Production exact-SHA caller census | Open | First exact-SHA collection exposed a cold-start 404; no artifact was retained |
 | Routing rollback rehearsal | Open | Requires the deployed control-plane operation and retained rollback evidence |
 | 30-day write observation | Open | The API ceiling remains `instrumented` |
 | Read disable and 30-day read observation | Open | Depends on shell migration and write observation |

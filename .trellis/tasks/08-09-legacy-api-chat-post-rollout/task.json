@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/legacy-api-chat-post-observation",
+  "branch": "codex/fix-production-legacy-census",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "02bf9b3c51275363a18e2c520160f52282438644",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/63",
+  "commit": "54fbb1890846fa023458183114ce23f570feecdd",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/65",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -49,52 +49,70 @@
         "at": "2026-08-10T06:18:09.997124+00:00"
       },
       {
+        "command": "gh run view 31560695880",
+        "status": "passed",
+        "summary": "Exact-main deployment passed on 393f0578e1cb6a3cee3a832b715b3a4fdfed60b9",
+        "at": "2026-08-12T04:15:05.433859+00:00"
+      },
+      {
+        "command": "gh run view 31561044924",
+        "status": "failed",
+        "summary": "Exact-SHA census reached the read endpoint but cold coordinator state returned HTTP 404; no artifact retained",
+        "at": "2026-08-12T04:15:05.613561+00:00"
+      },
+      {
+        "command": "npx vitest run tests/worker-api.test.ts -t serves-the-bounded-legacy-surface-registry",
+        "status": "passed",
+        "summary": "Cold bundled surface returns empty census and coordinator remains uninitialized",
+        "at": "2026-08-12T04:15:05.795213+00:00"
+      },
+      {
         "command": "npm run check:frontend",
         "status": "passed",
         "summary": "Vite build and frontend structure checks passed",
-        "at": "2026-08-12T03:10:23.729644+00:00"
+        "at": "2026-08-12T04:15:05.977614+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
         "summary": "50 files and 773 tests passed with local fake fixtures",
-        "at": "2026-08-12T03:10:23.903357+00:00"
+        "at": "2026-08-12T04:15:06.160790+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
         "summary": "Worker client and browser TypeScript checks passed",
-        "at": "2026-08-12T03:10:24.078122+00:00"
+        "at": "2026-08-12T04:15:06.336143+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
         "summary": "Worker bundle and bindings validated without deployment",
-        "at": "2026-08-12T03:10:24.252805+00:00"
-      },
-      {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "Working tree diff has no whitespace errors",
-        "at": "2026-08-12T03:10:24.442626+00:00"
+        "at": "2026-08-12T04:15:06.519097+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
-        "summary": "110 passed and 55 matrix skips across five viewports",
-        "at": "2026-08-12T03:10:24.628291+00:00"
+        "summary": "110 passed and 55 expected matrix skips across five viewports",
+        "at": "2026-08-12T04:15:06.701592+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
         "summary": "3 local fake Provider Agent tests passed",
-        "at": "2026-08-12T03:10:24.800543+00:00"
+        "at": "2026-08-12T04:15:06.885406+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Working tree diff has no whitespace errors",
+        "at": "2026-08-12T04:15:07.068605+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
         "summary": "Repository consistency passed",
-        "at": "2026-08-12T03:10:24.978603+00:00"
+        "at": "2026-08-12T04:15:07.246713+00:00"
       }
     ],
     "delivery": {

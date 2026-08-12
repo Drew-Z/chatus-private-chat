@@ -42,6 +42,9 @@ conversation/accounting evidence, and restart the affected observation window.
 - Identity migration evidence and delivery/PR evidence are now retained.
   A follow-up delivery adds the production census projection and evidence
   workflow without changing the surface phase ceiling or observation clocks.
+  The first production collection exposed a cold-start 404 for a bundled surface
+  with no coordinator state; a follow-up fixes that read-only projection to
+  return an empty census without initialization and adds a direct regression.
   Production caller census, rollback rehearsal, the 30-day write/read
   observation windows, route read-disable, cleanup approval, and archive checks
   remain future gates and are intentionally unchecked.
@@ -70,3 +73,8 @@ conversation/accounting evidence, and restart the affected observation window.
   routing rollback rehearsal, the real 30-day write window, reversible read
   disable, and the later 30-day read window remain open, so this task stays
   `in_progress` and unarchived.
+- PR #63 merged as `393f0578e1cb6a3cee3a832b715b3a4fdfed60b9`.
+  Exact-main deployment run `31560695880` passed. Census run `31561044924`
+  targeted the same SHA but failed before artifact upload because the bundled
+  surface had no initialized coordinator and the read-only endpoint returned
+  HTTP 404. No census artifact or observation claim was produced.
