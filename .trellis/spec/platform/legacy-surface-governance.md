@@ -129,7 +129,9 @@ only `day`, `callerClass`, `access`, `count`, `lastOccurredAt`, and
 unique, and bounded to 1..100; unknown query keys, unknown surface IDs, malformed
 stored rows, duplicate identities, or policy drift fail closed. The read-only
 endpoint inspects the exact bundled manifest and never synchronizes or mutates
-the coordinator as a side effect.
+the coordinator as a side effect. A bundled surface whose coordinator has not
+yet been initialized returns a valid empty census; an unknown surface still
+returns `legacy_surface_not_found`.
 
 The caller class must be declared by the manifest. Events older than seven days
 or more than five minutes in the future reject. Counts retain at most 100 UTC day

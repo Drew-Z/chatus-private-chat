@@ -34,4 +34,6 @@ The coordinator exposes a read-only, bounded daily census projection through an
 authenticated admin endpoint. A main-only GitHub Actions workflow verifies the
 exact deployed SHA before and after collection and retains only canonical
 content-free rows for 90 days. This evidence delivery does not start, shorten,
-or satisfy either 30-day observation window by itself.
+or satisfy either 30-day observation window by itself. A bundled surface with
+no initialized coordinator is projected as an empty census without creating or
+synchronizing control-plane state.

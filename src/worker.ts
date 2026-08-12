@@ -3358,15 +3358,17 @@ async function handleGetAdminLegacySurfaceCensus(
     const manifestDigest = await legacySurfaceManifestDigest();
     const coordinator = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(surfaceId));
     const inspected = await coordinator.inspectLegacySurface({ version: 1, manifest, manifestDigest });
-    if (!inspected.ok) return legacySurfaceErrorResponse(inspected.error);
-    const result = await coordinator.censusLegacySurface(days);
-    if (!result.ok) return legacySurfaceErrorResponse(result.error);
+    if (!inspected.ok && inspected.error !== "legacy_surface_not_found") {
+      return legacySurfaceErrorResponse(inspected.error);
+    }
+    const rows = inspected.ok ? await coordinator.censusLegacySurface(days) : { ok: true as const, rows: [] };
+    if (!rows.ok) return legacySurfaceErrorResponse(rows.error);
     const snapshot: LegacySurfaceCensusSnapshotV1 = {
       version: 1,
       surfaceId,
       generatedAt: Date.now(),
       days,
-      rows: result.rows,
+      rows: rows.rows,
     };
     if (!decodeLegacySurfaceCensusSnapshot(snapshot)) return legacySurfaceErrorResponse("legacy_surface_state_invalid");
     return jsonResponse(snapshot);

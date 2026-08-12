@@ -7314,6 +7314,27 @@ describe("Worker API", () => {
 
   it("serves the bounded legacy-surface registry and rejects invalid control-plane mutations", async () => {
     const cookie = await adminLogin();
+    const coldSurface = LEGACY_SURFACE_MANIFEST.find(
+      ({ surfaceId }) => surfaceId === "legacy.api.cloud-chats",
+    );
+    if (!coldSurface) throw new Error("missing cold legacy-surface fixture");
+    const coldCensus = await apiRequest(
+      `/api/admin/legacy-surfaces/${encodeURIComponent(coldSurface.surfaceId)}/census?days=30`,
+      cookie,
+    );
+    expect(coldCensus.status, await coldCensus.clone().text()).toBe(200);
+    await expect(coldCensus.json()).resolves.toMatchObject({
+      version: 1,
+      surfaceId: coldSurface.surfaceId,
+      days: 30,
+      rows: [],
+    });
+    await expect(
+      env.INSTANCE_COORDINATOR
+        .getByName(legacySurfaceObjectName(coldSurface.surfaceId))
+        .inspectLegacySurface(),
+    ).resolves.toEqual({ ok: false, error: "legacy_surface_not_found" });
+
     const initial = await apiRequest("/api/admin/legacy-surfaces", cookie);
     expect(initial.status, await initial.clone().text()).toBe(200);
     const snapshot: unknown = await initial.json();
