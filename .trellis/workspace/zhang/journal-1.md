@@ -1726,3 +1726,37 @@ Added and deployed the v6 IdentityRegistry foundation, principal-bound session a
 ### Next Steps
 
 - None - task complete
+
+
+## Session 46: Ship ACL sharing and revocation
+
+**Date**: 2026-08-12
+**Task**: Ship ACL sharing and revocation
+**Branch**: `main`
+
+### Summary
+
+Merged PR #62, deployed exact main through GitHub Actions, passed production member acceptance, retained delivery artifacts, recorded validation evidence, and archived the ACL sharing and revocation task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4f1b27b9177556a3e28ad63c542a0db9636def68` | (see git log) |
+| `8107362` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

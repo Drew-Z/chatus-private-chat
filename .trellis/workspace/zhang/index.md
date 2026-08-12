@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 45
-- **Last Active**: 2026-08-11
+- **Total Sessions**: 46
+- **Last Active**: 2026-08-12
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1728 | Active |
+| `journal-1.md` | ~1762 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 46 | 2026-08-12 | Ship ACL sharing and revocation | `4f1b27b9177556a3e28ad63c542a0db9636def68`, `8107362` | `main` |
 | 45 | 2026-08-11 | Stable principal and resource identity | `b36294dc97bc053f0153b03abca75ebcec712284` | `-` |
 | 44 | 2026-08-09 | Bound Provider fallback turns | `39ae56906e557ddf9b5634f40e9e146f488ed6ac` | `main` |
 | 43 | 2026-08-09 | Legacy surface control plane delivered and archived | `39aee8e738a871e89343290cfff652fa78bf1565`, `cde8c1cf8815b59150d6da4fb0dd32a2aeb25a54`, `926d2a31848c4a17b91eb8b46cdc49865228db8b` | `main` |
