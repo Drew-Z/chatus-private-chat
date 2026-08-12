@@ -45,3 +45,9 @@ gate that compares aggregate count, declared caller classes, and row deployment
 SHAs against the expected exact release. Any nonzero use or identity drift fails
 the run for operator attention while preserving the artifact; it does not mutate
 the coordinator, change runtime behavior, or advance an observation gate.
+
+Manual collection keeps exact-main release equality. Scheduled collection
+accepts the unchanged production release only when its SHA is current main or an
+ancestor in full Git history. This preserves monitoring across later record-only
+main commits that correctly skip Worker deployment while rejecting unrelated,
+forged, or mid-census production revisions.

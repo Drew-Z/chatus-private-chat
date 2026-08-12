@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { validateLegacySurfaceCensus } from "../scripts/legacy-census-contract.mjs";
 import {
+  assertDeployedReleaseSha,
+  assertUnchangedDeployedReleaseSha,
+} from "../scripts/collect-production-legacy-census.mjs";
+import {
   CHAT_POST_CALLER_CLASSES,
   CHAT_POST_SURFACE_ID,
   evaluateProductionLegacyCensus,
@@ -25,6 +29,37 @@ const census = {
 };
 
 describe("production legacy census contract", () => {
+  it("requires exact main manually and permits only deployed ancestors on schedule", async () => {
+    const deployedSha = "a".repeat(40);
+    const expectedMainSha = "b".repeat(40);
+    await expect(assertDeployedReleaseSha({
+      deployedSha: expectedMainSha,
+      expectedMainSha,
+      allowDeployedAncestor: false,
+    })).resolves.toBe(expectedMainSha);
+    await expect(assertDeployedReleaseSha({
+      deployedSha,
+      expectedMainSha,
+      allowDeployedAncestor: false,
+      isAncestor: async () => true,
+    })).rejects.toThrow("deployed commit mismatch");
+    await expect(assertDeployedReleaseSha({
+      deployedSha,
+      expectedMainSha,
+      allowDeployedAncestor: true,
+      isAncestor: async () => true,
+    })).resolves.toBe(deployedSha);
+    await expect(assertDeployedReleaseSha({
+      deployedSha,
+      expectedMainSha,
+      allowDeployedAncestor: true,
+      isAncestor: async () => false,
+    })).rejects.toThrow("not a main ancestor");
+    expect(assertUnchangedDeployedReleaseSha(deployedSha, deployedSha)).toBe(deployedSha);
+    expect(() => assertUnchangedDeployedReleaseSha(deployedSha, expectedMainSha))
+      .toThrow("deployed commit changed");
+  });
+
   it("keeps the scheduled gate caller classes aligned with the code-owned manifest", () => {
     const manifest = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === CHAT_POST_SURFACE_ID);
     expect(manifest?.callerClasses).toEqual(CHAT_POST_CALLER_CLASSES);

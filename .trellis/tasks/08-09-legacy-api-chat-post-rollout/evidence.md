@@ -116,6 +116,10 @@ does not prove which production callers exist or start either 30-day window.
 - Scheduled runs use exact `legacy.api.chat-post` and 30-day defaults. The strict
   content-free artifact is uploaded before an aggregate anomaly gate checks
   nonzero count, declared caller classes, and exact deployment-SHA agreement.
+- Manual runs require exact main/deployment equality. Scheduled runs use full
+  history to accept only current main or its deployed Git ancestor and require
+  that production SHA to stay unchanged through collection. This prevents a
+  later record-only main commit from causing a false stale-release failure.
 - A gate failure preserves the artifact and exposes only bounded aggregate
   counts/status. It does not call `/api/chat`, deploy, mutate coordinator state,
   start an observation clock, or close rollback/read-disable/cleanup gates.

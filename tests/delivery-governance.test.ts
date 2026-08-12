@@ -427,7 +427,7 @@ describe("workflow structural governance", () => {
       always: true,
     });
     expectArtifact(parsedLegacyCensusWorkflow, "census", "Retain production legacy census", {
-      name: "production-legacy-census-${{ env.LEGACY_SURFACE_ID }}-${{ github.sha }}",
+      name: "production-legacy-census-${{ env.LEGACY_SURFACE_ID }}-${{ steps.collect.outputs.deployed_sha }}",
       path: "artifacts/legacy-surface-census/census.json",
       retentionDays: 90,
     });
@@ -521,15 +521,18 @@ describe("main deployment governance", () => {
     const collector = getNamedStep(census, "Collect content-free census");
     expect(collector.env).toMatchObject({
       ADMIN_TOKEN: "${{ secrets.ADMIN_TOKEN }}",
-      EXPECTED_RELEASE_SHA: "${{ github.sha }}",
+      EXPECTED_MAIN_SHA: "${{ github.sha }}",
+      ALLOW_DEPLOYED_ANCESTOR: "${{ github.event_name == 'schedule' }}",
     });
+    expect(getNamedStep(census, "Checkout").with).toEqual({ "fetch-depth": 0 });
+    expect(collector.id).toBe("collect");
     const anomalyGate = getNamedStep(census, "Check census anomalies");
     expect(anomalyGate.if).toBe(
       "github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post'",
     );
     expect(anomalyGate.env).toEqual({
       CENSUS_INPUT: "artifacts/legacy-surface-census/census.json",
-      EXPECTED_RELEASE_SHA: "${{ github.sha }}",
+      EXPECTED_RELEASE_SHA: "${{ steps.collect.outputs.deployed_sha }}",
       MAX_CENSUS_TOTAL_COUNT: "0",
     });
     expect(getNamedStepIndex(census, "Retain production legacy census"))

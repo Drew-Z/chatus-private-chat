@@ -35,14 +35,18 @@ Every executable job has an explicit upper bound: classification and skip jobs u
 
 Production legacy census is a separate manual and daily scheduled, main-only,
 `production` environment job with a 10-minute timeout, read-only repository
-permissions, and non-canceling census concurrency. Scheduled runs use the exact
-`legacy.api.chat-post` / 30-day defaults; manual inputs remain available for
-bounded bundled-surface investigation. It uses `ADMIN_TOKEN`, verifies the
-deployed release SHA before and after the read, refuses stale remote main before
-and after collection, logs out the temporary admin session, and retains exactly
+permissions, full history, and non-canceling census concurrency. Scheduled runs
+use the exact `legacy.api.chat-post` / 30-day defaults; manual inputs remain
+available for bounded bundled-surface investigation. Manual runs require the
+deployed release to equal current main. Scheduled runs accept only a deployed
+release that is current main or its Git ancestor, so later record-only commits
+that legitimately skip deployment do not disable monitoring. Both modes require
+the deployed SHA to remain unchanged before and after the read, refuse stale
+remote main before and after collection, log out the temporary admin session,
+and retain exactly
 one strict content-free JSON census for 90 days. The artifact is retained before
 the chat-post anomaly gate evaluates only aggregate row/count, declared caller,
-and deployment-SHA agreement. Any nonzero chat-post count, unknown caller class,
+and deployment-SHA agreement with the captured production release. Any nonzero chat-post count, unknown caller class,
 or mismatched deployment SHA fails the run for attention without advancing the
 surface or starting an observation window. It never deploys, mutates legacy
 registry state, calls `/api/chat`, or uploads cookies, tokens, prompts, responses,

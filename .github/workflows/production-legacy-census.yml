@@ -39,6 +39,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -55,10 +57,12 @@ jobs:
         run: node scripts/assert-main-tip.mjs
 
       - name: Collect content-free census
+        id: collect
         env:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
-          EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          EXPECTED_MAIN_SHA: ${{ github.sha }}
+          ALLOW_DEPLOYED_ANCESTOR: ${{ github.event_name == 'schedule' }}
           CENSUS_OUTPUT: artifacts/legacy-surface-census/census.json
         run: node scripts/collect-production-legacy-census.mjs
 
@@ -70,7 +74,7 @@ jobs:
       - name: Retain production legacy census
         uses: actions/upload-artifact@v7
         with:
-          name: production-legacy-census-${{ env.LEGACY_SURFACE_ID }}-${{ github.sha }}
+          name: production-legacy-census-${{ env.LEGACY_SURFACE_ID }}-${{ steps.collect.outputs.deployed_sha }}
           path: artifacts/legacy-surface-census/census.json
           if-no-files-found: error
           retention-days: 90
@@ -79,6 +83,6 @@ jobs:
         if: github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post'
         env:
           CENSUS_INPUT: artifacts/legacy-surface-census/census.json
-          EXPECTED_RELEASE_SHA: ${{ github.sha }}
+          EXPECTED_RELEASE_SHA: ${{ steps.collect.outputs.deployed_sha }}
           MAX_CENSUS_TOTAL_COUNT: "0"
         run: node scripts/check-production-legacy-census.mjs
