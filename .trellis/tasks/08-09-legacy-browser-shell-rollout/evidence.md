@@ -54,3 +54,20 @@ read-disable, and cleanup approval remain open.
 - The rehearsal captures the complete pre-test surface atom and restores it in
   `finally`. It is local evidence only and does not disable production, start an
   observation window, or authorize asset deletion.
+
+## Rollback delivery and production census
+
+- PR #80 passed final CI run `31747949967` and squash-merged as exact main SHA
+  `1733c7da8368f17cee01244ec3caaf97dc168707`. GitHub Actions deployment run
+  `31748394946` deployed Worker version
+  `3938fb95-b635-4e76-92a7-5339b5eae358`; retained production artifact
+  `9200038120` expires 2026-11-11. No local production deployment was used.
+- Read-only shell census run `31749397004` retained exact-SHA artifact
+  `9200311303` through 2026-11-11 before the anomaly gate failed. Its bounded
+  aggregate was 4 rows / 49 reads, zero unknown callers, zero unexpected access,
+  and three deployment-SHA mismatches. The read count and historical SHA buckets
+  keep observation start blocked without inspecting row content.
+- The same main-only, non-canceling workflow now schedules shell/14-day census at
+  02:27 UTC after the existing chat-post/30-day 02:17 UTC run. It remains
+  read-only and cannot deploy, mutate the registry, disable a route, or advance
+  an observation phase.
