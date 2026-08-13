@@ -313,8 +313,11 @@ x-chatus-legacy-caller:
   Coordinator, manifest-sync, SHA-resolution, or record failures never block a
   redirect, shell response, static asset, or emergency root routing switch.
 - Navigation caches remain isolated for `/`, `/react-chat/`, and `/legacy/`.
-  Cached rollback assets remain retained; this instrumentation changes neither
-  `POST /api/chat` nor `/api/chats*` admission, telemetry, or authority.
+  Cached rollback assets may cover offline failures, `404`, and `5xx` only.
+  Authentication or terminal control responses (`401`, `403`, and `410`) pass
+  through unchanged so a stale worker cannot resurrect the shell. This
+  instrumentation changes neither `POST /api/chat` nor `/api/chats*` admission,
+  telemetry, or authority.
 
 ### 4. Validation & Error Matrix
 
@@ -328,13 +331,16 @@ x-chatus-legacy-caller:
 | Caller declaration is unknown or absent without browser metadata | Record `worker_api` |
 | SHA or observation store is unavailable | Serve normally and omit the event |
 | Shared React/PWA asset is requested | Do not count it solely as legacy shell use |
+| Navigation returns `401`, `403`, or `410` | Return it unchanged; never replace it with cached shell HTML |
+| Navigation is offline, `404`, or `5xx` | Use only that route family's cached shell when available |
 | Shell instrumentation changes a chat API | Reject the change; the surfaces are independent |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: a stale service worker pre-caches the retained shell with an explicit
   caller marker while a browser navigation and deployment smoke produce their
-  own exact-SHA, content-free buckets.
+  own exact-SHA, content-free buckets; a later `410` read-disable remains
+  authoritative over cached shell HTML.
 - Base: local tests use the configured zero SHA and assert all five caller
   classes without contacting a Provider, MCP server, or production.
 - Bad: count `/pwa.js` as legacy whenever React loads it, trust a caller-supplied
@@ -351,8 +357,13 @@ x-chatus-legacy-caller:
 - Frontend structure checks assert the exact legacy asset set, service-worker
   caller marker, deployment-smoke marker, isolated navigation cache keys, and
   retained `DEFAULT_CLIENT=legacy` routing source.
+- A deterministic service-worker harness executes the real `public/sw.js` and
+  proves route-family cache isolation, offline/`404`/`5xx` fallback, unchanged
+  `401`/`403`/`410` responses, request-boundary exclusions, cache-version
+  cleanup, and explicit update activation.
 - Workspace Playwright proves React parity across the five approved viewports;
-  local fake-Provider Agent Playwright covers direct legacy/React/admin entries.
+  local fake-Provider Agent Playwright covers direct legacy/React/admin entries
+  and fingerprints legacy local-storage fixtures before and after React entry.
   Neither suite may contact production or a live Provider/MCP server.
 - Run the complete Vitest suite, typecheck, Wrangler dry-run, diff check, and
   repository-wide Trellis consistency serially with frontend builds.

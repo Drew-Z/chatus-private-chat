@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/legacy-browser-shell-rollout",
+  "branch": "codex/browser-shell-parity-fixtures",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "a91f7c98966f467f3b879a582ab2a13d433e7a06",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/57",
+  "commit": "78bee2a29cae5b767b9fe03b222a11366eb48d4b",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/71",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -24,54 +24,6 @@
   "notes": "",
   "meta": {
     "validation": [
-      {
-        "command": "npm run check:frontend",
-        "status": "passed",
-        "summary": "Vite build and frontend structure checks passed",
-        "at": "2026-08-10T00:18:54.508302+00:00"
-      },
-      {
-        "command": "npm test",
-        "status": "passed",
-        "summary": "48 files and 729 tests passed",
-        "at": "2026-08-10T00:18:54.654635+00:00"
-      },
-      {
-        "command": "npm run typecheck",
-        "status": "passed",
-        "summary": "Worker client and browser TypeScript checks passed",
-        "at": "2026-08-10T00:18:54.807601+00:00"
-      },
-      {
-        "command": "npx wrangler deploy --dry-run",
-        "status": "passed",
-        "summary": "Worker bundle and bindings validated without deployment",
-        "at": "2026-08-10T00:18:54.965049+00:00"
-      },
-      {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "Working tree diff has no whitespace errors",
-        "at": "2026-08-10T00:18:55.113925+00:00"
-      },
-      {
-        "command": "npm run test:browser:workspace",
-        "status": "passed",
-        "summary": "90 passed and 55 intentionally skipped across five viewports",
-        "at": "2026-08-10T00:18:55.276415+00:00"
-      },
-      {
-        "command": "npm run test:browser:agent",
-        "status": "passed",
-        "summary": "3 local fake Provider Agent tests passed",
-        "at": "2026-08-10T00:18:55.416337+00:00"
-      },
-      {
-        "command": "python ./.trellis/scripts/task.py validate-all",
-        "status": "passed",
-        "summary": "Repository consistency passed",
-        "at": "2026-08-10T00:18:55.568744+00:00"
-      },
       {
         "command": "gh run view 31344295863",
         "status": "passed",
@@ -83,6 +35,66 @@
         "status": "passed",
         "summary": "Exact-main GitHub Actions deployment passed on 695ff9877d82e0bfa732ba59dc08d40f6c31073b: both stale-main guards, Worker deploy, production smoke, and two retained artifacts.",
         "at": "2026-08-10T00:41:15.285099+00:00"
+      },
+      {
+        "command": "npx vitest run tests/service-worker-shell.test.ts",
+        "status": "passed",
+        "summary": "12 service-worker shell isolation tests passed, including unchanged 401, 403, and 410 terminal navigation responses.",
+        "at": "2026-08-12T20:26:06.976050+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "51 Vitest files and 789 tests passed with local fixtures.",
+        "at": "2026-08-12T20:26:08.058445+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "110 Workspace Playwright tests passed with 55 configured matrix skips across five viewports.",
+        "at": "2026-08-12T20:26:10.215530+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "React build and frontend structure checks passed.",
+        "at": "2026-08-12T20:26:11.316355+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker bundle and bindings validated without production deployment.",
+        "at": "2026-08-12T20:26:13.388148+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed after final parity fixture expansion.",
+        "at": "2026-08-13T05:03:13.283682+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Final working-tree diff contains no whitespace errors; only line-ending conversion warnings were emitted.",
+        "at": "2026-08-13T05:03:14.514458+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task graph and workspace consistency passed after parity evidence updates.",
+        "at": "2026-08-13T05:03:15.718914+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 isolated fake-Provider Agent browser tests passed with all legacy persistence families fingerprinted after React and admin compatibility entry; one existing branch-navigation timeout passed on rerun.",
+        "at": "2026-08-13T05:07:53.968094+00:00"
+      },
+      {
+        "command": "gh run view 31669592924",
+        "status": "passed",
+        "summary": "PR 71 checks passed on head 78bee2a29cae5b767b9fe03b222a11366eb48d4b: changes, quality, and agent-browser succeeded; workspace-browser was skipped by expected path classification, with the five-viewport suite validated locally.",
+        "at": "2026-08-13T05:20:15.758104+00:00"
       }
     ],
     "delivery": {
