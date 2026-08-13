@@ -60,6 +60,28 @@ conversation/accounting evidence, and restart the affected observation window.
   use, unknown declared caller, or deployment-SHA mismatch fails for attention.
   This monitoring optimization neither advances the surface nor claims that a
   30-day observation window has begun or completed.
+- The deterministic pre-disable rehearsal now drives the real control-plane
+  write rollback from `write_disabled` to `shadowing`, proves a subsequent
+  local fake-Provider `POST /api/chat` succeeds, and then proves read-disable is
+  still independent. The test captures and restores the exact pre-test surface
+  atom so its rollback event and census rows do not escape the fixture.
+- The isolated restore drill now uses the runtime TeamAgent/UserState schema
+  versions, restores a non-empty transitional `chatus_conversations` row to the
+  mapped target conversation Agent, preserves the exact chat-post registry
+  controls, reports zero loss and unresolved references, leaves the source
+  digest unchanged, and keeps target writes closed. This is local rehearsal
+  evidence only: shell read observation, production write-disable, refreshed
+  post-disable recovery evidence, and both 30-day windows remain open.
+- The full Worker suite exposed an order-dependent census assertion that assumed
+  the shared chat-post coordinator had no prior rows. The control-plane test now
+  snapshots the atom, isolates its one-row census assertion, and restores the
+  exact snapshot in `finally`; full Vitest passes 51 files and 794 tests.
+- Draft PR #78 head `025822d352a64e5b4f3212efbf3e841612683cae`
+  passed `changes` and the full `quality` job in run `31742332074`;
+  both browser jobs were correctly skipped by path classification because the
+  complete local Workspace and Agent Playwright matrices are already retained.
+  The PR remains draft and unmerged, so no production deployment or observation
+  clock has been triggered.
 
 ## Delivery Evidence
 
