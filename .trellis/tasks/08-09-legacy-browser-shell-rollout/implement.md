@@ -98,3 +98,8 @@ authority, preserve counters, and restart the affected observation window.
 - Daily monitoring now keeps the existing 02:17 UTC chat-post/30-day run and
   adds an exact 02:27 UTC shell/14-day run through the same serialized, read-only
   workflow. Manual dispatch semantics remain unchanged.
+- PR #81 final head `898735791816b4731b6492b3fe2b2ee5c602768d`
+  passed all four required jobs in run `31751099544` and squash-merged as exact
+  main SHA `8f4a1da3b626c229c835f809eba803cae64a67d8`. The merge produced no Actions
+  run and did not trigger a production deployment; observation remains blocked
+  by the three historical deployment-SHA buckets.
