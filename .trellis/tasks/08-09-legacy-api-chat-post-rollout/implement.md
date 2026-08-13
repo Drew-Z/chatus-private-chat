@@ -124,3 +124,10 @@ conversation/accounting evidence, and restart the affected observation window.
   Wrangler dry-run, diff check, and Trellis validation pass locally. No new
   deployment or census has run yet, no artifact was produced for the failed run,
   and no write/read observation clock has started.
+- PR #74 head `92f8abdebad91e3e52ec20b440ce192fad2bf2c9` passed `changes`,
+  `quality`, and `agent-browser` in run `31704985070`; `workspace-browser` was
+  correctly skipped by path classification, while the full local Workspace
+  matrix passed 110 tests with 55 configured skips. Path-classification,
+  quality, coverage, and Agent Playwright artifacts `9182774633`, `9182919683`,
+  `9182920107`, and `9182821330` are retained through 2026-08-27. The PR remains
+  draft until this delivery record itself passes final CI.
