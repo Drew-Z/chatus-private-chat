@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "ec2d8538987755ec04dff18179d7b1413a8a6f72",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/78",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/79",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -179,6 +179,12 @@
         "status": "passed",
         "summary": "Repository task graph and workspace consistency passed after merge evidence updates.",
         "at": "2026-08-13T21:19:50.117134+00:00"
+      },
+      {
+        "command": "gh run view 31745241716",
+        "status": "passed",
+        "summary": "PR 79 Trellis-only path classification passed on head ceea228670ded1b267e673f7c199abe7961f251f; quality and browser jobs were correctly skipped after the complete local baseline passed.",
+        "at": "2026-08-13T21:21:56.238507+00:00"
       }
     ],
     "delivery": {
