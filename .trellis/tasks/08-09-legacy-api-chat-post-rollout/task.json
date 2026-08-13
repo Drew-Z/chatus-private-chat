@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "ec2d8538987755ec04dff18179d7b1413a8a6f72",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/78",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/79",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -109,12 +109,6 @@
         "at": "2026-08-13T06:38:53.104454+00:00"
       },
       {
-        "command": "python ./.trellis/scripts/task.py validate-all",
-        "status": "passed",
-        "summary": "Repository task graph and workspace consistency passed after scheduled census evidence updates.",
-        "at": "2026-08-13T06:51:12.959343+00:00"
-      },
-      {
         "command": "gh run view 31675537941",
         "status": "passed",
         "summary": "PR 72 path classification passed on head 08ee16a8063ce2e9883d6ecc48a542b3d6606a4c; quality and both browser jobs were skipped for Trellis-only changes, with the complete local shipping baseline retained in this task.",
@@ -127,52 +121,70 @@
         "at": "2026-08-13T17:34:32.382200+00:00"
       },
       {
-        "command": "npm test",
+        "command": "gh run view 31742332074",
         "status": "passed",
-        "summary": "All 51 Vitest files and 794 local fake-runtime tests passed after exact legacy-surface snapshot isolation.",
-        "at": "2026-08-13T17:34:32.555294+00:00"
+        "summary": "Draft PR 78 passed path classification and the complete quality gate on head 025822d352a64e5b4f3212efbf3e841612683cae; both browser jobs were path-skipped after retained local Workspace and Agent matrices passed.",
+        "at": "2026-08-13T20:54:16.183886+00:00"
+      },
+      {
+        "command": "gh pr view 78 and gh run view 31743185588",
+        "status": "passed",
+        "summary": "PR 78 final head passed changes and quality, squash-merged as exact main SHA 5c4114e63c9f9946ef6d121cfa1f3f915f912b65, and triggered no deployment workflow.",
+        "at": "2026-08-13T21:07:09.434521+00:00"
       },
       {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Vite client build and frontend structure checks passed with only the existing bundle-size advisory.",
-        "at": "2026-08-13T17:34:32.733489+00:00"
+        "summary": "Frontend build and structure checks passed; only the existing bundle-size advisory remained.",
+        "at": "2026-08-13T21:19:42.231843+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "All 51 Vitest files and 794 tests passed on merged main plus delivery evidence.",
+        "at": "2026-08-13T21:19:43.332344+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
         "summary": "Worker, client, and browser TypeScript checks passed.",
-        "at": "2026-08-13T17:34:32.910257+00:00"
+        "at": "2026-08-13T21:19:44.499218+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
         "summary": "Worker bundle and bindings validated without a production deployment.",
-        "at": "2026-08-13T17:34:33.096714+00:00"
+        "at": "2026-08-13T21:19:45.691232+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
         "summary": "Workspace Playwright passed 110 tests with 55 configured viewport skips.",
-        "at": "2026-08-13T17:34:33.275787+00:00"
+        "at": "2026-08-13T21:19:46.786814+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
-        "summary": "Isolated local fake-Provider Agent Playwright passed all 3 tests.",
-        "at": "2026-08-13T17:34:33.453851+00:00"
+        "summary": "Local fake-Provider Agent Playwright passed all 3 tests.",
+        "at": "2026-08-13T21:19:47.856038+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
-        "summary": "Recovery rehearsal, test isolation, spec, and task evidence changes contain no whitespace errors.",
-        "at": "2026-08-13T17:34:33.638804+00:00"
+        "summary": "Delivery evidence changes contain no whitespace errors.",
+        "at": "2026-08-13T21:19:48.905260+00:00"
       },
       {
-        "command": "gh run view 31742332074",
+        "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
-        "summary": "Draft PR 78 passed path classification and the complete quality gate on head 025822d352a64e5b4f3212efbf3e841612683cae; both browser jobs were path-skipped after retained local Workspace and Agent matrices passed.",
-        "at": "2026-08-13T20:54:16.183886+00:00"
+        "summary": "Repository task graph and workspace consistency passed after merge evidence updates.",
+        "at": "2026-08-13T21:19:50.117134+00:00"
+      },
+      {
+        "command": "gh run view 31745241716",
+        "status": "passed",
+        "summary": "PR 79 Trellis-only path classification passed on head ceea228670ded1b267e673f7c199abe7961f251f; quality and browser jobs were correctly skipped after the complete local baseline passed.",
+        "at": "2026-08-13T21:21:56.238507+00:00"
       }
     ],
     "delivery": {

@@ -82,6 +82,11 @@ conversation/accounting evidence, and restart the affected observation window.
   complete local Workspace and Agent Playwright matrices are already retained.
   The PR remains draft and unmerged, so no production deployment or observation
   clock has been triggered.
+- PR #78 final head `5e30ddc5c9ffab20ff2210cab84701fe15262b5d`
+  passed `changes` and `quality` in run `31743185588`, then squash-merged as
+  exact main SHA `5c4114e63c9f9946ef6d121cfa1f3f915f912b65`. No deployment
+  workflow ran for the merge, and no production routing, control-plane phase,
+  or observation clock changed.
 
 ## Delivery Evidence
 
