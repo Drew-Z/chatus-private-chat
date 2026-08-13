@@ -71,3 +71,9 @@ read-disable, and cleanup approval remain open.
   02:27 UTC after the existing chat-post/30-day 02:17 UTC run. It remains
   read-only and cannot deploy, mutate the registry, disable a route, or advance
   an observation phase.
+- PR #81 final head `898735791816b4731b6492b3fe2b2ee5c602768d`
+  passed `changes`, `quality`, `workspace-browser`, and `agent-browser` in run
+  `31751099544`, then squash-merged as exact main SHA
+  `8f4a1da3b626c229c835f809eba803cae64a67d8`. The merge SHA has no associated
+  Actions run; the latest production deployment remains the earlier manual run
+  `31748394946`, so scheduling the read-only census caused no production deploy.
