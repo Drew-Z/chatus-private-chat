@@ -137,6 +137,12 @@
         "status": "passed",
         "summary": "Repository task graph and workspace consistency passed after shell census scheduling updates.",
         "at": "2026-08-13T22:32:11.088606+00:00"
+      },
+      {
+        "command": "gh run view 31750483545",
+        "status": "passed",
+        "summary": "PR 81 final-head changes, quality, Workspace browser, and local fake-Provider Agent browser all passed on 290f5d62b5e2510b1db2957010d623ed13727491.",
+        "at": "2026-08-13T22:43:17.181911+00:00"
       }
     ],
     "delivery": {
