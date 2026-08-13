@@ -15,8 +15,8 @@
   "branch": "codex/browser-shell-parity-fixtures",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "a91f7c98966f467f3b879a582ab2a13d433e7a06",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/57",
+  "commit": "78bee2a29cae5b767b9fe03b222a11366eb48d4b",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/71",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -89,6 +89,12 @@
         "status": "passed",
         "summary": "3 isolated fake-Provider Agent browser tests passed with all legacy persistence families fingerprinted after React and admin compatibility entry; one existing branch-navigation timeout passed on rerun.",
         "at": "2026-08-13T05:07:53.968094+00:00"
+      },
+      {
+        "command": "gh run view 31669592924",
+        "status": "passed",
+        "summary": "PR 71 checks passed on head 78bee2a29cae5b767b9fe03b222a11366eb48d4b: changes, quality, and agent-browser succeeded; workspace-browser was skipped by expected path classification, with the five-viewport suite validated locally.",
+        "at": "2026-08-13T05:20:15.758104+00:00"
       }
     ],
     "delivery": {
