@@ -40,3 +40,17 @@ completion of either 14-day observation window.
 
 Production caller census, routing rollback, the 14-day write/read windows,
 read-disable, and cleanup approval remain open.
+
+## Local routing rollback rehearsal
+
+- All retained shell routes and legacy-exclusive assets now consume the exact
+  `legacy.browser.shell` read control after recording bounded late-caller
+  evidence. Control-plane unavailability remains fail-open for the emergency
+  rollback source.
+- A deterministic Worker test simulates `read_disabled`, proves `/legacy`,
+  `/legacy/`, and `/app.js` return terminal 410 without serving cached/source
+  content, then invokes the real transactional read rollback and proves the same
+  unchanged redirect, shell, and asset immediately return.
+- The rehearsal captures the complete pre-test surface atom and restores it in
+  `finally`. It is local evidence only and does not disable production, start an
+  observation window, or authorize asset deletion.
