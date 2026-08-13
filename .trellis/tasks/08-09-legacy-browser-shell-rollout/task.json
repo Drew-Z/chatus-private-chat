@@ -15,7 +15,7 @@
   "branch": "codex/browser-shell-rollback-rehearsal",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "0b09fe0c0b3a8e912c05c5e654af1eb3b3198d45",
+  "commit": "179b0392c28331b3229172d8e877d7f9b6e99e2c",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/73",
   "subtasks": [],
   "children": [],
