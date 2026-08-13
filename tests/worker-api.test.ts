@@ -5520,6 +5520,24 @@ describe("Worker API", () => {
     expect(userLogin.status).toBe(200);
   });
 
+  it("keeps a fresh admin login source out of the durable object recovery registry", async () => {
+    const registry = env.INSTANCE_COORDINATOR.getByName("$instance-maintenance");
+    const before = await registry.listRegisteredObjects();
+    const response = await exports.default.fetch(new Request("https://example.test/api/admin/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": `admin-registry-${crypto.randomUUID()}`,
+      },
+      body: JSON.stringify({ token: "test-admin-token" }),
+    }));
+    expect(response.status).toBe(200);
+    const cookie = response.headers.get("Set-Cookie")?.split(";", 1)[0] || "";
+    expect(cookie).toContain("chatus_admin=");
+    expect((await apiRequest("/api/admin/logout", cookie, { method: "POST" })).status).toBe(200);
+    await expect(registry.listRegisteredObjects()).resolves.toEqual(before);
+  });
+
   it("lets a user revoke every active device session without deleting data", async () => {
     const label = `self-revoke-${crypto.randomUUID()}`;
     const first = await login(label);

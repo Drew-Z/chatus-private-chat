@@ -56,6 +56,7 @@ import {
   type InstanceOperationResult,
   type InstanceOperationStateV1,
   type InstanceObjectRegistrationV1,
+  type InstanceObjectRegistrationResult,
   type InstanceObjectRegistryBaselineInput,
   type InstanceObjectRegistryResult,
 } from "./services/instance-capture";
@@ -611,7 +612,7 @@ export class InstanceCoordinator extends DurableObject<Record<string, never>> {
     });
   }
 
-  async registerObject(input: InstanceObjectRegistrationV1): Promise<InstanceObjectRegistryResult> {
+  async registerObject(input: InstanceObjectRegistrationV1): Promise<InstanceObjectRegistrationResult> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const registration = normalizeInstanceObjectRegistration(input);
       if (!registration) return { ok: false, error: "instance_object_conflict" };
@@ -633,22 +634,16 @@ export class InstanceCoordinator extends DurableObject<Record<string, never>> {
           }
           await this.ctx.storage.put(key, registration);
           await this.ctx.storage.delete(INSTANCE_OBJECT_BASELINE_KEY);
-          const objects = await this.readRegisteredObjects();
-          if (!objects) return { ok: false, error: "instance_maintenance_state_invalid" };
-          return this.registryResult(objects, { complete: false });
+          return { ok: true };
         }
-        const objects = await this.readRegisteredObjects();
-        if (!objects) return { ok: false, error: "instance_maintenance_state_invalid" };
-        return this.registryResult(objects, baseline);
+        return { ok: true };
       }
       if (stored.state && stored.state.phase !== "released") {
         return { ok: false, error: "instance_maintenance_busy" };
       }
       await this.ctx.storage.put(key, registration);
       await this.ctx.storage.delete(INSTANCE_OBJECT_BASELINE_KEY);
-      const objects = await this.readRegisteredObjects();
-      if (!objects) return { ok: false, error: "instance_maintenance_state_invalid" };
-      return this.registryResult(objects, { complete: false });
+      return { ok: true };
     });
   }
 

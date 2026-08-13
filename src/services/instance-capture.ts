@@ -146,6 +146,13 @@ export type InstanceObjectRegistryResult =
       error: "instance_object_conflict" | "instance_maintenance_busy" | "instance_maintenance_state_invalid";
     };
 
+export type InstanceObjectRegistrationResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error: "instance_object_conflict" | "instance_maintenance_busy" | "instance_maintenance_state_invalid";
+    };
+
 export type InstanceObjectRegistryBaselineInput = {
   version: 1;
   inventoryId: string;
@@ -165,7 +172,7 @@ export interface InstanceMaintenanceCoordinator {
   inspectMaintenance(): Promise<InstanceMaintenanceInspection>;
   acquireOperation(input: InstanceOperationAcquireInput): Promise<InstanceOperationResult>;
   releaseOperation(input: InstanceOperationReleaseInput): Promise<InstanceOperationResult>;
-  registerObject(input: InstanceObjectRegistrationV1): Promise<InstanceObjectRegistryResult>;
+  registerObject(input: InstanceObjectRegistrationV1): Promise<InstanceObjectRegistrationResult>;
   listRegisteredObjects(): Promise<InstanceObjectRegistryResult>;
   confirmObjectRegistryBaseline(input: InstanceObjectRegistryBaselineInput): Promise<InstanceObjectRegistryResult>;
 }
