@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "ec2d8538987755ec04dff18179d7b1413a8a6f72",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/72",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/78",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
