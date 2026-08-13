@@ -37,7 +37,8 @@ Production legacy census is a separate manual and daily scheduled, main-only,
 `production` environment job with a 10-minute timeout, read-only repository
 permissions, full history, and non-canceling census concurrency. Scheduled runs
 use the exact `legacy.api.chat-post` / 30-day defaults; manual inputs remain
-available for bounded bundled-surface investigation. Manual runs require the
+available for bounded bundled-surface investigation, including the exact
+`legacy.browser.shell` / 14-day rollout census. Manual runs require the
 deployed release to equal current main. Scheduled runs accept only a deployed
 release that is current main or its Git ancestor, so later record-only commits
 that legitimately skip deployment do not disable monitoring. Both modes require
@@ -45,10 +46,13 @@ the deployed SHA to remain unchanged before and after the read, refuse stale
 remote main before and after collection, log out the temporary admin session,
 and retain exactly
 one strict content-free JSON census for 90 days. The artifact is retained before
-the chat-post anomaly gate evaluates only aggregate row/count, declared caller,
-and deployment-SHA agreement with the captured production release. Any nonzero chat-post count, unknown caller class,
-or mismatched deployment SHA fails the run for attention without advancing the
-surface or starting an observation window. It never deploys, mutates legacy
+the fixed per-surface anomaly gate evaluates only aggregate row/count, declared
+caller, and deployment-SHA agreement with the captured production release. The
+chat-post 30-day policy rejects any nonzero count. The browser-shell 14-day
+policy permits bounded declared-caller reads but rejects an unknown caller or
+unexpected write row, or mismatched deployment SHA. A different window for either surface has no gate
+policy and fails rather than producing misleading rollout evidence. The gate
+never advances the surface or starts an observation window. It never deploys, mutates legacy
 registry state, calls `/api/chat`, or uploads cookies, tokens, prompts, responses,
 conversations, headers, or raw logs.
 

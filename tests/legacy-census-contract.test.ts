@@ -5,9 +5,12 @@ import {
   assertUnchangedDeployedReleaseSha,
 } from "../scripts/collect-production-legacy-census.mjs";
 import {
+  BROWSER_SHELL_CALLER_CLASSES,
+  BROWSER_SHELL_SURFACE_ID,
   CHAT_POST_CALLER_CLASSES,
   CHAT_POST_SURFACE_ID,
   evaluateProductionLegacyCensus,
+  resolveProductionLegacyCensusPolicy,
 } from "../scripts/check-production-legacy-census.mjs";
 import { LEGACY_SURFACE_MANIFEST } from "../src/contracts/legacy-surface";
 
@@ -60,9 +63,30 @@ describe("production legacy census contract", () => {
       .toThrow("deployed commit changed");
   });
 
-  it("keeps the scheduled gate caller classes aligned with the code-owned manifest", () => {
-    const manifest = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === CHAT_POST_SURFACE_ID);
-    expect(manifest?.callerClasses).toEqual(CHAT_POST_CALLER_CLASSES);
+  it("keeps gated caller classes aligned with the code-owned manifest", () => {
+    const chatPost = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === CHAT_POST_SURFACE_ID);
+    const browserShell = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === BROWSER_SHELL_SURFACE_ID);
+    expect(chatPost?.callerClasses).toEqual(CHAT_POST_CALLER_CLASSES);
+    expect(browserShell?.callerClasses).toEqual(BROWSER_SHELL_CALLER_CLASSES);
+  });
+
+  it("binds anomaly policies to each surface's exact observation window", () => {
+    expect(resolveProductionLegacyCensusPolicy(CHAT_POST_SURFACE_ID, 30)).toEqual({
+      allowedCallerClasses: CHAT_POST_CALLER_CLASSES,
+      allowedAccessClasses: ["read", "write"],
+      maximumTotalCount: 0,
+    });
+    expect(resolveProductionLegacyCensusPolicy(BROWSER_SHELL_SURFACE_ID, 14)).toEqual({
+      allowedCallerClasses: BROWSER_SHELL_CALLER_CLASSES,
+      allowedAccessClasses: ["read"],
+      maximumTotalCount: Number.MAX_SAFE_INTEGER,
+    });
+    expect(() => resolveProductionLegacyCensusPolicy(CHAT_POST_SURFACE_ID, 14))
+      .toThrow("no policy");
+    expect(() => resolveProductionLegacyCensusPolicy(BROWSER_SHELL_SURFACE_ID, 30))
+      .toThrow("no policy");
+    expect(() => resolveProductionLegacyCensusPolicy("legacy.api.cloud-chats", 30))
+      .toThrow("no policy");
   });
 
   it("accepts only canonical content-free census rows", () => {
@@ -107,6 +131,7 @@ describe("production legacy census contract", () => {
       rowCount: 0,
       totalCount: 0,
       unknownCallerRows: 0,
+      unexpectedAccessRows: 0,
       deploymentMismatchRows: 0,
       maximumTotalCount: 0,
       status: "clear",
@@ -123,7 +148,36 @@ describe("production legacy census contract", () => {
     });
   });
 
-  it("flags unknown caller classes and deployment drift without exposing rows", () => {
+  it("permits declared browser-shell reads and rejects shell writes", () => {
+    const shellExpected = {
+      surfaceId: BROWSER_SHELL_SURFACE_ID,
+      days: 14,
+      expectedDeploymentSha: "a".repeat(40),
+      ...resolveProductionLegacyCensusPolicy(BROWSER_SHELL_SURFACE_ID, 14),
+    };
+    const shellCensus = {
+      ...census,
+      surfaceId: BROWSER_SHELL_SURFACE_ID,
+      days: 14,
+      rows: [{ ...census.rows[0], callerClass: "service_worker", access: "read" }],
+    };
+    expect(evaluateProductionLegacyCensus(shellCensus, shellExpected)).toMatchObject({
+      totalCount: 2,
+      unknownCallerRows: 0,
+      unexpectedAccessRows: 0,
+      deploymentMismatchRows: 0,
+      status: "clear",
+    });
+    expect(evaluateProductionLegacyCensus({
+      ...shellCensus,
+      rows: [{ ...shellCensus.rows[0], access: "write" }],
+    }, shellExpected)).toMatchObject({
+      unexpectedAccessRows: 1,
+      status: "anomaly",
+    });
+  });
+
+  it("flags unknown callers, access drift, and deployment drift without exposing rows", () => {
     const summary = evaluateProductionLegacyCensus({
       ...census,
       rows: [{ ...census.rows[0], callerClass: "unexpected", deploymentSha: "b".repeat(40) }],
@@ -131,10 +185,12 @@ describe("production legacy census contract", () => {
       ...expected,
       expectedDeploymentSha: "a".repeat(40),
       allowedCallerClasses: ["browser", "test", "worker_api"],
+      allowedAccessClasses: ["read"],
       maximumTotalCount: 10,
     });
     expect(summary).toMatchObject({
       unknownCallerRows: 1,
+      unexpectedAccessRows: 1,
       deploymentMismatchRows: 1,
       status: "anomaly",
     });

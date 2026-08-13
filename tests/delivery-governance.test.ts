@@ -496,7 +496,10 @@ describe("main deployment governance", () => {
       workflow_dispatch: {
         inputs: {
           surface_id: expect.objectContaining({ default: "legacy.api.chat-post" }),
-          days: expect.objectContaining({ default: "30" }),
+          days: expect.objectContaining({
+            default: "30",
+            options: ["14", "30", "60", "90"],
+          }),
         },
       },
     });
@@ -528,12 +531,11 @@ describe("main deployment governance", () => {
     expect(collector.id).toBe("collect");
     const anomalyGate = getNamedStep(census, "Check census anomalies");
     expect(anomalyGate.if).toBe(
-      "github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post'",
+      "github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post' || env.LEGACY_SURFACE_ID == 'legacy.browser.shell'",
     );
     expect(anomalyGate.env).toEqual({
       CENSUS_INPUT: "artifacts/legacy-surface-census/census.json",
       EXPECTED_RELEASE_SHA: "${{ steps.collect.outputs.deployed_sha }}",
-      MAX_CENSUS_TOTAL_COUNT: "0",
     });
     expect(getNamedStepIndex(census, "Retain production legacy census"))
       .toBeLessThan(getNamedStepIndex(census, "Check census anomalies"));
