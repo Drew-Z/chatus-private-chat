@@ -5,7 +5,7 @@
 - [x] Version only `legacy.browser.shell` with owner `frontend`, 14-day windows,
       and the minimum enforceable phase ceiling.
 - [x] Add content-free caller instrumentation at every exact shell boundary.
-- [ ] Build deterministic React parity and local-storage/service-worker stale
+- [x] Build deterministic React parity and local-storage/service-worker stale
       client fixtures across required viewports.
 - [x] Preserve independent chat API telemetry and controls.
 - [ ] Rehearse route rollback, stop shell-owned writes, and retain 14-day write
@@ -21,6 +21,19 @@
 
 Restore the retained shell routing and service-worker path without changing API
 authority, preserve counters, and restart the affected observation window.
+
+## Local Parity Evidence
+
+- `evidence.md` records complete legacy local-storage fingerprint isolation and
+  a real-source service-worker harness without retaining user content.
+- Service-worker coverage proves explicit legacy pre-cache caller attribution,
+  separate root/React/legacy navigation caches, offline and error fallback,
+  unchanged `401`/`403`/`410` responses, request exclusions, cache cleanup, and
+  explicit update activation.
+- The final local baseline passes 51 Vitest files / 789 tests, Agent Playwright
+  3/3, and Workspace Playwright 110 passed / 55 configured matrix skips.
+- Production census, routing rollback, both 14-day observation windows,
+  read-disable, cleanup approval, and a new delivery remain open.
 
 ## Delivery Evidence
 

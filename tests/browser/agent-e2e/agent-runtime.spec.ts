@@ -115,13 +115,16 @@ test("real Worker Agent transport preserves streaming, approval, attachments, an
   expect(state.memoryContinuationRequests).toBeGreaterThan(0);
 });
 
-test("direct entries remain contained and the legacy image picker is keyboard operable", async ({ page, request }) => {
+test("direct entries preserve legacy storage and keep the legacy image picker keyboard operable", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/legacy/");
   await page.getByLabel("访问码").fill(memberAccessCode);
   await page.getByRole("button", { name: "进入 Chatus" }).click();
   await expect(page.locator("#chatView")).toBeVisible();
   await expect(page.locator("#promptInput")).toBeFocused();
+
+  const sessionIdentity = await readSessionIdentity(page);
+  const legacyStorageBefore = await seedLegacyStorageFixtures(page, sessionIdentity.user);
 
   const imagePicker = page.getByRole("button", { name: "添加图片" });
   await imagePicker.focus();
@@ -140,6 +143,11 @@ test("direct entries remain contained and the legacy image picker is keyboard op
   await page.goto("/react-chat/");
   await expect(page.getByRole("textbox", { name: "消息" })).toBeVisible();
   await expectDocumentContained(page);
+  expect(await readLegacyStorageFixtures(page, sessionIdentity.user)).toEqual(legacyStorageBefore);
+  expect(await readReactStorageNamespace(page, sessionIdentity.user)).toEqual({
+    activeChatCount: 1,
+    draftCount: 0,
+  });
 
   await page.goto("/react-chat/admin");
   await expect(page.getByLabel("管理员 Token")).toBeVisible();
@@ -150,6 +158,7 @@ test("direct entries remain contained and the legacy image picker is keyboard op
   expect(new URL(page.url()).pathname).toBe("/react-chat/admin");
   expect(new URL(page.url()).search).toBe("?source=browser");
   await expectDocumentContained(page);
+  expect(await readLegacyStorageFixtures(page, sessionIdentity.user)).toEqual(legacyStorageBefore);
 
   const redirect = await request.get("/admin.html", {
     maxRedirects: 0,
@@ -292,6 +301,94 @@ async function readDraftStorageState(page: Page, user: string): Promise<{
       activeChatFingerprint: await digest(localStorage.getItem(`chatus:react:${member}:active-chat`) || ""),
     };
   }, { member: user });
+}
+
+async function seedLegacyStorageFixtures(page: Page, user: string): Promise<{
+  keyCount: number;
+  fingerprint: string;
+}> {
+  return page.evaluate(async (member) => {
+    const encodedMember = encodeURIComponent(member);
+    const activeSessionId = "legacy-fixture-v3";
+    const fixtures: Array<[string, string]> = [
+      ["chatus.messages.v1", "[]"],
+      [`chatus.sessions.v2.${encodedMember}`, JSON.stringify([{
+        id: "legacy-fixture-v2",
+        title: "",
+        createdAt: 0,
+        updatedAt: 0,
+        messages: [],
+      }])],
+      [`chatus.sessions.v3.${encodedMember}`, JSON.stringify([{
+        id: activeSessionId,
+        title: "",
+        createdAt: 0,
+        updatedAt: 0,
+        messages: [],
+      }])],
+      [`chatus.activeSession.v3.${encodedMember}`, activeSessionId],
+      ["chatus.route.v1", "primary"],
+      ["chatus.sessionSnapshot.v1", JSON.stringify({ user: member, routes: [{ id: "primary" }] })],
+      [`chatus.memory.v1.${encodedMember}`, "legacy-memory-fixture"],
+      [`chatus.memoryDraft.v1.${encodedMember}`, "legacy-memory-draft-fixture"],
+      [`chatus.draft.v1.${encodedMember}.${encodeURIComponent(activeSessionId)}`, "legacy-chat-draft-fixture"],
+    ];
+    for (const [key, value] of fixtures) localStorage.setItem(key, value);
+    return summarize(fixtures);
+
+    async function summarize(entries: Array<[string, string]>): Promise<{ keyCount: number; fingerprint: string }> {
+      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(entries)));
+      return {
+        keyCount: entries.length,
+        fingerprint: [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+      };
+    }
+  }, user);
+}
+
+async function readLegacyStorageFixtures(page: Page, user: string): Promise<{
+  keyCount: number;
+  fingerprint: string;
+}> {
+  return page.evaluate(async (member) => {
+    const encodedMember = encodeURIComponent(member);
+    const activeSessionId = "legacy-fixture-v3";
+    const keys = [
+      "chatus.messages.v1",
+      `chatus.sessions.v2.${encodedMember}`,
+      `chatus.sessions.v3.${encodedMember}`,
+      `chatus.activeSession.v3.${encodedMember}`,
+      "chatus.route.v1",
+      "chatus.sessionSnapshot.v1",
+      `chatus.memory.v1.${encodedMember}`,
+      `chatus.memoryDraft.v1.${encodedMember}`,
+      `chatus.draft.v1.${encodedMember}.${encodeURIComponent(activeSessionId)}`,
+    ];
+    const entries = keys.map((key) => [key, localStorage.getItem(key) || ""] as [string, string]);
+    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(entries)));
+    return {
+      keyCount: entries.length,
+      fingerprint: [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    };
+  }, user);
+}
+
+async function readReactStorageNamespace(page: Page, user: string): Promise<{
+  activeChatCount: number;
+  draftCount: number;
+}> {
+  return page.evaluate((member) => {
+    const prefix = `chatus:react:${member}:`;
+    const keys: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(prefix)) keys.push(key);
+    }
+    return {
+      activeChatCount: keys.filter((key) => key === `${prefix}active-chat`).length,
+      draftCount: keys.filter((key) => key.startsWith(`${prefix}draft:`)).length,
+    };
+  }, user);
 }
 
 async function readInputFingerprint(input: Locator): Promise<string> {

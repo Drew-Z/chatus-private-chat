@@ -43,16 +43,16 @@ retiring the chat APIs that remain independently governed.
 
 - [ ] AC1. All browser, deployment, service-worker, test, and Worker route callers
       are instrumented with content-free exact-SHA use evidence.
-- [ ] AC2. React Workspace parity covers supported member/guest/admin-adjacent
+- [x] AC2. React Workspace parity covers supported member/guest/admin-adjacent
       workflows, local migration, errors, and required viewports.
-- [ ] AC3. Shell versus API caller/write boundaries are explicit; disabling the
+- [x] AC3. Shell versus API caller/write boundaries are explicit; disabling the
       shell cannot silently disable or authorize either chat API surface.
-- [ ] AC4. Stale service workers, cached assets, local storage, bookmarks, and
+- [x] AC4. Stale service workers, cached assets, local storage, bookmarks, and
       retries cannot bypass the control or resurrect obsolete state.
 - [ ] AC5. Routing rollback is rehearsed and the 14-day write window passes.
 - [ ] AC6. Read-disable is reversible and the 14-day read window passes with no
       unexplained caller.
-- [ ] AC7. Static assets and rollback routes remain retained; only this record
+- [x] AC7. Static assets and rollback routes remain retained; only this record
       reaches at most `approved_for_cleanup`.
 - [ ] AC8. Full validation, impacted Workspace/local fake Provider tests, specs,
       PR/delivery evidence, AC, and archive consistency pass.
