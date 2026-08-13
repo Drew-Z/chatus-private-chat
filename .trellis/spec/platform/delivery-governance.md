@@ -36,9 +36,9 @@ Every executable job has an explicit upper bound: classification and skip jobs u
 Production legacy census is a separate manual and daily scheduled, main-only,
 `production` environment job with a 10-minute timeout, read-only repository
 permissions, full history, and non-canceling census concurrency. Scheduled runs
-use the exact `legacy.api.chat-post` / 30-day defaults; manual inputs remain
-available for bounded bundled-surface investigation, including the exact
-`legacy.browser.shell` / 14-day rollout census. Manual runs require the
+use two exact off-round UTC entries: `legacy.api.chat-post` / 30 days at 02:17
+and `legacy.browser.shell` / 14 days at 02:27. Manual inputs remain available for
+bounded bundled-surface investigation. Manual runs require the
 deployed release to equal current main. Scheduled runs accept only a deployed
 release that is current main or its Git ancestor, so later record-only commits
 that legitimately skip deployment do not disable monitoring. Both modes require
@@ -119,6 +119,7 @@ The root `.trellis/workspace/index.md` developer table is a projection of every 
 | Official action uses an unapproved or pre-Node-24 major | Structured governance test fails |
 | PR has whitespace errors in committed diff | Base-to-head `git diff --check` fails |
 | Legacy foundation evidence omits the all-`discovered` invariant or either browser suite | Keep its delivery checklist and AC open |
+| Scheduled browser-shell census uses another surface/window or manual defaults override its cron | Structural governance test fails; do not treat the artifact as shell observation evidence |
 | One surface rollout cites another surface's evidence | Reject the rollout/archive; per-surface evidence is not transferable |
 | Deploy checkout cannot resolve `GITHUB_SHA^` | Deployment stops before preparing secrets or mutating production |
 | Browser suite fails | Upload retained trace/screenshot output without runtime secrets |

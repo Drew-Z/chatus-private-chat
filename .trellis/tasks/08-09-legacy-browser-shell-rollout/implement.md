@@ -82,3 +82,19 @@ authority, preserve counters, and restart the affected observation window.
   `recovery_proven` and immediately restores the unchanged redirect, shell, and
   asset. The exact pre-test atom is restored in `finally`. Production disable
   and both 14-day windows remain open.
+- PR #80 final head `ca1b7efe455a64fca0f65c8e93be7bde018aa44f`
+  passed `changes`, `quality`, and fake-Provider Agent browser in run
+  `31747949967`, then squash-merged as exact main SHA
+  `1733c7da8368f17cee01244ec3caaf97dc168707`. GitHub Actions deployment run
+  `31748394946` passed both stale-main guards, full quality, production upload,
+  and verification; Worker version `3938fb95-b635-4e76-92a7-5339b5eae358` is
+  live and the shell read control remains enabled.
+- Exact-main 14-day shell census run `31749397004` retained artifact
+  `9200311303` through 2026-11-11, then correctly failed the aggregate gate with
+  `rowCount=4`, `totalCount=49`, zero unknown callers, zero unexpected access,
+  and three deployment-SHA mismatches. No caller content was inspected. The
+  historical buckets block observation start, so production read-disable and
+  both 14-day windows remain open.
+- Daily monitoring now keeps the existing 02:17 UTC chat-post/30-day run and
+  adds an exact 02:27 UTC shell/14-day run through the same serialized, read-only
+  workflow. Manual dispatch semantics remain unchanged.

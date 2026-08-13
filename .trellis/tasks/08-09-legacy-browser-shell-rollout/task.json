@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/browser-shell-rollback-rehearsal",
+  "branch": "codex/schedule-browser-shell-census",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "179b0392c28331b3229172d8e877d7f9b6e99e2c",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/80",
+  "commit": "266c5dce12d775d9dd16638fedee7571358dcdda",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/81",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -67,58 +67,82 @@
         "at": "2026-08-13T21:50:34.568344+00:00"
       },
       {
+        "command": "gh run view 31747536303",
+        "status": "passed",
+        "summary": "PR 80 final-head changes, full quality, and local fake-Provider Agent browser passed on 23ba9ad9274ed78f895a58c74c685000c248383b; Workspace browser was path-skipped after the retained local 110-test matrix passed.",
+        "at": "2026-08-13T21:57:38.430996+00:00"
+      },
+      {
+        "command": "gh run view 31748394946",
+        "status": "passed",
+        "summary": "Exact-main deployment passed on 1733c7da8368f17cee01244ec3caaf97dc168707; Worker version 3938fb95-b635-4e76-92a7-5339b5eae358 is live and production verification passed.",
+        "at": "2026-08-13T22:32:02.381173+00:00"
+      },
+      {
+        "command": "gh run view 31749397004",
+        "status": "passed",
+        "summary": "Exact-main 14-day shell census retained artifact 9200311303, then correctly failed the aggregate anomaly gate with 49 reads, zero unknown callers, zero unexpected access, and three deployment-SHA mismatches.",
+        "at": "2026-08-13T22:32:03.477461+00:00"
+      },
+      {
+        "command": "npx vitest run tests/delivery-governance.test.ts tests/legacy-census-contract.test.ts",
+        "status": "passed",
+        "summary": "Two focused governance files and 57 tests passed for exact dual-cron shell/chat-post census scheduling and security boundaries.",
+        "at": "2026-08-13T22:32:04.563117+00:00"
+      },
+      {
         "command": "npm run check:frontend",
         "status": "passed",
         "summary": "Vite client build and frontend structure checks passed; only the existing bundle-size advisory remained.",
-        "at": "2026-08-13T21:50:35.560864+00:00"
+        "at": "2026-08-13T22:32:05.179537+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
         "summary": "All 51 Vitest files and 795 local fake-runtime tests passed.",
-        "at": "2026-08-13T21:50:36.619137+00:00"
+        "at": "2026-08-13T22:32:05.798874+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
         "summary": "Worker, client, and browser TypeScript checks passed.",
-        "at": "2026-08-13T21:50:37.568689+00:00"
+        "at": "2026-08-13T22:32:06.436294+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
-        "summary": "Worker bundle and bindings validated without a production deployment.",
-        "at": "2026-08-13T21:50:38.641190+00:00"
+        "summary": "Worker bundle and bindings validated without a local production deployment.",
+        "at": "2026-08-13T22:32:07.567103+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
         "summary": "Workspace Playwright passed 110 tests with 55 configured viewport skips.",
-        "at": "2026-08-13T21:50:39.638271+00:00"
+        "at": "2026-08-13T22:32:08.162486+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
         "summary": "Local fake-Provider Agent Playwright passed all 3 tests.",
-        "at": "2026-08-13T21:50:40.641115+00:00"
+        "at": "2026-08-13T22:32:08.776162+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
-        "summary": "Browser shell rollback implementation, tests, spec, and evidence contain no whitespace errors.",
-        "at": "2026-08-13T21:50:41.676234+00:00"
+        "summary": "Daily shell census workflow, governance tests, spec, and evidence contain no whitespace errors.",
+        "at": "2026-08-13T22:32:09.899541+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
-        "summary": "Repository task graph and workspace consistency passed after browser shell rollback evidence updates.",
-        "at": "2026-08-13T21:50:42.838605+00:00"
+        "summary": "Repository task graph and workspace consistency passed after shell census scheduling updates.",
+        "at": "2026-08-13T22:32:11.088606+00:00"
       },
       {
-        "command": "gh run view 31747536303",
+        "command": "gh run view 31750483545",
         "status": "passed",
-        "summary": "PR 80 final-head changes, full quality, and local fake-Provider Agent browser passed on 23ba9ad9274ed78f895a58c74c685000c248383b; Workspace browser was path-skipped after the retained local 110-test matrix passed.",
-        "at": "2026-08-13T21:57:38.430996+00:00"
+        "summary": "PR 81 final-head changes, quality, Workspace browser, and local fake-Provider Agent browser all passed on 290f5d62b5e2510b1db2957010d623ed13727491.",
+        "at": "2026-08-13T22:43:17.181911+00:00"
       }
     ],
     "delivery": {
