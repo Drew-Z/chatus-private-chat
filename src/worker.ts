@@ -576,6 +576,7 @@ const MAX_TOOL_RESULT_BYTES = 32 * 1024;
 const LEGACY_ADMIN_ALIAS_SURFACE_ID = "legacy.browser.admin-alias";
 const LEGACY_BROWSER_SHELL_SURFACE_ID = "legacy.browser.shell";
 const LEGACY_API_CHAT_POST_SURFACE_ID = "legacy.api.chat-post";
+const LEGACY_API_CLOUD_CHATS_SURFACE_ID = "legacy.api.cloud-chats";
 const USER_STATE_STABLE_IDENTITY_STORAGE_KEY = "chatus:stable-user-identity:v1";
 const LEGACY_SURFACE_CALLER_HEADER = "x-chatus-legacy-caller";
 const LEGACY_SURFACE_DEPLOYMENT_SHA_PATTERN = /^[a-f0-9]{40}$/;
@@ -2029,6 +2030,30 @@ async function recordLegacySurfaceUse(
   }
 }
 
+async function admitLegacyCloudChatsRoute(
+  request: Request,
+  env: Env,
+  url: URL,
+  access: "read" | "write",
+): Promise<LegacySurfaceUseResult> {
+  const legacyRead = await recordLegacySurfaceUse(
+    LEGACY_API_CLOUD_CHATS_SURFACE_ID,
+    request,
+    env,
+    url,
+    "read",
+  );
+  if (!legacyRead.ok || legacyRead.disabled) return legacyRead;
+  if (access === "read") return legacyRead;
+  return recordLegacySurfaceUse(
+    LEGACY_API_CLOUD_CHATS_SURFACE_ID,
+    request,
+    env,
+    url,
+    "write",
+  );
+}
+
 function classifyLegacyBrowserSurfaceCaller(
   request: Request,
   allowedCallerClasses: readonly LegacySurfaceCallerClass[],
@@ -2587,6 +2612,11 @@ async function handleApi(
   }
 
   if (url.pathname === "/api/chats" && request.method === "GET") {
+    const legacyRead = await admitLegacyCloudChatsRoute(request, env, url, "read");
+    if (!legacyRead.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+    if (legacyRead.disabled) {
+      return jsonResponse({ error: "legacy_surface_read_disabled", message: "兼容接口已停用" }, 410);
+    }
     return handleListChats(env, session);
   }
 
@@ -6524,6 +6554,11 @@ async function handleListChats(env: Env, session: Session): Promise<Response> {
 }
 
 async function handlePutChat(request: Request, env: Env, session: Session): Promise<Response> {
+  const legacyRead = await admitLegacyCloudChatsRoute(request, env, new URL(request.url), "read");
+  if (!legacyRead.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+  if (legacyRead.disabled) {
+    return jsonResponse({ error: "legacy_surface_read_disabled", message: "兼容接口已停用" }, 410);
+  }
   const body = await readJson<{ chat?: unknown }>(request);
   const chat = normalizeCloudChat(body.chat);
   if (!chat) {
@@ -6533,6 +6568,18 @@ async function handlePutChat(request: Request, env: Env, session: Session): Prom
   const stored = toStoredChat(chat);
   if (!stored) {
     return jsonResponse({ error: "chat_too_large", message: "会话内容过大，请减少图片后重试" }, 413);
+  }
+
+  const legacyWrite = await recordLegacySurfaceUse(
+    LEGACY_API_CLOUD_CHATS_SURFACE_ID,
+    request,
+    env,
+    new URL(request.url),
+    "write",
+  );
+  if (!legacyWrite.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+  if (legacyWrite.disabled) {
+    return jsonResponse({ error: "legacy_surface_write_disabled", message: "兼容接口已停止接收新会话" }, 410);
   }
 
   await migrateLegacyChatIndex(env, session.label, session);
@@ -6563,6 +6610,11 @@ async function handleDeleteChat(
   session: Session,
   url: URL,
 ): Promise<Response> {
+  const legacyRead = await admitLegacyCloudChatsRoute(request, env, url, "read");
+  if (!legacyRead.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+  if (legacyRead.disabled) {
+    return jsonResponse({ error: "legacy_surface_read_disabled", message: "兼容接口已停用" }, 410);
+  }
   const id = (url.searchParams.get("id") || "").trim();
   if (!id) {
     return jsonResponse({ error: "id_required" }, 400);
@@ -6571,6 +6623,17 @@ async function handleDeleteChat(
   const normalizedExpectedUpdatedAt = Number.isFinite(expectedUpdatedAt) && expectedUpdatedAt > 0 ? expectedUpdatedAt : 0;
   if (!normalizedExpectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
+  }
+  const legacyWrite = await recordLegacySurfaceUse(
+    LEGACY_API_CLOUD_CHATS_SURFACE_ID,
+    request,
+    env,
+    url,
+    "write",
+  );
+  if (!legacyWrite.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+  if (legacyWrite.disabled) {
+    return jsonResponse({ error: "legacy_surface_write_disabled", message: "兼容接口已停止删除会话" }, 410);
   }
   await migrateLegacyChatIndex(env, session.label, session);
   await ensureAgentLegacyImport(env, session.label, session);
@@ -6598,6 +6661,11 @@ async function handleDeleteChat(
 }
 
 async function handleMigrateChats(request: Request, env: Env, session: Session): Promise<Response> {
+  const legacyRead = await admitLegacyCloudChatsRoute(request, env, new URL(request.url), "read");
+  if (!legacyRead.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+  if (legacyRead.disabled) {
+    return jsonResponse({ error: "legacy_surface_read_disabled", message: "兼容接口已停用" }, 410);
+  }
   const body = await readJson<{ chats?: unknown; mode?: unknown }>(request);
   if (!Array.isArray(body.chats) || !body.chats.length) {
     return jsonResponse({ error: "empty_chats", message: "没有可同步的会话" }, 400);
@@ -6613,6 +6681,18 @@ async function handleMigrateChats(request: Request, env: Env, session: Session):
       return jsonResponse({ error: "chat_too_large", message: `会话“${chat.title}”内容过大` }, 413);
     }
     incoming.push(chat);
+  }
+
+  const legacyWrite = await recordLegacySurfaceUse(
+    LEGACY_API_CLOUD_CHATS_SURFACE_ID,
+    request,
+    env,
+    new URL(request.url),
+    "write",
+  );
+  if (!legacyWrite.ok) return jsonResponse({ error: "legacy_surface_unavailable" }, 503);
+  if (legacyWrite.disabled) {
+    return jsonResponse({ error: "legacy_surface_write_disabled", message: "兼容接口已停止迁移会话" }, 410);
   }
 
   const mode = body.mode === "replace" ? "replace" : body.mode === "restore" ? "restore" : "merge";

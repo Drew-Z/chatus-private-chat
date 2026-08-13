@@ -9,6 +9,8 @@ import {
   BROWSER_SHELL_SURFACE_ID,
   CHAT_POST_CALLER_CLASSES,
   CHAT_POST_SURFACE_ID,
+  CLOUD_CHATS_CALLER_CLASSES,
+  CLOUD_CHATS_SURFACE_ID,
   evaluateProductionLegacyCensus,
   resolveProductionLegacyCensusPolicy,
 } from "../scripts/check-production-legacy-census.mjs";
@@ -66,8 +68,10 @@ describe("production legacy census contract", () => {
   it("keeps gated caller classes aligned with the code-owned manifest", () => {
     const chatPost = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === CHAT_POST_SURFACE_ID);
     const browserShell = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === BROWSER_SHELL_SURFACE_ID);
+    const cloudChats = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === CLOUD_CHATS_SURFACE_ID);
     expect(chatPost?.callerClasses).toEqual(CHAT_POST_CALLER_CLASSES);
     expect(browserShell?.callerClasses).toEqual(BROWSER_SHELL_CALLER_CLASSES);
+    expect(cloudChats?.callerClasses).toEqual(CLOUD_CHATS_CALLER_CLASSES);
   });
 
   it("binds anomaly policies to each surface's exact observation window", () => {
@@ -85,8 +89,11 @@ describe("production legacy census contract", () => {
       .toThrow("no policy");
     expect(() => resolveProductionLegacyCensusPolicy(BROWSER_SHELL_SURFACE_ID, 30))
       .toThrow("no policy");
-    expect(() => resolveProductionLegacyCensusPolicy("legacy.api.cloud-chats", 30))
-      .toThrow("no policy");
+    expect(resolveProductionLegacyCensusPolicy(CLOUD_CHATS_SURFACE_ID, 30)).toEqual({
+      allowedCallerClasses: CLOUD_CHATS_CALLER_CLASSES,
+      allowedAccessClasses: ["read", "write"],
+      maximumTotalCount: 0,
+    });
   });
 
   it("accepts only canonical content-free census rows", () => {

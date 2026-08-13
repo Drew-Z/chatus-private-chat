@@ -531,7 +531,7 @@ describe("main deployment governance", () => {
     expect(collector.id).toBe("collect");
     const anomalyGate = getNamedStep(census, "Check census anomalies");
     expect(anomalyGate.if).toBe(
-      "github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post' || env.LEGACY_SURFACE_ID == 'legacy.browser.shell'",
+      "github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post' || env.LEGACY_SURFACE_ID == 'legacy.api.cloud-chats' || env.LEGACY_SURFACE_ID == 'legacy.browser.shell'",
     );
     expect(anomalyGate.env).toEqual({
       CENSUS_INPUT: "artifacts/legacy-surface-census/census.json",

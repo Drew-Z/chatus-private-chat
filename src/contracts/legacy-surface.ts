@@ -398,6 +398,11 @@ const INITIAL_MANIFEST: LegacySurfaceManifestRecordV1[] = [
     replacement: "agent-conversation-api",
     rollbackRoute: "compatibility_read",
     recoveryClass: "capture_restore",
+    manifestVersion: 2,
+    owner: "data",
+    writeObservationMs: 30 * 24 * 60 * 60 * 1_000,
+    readObservationMs: 30 * 24 * 60 * 60 * 1_000,
+    maximumSupportedPhase: "instrumented",
   }),
   manifestRecord({
     surfaceId: "legacy.auth.access-secret-fallback",

@@ -8,12 +8,12 @@ administrator legacy-surface APIs or Operations UI, capture/restore behavior, or
 a later rollout that instruments or disables one exact legacy surface.
 
 The shared control plane is implemented, but it does not by itself disable a
-caller or prove that a surface is unused. Ten records remain code-owned with
+caller or prove that a surface is unused. Nine records remain code-owned with
 `owner: "unassigned"` and `maximumSupportedPhase: "discovered"`.
-`legacy.browser.admin-alias`, `legacy.browser.shell`, and
-`legacy.api.chat-post` are the current rollout-owned exceptions. The browser
-records are owned by `frontend`; the chat POST record is owned by `data`. Each
-uses manifest version 2 and a ceiling of `instrumented`.
+`legacy.browser.admin-alias`, `legacy.browser.shell`, `legacy.api.chat-post`,
+and `legacy.api.cloud-chats` are the current rollout-owned exceptions. The
+browser records are owned by `frontend`; both API records are owned by `data`.
+Each uses manifest version 2 and a ceiling of `instrumented`.
 Raising any ceiling requires a separately approved rollout task with that
 surface's caller, parity, recovery, observation, owner, and rollback evidence.
 
@@ -232,8 +232,8 @@ resolveLegacySurfaceDeploymentSha(env, url): Promise<LowercaseSha | undefined>
 
 - Worker API test asserts 308 status, query preservation, declared caller use,
   unknown-caller fallback, and server-owned zero-SHA evidence.
-- Manifest test asserts exactly one versioned/owned admin-alias record and all
-  other records remain version 1, owner `unassigned`, ceiling `discovered`.
+- Manifest tests assert the four rollout-owned records are versioned/owned and
+  all other records remain version 1, owner `unassigned`, ceiling `discovered`.
 - Deployment-config test asserts `prepare-deployment.mjs` requires a valid
   lowercase 40-character `GITHUB_SHA` and writes server-only `DEPLOYMENT_SHA`.
 - Agent browser and production smoke tests use the React route, exercise the
@@ -496,6 +496,58 @@ if (!control.ok || control.disabled) {
 }
 ```
 
+## Scenario: `legacy.api.cloud-chats`
+
+### 1. Scope / Trigger
+
+- Trigger: instrument the compatibility `GET/PUT/DELETE /api/chats` and
+  `POST /api/chats/migrate` boundaries while callers move to the Agent
+  conversation API; this rollout does not delete routes or storage.
+- Ownership: `data`; manifest version 2; separate 30-day read/write windows;
+  code ceiling `instrumented` until later gates are separately approved.
+
+### 2. Signatures
+
+```text
+GET /api/chats -> read admission
+PUT /api/chats, DELETE /api/chats, POST /api/chats/migrate
+  -> read admission, then write admission, then retained handler
+```
+
+### 3. Contracts
+
+- Every method records only declared caller class, read/write access, UTC
+  bucket, occurrence time, and server-owned deployment SHA.
+- PUT, DELETE, and migrate perform read admission before parsing or mutating,
+  then perform write admission immediately before UserState/Agent changes.
+- Read-disable returns `410 legacy_surface_read_disabled`; write-disable
+  returns `410 legacy_surface_write_disabled` before any UserState, Agent, KV,
+  cleanup, or accounting side effect.
+- Coordinator or manifest failures return `503 legacy_surface_unavailable` and
+  never expose internal state or request content.
+- Caller classes are `agent_runtime`, `browser`, `operator`, `test`, and
+  `worker_api`; unknown declarations fail closed to `worker_api`.
+
+### 4. Parity and Recovery Gates
+
+- Before write-disable, deterministic fixtures must reconcile list/read/upsert/
+  delete/migrate ordering, pagination, metadata, tombstones, retries,
+  idempotency, cleanup, and UserState/Agent identity mappings.
+- Capture/isolated restore retains transitional UserState and Agent state;
+  `compatibility_read` rollback re-enables the retained route against the same
+  authoritative source without mixing restored/source data.
+- Any unexplained caller, parity divergence, or recovery failure resets only
+  the affected observation window.
+
+### 5. Tests Required
+
+- Worker tests cover all four methods, all declared callers, content-free
+  counters, server-owned SHA, read/write controls, and zero side effects on
+  disabled writes.
+- Census policy tests require the exact 30-day window, caller allowlist, and
+  aggregate anomaly gate; production collection remains read-only and
+  GitHub-Actions-only.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Required result |
@@ -528,8 +580,8 @@ if (!control.ok || control.disabled) {
 ## 6. Tests Required
 
 - Assert all 13 IDs occur once and stay sorted; the admin alias, browser shell,
-  and chat POST records are version 2/owned/`instrumented`, the other 10 remain
-  version 1/unassigned/`discovered`,
+  chat POST, and cloud-chats records are version 2/owned/`instrumented`, the
+  other 9 remain version 1/unassigned/`discovered`,
   and every synchronized runtime state still begins at phase `discovered`.
   Manifest additions/forward versions pass while removal, downgrade, duplicate,
   reorder, identity/policy conflict, unknown fields, and digest drift reject.

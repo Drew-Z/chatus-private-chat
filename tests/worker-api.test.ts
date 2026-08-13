@@ -6782,6 +6782,104 @@ describe("Worker API", () => {
     await expect(staleMerge.json()).resolves.toMatchObject({ mode: "merge", chats: [] });
   });
 
+  it("records method-specific legacy cloud-chat evidence and blocks disabled access before mutation", async () => {
+    const cloudChats = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.api.cloud-chats");
+    if (!cloudChats) throw new Error("missing_legacy_cloud_chats_manifest");
+    const cloudChatsStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(cloudChats.surfaceId));
+    await runInDurableObject(cloudChatsStub, async (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+    });
+    const { cookie } = await login();
+    const chat = {
+      id: "legacy-census-chat",
+      title: "Census fixture",
+      createdAt: 10,
+      updatedAt: 20,
+      messages: [],
+    };
+
+    const put = await apiRequest("/api/chats", cookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-chatus-legacy-caller": "browser" },
+      body: JSON.stringify({ chat }),
+    });
+    expect(put.status, await put.clone().text()).toBe(200);
+    expect((await apiRequest("/api/chats", cookie, {
+      headers: { "x-chatus-legacy-caller": "agent_runtime" },
+    })).status).toBe(200);
+    const migrate = await apiRequest("/api/chats/migrate", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-chatus-legacy-caller": "operator" },
+      body: JSON.stringify({
+        mode: "merge",
+        chats: [{ ...chat, id: "legacy-census-migrate", updatedAt: 30 }],
+      }),
+    });
+    expect(migrate.status, await migrate.clone().text()).toBe(200);
+    const remove = await apiRequest(
+      "/api/chats?id=legacy-census-chat&expectedUpdatedAt=20",
+      cookie,
+      { method: "DELETE", headers: { "x-chatus-legacy-caller": "test" } },
+    );
+    expect(remove.status, await remove.clone().text()).toBe(200);
+    expect((await apiRequest("/api/chats", cookie)).status).toBe(200);
+
+    await expect(runInDurableObject(cloudChatsStub, async (_instance, state) => (
+      state.storage.sql.exec<{ caller_class: string; access: string; count: number; deployment_sha: string }>(
+        "SELECT caller_class, access, count, deployment_sha FROM legacy_surface_daily ORDER BY caller_class, access",
+      ).toArray()
+    ))).resolves.toEqual([
+      { caller_class: "agent_runtime", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "browser", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "browser", access: "write", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "operator", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "operator", access: "write", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "test", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "test", access: "write", count: 1, deployment_sha: "0".repeat(40) },
+      { caller_class: "worker_api", access: "read", count: 1, deployment_sha: "0".repeat(40) },
+    ]);
+
+    try {
+      await runInDurableObject(cloudChatsStub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_state SET phase = 'write_disabled', read_control = 'enabled', write_control = 'disabled' WHERE id = 1",
+        );
+      });
+      const blockedWrite = await apiRequest("/api/chats", cookie, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-chatus-legacy-caller": "worker_api" },
+        body: JSON.stringify({ chat: { ...chat, id: "must-not-persist", updatedAt: 40 } }),
+      });
+      expect(blockedWrite.status).toBe(410);
+      await expect(blockedWrite.json()).resolves.toMatchObject({ error: "legacy_surface_write_disabled" });
+      const afterBlockedWrite = await apiRequest("/api/chats", cookie, {
+        headers: { "x-chatus-legacy-caller": "worker_api" },
+      });
+      expect(afterBlockedWrite.status).toBe(200);
+      await expect(afterBlockedWrite.json()).resolves.not.toMatchObject({
+        chats: expect.arrayContaining([expect.objectContaining({ id: "must-not-persist" })]),
+      });
+
+      await runInDurableObject(cloudChatsStub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_state SET phase = 'read_disabled', read_control = 'disabled', write_control = 'disabled' WHERE id = 1",
+        );
+      });
+      const blockedRead = await apiRequest("/api/chats", cookie, {
+        headers: { "x-chatus-legacy-caller": "test" },
+      });
+      expect(blockedRead.status).toBe(410);
+      await expect(blockedRead.json()).resolves.toMatchObject({ error: "legacy_surface_read_disabled" });
+    } finally {
+      await runInDurableObject(cloudChatsStub, async (_instance, state) => {
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_state SET phase = 'discovered', read_control = 'enabled', write_control = 'enabled' WHERE id = 1",
+        );
+        state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+      });
+    }
+  });
+
   it("deletes all user conversations and long-term memory", async () => {
     const { cookie, label } = await login();
     const providerEvidence = await seedProviderAttempt(`retained-${crypto.randomUUID()}`);
@@ -7333,7 +7431,7 @@ describe("Worker API", () => {
   it("serves the bounded legacy-surface registry and rejects invalid control-plane mutations", async () => {
     const cookie = await adminLogin();
     const coldSurface = LEGACY_SURFACE_MANIFEST.find(
-      ({ surfaceId }) => surfaceId === "legacy.api.cloud-chats",
+      ({ surfaceId }) => surfaceId === "legacy.auth.access-secret-fallback",
     );
     if (!coldSurface) throw new Error("missing cold legacy-surface fixture");
     const coldCensus = await apiRequest(
@@ -7370,6 +7468,7 @@ describe("Worker API", () => {
     );
     for (const surface of snapshot.surfaces) {
       const isInstrumentedSurface = surface.surfaceId === "legacy.api.chat-post"
+        || surface.surfaceId === "legacy.api.cloud-chats"
         || surface.surfaceId === "legacy.browser.admin-alias"
         || surface.surfaceId === "legacy.browser.shell";
       expect(Object.keys(surface).sort()).toEqual([
@@ -7395,7 +7494,9 @@ describe("Worker API", () => {
         phase: "discovered",
         readControl: "enabled",
         writeControl: "enabled",
-        owner: surface.surfaceId === "legacy.api.chat-post" ? "data" : isInstrumentedSurface ? "frontend" : "unassigned",
+        owner: surface.surfaceId === "legacy.api.chat-post" || surface.surfaceId === "legacy.api.cloud-chats"
+          ? "data"
+          : isInstrumentedSurface ? "frontend" : "unassigned",
         allowedActions: isInstrumentedSurface
           ? [{ kind: "advance", targetPhase: "instrumented" }]
           : [],
