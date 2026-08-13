@@ -47,9 +47,9 @@ and recovery behavior.
 
 ## Acceptance Criteria
 
-- [ ] AC1. Every legacy method and declared caller class has exact-SHA,
+- [x] AC1. Every legacy method and declared caller class has exact-SHA,
       content-free census evidence with no unknown or unexplained access.
-- [ ] AC2. Agent parity covers list/read/upsert/delete/migrate, pagination,
+- [x] AC2. Agent parity covers list/read/upsert/delete/migrate, pagination,
       tombstones, retries, cleanup, metadata, sync, and stable errors using only
       deterministic local fixtures.
 - [ ] AC3. Identity/resource migration maps reconcile one-to-one and satisfy the
@@ -60,7 +60,7 @@ and recovery behavior.
       observation window completes.
 - [ ] AC6. Read-disable is reversible and its independent 30-day window passes
       with no unexplained caller.
-- [ ] AC7. Route code, UserState/Agent state, and rollback sources remain
+- [x] AC7. Route code, UserState/Agent state, and rollback sources remain
       retained; only this record may reach `approved_for_cleanup`.
 - [ ] AC8. Focused/full tests, specs, delivery/PR evidence, task validation,
       and archive consistency pass.

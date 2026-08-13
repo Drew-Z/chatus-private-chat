@@ -57,3 +57,19 @@ affected observation window.
   Playwright (110 passed, 55 configured skips), `git diff --check`, and
   repository-wide Trellis consistency. Commit, PR, deployment, and production
   census evidence are recorded only after their respective actions complete.
+- PR #76 merged as exact `main` SHA
+  `36db0f0b048db75dc0943672d352d052cf1f29e1`. GitHub Actions deployment run
+  `31719901675` passed exact-main guards, full quality, Worker upload, and
+  production smoke; Worker version
+  `e9f203a2-ed4a-4768-8dd3-15f23219f158` is live. Deployment artifact
+  `9188977636` is retained through 2026-11-11. No local production deployment
+  was used.
+- Exact-main cloud-chats census run `31720354544` passed fresh collection,
+  stale-main recheck, aggregate anomaly gate, and artifact upload. Its
+  aggregate-only result was `rowCount=0`, `totalCount=0`,
+  `unknownCallerRows=0`, `unexpectedAccessRows=0`,
+  `deploymentMismatchRows=0`, and `status=clear`; artifact `9189023771` is
+  retained through 2026-11-11. Raw census rows were not inspected or retained
+  here. This is a clean read-only baseline and does not start the 30-day write
+  or read observation windows; rollback, disable, identity reconciliation, and
+  cleanup gates remain open.

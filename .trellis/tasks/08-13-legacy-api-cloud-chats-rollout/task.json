@@ -15,8 +15,8 @@
   "branch": "codex/legacy-api-cloud-chats-rollout",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "1e3f12a16f65ebcaee1b9e7c7da7cf2c1b5ac65e",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/76",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -71,6 +71,18 @@
         "status": "passed",
         "summary": "Repository consistency OK",
         "at": "2026-08-13T16:04:51.375203+00:00"
+      },
+      {
+        "command": "GitHub Actions deployment run 31719901675",
+        "status": "passed",
+        "summary": "Exact main deployment and production smoke passed",
+        "at": "2026-08-13T16:25:59.077312+00:00"
+      },
+      {
+        "command": "GitHub Actions census run 31720354544",
+        "status": "passed",
+        "summary": "30-day aggregate-only exact-SHA census clear with zero rows and zero access",
+        "at": "2026-08-13T16:25:59.276063+00:00"
       }
     ]
   }
