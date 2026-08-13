@@ -113,6 +113,12 @@
         "status": "passed",
         "summary": "Repository task graph and workspace consistency passed after browser shell rollback evidence updates.",
         "at": "2026-08-13T21:50:42.838605+00:00"
+      },
+      {
+        "command": "gh run view 31747536303",
+        "status": "passed",
+        "summary": "PR 80 final-head changes, full quality, and local fake-Provider Agent browser passed on 23ba9ad9274ed78f895a58c74c685000c248383b; Workspace browser was path-skipped after the retained local 110-test matrix passed.",
+        "at": "2026-08-13T21:57:38.430996+00:00"
       }
     ],
     "delivery": {
