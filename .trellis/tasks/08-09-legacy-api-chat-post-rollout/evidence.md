@@ -170,3 +170,10 @@ does not prove which production callers exist or start either 30-day window.
   principal/resource identity task now satisfy AC1 and AC3. This scheduled run
   remains monitoring evidence only: it does not rehearse rollback, disable
   writes, or start either observation window.
+- Draft PR [#78](https://github.com/Drew-Z/chatus-private-chat/pull/78) passed
+  path classification and the complete quality gate in [run
+  31742332074](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31742332074)
+  on head `025822d352a64e5b4f3212efbf3e841612683cae`. Workspace and Agent
+  Playwright were path-skipped after the retained local matrices passed 110 and
+  3 tests respectively. The PR remains draft and unmerged; no production
+  routing, deployment, disable control, or observation window changed.

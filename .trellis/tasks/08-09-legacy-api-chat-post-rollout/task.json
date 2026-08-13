@@ -167,6 +167,12 @@
         "status": "passed",
         "summary": "Recovery rehearsal, test isolation, spec, and task evidence changes contain no whitespace errors.",
         "at": "2026-08-13T17:34:33.638804+00:00"
+      },
+      {
+        "command": "gh run view 31742332074",
+        "status": "passed",
+        "summary": "Draft PR 78 passed path classification and the complete quality gate on head 025822d352a64e5b4f3212efbf3e841612683cae; both browser jobs were path-skipped after retained local Workspace and Agent matrices passed.",
+        "at": "2026-08-13T20:54:16.183886+00:00"
       }
     ],
     "delivery": {

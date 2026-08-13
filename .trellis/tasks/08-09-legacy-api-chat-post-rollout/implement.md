@@ -76,6 +76,12 @@ conversation/accounting evidence, and restart the affected observation window.
   the shared chat-post coordinator had no prior rows. The control-plane test now
   snapshots the atom, isolates its one-row census assertion, and restores the
   exact snapshot in `finally`; full Vitest passes 51 files and 794 tests.
+- Draft PR #78 head `025822d352a64e5b4f3212efbf3e841612683cae`
+  passed `changes` and the full `quality` job in run `31742332074`;
+  both browser jobs were correctly skipped by path classification because the
+  complete local Workspace and Agent Playwright matrices are already retained.
+  The PR remains draft and unmerged, so no production deployment or observation
+  clock has been triggered.
 
 ## Delivery Evidence
 
