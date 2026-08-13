@@ -8,6 +8,8 @@
 - [x] Build deterministic React parity and local-storage/service-worker stale
       client fixtures across required viewports.
 - [x] Preserve independent chat API telemetry and controls.
+- [x] Extend the main-only production census workflow with the exact 14-day shell
+      window and a fixed declared-caller/deployment-SHA anomaly policy.
 - [ ] Rehearse route rollback, stop shell-owned writes, and retain 14-day write
       observation evidence.
 - [ ] Disable shell reads reversibly and retain 14-day read observation evidence.
@@ -32,7 +34,7 @@ authority, preserve counters, and restart the affected observation window.
   explicit update activation.
 - The final local baseline passes 51 Vitest files / 789 tests, Agent Playwright
   3/3, and Workspace Playwright 110 passed / 55 configured matrix skips.
-- Production census, routing rollback, both 14-day observation windows,
+- Production census collection, routing rollback, both 14-day observation windows,
   read-disable, cleanup approval, and a new delivery remain open.
 
 ## Delivery Evidence

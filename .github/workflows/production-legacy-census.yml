@@ -16,6 +16,7 @@ on:
         default: "30"
         type: choice
         options:
+          - "14"
           - "30"
           - "60"
           - "90"
@@ -80,9 +81,8 @@ jobs:
           retention-days: 90
 
       - name: Check census anomalies
-        if: github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post'
+        if: github.event_name == 'schedule' || env.LEGACY_SURFACE_ID == 'legacy.api.chat-post' || env.LEGACY_SURFACE_ID == 'legacy.browser.shell'
         env:
           CENSUS_INPUT: artifacts/legacy-surface-census/census.json
           EXPECTED_RELEASE_SHA: ${{ steps.collect.outputs.deployed_sha }}
-          MAX_CENSUS_TOTAL_COUNT: "0"
         run: node scripts/check-production-legacy-census.mjs

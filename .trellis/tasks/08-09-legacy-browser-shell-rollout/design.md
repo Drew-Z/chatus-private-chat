@@ -34,3 +34,12 @@ for their later write/read disable, but not for their instrumentation or parity.
 The routing switch restores the retained shell and service-worker reachability
 without changing API/storage authority. Any unexplained stale-client hit resets
 the read observation.
+
+## Production Census Evidence
+
+The existing main-only production census workflow accepts the shell's exact
+14-day window and applies a fixed shell policy derived from the code-owned caller
+set. Declared browser, deployment, service-worker, test, and Worker API reads may
+be retained as bounded aggregate evidence; unknown callers, unexpected write
+rows, or deployment-SHA drift fail the run. Collection remains read-only and does not advance the surface
+or start either observation window.
