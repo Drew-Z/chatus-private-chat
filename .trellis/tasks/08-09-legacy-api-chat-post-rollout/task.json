@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/record-census-release-fix",
+  "branch": "codex/record-first-scheduled-census",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "971cc53dbae0e856f55477435a0b289e8ee26111",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/69",
+  "commit": "e6949ea301d6ac781ca23cb912de57ba0d1ec6bc",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/72",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -85,64 +85,82 @@
         "at": "2026-08-12T04:15:05.795213+00:00"
       },
       {
-        "command": "npm run test:browser:workspace",
-        "status": "passed",
-        "summary": "Workspace Playwright passed 110 tests with 55 configured skips across five viewports.",
-        "at": "2026-08-12T16:17:30.872851+00:00"
-      },
-      {
-        "command": "npm run test:browser:agent",
-        "status": "passed",
-        "summary": "Isolated fake-Provider Agent Playwright passed 3 tests on rerun after one transient branch-navigation timeout.",
-        "at": "2026-08-12T16:17:31.065634+00:00"
-      },
-      {
         "command": "gh run view 31617086427",
         "status": "passed",
         "summary": "PR 67 passed changes, quality, Workspace Playwright, and fake-Provider Agent Playwright on the merged delivery.",
         "at": "2026-08-12T16:29:12.048123+00:00"
       },
       {
+        "command": "gh run view 31619333414",
+        "status": "passed",
+        "summary": "PR 69 passed changes, quality, Workspace Playwright, and fake-Provider Agent Playwright for scheduled release ancestry validation.",
+        "at": "2026-08-12T16:59:40.960208+00:00"
+      },
+      {
+        "command": "gh run view 31666803093",
+        "status": "passed",
+        "summary": "First scheduled 30-day legacy.api.chat-post census passed from main ae2eeca86c3b759e221e7776d79beb33c4cf5892; artifact 9168221653 is retained through 2026-11-11 and no observation phase was advanced.",
+        "at": "2026-08-13T06:38:52.919805+00:00"
+      },
+      {
+        "command": "node scripts/check-production-legacy-census.mjs (artifact 9168221653)",
+        "status": "passed",
+        "summary": "Strict aggregate validation returned 0 rows, 0 total calls, 0 unknown callers, 0 deployment mismatches, and clear status for deployed SHA 48affb8c7f957e8afef168b0c2874810f77397ee without printing census row content.",
+        "at": "2026-08-13T06:38:53.104454+00:00"
+      },
+      {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Client build and frontend structure checks passed after scheduled release ancestry fix.",
-        "at": "2026-08-12T16:44:10.694200+00:00"
+        "summary": "Vite client build and frontend structure checks passed; only the existing bundle-size advisory was emitted.",
+        "at": "2026-08-13T06:51:11.610568+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "50 Vitest files and 777 tests passed after scheduled release ancestry fix.",
-        "at": "2026-08-12T16:44:10.881153+00:00"
+        "summary": "50 Vitest files and 777 local fake-runtime tests passed.",
+        "at": "2026-08-13T06:51:11.794606+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
         "summary": "Worker, client, and browser TypeScript checks passed.",
-        "at": "2026-08-12T16:44:11.065010+00:00"
+        "at": "2026-08-13T06:51:11.971753+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
-        "summary": "Wrangler dry-run completed without a production deploy.",
-        "at": "2026-08-12T16:44:11.256715+00:00"
+        "summary": "Worker bundle and bindings validated without a production deployment.",
+        "at": "2026-08-13T06:51:12.162800+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright passed 110 tests with 55 configured matrix skips across five viewports.",
+        "at": "2026-08-13T06:51:12.360902+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Isolated fake-Provider Agent Playwright passed 3 tests.",
+        "at": "2026-08-13T06:51:12.565599+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
-        "summary": "Working diff contains no whitespace errors.",
-        "at": "2026-08-12T16:44:11.447429+00:00"
+        "summary": "Task evidence diff contains no whitespace errors; only line-ending conversion notices were emitted.",
+        "at": "2026-08-13T06:51:12.764974+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
-        "summary": "Repository task and workspace consistency passed.",
-        "at": "2026-08-12T16:44:11.643398+00:00"
+        "summary": "Repository task graph and workspace consistency passed after scheduled census evidence updates.",
+        "at": "2026-08-13T06:51:12.959343+00:00"
       },
       {
-        "command": "gh run view 31619333414",
+        "command": "gh run view 31675537941",
         "status": "passed",
-        "summary": "PR 69 passed changes, quality, Workspace Playwright, and fake-Provider Agent Playwright for scheduled release ancestry validation.",
-        "at": "2026-08-12T16:59:40.960208+00:00"
+        "summary": "PR 72 path classification passed on head 08ee16a8063ce2e9883d6ecc48a542b3d6606a4c; quality and both browser jobs were skipped for Trellis-only changes, with the complete local shipping baseline retained in this task.",
+        "at": "2026-08-13T06:54:12.718576+00:00"
       }
     ],
     "delivery": {

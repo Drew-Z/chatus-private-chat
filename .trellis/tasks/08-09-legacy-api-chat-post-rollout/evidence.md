@@ -134,3 +134,18 @@ does not prove which production callers exist or start either 30-day window.
   `971cc53dbae0e856f55477435a0b289e8ee26111`. It closes the false stale-release
   failure caused by later record-only main commits without weakening ancestry or
   before/after deployment-stability checks.
+- The first scheduled collection passed in [run
+  31666803093](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31666803093)
+  from main SHA `ae2eeca86c3b759e221e7776d79beb33c4cf5892`. Its only retained artifact is
+  `9168221653`, named
+  `production-legacy-census-legacy.api.chat-post-48affb8c7f957e8afef168b0c2874810f77397ee`,
+  with digest `sha256:ce421fbc200ed445c76b9774b6ea92b397092c48967110f59a9a8df6c881bcf9`
+  and expiry `2026-11-11T04:22:16Z`.
+- The existing strict aggregate evaluator independently validated that artifact
+  as `surfaceId=legacy.api.chat-post`, `days=30`, `rowCount=0`, `totalCount=0`,
+  `unknownCallerRows=0`, `deploymentMismatchRows=0`, and `status=clear`. No census
+  row content was printed or copied into Trellis evidence.
+- Static caller mapping, exact-SHA production census, and the completed stable
+  principal/resource identity task now satisfy AC1 and AC3. This scheduled run
+  remains monitoring evidence only: it does not rehearse rollback, disable
+  writes, or start either observation window.

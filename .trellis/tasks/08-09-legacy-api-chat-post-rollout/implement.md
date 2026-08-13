@@ -106,3 +106,9 @@ conversation/accounting evidence, and restart the affected observation window.
   `971cc53dbae0e856f55477435a0b289e8ee26111`. Scheduled runs now accept only
   the unchanged deployed current-main-or-ancestor SHA, while manual runs retain
   exact-main equality and no production deploy was performed.
+- The first scheduled census run `31666803093` passed from main SHA
+  `ae2eeca86c3b759e221e7776d79beb33c4cf5892`. Artifact `9168221653` is retained
+  through `2026-11-11T04:22:16Z`; strict aggregate validation returned zero rows,
+  zero total calls, zero unknown callers, zero deployment mismatches, and
+  `status=clear`. AC1 and AC3 are now complete, while rollback and both
+  observation windows remain intentionally open.
