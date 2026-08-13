@@ -12,7 +12,7 @@
   "assignee": "zhang",
   "createdAt": "2026-08-09",
   "completedAt": null,
-  "branch": "codex/browser-shell-census",
+  "branch": "codex/browser-shell-rollback-rehearsal",
   "base_branch": "main",
   "worktree_path": null,
   "commit": "0b09fe0c0b3a8e912c05c5e654af1eb3b3198d45",
@@ -55,58 +55,64 @@
         "at": "2026-08-13T07:43:46.612657+00:00"
       },
       {
+        "command": "gh run view 31679067366",
+        "status": "passed",
+        "summary": "PR 73 final-head checks passed on 3dd6b00d4a03167a1b9e0f3ff5ba7309b9e26e8b: changes, quality, Workspace Playwright, and isolated fake-Provider Agent Playwright all succeeded.",
+        "at": "2026-08-13T07:53:43.076357+00:00"
+      },
+      {
+        "command": "npx vitest run tests/worker-api.test.ts tests/service-worker-shell.test.ts -t focused browser shell rollback",
+        "status": "passed",
+        "summary": "Focused Worker and service-worker coverage passed 5 tests, including terminal 410 enforcement and real transactional read rollback.",
+        "at": "2026-08-13T21:50:34.568344+00:00"
+      },
+      {
         "command": "npm run check:frontend",
         "status": "passed",
-        "summary": "Vite client build and frontend structure checks passed; only the existing bundle-size advisory was emitted.",
-        "at": "2026-08-13T07:43:46.791541+00:00"
+        "summary": "Vite client build and frontend structure checks passed; only the existing bundle-size advisory remained.",
+        "at": "2026-08-13T21:50:35.560864+00:00"
       },
       {
         "command": "npm test",
         "status": "passed",
-        "summary": "51 Vitest files and 791 local fake-runtime tests passed after the final shell access-policy regression.",
-        "at": "2026-08-13T07:43:46.985754+00:00"
+        "summary": "All 51 Vitest files and 795 local fake-runtime tests passed.",
+        "at": "2026-08-13T21:50:36.619137+00:00"
       },
       {
         "command": "npm run typecheck",
         "status": "passed",
         "summary": "Worker, client, and browser TypeScript checks passed.",
-        "at": "2026-08-13T07:43:47.160016+00:00"
+        "at": "2026-08-13T21:50:37.568689+00:00"
       },
       {
         "command": "npx wrangler deploy --dry-run",
         "status": "passed",
         "summary": "Worker bundle and bindings validated without a production deployment.",
-        "at": "2026-08-13T07:43:47.354931+00:00"
+        "at": "2026-08-13T21:50:38.641190+00:00"
       },
       {
         "command": "npm run test:browser:workspace",
         "status": "passed",
-        "summary": "Workspace Playwright passed 110 tests with 55 configured matrix skips across five viewports.",
-        "at": "2026-08-13T07:43:47.550434+00:00"
+        "summary": "Workspace Playwright passed 110 tests with 55 configured viewport skips.",
+        "at": "2026-08-13T21:50:39.638271+00:00"
       },
       {
         "command": "npm run test:browser:agent",
         "status": "passed",
-        "summary": "Isolated fake-Provider Agent Playwright passed 3 tests.",
-        "at": "2026-08-13T07:43:47.736729+00:00"
+        "summary": "Local fake-Provider Agent Playwright passed all 3 tests.",
+        "at": "2026-08-13T21:50:40.641115+00:00"
       },
       {
         "command": "git diff --check",
         "status": "passed",
-        "summary": "Final shell census workflow diff contains no whitespace errors; only line-ending conversion notices were emitted.",
-        "at": "2026-08-13T07:43:47.912216+00:00"
+        "summary": "Browser shell rollback implementation, tests, spec, and evidence contain no whitespace errors.",
+        "at": "2026-08-13T21:50:41.676234+00:00"
       },
       {
         "command": "python ./.trellis/scripts/task.py validate-all",
         "status": "passed",
-        "summary": "Repository task graph and workspace consistency passed after shell census capability updates.",
-        "at": "2026-08-13T07:43:48.078504+00:00"
-      },
-      {
-        "command": "gh run view 31679067366",
-        "status": "passed",
-        "summary": "PR 73 final-head checks passed on 3dd6b00d4a03167a1b9e0f3ff5ba7309b9e26e8b: changes, quality, Workspace Playwright, and isolated fake-Provider Agent Playwright all succeeded.",
-        "at": "2026-08-13T07:53:43.076357+00:00"
+        "summary": "Repository task graph and workspace consistency passed after browser shell rollback evidence updates.",
+        "at": "2026-08-13T21:50:42.838605+00:00"
       }
     ],
     "delivery": {

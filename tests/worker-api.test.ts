@@ -5846,6 +5846,96 @@ describe("Worker API", () => {
     ]);
   });
 
+  it("rehearses reversible legacy browser shell read disable across routes and assets", async () => {
+    const browserShell = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.browser.shell");
+    if (!browserShell) throw new Error("missing_browser_shell_manifest");
+    const browserShellStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(browserShell.surfaceId));
+    const manifestDigest = await legacySurfaceManifestDigest();
+    await browserShellStub.syncLegacySurfaceManifest({ version: 1, manifest: browserShell, manifestDigest });
+    const originalSnapshot = await browserShellStub.captureLegacySurfaceState({
+      version: 1,
+      surfaceId: browserShell.surfaceId,
+      captureEpoch: `browser-shell-route-rehearsal-${crypto.randomUUID()}`,
+      manifestDigest,
+    });
+
+    try {
+      await runInDurableObject(browserShellStub, async (_instance, state) => {
+        state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+        state.storage.sql.exec(
+          "UPDATE legacy_surface_state SET revision = 9, phase = 'read_disabled', read_control = 'disabled', write_control = 'disabled', last_transition_at = ? WHERE id = 1",
+          Date.now() - 1,
+        );
+      });
+
+      const blocked = await Promise.all([
+        exports.default.fetch(new Request("https://example.test/legacy", {
+          redirect: "manual",
+          headers: { "x-chatus-legacy-caller": "browser" },
+        })),
+        exports.default.fetch(new Request("https://example.test/legacy/", {
+          headers: { "x-chatus-legacy-caller": "test" },
+        })),
+        exports.default.fetch(new Request("https://example.test/app.js?v=development", {
+          headers: { "x-chatus-legacy-caller": "service_worker" },
+        })),
+      ]);
+      expect(blocked.map(({ status }) => status)).toEqual([410, 410, 410]);
+      for (const response of blocked) {
+        await expect(response.json()).resolves.toMatchObject({ error: "legacy_surface_read_disabled" });
+      }
+
+      const rollbackRequestedAt = Date.now();
+      const rollback = await browserShellStub.rollbackLegacySurface({
+        version: 1,
+        surfaceId: browserShell.surfaceId,
+        expectedRevision: 9,
+        operationId: `browser-shell-routing-switch-${crypto.randomUUID()}`,
+        scope: "read",
+        reason: "runtime_regression",
+        requestedAt: rollbackRequestedAt,
+        evidence: [{
+          version: 1,
+          kind: "rollback_rehearsal",
+          evidenceId: `browser-shell-route-rehearsal-${crypto.randomUUID()}`,
+          digest: "b".repeat(64),
+          deploymentSha: "0".repeat(40),
+          observedAt: rollbackRequestedAt,
+          count: 1,
+          result: "passed",
+        }],
+      });
+      expect(rollback).toMatchObject({
+        ok: true,
+        replayed: false,
+        projection: {
+          phase: "recovery_proven",
+          readControl: "enabled",
+          writeControl: "disabled",
+        },
+      });
+
+      const restored = await Promise.all([
+        exports.default.fetch(new Request("https://example.test/legacy", { redirect: "manual" })),
+        exports.default.fetch(new Request("https://example.test/legacy/")),
+        exports.default.fetch(new Request("https://example.test/app.js?v=development")),
+      ]);
+      expect(restored.map(({ status }) => status)).toEqual([308, 200, 200]);
+    } finally {
+      await runInDurableObject(browserShellStub, async (_instance, state) => {
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+          state.storage.sql.exec("DELETE FROM legacy_surface_operations");
+          state.storage.sql.exec("DELETE FROM legacy_surface_events");
+          state.storage.sql.exec("DELETE FROM legacy_surface_state");
+          state.storage.sql.exec("DELETE FROM legacy_surface_manifest");
+        });
+      });
+      await expect(browserShellStub.restoreLegacySurfaceState({ version: 1, snapshot: originalSnapshot }))
+        .resolves.toMatchObject({ ok: true, restored: true });
+    }
+  });
+
   it("records separate legacy chat POST evidence and enforces read/write controls before Provider I/O", async () => {
     const legacyChatPost = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.api.chat-post");
     if (!legacyChatPost) throw new Error("missing_legacy_chat_post_manifest");

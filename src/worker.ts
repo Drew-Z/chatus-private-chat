@@ -1947,11 +1947,13 @@ async function handleRequest(
     return fetchRewrittenAsset(request, env, url, "/react-chat/");
   }
   if (request.method === "GET" && url.pathname === "/legacy") {
-    await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
+    const disabled = await rejectDisabledLegacyBrowserShell(request, env, url);
+    if (disabled) return disabled;
     return Response.redirect(new URL("/legacy/", url).toString(), 308);
   }
   if (request.method === "GET" && url.pathname === "/legacy/") {
-    await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
+    const disabled = await rejectDisabledLegacyBrowserShell(request, env, url);
+    if (disabled) return disabled;
     return fetchRewrittenAsset(request, env, url, "/legacy/");
   }
   if (request.method === "GET" && url.pathname === "/admin.html") {
@@ -1963,12 +1965,14 @@ async function handleRequest(
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
     const shellPath = env.DEFAULT_CLIENT === "legacy" ? "/legacy/" : "/react-chat/index.html";
     if (shellPath === "/legacy/") {
-      await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
+      const disabled = await rejectDisabledLegacyBrowserShell(request, env, url);
+      if (disabled) return disabled;
     }
     return fetchRewrittenAsset(request, env, url, shellPath);
   }
   if (request.method === "GET" && LEGACY_BROWSER_SHELL_ASSET_PATHS.has(url.pathname)) {
-    await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
+    const disabled = await rejectDisabledLegacyBrowserShell(request, env, url);
+    if (disabled) return disabled;
   }
   const assetResponse = await env.ASSETS.fetch(request);
   return withAssetCacheHeaders(assetResponse, url);
@@ -1979,14 +1983,25 @@ async function recordLegacyBrowserSurfaceUse(
   request: Request,
   env: Env,
   url: URL,
-): Promise<void> {
+): Promise<LegacySurfaceUseResult> {
   // Browser rollback routes remain fail-open while their observation store is unavailable.
-  await recordLegacySurfaceUse(surfaceId, request, env, url, "read");
+  return recordLegacySurfaceUse(surfaceId, request, env, url, "read");
 }
 
 type LegacySurfaceUseResult =
   | { ok: true; disabled: boolean; writeDisabled: boolean }
   | { ok: false; error: string };
+
+async function rejectDisabledLegacyBrowserShell(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response | undefined> {
+  const control = await recordLegacyBrowserSurfaceUse(LEGACY_BROWSER_SHELL_SURFACE_ID, request, env, url);
+  return control.ok && control.disabled
+    ? jsonResponse({ error: "legacy_surface_read_disabled", message: "兼容页面已停用" }, 410)
+    : undefined;
+}
 
 async function recordLegacySurfaceUse(
   surfaceId: string,

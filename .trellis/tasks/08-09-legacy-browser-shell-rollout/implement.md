@@ -75,3 +75,10 @@ authority, preserve counters, and restart the affected observation window.
   only: routing rollback, write disable, the real 14-day write observation, read
   disable, and the later read observation remain open and no observation clock
   starts from this run.
+- The local pre-disable rehearsal now makes every retained shell route and
+  legacy-exclusive asset consume the real read control. A simulated
+  `read_disabled` projection returns terminal 410 responses for `/legacy`,
+  `/legacy/`, and `/app.js`; the real transactional read rollback returns to
+  `recovery_proven` and immediately restores the unchanged redirect, shell, and
+  asset. The exact pre-test atom is restored in `finally`. Production disable
+  and both 14-day windows remain open.

@@ -312,6 +312,12 @@ x-chatus-legacy-caller:
 - Deployment identity comes only from `DEPLOYMENT_SHA` or `release.json`.
   Coordinator, manifest-sync, SHA-resolution, or record failures never block a
   redirect, shell response, static asset, or emergency root routing switch.
+- Every retained shell route and legacy-exclusive asset consumes the projected
+  read control after recording late-caller evidence. `read_disabled` returns the
+  terminal `410 legacy_surface_read_disabled`; a real read rollback returns the
+  surface to `recovery_proven` and immediately restores the unchanged redirect,
+  shell, and asset sources. Observation-store failure remains fail-open for the
+  emergency rollback path.
 - Navigation caches remain isolated for `/`, `/react-chat/`, and `/legacy/`.
   Cached rollback assets may cover offline failures, `404`, and `5xx` only.
   Authentication or terminal control responses (`401`, `403`, and `410`) pass
@@ -353,7 +359,8 @@ x-chatus-legacy-caller:
   1, unassigned, and capped at `discovered`.
 - Worker integration covers `/legacy`, `/legacy/`, one exclusive asset per
   declared caller class, browser Fetch Metadata, unknown-caller fallback,
-  read-only daily counts, and the server-owned zero SHA.
+  read-only daily counts, the server-owned zero SHA, terminal 410 enforcement,
+  and real transactional read rollback to the retained routes/assets.
 - Frontend structure checks assert the exact legacy asset set, service-worker
   caller marker, deployment-smoke marker, isolated navigation cache keys, and
   retained `DEFAULT_CLIENT=legacy` routing source.
