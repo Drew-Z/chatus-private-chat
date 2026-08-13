@@ -40,11 +40,11 @@ error, and privacy behavior.
 
 ## Acceptance Criteria
 
-- [ ] AC1. Browser, guest, test, and Worker API callers are completely mapped and
+- [x] AC1. Browser, guest, test, and Worker API callers are completely mapped and
       instrumented with content-free exact-SHA evidence.
 - [x] AC2. Agent parity covers quota, Provider attempts/budget, skills, files,
       tools, streams, cancellation, progress, errors, and privacy.
-- [ ] AC3. Caller census and identity migration/parity contract are sufficient
+- [x] AC3. Caller census and identity migration/parity contract are sufficient
       to unblock the stable principal/resource identity planning gate.
 - [x] AC4. No legacy POST receives an authoritative message after write-disable;
       denial produces zero hidden Provider/tool calls and no double quota count.
