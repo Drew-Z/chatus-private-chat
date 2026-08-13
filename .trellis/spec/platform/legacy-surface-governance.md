@@ -439,6 +439,16 @@ recordLegacySurfaceUse(
 - Observation or coordinator failures fail closed for this API boundary with the
   stable `legacy_surface_unavailable` error; no secret-bearing diagnostic is
   returned.
+- The pre-disable routing rehearsal uses the real `rollbackLegacySurface` RPC:
+  a simulated `write_disabled` projection rolls back to `shadowing`, both
+  controls become enabled, and a subsequent local fake-Provider POST succeeds.
+  Read-disable remains an independent terminal check after that rehearsal.
+- Isolated restore evidence for this surface must use the runtime-exported
+  TeamAgent and UserState schema versions, include a non-empty transitional
+  `chatus_conversations` row, map it to the isolated target conversation Agent,
+  retain the exact `legacy.api.chat-post` registry atom, and keep target writes
+  closed through acceptance. A fixture-derived invented schema is not recovery
+  evidence even when both fixture producer and consumer agree with each other.
 
 ### 4. Validation & Error Matrix
 
@@ -468,12 +478,21 @@ recordLegacySurfaceUse(
   cancellation, attempt identity, and secret-free telemetry using local fake
   Provider/MCP fixtures only.
 - The legacy control test asserts read/write evidence counts, zero Provider calls
-  on disabled writes, and unchanged quota after the one-shot refund.
+  on disabled writes, unchanged quota after the one-shot refund, transactional
+  rollback to `shadowing`, and successful route reuse after rollback.
+- The isolated restore drill decodes the restored conversation Agent payload,
+  asserts the real runtime schema, non-empty transitional conversation row,
+  stable target identity mapping, preserved legacy-surface controls, zero loss,
+  unchanged source digest, and writes closed through acceptance.
 - Fallback unit tests assert committed-stream parent abort cancels the upstream
   reader, releases the lease once, and leaves failure telemetry at zero.
 - Any test that mutates a Durable Object manifest/state directly must restore the
   exact code-owned manifest/state in `finally`; otherwise later legacy callers
   correctly fail closed and the suite becomes order-dependent.
+- Census tests that require an exact count must capture the full surface atom,
+  clear only their local daily rows, then delete and restore the exact snapshot
+  in `finally`; they must not assume earlier tests left the shared coordinator
+  empty.
 
 ### 7. Wrong vs Correct
 

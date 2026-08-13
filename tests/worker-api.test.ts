@@ -17,7 +17,12 @@ import {
   type PrincipalRouteV1,
 } from "../src/contracts/identity";
 import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse, isAdminLegacySurfaceSnapshot } from "../client/src/lib/api";
-import { LEGACY_SURFACE_MANIFEST, legacySurfaceObjectName, stableJson } from "../src/contracts/legacy-surface";
+import {
+  LEGACY_SURFACE_MANIFEST,
+  legacySurfaceManifestDigest,
+  legacySurfaceObjectName,
+  stableJson,
+} from "../src/contracts/legacy-surface";
 import { IDENTITY_REGISTRY_INSTANCE_NAME } from "../src/identity-registry";
 import { providerOfferingId } from "../src/contracts/provider-attempt";
 import { PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS } from "../src/contracts/provider-finance";
@@ -5845,6 +5850,18 @@ describe("Worker API", () => {
     const legacyChatPost = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.api.chat-post");
     if (!legacyChatPost) throw new Error("missing_legacy_chat_post_manifest");
     const legacyChatPostStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(legacyChatPost.surfaceId));
+    const manifestDigest = await legacySurfaceManifestDigest();
+    await legacyChatPostStub.syncLegacySurfaceManifest({
+      version: 1,
+      manifest: legacyChatPost,
+      manifestDigest,
+    });
+    const originalSnapshot = await legacyChatPostStub.captureLegacySurfaceState({
+      version: 1,
+      surfaceId: legacyChatPost.surfaceId,
+      captureEpoch: `chat-post-route-rehearsal-${crypto.randomUUID()}`,
+      manifestDigest,
+    });
     await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
       state.storage.sql.exec("DELETE FROM legacy_surface_daily");
     });
@@ -5891,7 +5908,8 @@ describe("Worker API", () => {
     try {
       await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
         state.storage.sql.exec(
-          "UPDATE legacy_surface_state SET phase = 'write_disabled', read_control = 'enabled', write_control = 'disabled' WHERE id = 1",
+          "UPDATE legacy_surface_state SET revision = 5, phase = 'write_disabled', read_control = 'enabled', write_control = 'disabled', last_transition_at = ? WHERE id = 1",
+          Date.now() - 1,
         );
       });
       const writeBlocked = await apiRequest("/api/chat", cookie, {
@@ -5912,6 +5930,51 @@ describe("Worker API", () => {
       const usageAfterWriteBlock = (await apiRequest("/api/session", cookie).then((item) => item.json()) as any).usage.used;
       expect(usageAfterWriteBlock).toBe(usageBefore + 1);
 
+      const rollbackRequestedAt = Date.now();
+      const rollback = await legacyChatPostStub.rollbackLegacySurface({
+        version: 1,
+        surfaceId: legacyChatPost.surfaceId,
+        expectedRevision: 5,
+        operationId: `chat-post-routing-switch-${crypto.randomUUID()}`,
+        scope: "write",
+        reason: "runtime_regression",
+        requestedAt: rollbackRequestedAt,
+        evidence: [{
+          version: 1,
+          kind: "rollback_rehearsal",
+          evidenceId: `chat-post-route-rehearsal-${crypto.randomUUID()}`,
+          digest: "a".repeat(64),
+          deploymentSha: "0".repeat(40),
+          observedAt: rollbackRequestedAt,
+          count: 1,
+          result: "passed",
+        }],
+      });
+      expect(rollback).toMatchObject({
+        ok: true,
+        replayed: false,
+        projection: {
+          phase: "shadowing",
+          readControl: "enabled",
+          writeControl: "enabled",
+        },
+      });
+      const routeRestored = await apiRequest("/api/chat", cookie, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Chatus-Client": "web",
+          "x-chatus-legacy-caller": "test",
+        },
+        body: JSON.stringify({
+          routeId: "primary",
+          messages: [{ role: "user", content: "execute after routing rollback" }],
+        }),
+      });
+      expect(routeRestored.status, await routeRestored.clone().text()).toBe(200);
+      await routeRestored.text();
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+
       await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
         state.storage.sql.exec(
           "UPDATE legacy_surface_state SET phase = 'read_disabled', read_control = 'disabled', write_control = 'disabled' WHERE id = 1",
@@ -5931,22 +5994,28 @@ describe("Worker API", () => {
       });
       expect(readBlocked.status).toBe(410);
       await expect(readBlocked.json()).resolves.toMatchObject({ error: "legacy_surface_read_disabled" });
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
 
       await expect(runInDurableObject(legacyChatPostStub, async (_instance, state) => (
         state.storage.sql.exec<{ access: string; count: number }>(
           "SELECT access, count FROM legacy_surface_daily WHERE caller_class = 'test' ORDER BY access",
         ).toArray()
       ))).resolves.toEqual([
-        { access: "read", count: 3 },
-        { access: "write", count: 1 },
+        { access: "read", count: 4 },
+        { access: "write", count: 2 },
       ]);
     } finally {
       await runInDurableObject(legacyChatPostStub, async (_instance, state) => {
-        state.storage.sql.exec(
-          "UPDATE legacy_surface_state SET phase = 'discovered', read_control = 'enabled', write_control = 'enabled' WHERE id = 1",
-        );
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+          state.storage.sql.exec("DELETE FROM legacy_surface_operations");
+          state.storage.sql.exec("DELETE FROM legacy_surface_events");
+          state.storage.sql.exec("DELETE FROM legacy_surface_state");
+          state.storage.sql.exec("DELETE FROM legacy_surface_manifest");
+        });
       });
+      await expect(legacyChatPostStub.restoreLegacySurfaceState({ version: 1, snapshot: originalSnapshot }))
+        .resolves.toMatchObject({ ok: true, restored: true });
     }
   });
 
@@ -7507,14 +7576,24 @@ describe("Worker API", () => {
     const censusSurface = LEGACY_SURFACE_MANIFEST[0];
     const censusOccurredAt = Date.now();
     const censusStub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(censusSurface.surfaceId));
-    await censusStub.recordLegacySurfaceUse({
+    const censusSnapshot = await censusStub.captureLegacySurfaceState({
       version: 1,
       surfaceId: censusSurface.surfaceId,
-      callerClass: "worker_api",
-      access: "write",
-      occurredAt: censusOccurredAt,
-      deploymentSha: "d".repeat(40),
+      captureEpoch: `worker-api-census-${crypto.randomUUID()}`,
+      manifestDigest: snapshot.manifestDigest,
     });
+    await runInDurableObject(censusStub, async (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+    });
+    try {
+      await censusStub.recordLegacySurfaceUse({
+        version: 1,
+        surfaceId: censusSurface.surfaceId,
+        callerClass: "worker_api",
+        access: "write",
+        occurredAt: censusOccurredAt,
+        deploymentSha: "d".repeat(40),
+      });
     const censusResponse = await apiRequest(
       `/api/admin/legacy-surfaces/${encodeURIComponent(censusSurface.surfaceId)}/census?days=30`,
       cookie,
@@ -7636,6 +7715,19 @@ describe("Worker API", () => {
           stableJson(LEGACY_SURFACE_MANIFEST[0]),
         );
       });
+    }
+    } finally {
+      await runInDurableObject(censusStub, async (_instance, state) => {
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec("DELETE FROM legacy_surface_daily");
+          state.storage.sql.exec("DELETE FROM legacy_surface_operations");
+          state.storage.sql.exec("DELETE FROM legacy_surface_events");
+          state.storage.sql.exec("DELETE FROM legacy_surface_state");
+          state.storage.sql.exec("DELETE FROM legacy_surface_manifest");
+        });
+      });
+      await expect(censusStub.restoreLegacySurfaceState({ version: 1, snapshot: censusSnapshot }))
+        .resolves.toMatchObject({ ok: true, restored: true });
     }
   });
 

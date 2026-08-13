@@ -145,6 +145,27 @@ does not prove which production callers exist or start either 30-day window.
   as `surfaceId=legacy.api.chat-post`, `days=30`, `rowCount=0`, `totalCount=0`,
   `unknownCallerRows=0`, `deploymentMismatchRows=0`, and `status=clear`. No census
   row content was printed or copied into Trellis evidence.
+
+## Local recovery and routing rehearsal
+
+- The isolated restore drill uses the runtime-exported TeamAgent and UserState
+  schema versions rather than fixture-owned schema labels. Its capture includes
+  one non-empty transitional `chatus_conversations` row and restores it to the
+  mapped isolated conversation Agent while the target remains writes-closed.
+- The drill also parses the retained `legacy_surface_registry` entry and proves
+  the exact `legacy.api.chat-post` atom remains enabled at its captured phase,
+  with zero lost items, zero unresolved references, and an unchanged source
+  digest. No production data, live Provider, or production restore is used.
+- The route rehearsal simulates `write_disabled`, confirms the compatibility
+  POST is rejected without another Provider call or net quota charge, invokes
+  the real transactional `rollbackLegacySurface` RPC, verifies the projection
+  returns to `shadowing`, and proves the same route can serve a later local
+  fake-Provider POST. Read-disable is then checked independently.
+- Both Worker tests capture the complete pre-test surface atom and restore it in
+  `finally`. The control-plane census assertion also clears only its local daily
+  rows before asserting an exact count, eliminating execution-order dependence.
+- This evidence does not raise the manifest ceiling, disable production writes,
+  begin either 30-day observation window, or satisfy the shell-read dependency.
 - Static caller mapping, exact-SHA production census, and the completed stable
   principal/resource identity task now satisfy AC1 and AC3. This scheduled run
   remains monitoring evidence only: it does not rehearse rollback, disable

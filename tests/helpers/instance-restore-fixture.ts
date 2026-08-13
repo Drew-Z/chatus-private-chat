@@ -37,6 +37,8 @@ import {
   type LegacySurfaceCaptureSnapshotV1,
   type LegacySurfaceRegistryCaptureV1,
 } from "../../src/contracts/legacy-surface";
+import { TEAM_AGENT_SCHEMA_VERSION } from "../../src/agent/team-agent";
+import { USER_STATE_SCHEMA_VERSION } from "../../src/worker";
 
 const FIXED_NOW = new Date("2026-08-05T12:00:00.000Z");
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -392,7 +394,7 @@ function fixtureCaptureAdapters(
       object.stateClass,
       object.restoreBehavior,
       durableSnapshotBytes(object.schemaVersion, object.kind),
-      object.kind === "user_state" ? 1 : 0,
+      object.kind === "user_state" || object.kind === "conversation_team_agent" ? 1 : 0,
     ));
   }
   adapters.push(captureAdapter("ephemeral_state", "sessions-and-leases", "ephemeral-v1", "excluded", "exclude",
@@ -519,7 +521,11 @@ function objectRegistration(
     kind,
     instanceName,
     rootInstanceName,
-    schemaVersion: kind === "provider_attempt_ledger"
+    schemaVersion: kind === "conversation_team_agent" || kind === "root_team_agent"
+      ? `team-agent-v${TEAM_AGENT_SCHEMA_VERSION}`
+      : kind === "user_state"
+        ? `user-state-v${USER_STATE_SCHEMA_VERSION}`
+      : kind === "provider_attempt_ledger"
       ? "provider-attempt-ledger-v3"
       : kind === "identity_registry"
         ? "identity-registry-v2"
@@ -590,7 +596,25 @@ function supportedSchemas(manifest: CaptureManifestV1): RestoreTargetInspectionV
 }
 
 function durableSnapshotBytes(schemaVersion: string, kind: InstanceObjectKind): Uint8Array {
-  const tables = kind === "identity_registry"
+  const tables = kind === "conversation_team_agent"
+    ? [{
+        name: "chatus_conversations",
+        schema: "CREATE TABLE chatus_conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, summary TEXT NOT NULL DEFAULT '', pinned INTEGER NOT NULL DEFAULT 0, route_id TEXT NOT NULL DEFAULT '', parent_chat_id TEXT NOT NULL DEFAULT '', skill_ids TEXT NOT NULL DEFAULT '[]', message_count INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER NOT NULL DEFAULT 0)",
+        rows: [{
+          id: "conversation-restore-drill",
+          title: "Restore drill",
+          created_at: FIXED_NOW.getTime(),
+          updated_at: FIXED_NOW.getTime() + 1,
+          summary: "",
+          pinned: 0,
+          route_id: "primary",
+          parent_chat_id: "",
+          skill_ids: "[]",
+          message_count: 1,
+          deleted_at: 0,
+        }],
+      }]
+    : kind === "identity_registry"
     ? [
       {
         name: "conversation_acl_entries",
