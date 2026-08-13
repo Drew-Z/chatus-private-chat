@@ -112,3 +112,15 @@ conversation/accounting evidence, and restart the affected observation window.
   zero total calls, zero unknown callers, zero deployment mismatches, and
   `status=clear`. AC1 and AC3 are now complete, while rollback and both
   observation windows remain intentionally open.
+- Shell census run `31680939102` against exact deployed main SHA
+  `8a3a55340c07a7a87c33bed84de9783339c2e39b` failed before artifact creation
+  because a fresh GitHub runner received HTTP 500 from `POST /api/admin/login`.
+  The login-throttle `UserState` cold start called `InstanceCoordinator.registerObject`,
+  whose success payload enumerated and digested the complete, growing recovery
+  registry. Registration now returns only `{ ok: true }`; explicit inventory
+  calls retain the complete list/digest contract, and short-lived login/guest
+  UserState instances no longer enter the recoverable registry. Focused Worker
+  and capture tests, full 51-file/793-test Vitest, frontend checks, typecheck,
+  Wrangler dry-run, diff check, and Trellis validation pass locally. No new
+  deployment or census has run yet, no artifact was produced for the failed run,
+  and no write/read observation clock has started.

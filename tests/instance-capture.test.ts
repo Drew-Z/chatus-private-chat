@@ -551,14 +551,8 @@ describe("instance capture contracts", () => {
       restoreBehavior: "restore" as const,
       registeredAt: 1,
     };
-    await expect(instance.registerObject(registration)).resolves.toMatchObject({
-      ok: true,
-      objects: [registration],
-    });
-    await expect(instance.registerObject({ ...registration, registeredAt: 2 })).resolves.toMatchObject({
-      ok: true,
-      objects: [registration],
-    });
+    await expect(instance.registerObject(registration)).resolves.toEqual({ ok: true });
+    await expect(instance.registerObject({ ...registration, registeredAt: 2 })).resolves.toEqual({ ok: true });
     await expect(instance.listRegisteredObjects()).resolves.toMatchObject({
       ok: true,
       objects: [registration],
@@ -584,10 +578,7 @@ describe("instance capture contracts", () => {
       instanceName: "member-registered-after-baseline",
       registeredAt: 3,
     };
-    await expect(instance.registerObject(laterRegistration)).resolves.toMatchObject({
-      ok: true,
-      baselineComplete: false,
-    });
+    await expect(instance.registerObject(laterRegistration)).resolves.toEqual({ ok: true });
     await expect(instance.listRegisteredObjects()).resolves.toMatchObject({
       ok: true,
       baselineComplete: false,
@@ -638,33 +629,29 @@ describe("instance capture contracts", () => {
     };
     const initial = await instance.registerObject(registration);
     if (!initial.ok) throw new Error("registration failed");
+    const initialRegistry = await instance.listRegisteredObjects();
+    if (!initialRegistry.ok) throw new Error("registry read failed");
     const baseline = await instance.confirmObjectRegistryBaseline({
       version: 1,
       inventoryId: "schema-upgrade-v6",
-      objects: initial.objects,
+      objects: initialRegistry.objects,
       confirmedAt: 2,
     });
     if (!baseline.ok) throw new Error("baseline confirmation failed");
 
     const upgraded = { ...registration, schemaVersion: "team-agent-v7", registeredAt: 3 };
     const upgradeResult = await instance.registerObject(upgraded);
-    expect(upgradeResult).toMatchObject({
-      ok: true,
-      objects: [upgraded],
-      baselineComplete: false,
-    });
+    expect(upgradeResult).toEqual({ ok: true });
     if (!upgradeResult.ok) throw new Error("schema upgrade failed");
-    expect(upgradeResult.registryDigest).not.toBe(baseline.registryDigest);
-    await expect(instance.registerObject({ ...upgraded, registeredAt: 4 })).resolves.toMatchObject({
+    const upgradedRegistry = await instance.listRegisteredObjects();
+    expect(upgradedRegistry).toMatchObject({
       ok: true,
       objects: [upgraded],
       baselineComplete: false,
     });
-    await expect(instance.listRegisteredObjects()).resolves.toMatchObject({
-      ok: true,
-      objects: [upgraded],
-      baselineComplete: false,
-    });
+    if (!upgradedRegistry.ok) throw new Error("registry read failed");
+    expect(upgradedRegistry.registryDigest).not.toBe(baseline.registryDigest);
+    await expect(instance.registerObject({ ...upgraded, registeredAt: 4 })).resolves.toEqual({ ok: true });
   });
 
   it("rejects schema registration downgrades, family changes, malformed versions, and policy drift", async () => {
@@ -1007,6 +994,23 @@ describe("instance capture contracts", () => {
     });
   });
 
+  it("keeps rebuildable UserState instances out of the durable object recovery registry", async () => {
+    const registry = coordinator(INSTANCE_MAINTENANCE_COORDINATOR);
+    const before = await registry.listRegisteredObjects();
+    if (!before.ok) throw new Error("registry read failed");
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const names = [
+      `login:admin:${suffix.padEnd(64, "0")}`,
+      `guest-source:${suffix.padEnd(64, "0")}`,
+      `guest-${suffix}`,
+    ];
+    for (const name of names) {
+      const state = env.USER_STATE.getByName(name) as DurableObjectStub<UserState>;
+      await expect(state.getLoginThrottle(Date.now(), 5, 60_000)).resolves.toEqual({ ok: true, retryAfter: 0 });
+    }
+    await expect(registry.listRegisteredObjects()).resolves.toEqual(before);
+  });
+
   it("captures deterministic KV classes without persisting excluded session payloads", async () => {
     const suffix = crypto.randomUUID();
     const keys = {
@@ -1233,10 +1237,7 @@ describe("instance capture contracts", () => {
       restoreBehavior: "restore" as const,
       registeredAt: 3,
     };
-    await expect(registry.registerObject(lateRegistration)).resolves.toMatchObject({
-      ok: true,
-      baselineComplete: false,
-    });
+    await expect(registry.registerObject(lateRegistration)).resolves.toEqual({ ok: true });
     await expect(staleRegisteredAdapters.find(({ store }) => store === "instance_object_registry")!
       .capture(epoch)).rejects.toMatchObject({ code: "capture_object_registry_changed" });
     const currentRegistry = await registry.listRegisteredObjects();

@@ -136,7 +136,9 @@ InstanceCoordinator.registerObject({
   stateClass: CaptureStateClass,
   restoreBehavior: CaptureRestoreBehavior,
   registeredAt: number,
-})
+}): Promise<{ ok: true } | { ok: false; error: string }>
+
+InstanceCoordinator.listRegisteredObjects(): Promise<InstanceObjectRegistryResult>
 ```
 
 `InstanceOperationStateV1` contains exact `operationId`, random per-acquisition `fenceId`, operation `kind`, and `startedAt`. A release must present the same `operationId`, `fenceId`, and `kind`.
@@ -144,9 +146,10 @@ InstanceCoordinator.registerObject({
 ### 3. Contracts
 
 - The baseline input is the operator-owned external historical object inventory. Confirmation rejects conflicts, atomically adds inventory objects that have not awakened since rollout, and persists a bounded `inventoryId`, object count, and digest. Merely repeating the coordinator's currently observed list is not proof that dormant historical objects are complete.
-- A new object identity invalidates the baseline. Adapter construction and the registry adapter capture both re-read `baselineComplete` and the digest so an identity appearing before or during maintenance aborts the capture.
+- A new recoverable object identity invalidates the baseline. Adapter construction and the registry adapter capture both re-read `baselineComplete` and the digest so an identity appearing before or during maintenance aborts the capture. Short-lived `login:*`, `guest-source:*`, and `guest-*` UserState instances are rebuilt empty and never enter this recoverable-object registry.
 - Re-registering an unchanged object is idempotent and preserves its stored record even when the caller supplies a later `registeredAt`. A schema migration may replace that record only when kind, instance identity, root ownership, state class, and restore behavior are unchanged; both schema strings match lowercase `<family>-v<positive base-10 integer>`; the family is identical; and the incoming numeric version is strictly greater. Skipped forward versions are legal because migration history, not the registry, proves the applied steps.
-- A successful schema registration upgrade persists the incoming schema record, deletes the confirmed object-registry baseline, and returns `baselineComplete: false` with the new registry digest. Operators must confirm a new external inventory before capture. Downgrades, family changes, leading-zero/zero/unsafe versions, and ownership or restore-policy drift return `instance_object_conflict` without changing the stored record.
+- Registration is a startup-path RPC and returns only the constant-size `{ ok: true }` acknowledgement. It must not enumerate, digest, or serialize the complete registry. Call `listRegisteredObjects()` only from explicit capture/inventory paths that need `objects`, `baselineComplete`, and `registryDigest`.
+- A successful schema registration upgrade persists the incoming schema record, deletes the confirmed object-registry baseline, and returns `{ ok: true }`. A later explicit registry list reports `baselineComplete: false` and the new digest. Operators must confirm a new external inventory before capture. Downgrades, family changes, leading-zero/zero/unsafe versions, and ownership or restore-policy drift return `instance_object_conflict` without changing the stored record.
 - Requested or active maintenance freezes both new identities and otherwise-valid schema upgrades. Exact same-schema registration remains idempotent, but an upgrade returns `instance_maintenance_busy` and writes nothing until maintenance is released. This ordering prevents a capture epoch from mixing an old external inventory with an object that migrated after the drain boundary.
 - Durable Object rollout tests must seed the previously deployed registration and then register the current schema. A deployment smoke can hit an already-running old isolate and pass before eviction; only the restart registration path proves that applying a new SQLite migration will not make the object permanently unavailable.
 - Request maintenance before draining. New HTTP mutations, Provider/Agent turns, OAuth callbacks, Queue delivery, Workspace mutation, branches, and cleanup acquire durable fences; each acquisition has an independent `fenceId`, including duplicate logical operation IDs.
@@ -162,7 +165,8 @@ InstanceCoordinator.registerObject({
 | --- | --- |
 | External inventory is missing, malformed, omits an observed object, or conflicts with schema/ownership | Reject baseline with `instance_object_conflict` |
 | New identity appears after baseline | Invalidate baseline; stale adapters fail with `capture_object_registry_changed` |
-| Same object registers a higher numeric version in the same schema family while writes are open | Persist the upgrade, invalidate the baseline, and return the updated digest with `baselineComplete: false` |
+| Same object registers a higher numeric version in the same schema family while writes are open | Persist the upgrade, invalidate the baseline, return `{ ok: true }`; the next explicit list reports the updated digest and `baselineComplete: false` |
+| Login/guest throttle UserState starts from a new source/session | Initialize its local schema without central registration; login must not scale with the recoverable registry |
 | Schema registration downgrades, changes family/policy/ownership, or uses a malformed numeric suffix | Return `instance_object_conflict`; preserve the existing registration and baseline |
 | A valid schema upgrade arrives while maintenance is requested or active | Return `instance_maintenance_busy`; preserve the existing registration and baseline |
 | Two operations share one logical ID | Store two independent fence IDs; releasing one leaves the other active |
@@ -176,15 +180,18 @@ InstanceCoordinator.registerObject({
 
 - Good: an external inventory seeds a dormant `UserState`, every store captures one epoch, the encrypted envelope is durably accepted, then the coordinator records only its evidence ID and reopens writes.
 - Good: `team-agent-v6` re-registers as `team-agent-v7` after applying its SQLite migration, the registry baseline becomes incomplete, and a newly confirmed external inventory restores capture readiness.
+- Good: a fresh administrator source initializes `login:admin:*`, authenticates, and leaves the recoverable registry byte-for-byte unchanged.
 - Base: a failed drain or archive sink releases the requested/active boundary as failed; source stores remain unchanged and no archive is returned.
 - Base: an unchanged object re-registers during maintenance and receives its existing idempotent record; a version upgrade waits until maintenance is released.
+- Bad: return the complete recoverable-object array from every startup registration, so unrelated login cold starts eventually exceed RPC limits as the registry grows.
 - Bad: confirm the objects that happened to wake, let two deliveries share one releasable fence, mark captured before durable persistence, or call a readable archive a recoverable instance.
 - Bad: treat every schema change as an identity conflict. The deployment may pass a smoke against an old isolate, then return persistent 503 responses after eviction when the migrated object restarts and cannot re-register.
 
 ### 6. Tests Required
 
 - Prove external inventory seeding, later-registration invalidation, digest recheck, unknown/missing stores, cross-generation references, Queue/DLQ regeneration evidence, and explicit exclusions.
-- Prove same-family forward schema upgrade persistence, exact-schema idempotency, baseline deletion/digest change, downgrade/family/malformed/policy conflicts, and requested plus active maintenance rejection. Assert rejected upgrades leave the old registration unchanged.
+- Prove same-family forward schema upgrade persistence, exact-schema idempotency, constant-size registration acknowledgement, baseline deletion/digest change through an explicit list, downgrade/family/malformed/policy conflicts, and requested plus active maintenance rejection. Assert rejected upgrades leave the old registration unchanged.
+- Exercise fresh admin-login, user-login, guest-source, and guest-session UserState initialization; assert the recoverable registry is unchanged and authentication/throttling still works.
 - For every Durable Object schema bump, seed the immediately previous deployed registration and execute the current startup registration locally; do not rely only on a fresh-object test or the first deployment health smoke.
 - Prove independent duplicate-operation fences, ambiguous acquire/release reconciliation, drain rejection, every capture-phase rollback, and persistent fail-closed behavior.
 - Prove wrong/missing keys, fresh IVs, AAD/header/payload tamper rejection, deterministic manifest checksums, exact payload counts/sizes, and absence of keys/content from evidence.
@@ -230,9 +237,10 @@ if (sameIdentityAndPolicy(existing, incoming) && isStrictForwardSchemaUpgrade(ex
   if (maintenanceRequestedOrActive) return { ok: false, error: "instance_maintenance_busy" };
   await persistRegistrationAndInvalidateBaseline(incoming);
 }
+return { ok: true };
 ```
 
-Schema evolution is a controlled update of one registered object, not a new identity and not an unrestricted metadata rewrite.
+Callers that need the updated registry state must follow registration with the explicit inventory method; ordinary object startup never receives the complete registry. Schema evolution is a controlled update of one registered object, not a new identity and not an unrestricted metadata rewrite.
 
 ### Autonomous Purge Retry
 

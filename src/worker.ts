@@ -789,6 +789,7 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
       const rebuildable = instanceName.startsWith("login:")
         || instanceName.startsWith("guest-source:")
         || instanceName.startsWith("guest-");
+      if (rebuildable) return;
       const registered = await env.INSTANCE_COORDINATOR
         .getByName(INSTANCE_MAINTENANCE_COORDINATOR)
         .registerObject({
@@ -797,8 +798,8 @@ export class UserState extends DurableObject<Env> implements QuotaBucket {
           instanceName,
           rootInstanceName: "",
           schemaVersion: `user-state-v${USER_STATE_SCHEMA_VERSION}`,
-          stateClass: rebuildable ? "rebuildable" : "authoritative",
-          restoreBehavior: rebuildable ? "rebuild" : "restore",
+          stateClass: "authoritative",
+          restoreBehavior: "restore",
           registeredAt: Date.now(),
         });
       if (!registered.ok) throw new Error(registered.error);
