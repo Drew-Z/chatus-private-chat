@@ -58,3 +58,20 @@ authority, preserve counters, and restart the affected observation window.
 - This delivery starts no observation clock by itself. Routing rollback rehearsal,
   the real 14-day write window, reversible read disable, and the later 14-day read
   window remain open, so this task stays `in_progress` and unarchived.
+- PR #74 fixed the shared administrator-login dependency that blocked shell
+  census collection. It squash-merged as exact main SHA
+  `0dfd46f69e480ad43895dd0c42f8fdabde58d71d`; GitHub Actions deployment run
+  `31706374823` passed and deployed Worker version
+  `f19692b2-7f71-42c7-be6f-2ca6242e2eb9`. Production deployment artifact
+  `9183460061` is retained through 2026-11-11.
+- Shell census run `31706773576` then passed fresh-runner admin login, collection,
+  exact-main recheck, and artifact upload. Artifact `9183510472` is retained
+  through 2026-11-11. Strict aggregate-only output was `rowCount=4`,
+  `totalCount=40`, `unknownCallerRows=0`, `unexpectedAccessRows=0`,
+  `deploymentMismatchRows=3`, and `status=anomaly`. The aggregate shape is
+  consistent with pre-deployment buckets still inside the 14-day query window,
+  but strict policy keeps the result anomalous without inspecting row contents;
+  no unknown caller or unexpected write was found. This is a census baseline
+  only: routing rollback, write disable, the real 14-day write observation, read
+  disable, and the later read observation remain open and no observation clock
+  starts from this run.

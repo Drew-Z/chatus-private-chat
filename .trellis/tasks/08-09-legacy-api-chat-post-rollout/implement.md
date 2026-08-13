@@ -131,3 +131,23 @@ conversation/accounting evidence, and restart the affected observation window.
   quality, coverage, and Agent Playwright artifacts `9182774633`, `9182919683`,
   `9182920107`, and `9182821330` are retained through 2026-08-27. The PR remains
   draft until this delivery record itself passes final CI.
+- PR #74 final run `31705735625` passed `changes`, `quality`, and
+  `agent-browser`, with `workspace-browser` path-skipped after the full local
+  Workspace pass. The PR squash-merged as exact main SHA
+  `0dfd46f69e480ad43895dd0c42f8fdabde58d71d`. GitHub Actions deployment run
+  `31706374823` passed both stale-main guards, full quality, Worker upload, and
+  production verification; Worker version
+  `f19692b2-7f71-42c7-be6f-2ca6242e2eb9` is live. Production deployment artifact
+  `9183460061` is retained through 2026-11-11. No local production deployment
+  was used.
+- Follow-up shell census run `31706773576` proved that fresh-runner admin login,
+  exact-main census collection, post-collection stale-main guard, and artifact
+  upload now succeed. Artifact `9183510472` is retained through 2026-11-11.
+  The workflow's aggregate-only checker reported `rowCount=4`, `totalCount=40`,
+  `unknownCallerRows=0`, `unexpectedAccessRows=0`, and
+  `deploymentMismatchRows=3`, therefore `status=anomaly`. The aggregate shape is
+  consistent with pre-deployment buckets still inside the 14-day window, but the
+  strict policy correctly keeps the result anomalous without inspecting or
+  retaining row contents. No unknown caller or unexpected write row was found.
+  This census remains a read-only baseline and does not start or satisfy either
+  rollout observation window.
