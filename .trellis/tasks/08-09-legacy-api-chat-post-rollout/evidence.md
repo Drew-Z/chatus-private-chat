@@ -177,3 +177,11 @@ does not prove which production callers exist or start either 30-day window.
   Playwright were path-skipped after the retained local matrices passed 110 and
   3 tests respectively. The PR remains draft and unmerged; no production
   routing, deployment, disable control, or observation window changed.
+- PR #78 final head `5e30ddc5c9ffab20ff2210cab84701fe15262b5d`
+  passed `changes` and `quality` in [run
+  31743185588](https://github.com/Drew-Z/chatus-private-chat/actions/runs/31743185588),
+  then squash-merged as exact main SHA
+  `5c4114e63c9f9946ef6d121cfa1f3f915f912b65` at
+  `2026-08-13T21:04:07Z`. The merge produced no deployment workflow run; this
+  delivery therefore changes no production route, registry phase, write/read
+  control, or observation clock.
