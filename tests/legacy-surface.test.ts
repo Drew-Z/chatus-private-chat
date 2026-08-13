@@ -69,6 +69,15 @@ describe("legacy surface contract", () => {
       readObservationMs: 30 * 24 * 60 * 60 * 1_000,
       maximumSupportedPhase: "instrumented",
     });
+    const legacyCloudChats = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.api.cloud-chats");
+    expect(legacyCloudChats).toMatchObject({
+      owner: "data",
+      manifestVersion: 2,
+      callerClasses: ["agent_runtime", "browser", "operator", "test", "worker_api"],
+      writeObservationMs: 30 * 24 * 60 * 60 * 1_000,
+      readObservationMs: 30 * 24 * 60 * 60 * 1_000,
+      maximumSupportedPhase: "instrumented",
+    });
     const browserShell = LEGACY_SURFACE_MANIFEST.find(({ surfaceId }) => surfaceId === "legacy.browser.shell");
     expect(browserShell).toMatchObject({
       owner: "frontend",
@@ -78,7 +87,12 @@ describe("legacy surface contract", () => {
       readObservationMs: 14 * 24 * 60 * 60 * 1_000,
       maximumSupportedPhase: "instrumented",
     });
-    const instrumentedSurfaces = new Set(["legacy.api.chat-post", "legacy.browser.admin-alias", "legacy.browser.shell"]);
+    const instrumentedSurfaces = new Set([
+      "legacy.api.chat-post",
+      "legacy.api.cloud-chats",
+      "legacy.browser.admin-alias",
+      "legacy.browser.shell",
+    ]);
     expect(LEGACY_SURFACE_MANIFEST.filter(({ surfaceId }) => !instrumentedSurfaces.has(surfaceId)).every((record) => (
       record.owner === "unassigned"
       && record.manifestVersion === 1
@@ -114,7 +128,7 @@ describe("legacy surface contract", () => {
   });
 
   it("allows only additive or forward-versioned manifest evolution", () => {
-    const ownerAssigned = replaceRecord(LEGACY_SURFACE_MANIFEST, 1, {
+    const ownerAssigned = replaceRecord(LEGACY_SURFACE_MANIFEST, 2, {
       owner: "operations",
       manifestVersion: 2,
       maximumSupportedPhase: "instrumented",
@@ -122,11 +136,11 @@ describe("legacy surface contract", () => {
     expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, ownerAssigned)).toEqual(ownerAssigned);
 
     expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, ownerAssigned.slice(1))).toBeUndefined();
-    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 1, {
+    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 2, {
       owner: "security",
       manifestVersion: 3,
     }))).toBeUndefined();
-    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 1, {
+    expect(validateLegacySurfaceManifestUpgrade(ownerAssigned, replaceRecord(ownerAssigned, 2, {
       maximumSupportedPhase: "discovered",
       manifestVersion: 3,
     }))).toBeUndefined();
@@ -134,7 +148,7 @@ describe("legacy surface contract", () => {
       replacement: "conflicting-replacement",
       manifestVersion: 2,
     }))).toBeUndefined();
-    expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, replaceRecord(LEGACY_SURFACE_MANIFEST, 1, {
+    expect(validateLegacySurfaceManifestUpgrade(LEGACY_SURFACE_MANIFEST, replaceRecord(LEGACY_SURFACE_MANIFEST, 2, {
       maximumSupportedPhase: "instrumented",
     }))).toBeUndefined();
   });
@@ -208,6 +222,7 @@ describe("InstanceCoordinator legacy surface state", () => {
       const stub = env.INSTANCE_COORDINATOR.getByName(legacySurfaceObjectName(manifest.surfaceId));
       const result = await stub.syncLegacySurfaceManifest({ version: 1, manifest, manifestDigest: digest });
       const isInstrumentedSurface = manifest.surfaceId === "legacy.api.chat-post"
+        || manifest.surfaceId === "legacy.api.cloud-chats"
         || manifest.surfaceId === "legacy.browser.admin-alias"
         || manifest.surfaceId === "legacy.browser.shell";
       expect(result).toEqual({
@@ -218,7 +233,9 @@ describe("InstanceCoordinator legacy surface state", () => {
           phase: "discovered",
           readControl: "enabled",
           writeControl: "enabled",
-          owner: manifest.surfaceId === "legacy.api.chat-post" ? "data" : isInstrumentedSurface ? "frontend" : "unassigned",
+          owner: manifest.surfaceId === "legacy.api.chat-post" || manifest.surfaceId === "legacy.api.cloud-chats"
+            ? "data"
+            : isInstrumentedSurface ? "frontend" : "unassigned",
           allowedActions: isInstrumentedSurface
             ? [{ kind: "advance", targetPhase: "instrumented" }]
             : [],

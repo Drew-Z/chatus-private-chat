@@ -5,6 +5,8 @@ import { validateLegacySurfaceCensus } from "./legacy-census-contract.mjs";
 
 export const CHAT_POST_SURFACE_ID = "legacy.api.chat-post";
 export const CHAT_POST_CALLER_CLASSES = ["browser", "test", "worker_api"];
+export const CLOUD_CHATS_SURFACE_ID = "legacy.api.cloud-chats";
+export const CLOUD_CHATS_CALLER_CLASSES = ["agent_runtime", "browser", "operator", "test", "worker_api"];
 export const BROWSER_SHELL_SURFACE_ID = "legacy.browser.shell";
 export const BROWSER_SHELL_CALLER_CLASSES = [
   "browser",
@@ -27,6 +29,13 @@ export function resolveProductionLegacyCensusPolicy(surfaceId, days) {
       allowedCallerClasses: BROWSER_SHELL_CALLER_CLASSES,
       allowedAccessClasses: ["read"],
       maximumTotalCount: Number.MAX_SAFE_INTEGER,
+    };
+  }
+  if (surfaceId === CLOUD_CHATS_SURFACE_ID && days === 30) {
+    return {
+      allowedCallerClasses: CLOUD_CHATS_CALLER_CLASSES,
+      allowedAccessClasses: ["read", "write"],
+      maximumTotalCount: 0,
     };
   }
   throw new Error("Production census gate has no policy for this surface and window");
