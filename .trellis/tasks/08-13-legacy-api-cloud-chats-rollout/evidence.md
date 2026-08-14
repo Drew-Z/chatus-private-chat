@@ -30,6 +30,15 @@
   and leaves target writes closed. Drill output contains no conversation content,
   object identity, label, credential, token, or raw exception.
 
+## Delivery evidence
+
+- PR #86 final head `b48a1f91863fc4956f0292824685de9a1501368e` passed
+  `changes` and `quality` in run `31776316693`; the path classifier skipped both
+  browser jobs, whose impacted suites had already passed locally.
+- PR #86 squash-merged into `main` as exact SHA
+  `11006c32d5aa5158bb6ad0583597769254c27908`. The merge SHA has no associated
+  Actions run, so this delivery did not trigger a production deployment.
+
 ## Remaining gates
 
 This evidence is local and pre-disable. It does not raise the code-owned

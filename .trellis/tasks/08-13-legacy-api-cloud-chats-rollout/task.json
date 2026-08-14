@@ -95,6 +95,18 @@
         "status": "passed",
         "summary": "Repository task graph and workspace consistency passed after cloud-chats recovery evidence updates.",
         "at": "2026-08-14T06:21:52.214798+00:00"
+      },
+      {
+        "command": "gh run view 31776316693",
+        "status": "passed",
+        "summary": "PR 86 final head b48a1f91863fc4956f0292824685de9a1501368e passed changes and quality; browser jobs were correctly skipped after impacted suites passed locally.",
+        "at": "2026-08-14T06:43:16.301297+00:00"
+      },
+      {
+        "command": "gh pr view 86",
+        "status": "passed",
+        "summary": "PR 86 squash-merged into main as exact SHA 11006c32d5aa5158bb6ad0583597769254c27908; the merge SHA has no associated Actions run and triggered no production deployment.",
+        "at": "2026-08-14T06:43:16.481509+00:00"
       }
     ]
   }
