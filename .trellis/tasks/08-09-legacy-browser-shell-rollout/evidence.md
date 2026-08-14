@@ -89,3 +89,7 @@ read-disable, and cleanup approval remain open.
   `unexpectedAccessRows=0`, `deploymentMismatchRows=3`, and `status=anomaly`.
   No census rows were inspected or printed. The three historical deployment-SHA
   buckets still block observation start; shell reads remain enabled.
+- PR #83 carried these evidence-only records, passed its path-classification
+  check in run `31756788734`, and squash-merged into `main` as exact SHA
+  `536d13fab8fcf6a469d629ce538224f33cca655e`. The merge triggered no production
+  deployment; the deployed Worker remains the exact SHA from run `31754436200`.

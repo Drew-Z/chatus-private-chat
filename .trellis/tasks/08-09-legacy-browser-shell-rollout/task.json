@@ -167,6 +167,18 @@
         "status": "passed",
         "summary": "Repository task graph and workspace consistency passed after evidence updates.",
         "at": "2026-08-14T00:06:31.188244+00:00"
+      },
+      {
+        "command": "gh run view 31756788734",
+        "status": "passed",
+        "summary": "PR 83 final head 10eb58b00220486b4d4cbeb448a69f055177e72a passed path classification; quality and browser jobs were correctly skipped for evidence-only records.",
+        "at": "2026-08-14T00:16:27.000000+00:00"
+      },
+      {
+        "command": "gh pr view 83",
+        "status": "passed",
+        "summary": "PR 83 squash-merged into main as exact SHA 536d13fab8fcf6a469d629ce538224f33cca655e; no production deployment was triggered.",
+        "at": "2026-08-14T00:17:44.000000+00:00"
       }
     ],
     "delivery": {
