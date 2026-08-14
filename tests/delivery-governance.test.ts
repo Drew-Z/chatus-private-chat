@@ -492,7 +492,11 @@ describe("main deployment governance", () => {
 
   it("keeps production census main-only, read-only, and exact-SHA", () => {
     expect(parsedLegacyCensusWorkflow.on).toMatchObject({
-      schedule: [{ cron: "17 2 * * *" }, { cron: "27 2 * * *" }],
+      schedule: [
+        { cron: "17 2 * * *" },
+        { cron: "27 2 * * *" },
+        { cron: "37 2 * * *" },
+      ],
       workflow_dispatch: {
         inputs: {
           surface_id: expect.objectContaining({ default: "legacy.api.chat-post" }),
@@ -512,7 +516,7 @@ describe("main deployment governance", () => {
     expect(census.if).toBe("github.ref == 'refs/heads/main'");
     expect(census.environment).toBe("production");
     expect(census.env).toEqual({
-      LEGACY_SURFACE_ID: "${{ github.event.schedule == '27 2 * * *' && 'legacy.browser.shell' || inputs.surface_id || 'legacy.api.chat-post' }}",
+      LEGACY_SURFACE_ID: "${{ github.event.schedule == '27 2 * * *' && 'legacy.browser.shell' || github.event.schedule == '37 2 * * *' && 'legacy.api.cloud-chats' || inputs.surface_id || 'legacy.api.chat-post' }}",
       CENSUS_DAYS: "${{ github.event.schedule == '27 2 * * *' && '14' || inputs.days || '30' }}",
     });
     expectCommandsInOrder(census, [
