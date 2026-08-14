@@ -179,6 +179,12 @@
         "status": "passed",
         "summary": "PR 83 squash-merged into main as exact SHA 536d13fab8fcf6a469d629ce538224f33cca655e; no production deployment was triggered.",
         "at": "2026-08-14T00:17:44.000000+00:00"
+      },
+      {
+        "command": "gh run view 31769590170",
+        "status": "passed",
+        "summary": "Scheduled exact-main-ancestor 14-day shell census retained artifact 9207618241 and reached the strict aggregate gate with 53 reads, zero unknown callers, zero unexpected access rows, and three deployment-SHA mismatches; historical buckets remain the only anomaly.",
+        "at": "2026-08-14T04:21:33.000000+00:00"
       }
     ],
     "delivery": {
