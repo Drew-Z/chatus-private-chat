@@ -99,3 +99,8 @@ read-disable, and cleanup approval remain open.
   `rowCount=4`, `totalCount=53`, `unknownCallerRows=0`, `unexpectedAccessRows=0`,
   `deploymentMismatchRows=3`, and `status=anomaly`; no rows were inspected or
   printed, and shell reads remain enabled.
+- PR #84 carried the scheduled-census evidence, passed path classification in
+  run `31772562158` on final head `8040d81a115dc0169dec892fd6aac6669df6d39f`,
+  and squash-merged into `main` as exact SHA
+  `4142d21913bdeb74057b2345764974968520c887`. The evidence-only merge produced
+  no production deployment.

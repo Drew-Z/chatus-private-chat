@@ -120,3 +120,7 @@ authority, preserve counters, and restart the affected observation window.
   unknown callers, zero unexpected access rows, three deployment-SHA mismatches).
   The scheduled ancestor policy works; only the historical 14-day buckets keep
   observation and read-disable open.
+- PR #84 passed path classification in run `31772562158` on final head
+  `8040d81a115dc0169dec892fd6aac6669df6d39f` and squash-merged as main SHA
+  `4142d21913bdeb74057b2345764974968520c887`; it contained evidence-only
+  records and triggered no production deployment.
