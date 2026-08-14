@@ -77,3 +77,15 @@ read-disable, and cleanup approval remain open.
   `8f4a1da3b626c229c835f809eba803cae64a67d8`. The merge SHA has no associated
   Actions run; the latest production deployment remains the earlier manual run
   `31748394946`, so scheduling the read-only census caused no production deploy.
+- Exact-main deployment run `31754436200` passed through GitHub Actions only on
+  main SHA `77c985e80152e6f6eecaf668984a1214d5d1a35c`; production smoke passed,
+  Worker version `2fca46e9-4cc3-4b80-bff8-15bfa206d918` is live, and deployment
+  artifact `9202265262` is retained. This deployment contained only the reviewed
+  census scheduling/governance and delivery-record changes; no local production
+  deploy was used.
+- A fresh read-only 14-day shell census run `31754704348` collected and retained
+  artifact `9202286207` on the exact deployed main SHA. Its aggregate-only gate
+  was `rowCount=4`, `totalCount=53`, `unknownCallerRows=0`,
+  `unexpectedAccessRows=0`, `deploymentMismatchRows=3`, and `status=anomaly`.
+  No census rows were inspected or printed. The three historical deployment-SHA
+  buckets still block observation start; shell reads remain enabled.

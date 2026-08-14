@@ -103,3 +103,12 @@ authority, preserve counters, and restart the affected observation window.
   main SHA `8f4a1da3b626c229c835f809eba803cae64a67d8`. The merge produced no Actions
   run and did not trigger a production deployment; observation remains blocked
   by the three historical deployment-SHA buckets.
+- Deployment run `31754436200` passed on exact main SHA
+  `77c985e80152e6f6eecaf668984a1214d5d1a35c` through GitHub Actions and deployed
+  Worker version `2fca46e9-4cc3-4b80-bff8-15bfa206d918`; artifact `9202265262`
+  is retained and production smoke passed.
+- Fresh census run `31754704348` retained artifact `9202286207` and reached the
+  strict aggregate gate: `rowCount=4`, `totalCount=53`, zero unknown callers,
+  zero unexpected access rows, three deployment-SHA mismatches, `status=anomaly`.
+  The 14-day window has not cleared, so write/read observation, read-disable,
+  cleanup approval, and archive remain open.
