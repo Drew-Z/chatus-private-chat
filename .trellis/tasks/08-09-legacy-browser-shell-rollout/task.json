@@ -91,54 +91,6 @@
         "at": "2026-08-13T22:32:04.563117+00:00"
       },
       {
-        "command": "npm run check:frontend",
-        "status": "passed",
-        "summary": "Vite client build and frontend structure checks passed; only the existing bundle-size advisory remained.",
-        "at": "2026-08-13T22:32:05.179537+00:00"
-      },
-      {
-        "command": "npm test",
-        "status": "passed",
-        "summary": "All 51 Vitest files and 795 local fake-runtime tests passed.",
-        "at": "2026-08-13T22:32:05.798874+00:00"
-      },
-      {
-        "command": "npm run typecheck",
-        "status": "passed",
-        "summary": "Worker, client, and browser TypeScript checks passed.",
-        "at": "2026-08-13T22:32:06.436294+00:00"
-      },
-      {
-        "command": "npx wrangler deploy --dry-run",
-        "status": "passed",
-        "summary": "Worker bundle and bindings validated without a local production deployment.",
-        "at": "2026-08-13T22:32:07.567103+00:00"
-      },
-      {
-        "command": "npm run test:browser:workspace",
-        "status": "passed",
-        "summary": "Workspace Playwright passed 110 tests with 55 configured viewport skips.",
-        "at": "2026-08-13T22:32:08.162486+00:00"
-      },
-      {
-        "command": "npm run test:browser:agent",
-        "status": "passed",
-        "summary": "Local fake-Provider Agent Playwright passed all 3 tests.",
-        "at": "2026-08-13T22:32:08.776162+00:00"
-      },
-      {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "Daily shell census workflow, governance tests, spec, and evidence contain no whitespace errors.",
-        "at": "2026-08-13T22:32:09.899541+00:00"
-      },
-      {
-        "command": "python ./.trellis/scripts/task.py validate-all",
-        "status": "passed",
-        "summary": "Repository task graph and workspace consistency passed after shell census scheduling updates.",
-        "at": "2026-08-13T22:32:11.088606+00:00"
-      },
-      {
         "command": "gh run view 31750483545",
         "status": "passed",
         "summary": "PR 81 final-head changes, quality, Workspace browser, and local fake-Provider Agent browser all passed on 290f5d62b5e2510b1db2957010d623ed13727491.",
@@ -155,6 +107,66 @@
         "status": "passed",
         "summary": "PR 81 squash-merged as exact main SHA 8f4a1da3b626c229c835f809eba803cae64a67d8; no Actions run exists for the merge SHA, so no production deployment was triggered.",
         "at": "2026-08-13T22:56:19.526530+00:00"
+      },
+      {
+        "command": "gh run view 31754436200",
+        "status": "passed",
+        "summary": "Exact-main GitHub Actions deployment passed on 77c985e80152e6f6eecaf668984a1214d5d1a35c; Worker version 2fca46e9-4cc3-4b80-bff8-15bfa206d918 is live, production smoke passed, and artifact 9202265262 was retained.",
+        "at": "2026-08-13T23:40:44.000000+00:00"
+      },
+      {
+        "command": "gh run view 31754704348",
+        "status": "passed",
+        "summary": "Fresh exact-main 14-day shell census collected artifact 9202286207 and reached the strict aggregate gate with 53 reads, zero unknown callers, zero unexpected access rows, and three deployment-SHA mismatches; the workflow's anomaly conclusion is expected while historical buckets remain.",
+        "at": "2026-08-13T23:41:41.000000+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structure checks passed; existing bundle-size advisory only.",
+        "at": "2026-08-14T00:06:24.045147+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "51 Vitest files and 795 tests passed.",
+        "at": "2026-08-14T00:06:25.161997+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright passed 110 tests with 55 configured matrix skips.",
+        "at": "2026-08-14T00:06:26.154864+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-Provider Agent Playwright passed all 3 tests.",
+        "at": "2026-08-14T00:06:27.162841+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-14T00:06:28.134386+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker bundle and bindings validated without a production deployment.",
+        "at": "2026-08-14T00:06:29.267953+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Evidence-only task changes contain no whitespace errors.",
+        "at": "2026-08-14T00:06:30.229620+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task graph and workspace consistency passed after evidence updates.",
+        "at": "2026-08-14T00:06:31.188244+00:00"
       }
     ],
     "delivery": {
