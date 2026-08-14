@@ -12,15 +12,60 @@
   "assignee": "codex",
   "createdAt": "2026-08-14",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/chatus-ux-settings-redesign-ui",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "2fad5b0183910c06956f948feba3dba3b99b50c0",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "full-quality-gate",
+        "status": "passed",
+        "summary": "Frontend checks, typecheck, 799 Vitest tests, 112 browser passes across five viewports, Wrangler dry-run, and diff hygiene passed.",
+        "at": "2026-08-14T13:59:55.271352+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite build and frontend structure checks passed.",
+        "at": "2026-08-14T14:00:49.417694+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "52 files and 799 tests passed in the serial Cloudflare pool.",
+        "at": "2026-08-14T14:01:07.025431+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-14T14:01:19.040040+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Packaging dry-run completed without deployment.",
+        "at": "2026-08-14T14:01:33.400910+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors; only expected line-ending notices were emitted.",
+        "at": "2026-08-14T14:01:49.997640+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "112 tests passed and 58 expected skips across wide, desktop, tablet, mobile, and touch projects.",
+        "at": "2026-08-14T14:02:03.362773+00:00"
+      }
+    ]
+  }
 }
