@@ -7,6 +7,13 @@ import { PageState } from "./components/PageState";
 import { createGuestSession, fetchSession, login, logout, type SessionProjection } from "./lib/api";
 import type { ClientSurface } from "./lib/routing";
 import { consumeMcpOAuthCallback, type McpOAuthCallbackResult } from "./lib/mcp-oauth";
+import {
+  readThemePreference,
+  resolveTheme,
+  writeThemePreference,
+  getDeviceStorage,
+  type ThemePreference,
+} from "./lib/device-preferences";
 
 type AppState =
   | { status: "loading" }
@@ -23,6 +30,8 @@ function ChatApp() {
   const [state, setState] = useState<AppState>({ status: "loading" });
   const [memberLoginOpen, setMemberLoginOpen] = useState(false);
   const [mcpOAuthResult, setMcpOAuthResult] = useState<McpOAuthCallbackResult | null>(null);
+  const themeUser = state.status === "authenticated" ? state.session.user : "anonymous";
+  const { themePreference, setThemePreference } = useDeviceTheme(themeUser);
 
   const refresh = useCallback(async () => {
     try {
@@ -76,6 +85,8 @@ function ChatApp() {
         mcpOAuthResult={mcpOAuthResult}
         onMcpOAuthResultConsumed={() => setMcpOAuthResult(null)}
         onMemberLogin={() => setMemberLoginOpen(true)}
+        themePreference={themePreference}
+        onThemePreferenceChange={setThemePreference}
         onLogout={async () => {
           await logout();
           setState({ status: "loading" });
@@ -98,6 +109,39 @@ function ChatApp() {
       )}
     </>
   );
+}
+
+function useDeviceTheme(user: string): {
+  themePreference: ThemePreference;
+  setThemePreference: (preference: ThemePreference) => boolean;
+} {
+  const [themePreference, setThemePreferenceState] = useState<ThemePreference>(() => (
+    readThemePreference(getDeviceStorage(), user)
+  ));
+
+  useEffect(() => {
+    setThemePreferenceState(readThemePreference(getDeviceStorage(), user));
+  }, [user]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      const resolved = resolveTheme(themePreference, media.matches);
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.style.colorScheme = resolved;
+    };
+    apply();
+    if (themePreference !== "follow-system") return;
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, [themePreference]);
+
+  const setThemePreference = useCallback((preference: ThemePreference) => {
+    setThemePreferenceState(preference);
+    return writeThemePreference(getDeviceStorage(), user, preference);
+  }, [user]);
+
+  return { themePreference, setThemePreference };
 }
 
 function clearSessionStorage(user: string): void {

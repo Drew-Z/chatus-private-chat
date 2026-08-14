@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { ProductBrand } from "./ProductBrand";
 
 export function LoginView({
   message,
@@ -21,16 +22,10 @@ export function LoginView({
   return (
     <main className="auth-shell">
       <section className="auth-panel" aria-labelledby="login-title">
-        <div className="brand-lockup">
-          <div className="brand-mark">C</div>
-          <div>
-            <strong>Chatus</strong>
-            <span>Private AI workspace</span>
-          </div>
-        </div>
-        <p className="eyebrow">INVITATION ONLY</p>
+        <ProductBrand />
+        <p className="eyebrow">BIAU PORT · 成员入口</p>
         <h1 id="login-title">进入你的工作台</h1>
-        <p className="muted">使用专属访问码连接个人 Agent 和已分配能力。</p>
+        <p className="muted">使用专属访问码连接你的 Agent、对话和已分配能力。</p>
         <form onSubmit={handleSubmit} className="stack-form">
           <label htmlFor="access-code">访问码</label>
           <input
@@ -42,7 +37,7 @@ export function LoginView({
             placeholder="输入访问码"
             required
           />
-          <button type="submit" disabled={submitting}>{submitting ? "正在进入..." : "进入 Chatus"}</button>
+          <button type="submit" disabled={submitting}>{submitting ? "正在进入..." : "进入泊语"}</button>
           <p className="form-message" role="status">{message}</p>
         </form>
       </section>

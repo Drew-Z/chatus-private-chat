@@ -68,6 +68,8 @@ const productionSmoke = await readText(path.join(root, "scripts/smoke-production
 const reactStyles = await readText(path.join(root, "client/src/styles.css"));
 const reactClient = await readText(path.join(root, "client/src/components/ChatWorkspace.tsx"));
 const reactSidebar = await readText(path.join(root, "client/src/components/ConversationSidebar.tsx"));
+const reactInspector = await readText(path.join(root, "client/src/components/ConversationInspector.tsx"));
+const reactMemberSettings = await readText(path.join(root, "client/src/components/MemberSettingsCenter.tsx"));
 const reactMemoryPanel = await readText(path.join(root, "client/src/components/MemoryPanel.tsx"));
 const reactMessageView = await readText(path.join(root, "client/src/components/MessageView.tsx"));
 const reactComposer = await readText(path.join(root, "client/src/components/MessageComposer.tsx"));
@@ -123,11 +125,11 @@ assert(reactClient.includes("const value = input || pendingSubmission?.text || \
 assert(reactClient.includes("draftGeneration.current === submittedDraftGeneration") && reactClient.includes("setAttachments(submittedAttachments)"), "React client: rejected sends must restore the complete submitted draft only when no newer draft exists");
 assert(reactClient.includes("retryFailedTurn") && reactClient.includes('onBranch(conversation, "resend"'), "React client: failed turns need an in-place retry branch action");
 assert(reactClient.includes("followTranscriptRef") && reactClient.includes("onScroll={trackTranscriptScroll}"), "React client: streaming scroll must respect manual transcript scrolling");
-assert(reactSidebar.includes("session.tools.map") && reactSidebar.includes("selectedToolIds"), "React sidebar: assigned tools and current Skill activation must remain visible");
-assert(reactSidebar.includes('tool.source === "mcp"'), "React sidebar: MCP tools must remain distinguishable without exposing server details");
-assert(reactSidebar.includes("onRevokeAllSessions") && reactSidebar.includes("onDeleteUserData") && reactSidebar.includes("onExportUserData"), "React sidebar: account data actions are missing");
-assert(reactSidebar.includes("账号与数据") && reactSidebar.includes("清空我的数据") && reactSidebar.includes("注销所有设备"), "React sidebar: account data controls need explicit labels and destructive copy");
-assert(reactSidebar.includes("<dialog") && reactSidebar.includes("previousFocusRef.current?.focus()"), "React sidebar: account data confirmations must be modal and restore focus");
+assert(reactInspector.includes("session.tools.map") && reactInspector.includes("selectedToolIds"), "React inspector: assigned tools and current Skill activation must remain visible");
+assert(reactInspector.includes('tool.source === "mcp"'), "React inspector: MCP tools must remain distinguishable without exposing server details");
+assert(reactMemberSettings.includes("onRevokeAllSessions") && reactMemberSettings.includes("onDeleteUserData") && reactMemberSettings.includes("onExportUserData"), "React settings: account data actions are missing");
+assert(reactMemberSettings.includes("账号与数据") && reactMemberSettings.includes("清空我的数据") && reactMemberSettings.includes("注销所有设备"), "React settings: account data controls need explicit labels and destructive copy");
+assert(reactMemberSettings.includes("<ConfirmDialog") && reactMemberSettings.includes("tone={confirmation === \"delete\" ? \"danger\" : \"default\"}"), "React settings: account data confirmations must be modal and destructive-aware");
 assert(reactSidebar.includes("data-sidebar-initial-focus") && reactSidebar.includes('event.key === "Escape"') && reactSidebar.includes("previousSidebarFocusRef.current?.focus()"), "React sidebar: mobile drawer must trap focus, close on Escape, and restore focus");
 assert(reactSidebar.includes("conversation-delete-dialog") && !reactSidebar.includes("window.confirm"), "React sidebar: conversation deletion needs an accessible modal instead of window.confirm");
 assert(reactSidebar.includes("aria-pressed={active}") && reactSidebar.includes("onViewChange"), "React sidebar: active conversations and the controlled settings view need semantic state");

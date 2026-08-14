@@ -44,6 +44,12 @@ import {
   type DraftAttachment,
 } from "../lib/image-input";
 import { ConversationSidebar } from "./ConversationSidebar";
+import {
+  ConversationInspector,
+  type ConversationSettingsSaveState,
+  type InspectorSection,
+} from "./ConversationInspector";
+import { MemberSettingsCenter } from "./MemberSettingsCenter";
 import { MemoryPanel } from "./MemoryPanel";
 import { MessageComposer } from "./MessageComposer";
 import { MessageView, type MessageAction } from "./MessageView";
@@ -59,6 +65,12 @@ import {
   providerTurnProgressText,
   selectNewestProviderTurnProgress,
 } from "../lib/provider-turn-progress";
+import {
+  readDeviceBoolean,
+  writeDeviceBoolean,
+  getDeviceStorage,
+  type ThemePreference,
+} from "../lib/device-preferences";
 
 type LogoutState =
   | { status: "idle" }
@@ -70,12 +82,16 @@ export function ChatWorkspace({
   mcpOAuthResult,
   onMcpOAuthResultConsumed,
   onMemberLogin,
+  themePreference,
+  onThemePreferenceChange,
   onLogout,
 }: {
   session: SessionProjection;
   mcpOAuthResult: McpOAuthCallbackResult | null;
   onMcpOAuthResultConsumed: () => void;
   onMemberLogin: () => void;
+  themePreference: ThemePreference;
+  onThemePreferenceChange: (preference: ThemePreference) => boolean;
   onLogout: () => Promise<void>;
 }) {
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
@@ -90,6 +106,13 @@ export function ChatWorkspace({
   const [logoutState, setLogoutState] = useState<LogoutState>({ status: "idle" });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarView, setSidebarView] = useState<"history" | "files" | "settings">("history");
+  const [inspectorOpen, setInspectorOpen] = useState(() => (
+    window.matchMedia("(min-width: 781px)").matches
+      && readDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open")
+  ));
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>("model");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSave, setSettingsSave] = useState<{ conversationId: string; state: ConversationSettingsSaveState }>({ conversationId: "", state: "idle" });
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [mcpConnectionsOpen, setMcpConnectionsOpen] = useState(false);
   const [mcpConnections, setMcpConnections] = useState(session.mcpConnections);
@@ -347,6 +370,7 @@ export function ChatWorkspace({
     const conversationId = activeConversation?.id;
     if (!conversationId || !activePermissions.canManageSettings) return Promise.resolve();
     setWorkspaceError("");
+    setSettingsSave({ conversationId, state: "saving" });
     const previous = settingsQueues.current.get(conversationId) || Promise.resolve();
     let task: Promise<void>;
     task = previous.then(async () => {
@@ -354,8 +378,14 @@ export function ChatWorkspace({
       if (!current) return;
       try {
         updateConversationInList(await updateAgentConversation(current, patch));
+        if (settingsQueues.current.get(conversationId) === task) {
+          setSettingsSave({ conversationId, state: "saved" });
+        }
       } catch (error) {
         setWorkspaceError(errorMessage(error, "会话设置保存失败，请重试。"));
+        if (settingsQueues.current.get(conversationId) === task) {
+          setSettingsSave({ conversationId, state: "error" });
+        }
         if (!(await recoverConversationAccess(error, conversationId))) {
           await refreshConversations(conversationId).catch(() => undefined);
         }
@@ -381,10 +411,19 @@ export function ChatWorkspace({
     clearUserDrafts(session.user);
   };
 
-  const openRouteSettings = () => {
-    setSidebarView("settings");
-    setSidebarOpen(true);
+  const openInspector = (section: InspectorSection) => {
+    setInspectorSection(section);
+    setInspectorOpen(true);
+    setSidebarView(section === "files" ? "files" : "settings");
+    setSidebarOpen(false);
+    writeDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open", true);
   };
+  const closeInspector = () => {
+    setInspectorOpen(false);
+    setSidebarView("history");
+    writeDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open", false);
+  };
+  const openRouteSettings = () => openInspector("model");
   const parentConversation = activeConversation?.parentChatId
     ? conversations.find((conversation) => conversation.id === activeConversation.parentChatId) || null
     : null;
@@ -466,6 +505,7 @@ export function ChatWorkspace({
         parentMissing={parentMissing}
         onOpenSidebar={() => setSidebarOpen(true)}
         onOpenRouteSettings={openRouteSettings}
+        onOpenMemberSettings={() => { setSettingsOpen(true); setSidebarOpen(false); }}
         onOpenMemory={() => setMemoryOpen(true)}
         onOpenMcpConnections={() => {
           setMcpConnectionsOpen(true);
@@ -477,20 +517,23 @@ export function ChatWorkspace({
         onLogout={handleLogout}
       />
 
-      <div className="workspace-layout">
+      <div className={`workspace-layout ${inspectorOpen ? "inspector-open" : ""}`}>
         <ConversationSidebar
           open={sidebarOpen}
           session={session}
           conversations={conversations}
           activeId={activeId}
-          routeId={routeId}
-          skillMode={skillMode}
-          skillIds={skillIds}
           view={sidebarView}
           busy={busy || accountOperationBusy}
           loading={loading}
           onClose={() => setSidebarOpen(false)}
-          onViewChange={setSidebarView}
+          onViewChange={(view) => {
+            if (view === "history") {
+              setSidebarView("history");
+              return;
+            }
+            openInspector(view === "files" ? "files" : "model");
+          }}
           onSelect={(conversation) => setActiveId(conversation.id)}
           onCreate={createConversation}
           onRename={renameConversation}
@@ -499,16 +542,7 @@ export function ChatWorkspace({
             updateConversationInList({ ...conversation, accessRevision });
             void refreshAfterAccessChange(conversation.id);
           }}
-          onConversationUpdated={updateConversationInList}
-          onRouteChange={(nextRouteId) => { setRouteId(nextRouteId); void persistSettings({ routeId: nextRouteId }); }}
-          onSkillModeChange={(nextSkillMode) => {
-            setSkillMode(nextSkillMode);
-            void persistSettings({ skillMode: nextSkillMode });
-          }}
-          onSkillChange={(nextSkillIds) => { setSkillIds(nextSkillIds); void persistSettings({ skillIds: nextSkillIds }); }}
-          onRevokeAllSessions={handleRevokeAllSessions}
-          onDeleteUserData={handleDeleteUserData}
-          onExportUserData={handleUserDataExport}
+          onOpenMemberSettings={() => { setSettingsOpen(true); setSidebarOpen(false); }}
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
 
@@ -546,6 +580,28 @@ export function ChatWorkspace({
             </div>
           )}
         </section>
+        <ConversationInspector
+          open={inspectorOpen}
+          section={inspectorSection}
+          session={session}
+          conversation={activeConversation}
+          routeId={routeId}
+          skillMode={skillMode}
+          skillIds={skillIds}
+          saveState={settingsSave.conversationId === activeConversation?.id ? settingsSave.state : "idle"}
+          busy={busy || accountOperationBusy}
+          onClose={closeInspector}
+          onSectionChange={setInspectorSection}
+          onConversationUpdated={updateConversationInList}
+          onAccessChanged={(conversation, accessRevision) => {
+            updateConversationInList({ ...conversation, accessRevision });
+            void refreshAfterAccessChange(conversation.id);
+          }}
+          onRouteChange={(nextRouteId) => { setRouteId(nextRouteId); void persistSettings({ routeId: nextRouteId }); }}
+          onSkillModeChange={(nextSkillMode) => { setSkillMode(nextSkillMode); void persistSettings({ skillMode: nextSkillMode }); }}
+          onSkillChange={(nextSkillIds) => { setSkillIds(nextSkillIds); void persistSettings({ skillIds: nextSkillIds }); }}
+          onRetrySave={() => { void persistSettings({ routeId, skillMode, skillIds }); }}
+        />
       </div>
       {session.capabilities.memory && <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />}
       {session.access === "member" && mcpConnectionsOpen && (
@@ -560,6 +616,25 @@ export function ChatWorkspace({
           onRevoke={revokeMcpConnection}
         />
       )}
+      <MemberSettingsCenter
+        open={settingsOpen}
+        nestedOpen={memoryOpen || mcpConnectionsOpen}
+        session={session}
+        themePreference={themePreference}
+        connectedMcpCount={mcpConnections.filter((item) => item.connected).length}
+        busy={accountOperationBusy}
+        onClose={() => setSettingsOpen(false)}
+        onThemePreferenceChange={onThemePreferenceChange}
+        onOpenMemory={() => setMemoryOpen(true)}
+        onOpenMcpConnections={() => {
+          setMcpConnectionsOpen(true);
+          setMcpConnectionNotice(null);
+          void refreshMcpConnections();
+        }}
+        onExportUserData={handleUserDataExport}
+        onRevokeAllSessions={handleRevokeAllSessions}
+        onDeleteUserData={handleDeleteUserData}
+      />
     </main>
   );
 }

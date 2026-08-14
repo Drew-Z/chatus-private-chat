@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Verify accessible names, focus entry/containment/restoration, semantic toggle state, and responsive typed-client composition."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Verify device storage fallback/user scoping and source-entity fencing for async settings mutations."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Verify the full command matrix and privacy/rollout boundary before commit."}

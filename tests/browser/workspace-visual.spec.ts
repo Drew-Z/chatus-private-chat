@@ -589,7 +589,7 @@ test("file workspace stays contained and exposes exact version selection", async
   await expect(failedRow.getByRole("checkbox")).toBeEnabled();
   expect(ingestRetryRequested).toBe(true);
 
-  await page.locator('input[type="file"]').first().setInputFiles({
+  await panel.locator('input[type="file"]').nth(0).setInputFiles({
     name: "too-large.txt",
     mimeType: "text/plain",
     buffer: Buffer.alloc(1024 * 1024 + 1, 65),
@@ -730,6 +730,7 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
 
 test("member Skill mode switches between automatic and exact manual selection", async ({ page }) => {
   await page.getByRole("button", { name: "查看线路与状态" }).click();
+  await page.getByRole("button", { name: "Skills", exact: true }).click();
   const mode = page.getByRole("group", { name: "Skill 模式" });
   const automatic = mode.getByRole("button", { name: "自动" });
   const manual = mode.getByRole("button", { name: "手动" });
@@ -746,6 +747,30 @@ test("member Skill mode switches between automatic and exact manual selection", 
   await expect(projectSkill).toBeEnabled();
   await projectSkill.uncheck();
   await expect(projectSkill).not.toBeChecked();
+});
+
+test("member settings center keeps global preferences out of conversation context", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "mobile-480"].includes(testInfo.project.name), "settings coverage targets desktop and mobile");
+  await page.getByRole("button", { name: "成员设置" }).first().click();
+  const center = page.getByRole("dialog", { name: "成员设置" });
+  await expect(center).toBeVisible();
+  await center.getByRole("button", { name: "外观" }).click();
+  await expect(center.locator('[role="group"][aria-label="主题"]')).toBeVisible();
+  await center.getByRole("button", { name: "深色" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  if ((page.viewportSize()?.width || 0) <= 780) await center.getByRole("button", { name: "设置", exact: true }).click();
+  await center.getByRole("button", { name: "连接" }).click();
+  await expect(center).toContainText("MCP");
+  if ((page.viewportSize()?.width || 0) <= 780) await center.getByRole("button", { name: "设置", exact: true }).click();
+  await center.getByRole("button", { name: "账号与数据" }).click();
+  await expect(center).toContainText("导出我的数据");
+  const geometry = await page.evaluate(() => ({
+    documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+  }));
+  expect(geometry).toEqual({ documentFits: true, bodyFits: true });
+  await page.keyboard.press("Escape");
+  await expect(center).toHaveCount(0);
 });
 
 test("message edit restores focus and rich content remains visible", async ({ page }) => {

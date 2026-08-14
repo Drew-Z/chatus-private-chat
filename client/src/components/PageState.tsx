@@ -1,9 +1,10 @@
 import { RefreshCw } from "lucide-react";
+import { ProductBrand } from "./ProductBrand";
 
 export function PageState({ title, detail, onRetry }: { title: string; detail: string; onRetry?: () => void }) {
   return (
     <main className="page-state" aria-live="polite">
-      <div className="brand-mark">C</div>
+      <ProductBrand />
       <h1>{title}</h1>
       <p>{detail}</p>
       {onRetry && (

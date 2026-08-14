@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/directory-structure.md","reason":"Typed client is the implementation boundary; public/ remains the legacy rollback surface."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"React composition, drawer focus lifecycle, semantic controls, and layered inspector/settings ownership."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Device-local theme preference, user scoping, revisioned conversation saves, and account-operation draft retention."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required frontend, Vitest, browser matrix, dry-run, privacy, and legacy-surface checks."}

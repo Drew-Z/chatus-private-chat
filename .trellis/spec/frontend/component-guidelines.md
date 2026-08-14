@@ -527,6 +527,8 @@ type LegacyRouteMigrationResponse = {
 - Render source URL/document parts after primary content in a named `<section>`. Sanitize URL protocols before creating links, retain the full accessible/title text, and visually contain long labels.
 - At 520px and below, preserve measurable space for both the conversation title and logical route/model. Compact the product identity to its mark instead of hiding the active conversation title.
 - A mobile drawer records its opener only on the closed-to-open transition. Move focus to the close control after the opening click/visibility transition settles only if the user has not moved focus, and restore the opener on an actual close or unmount rather than every effect cleanup.
+- Keep conversation configuration and member configuration as separate layered surfaces. `ConversationInspector` is keyed to the active conversation and owns only route/model, Skills, tools, files, and sharing presentation; `MemberSettingsCenter` owns appearance, memory, MCP, account/data, and session/device presentation. Both surfaces must preserve the existing permission gates and focus lifecycle of the API/dialog components they host.
+- The inspector is closed by default on desktop and becomes a drawer/full-screen layer below the tablet breakpoint. The settings center uses master-detail on desktop and list-to-detail on mobile; every layer receives an accessible name, initial focus, Escape handling, Tab containment, and opener restoration.
 
 ### Tests Required
 

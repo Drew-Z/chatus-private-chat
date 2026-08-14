@@ -1,7 +1,9 @@
-import { StrictMode, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
+import { ConversationInspector, type InspectorSection } from "../../../../client/src/components/ConversationInspector";
+import { MemberSettingsCenter } from "../../../../client/src/components/MemberSettingsCenter";
 import { MessageComposer } from "../../../../client/src/components/MessageComposer";
 import { MessageView, type MessageAction } from "../../../../client/src/components/MessageView";
 import { AdminOperationsContent, AdminOperationsPanel } from "../../../../client/src/components/AdminOperationsPanel";
@@ -22,6 +24,7 @@ import {
 import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
 import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
 import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
+import type { ThemePreference } from "../../../../client/src/lib/device-preferences";
 import {
   addDraftAttachmentFiles,
   readDraftAttachment,
@@ -681,6 +684,19 @@ function WorkspaceFixture() {
   const [activeId, setActiveId] = useState(initialActiveId);
   const [sidebarOpen, setSidebarOpen] = useState(params.get("drawer") === "open");
   const [sidebarView, setSidebarView] = useState<SidebarView>("history");
+  const [inspectorOpen, setInspectorOpen] = useState(params.get("inspector") === "open");
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>(params.get("section") === "files" ? "files" : "model");
+  const [memberSettingsOpen, setMemberSettingsOpen] = useState(params.get("settings") === "open");
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
+    const value = params.get("theme");
+    return value === "light" || value === "dark" ? value : "follow-system";
+  });
+  useEffect(() => {
+    const resolved = themePreference === "follow-system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : themePreference;
+    document.documentElement.dataset.theme = resolved;
+  }, [themePreference]);
   const [input, setInput] = useState(params.get("draft") === "long" ? "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行" : "准备发送的合成消息");
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
@@ -955,7 +971,8 @@ function WorkspaceFixture() {
         parentConversation={parentConversation}
         parentMissing={parentMissing}
         onOpenSidebar={() => setSidebarOpen(true)}
-        onOpenRouteSettings={() => { setSidebarView("settings"); setSidebarOpen(true); }}
+        onOpenRouteSettings={() => { setInspectorSection("model"); setInspectorOpen(true); setSidebarOpen(false); }}
+        onOpenMemberSettings={() => { setMemberSettingsOpen(true); setSidebarOpen(false); }}
         onOpenMemory={() => undefined}
         onOpenMcpConnections={() => undefined}
         onReturnToParent={() => {
@@ -964,7 +981,7 @@ function WorkspaceFixture() {
         onMemberLogin={() => undefined}
         onLogout={async () => setLogoutState("pending")}
       />
-      <div className="workspace-layout">
+      <div className={`workspace-layout ${inspectorOpen ? "inspector-open" : ""}`}>
         <ConversationSidebar
           open={sidebarOpen}
           session={session}
@@ -977,7 +994,12 @@ function WorkspaceFixture() {
           busy={turnBusy || workspaceBlocked}
           loading={false}
           onClose={() => setSidebarOpen(false)}
-          onViewChange={setSidebarView}
+          onViewChange={(view) => {
+            setSidebarView(view);
+            if (view === "files") setInspectorSection("files");
+            else if (view === "settings") setInspectorSection("model");
+            if (view !== "history") setInspectorOpen(true);
+          }}
           onSelect={(conversation) => setActiveId(conversation.id)}
           onCreate={async () => undefined}
           onRename={async (conversation, title) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, title } : item))}
@@ -996,6 +1018,7 @@ function WorkspaceFixture() {
           onRevokeAllSessions={async () => undefined}
           onDeleteUserData={async () => undefined}
           onExportUserData={async () => ({ truncated: false })}
+          onOpenMemberSettings={() => { setMemberSettingsOpen(true); setSidebarOpen(false); }}
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
         <section className="chat-panel" aria-label="对话">
@@ -1063,7 +1086,41 @@ function WorkspaceFixture() {
             /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
           </div>
         </section>
+        <ConversationInspector
+          open={inspectorOpen}
+          section={inspectorSection}
+          session={session}
+          conversation={activeConversation}
+          routeId={routeId}
+          skillMode={skillMode}
+          skillIds={skillIds}
+          saveState="idle"
+          busy={turnBusy || workspaceBlocked}
+          onClose={() => setInspectorOpen(false)}
+          onSectionChange={setInspectorSection}
+          onConversationUpdated={(conversation) => setConversations((current) => current.map((item) => item.id === conversation.id ? conversation : item))}
+          onAccessChanged={(conversation, accessRevision) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, accessRevision } : item))}
+          onRouteChange={() => undefined}
+          onSkillModeChange={(nextSkillMode) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillMode: nextSkillMode } : conversation))}
+          onSkillChange={(nextSkillIds) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillIds: nextSkillIds } : conversation))}
+          onRetrySave={() => undefined}
+        />
       </div>
+      <MemberSettingsCenter
+        open={memberSettingsOpen}
+        nestedOpen={false}
+        session={session}
+        themePreference={themePreference}
+        connectedMcpCount={session.mcpConnections.filter((item) => item.connected).length}
+        busy={workspaceBlocked}
+        onClose={() => setMemberSettingsOpen(false)}
+        onThemePreferenceChange={(next) => { setThemePreference(next); return true; }}
+        onOpenMemory={() => undefined}
+        onOpenMcpConnections={() => undefined}
+        onExportUserData={async () => ({ truncated: false })}
+        onRevokeAllSessions={async () => undefined}
+        onDeleteUserData={async () => undefined}
+      />
     </main>
   );
 }

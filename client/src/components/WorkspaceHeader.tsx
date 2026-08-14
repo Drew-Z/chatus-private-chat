@@ -1,6 +1,7 @@
-import { ArrowLeft, Brain, Cable, Download, Eye, LogIn, LogOut, Menu, Pencil, Route, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, Brain, Cable, Download, Eye, LogIn, LogOut, Menu, PanelRightOpen, Pencil, Route, Settings, Wifi, WifiOff } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
 import { resolveConversationAccessPermissions } from "../lib/state";
+import { ProductBrand } from "./ProductBrand";
 
 export type ConnectionState = "connecting" | "ready" | "error";
 
@@ -19,6 +20,7 @@ export function WorkspaceHeader({
   onOpenRouteSettings,
   onOpenMemory,
   onOpenMcpConnections,
+  onOpenMemberSettings = () => undefined,
   onReturnToParent,
   onMemberLogin,
   onLogout,
@@ -37,6 +39,7 @@ export function WorkspaceHeader({
   onOpenRouteSettings: () => void;
   onOpenMemory: () => void;
   onOpenMcpConnections: () => void;
+  onOpenMemberSettings?: () => void;
   onReturnToParent: () => void;
   onMemberLogin: () => void;
   onLogout: () => Promise<void>;
@@ -55,10 +58,7 @@ export function WorkspaceHeader({
     <header className="workspace-header">
       <div className="header-leading">
         <button className="icon-button mobile-only" type="button" onClick={onOpenSidebar} title="打开会话" aria-label="打开会话"><Menu size={19} /></button>
-        <div className="brand-lockup compact">
-          <div className="brand-mark small">C</div>
-          <div><strong>Chatus</strong><span>{session.displayName}</span></div>
-        </div>
+        <ProductBrand compact meta={session.displayName} />
       </div>
 
       <div className="header-conversation">
@@ -114,11 +114,15 @@ export function WorkspaceHeader({
         </div>
         <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
         {session.capabilities.memory && permissions.canManageSettings && (
-          <button className="icon-text-button quiet-button" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
+          <button className="icon-text-button quiet-button memory-trigger" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
         )}
         {session.access === "member" && permissions.canUseConversationTools && (
           <button className={`icon-button mcp-connections-trigger ${connectedMcpCount ? "connected" : ""}`} type="button" onClick={onOpenMcpConnections} disabled={busy || accountBusy} title={`MCP 连接${connectedMcpCount ? ` · ${connectedMcpCount} 已连接` : ""}`} aria-label={`MCP 连接${connectedMcpCount ? `，${connectedMcpCount} 个已连接` : ""}`}><Cable size={18} /></button>
         )}
+        {(session.access === "guest" || permissions.canManageSettings) && (
+          <button className="icon-button inspector-trigger" type="button" onClick={onOpenRouteSettings} disabled={busy || accountBusy} title="会话配置" aria-label="会话配置"><PanelRightOpen size={18} /></button>
+        )}
+        <button className="icon-button" type="button" onClick={onOpenMemberSettings} disabled={busy || accountBusy} title="成员设置" aria-label="成员设置"><Settings size={18} /></button>
         {session.access === "guest" ? (
           <button className="icon-text-button quiet-button" type="button" onClick={onMemberLogin} disabled={busy || accountBusy} title="成员登录" aria-label="成员登录"><LogIn size={17} /><span>成员登录</span></button>
         ) : (
