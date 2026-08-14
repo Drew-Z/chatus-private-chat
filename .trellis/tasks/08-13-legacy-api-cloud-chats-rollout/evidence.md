@@ -39,6 +39,20 @@
   `11006c32d5aa5158bb6ad0583597769254c27908`. The merge SHA has no associated
   Actions run, so this delivery did not trigger a production deployment.
 
+## Scheduled monitoring
+
+- The main-only, non-canceling production census workflow adds an exact 02:37 UTC
+  daily run for `legacy.api.cloud-chats` / 30 days. The existing chat-post and
+  browser-shell schedules remain unchanged.
+- Scheduled runs reuse the strict zero-count cloud-chats gate, accept only the
+  captured deployed main SHA or its Git ancestor, retain the aggregate-only
+  artifact before gating, and cannot deploy, mutate registry state, or advance a
+  rollout phase.
+- Instrumentation became live at `2026-08-13T16:21:12Z`. No census before
+  `2026-09-12T16:21:12Z` can prove a complete 30-day quiet period; the first
+  scheduled slot after that boundary is `2026-09-13T02:37:00Z` (Beijing
+  `2026-09-13 10:37`).
+
 ## Remaining gates
 
 This evidence is local and pre-disable. It does not raise the code-owned

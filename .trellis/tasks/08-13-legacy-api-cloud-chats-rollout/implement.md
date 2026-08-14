@@ -94,3 +94,9 @@ affected observation window.
   as exact main SHA `11006c32d5aa5158bb6ad0583597769254c27908`, which has no
   associated Actions run and triggered no production deployment. The
   `instrumented` phase ceiling and every remaining rollout gate are unchanged.
+- Daily monitoring now adds an exact 02:37 UTC cloud-chats / 30-day run to the
+  existing serialized, main-only, read-only census workflow. It reuses the strict
+  zero-count policy and cannot deploy or advance the surface. Because production
+  instrumentation became live at `2026-08-13T16:21:12Z`, the first scheduled
+  slot eligible to prove a full 30-day quiet period is `2026-09-13T02:37:00Z`
+  (Beijing `2026-09-13 10:37`); earlier snapshots are monitoring evidence only.

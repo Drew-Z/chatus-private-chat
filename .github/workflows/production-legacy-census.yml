@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "17 2 * * *"
     - cron: "27 2 * * *"
+    - cron: "37 2 * * *"
   workflow_dispatch:
     inputs:
       surface_id:
@@ -36,7 +37,7 @@ jobs:
     environment: production
     timeout-minutes: 10
     env:
-      LEGACY_SURFACE_ID: ${{ github.event.schedule == '27 2 * * *' && 'legacy.browser.shell' || inputs.surface_id || 'legacy.api.chat-post' }}
+      LEGACY_SURFACE_ID: ${{ github.event.schedule == '27 2 * * *' && 'legacy.browser.shell' || github.event.schedule == '37 2 * * *' && 'legacy.api.cloud-chats' || inputs.surface_id || 'legacy.api.chat-post' }}
       CENSUS_DAYS: ${{ github.event.schedule == '27 2 * * *' && '14' || inputs.days || '30' }}
     steps:
       - name: Checkout

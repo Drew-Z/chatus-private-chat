@@ -12,11 +12,11 @@
   "assignee": "zhang",
   "createdAt": "2026-08-13",
   "completedAt": null,
-  "branch": "codex/cloud-chats-rollback-rehearsal",
+  "branch": "codex/schedule-cloud-chats-census",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "f83b1642b6107ff8cf4466702645b053987cfab2",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/86",
+  "commit": "8cd2516adda11bd332de23cea30a70c1e50fa7bf",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/88",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -49,54 +49,6 @@
         "at": "2026-08-14T06:21:50.667576+00:00"
       },
       {
-        "command": "npm run check:frontend",
-        "status": "passed",
-        "summary": "Frontend build and structure checks passed; existing bundle-size advisory only.",
-        "at": "2026-08-14T06:21:50.860486+00:00"
-      },
-      {
-        "command": "npm test",
-        "status": "passed",
-        "summary": "51 Vitest files and 795 local fake-runtime tests passed.",
-        "at": "2026-08-14T06:21:51.055534+00:00"
-      },
-      {
-        "command": "npm run test:browser:workspace",
-        "status": "passed",
-        "summary": "Workspace Playwright passed 110 tests with 55 configured viewport skips.",
-        "at": "2026-08-14T06:21:51.250355+00:00"
-      },
-      {
-        "command": "npm run test:browser:agent",
-        "status": "passed",
-        "summary": "Local fake-Provider Agent Playwright passed all 3 tests.",
-        "at": "2026-08-14T06:21:51.453623+00:00"
-      },
-      {
-        "command": "npm run typecheck",
-        "status": "passed",
-        "summary": "Worker, client, and browser TypeScript checks passed.",
-        "at": "2026-08-14T06:21:51.647225+00:00"
-      },
-      {
-        "command": "npx wrangler deploy --dry-run",
-        "status": "passed",
-        "summary": "Wrangler 4.110.0 validated the Worker bundle, assets, and bindings without production deployment.",
-        "at": "2026-08-14T06:21:51.835871+00:00"
-      },
-      {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "Task changes contain no whitespace errors; only line-ending conversion notices were emitted.",
-        "at": "2026-08-14T06:21:52.018632+00:00"
-      },
-      {
-        "command": "python ./.trellis/scripts/task.py validate-all",
-        "status": "passed",
-        "summary": "Repository task graph and workspace consistency passed after cloud-chats recovery evidence updates.",
-        "at": "2026-08-14T06:21:52.214798+00:00"
-      },
-      {
         "command": "gh run view 31776316693",
         "status": "passed",
         "summary": "PR 86 final head b48a1f91863fc4956f0292824685de9a1501368e passed changes and quality; browser jobs were correctly skipped after impacted suites passed locally.",
@@ -107,6 +59,60 @@
         "status": "passed",
         "summary": "PR 86 squash-merged into main as exact SHA 11006c32d5aa5158bb6ad0583597769254c27908; the merge SHA has no associated Actions run and triggered no production deployment.",
         "at": "2026-08-14T06:43:16.481509+00:00"
+      },
+      {
+        "command": "npx vitest run tests/delivery-governance.test.ts tests/legacy-census-contract.test.ts",
+        "status": "passed",
+        "summary": "Two focused workflow and census contract files passed 57 tests for the third scheduled surface mapping and strict cloud-chats 30-day gate.",
+        "at": "2026-08-14T07:42:07.612942+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "The complete serial Workers suite passed 51 files and 795 tests.",
+        "at": "2026-08-14T07:42:07.804728+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structure checks passed with the existing bundle-size advisory only.",
+        "at": "2026-08-14T07:42:07.987365+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-14T07:42:08.179158+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler 4.110.0 validated the Worker bundle, assets, and bindings without production deployment.",
+        "at": "2026-08-14T07:42:08.360856+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "The final complete Workspace Playwright run passed 110 tests with 55 configured viewport skips after one unrelated boundary-780 timeout passed in isolation and on full rerun.",
+        "at": "2026-08-14T07:42:08.540096+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-Provider Agent Playwright passed all 3 tests.",
+        "at": "2026-08-14T07:42:08.720286+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "The cloud-chats scheduled census changes contain no whitespace errors; only line-ending conversion notices were emitted.",
+        "at": "2026-08-14T07:42:08.898613+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository task graph and workspace consistency passed after the scheduled cloud-chats evidence updates.",
+        "at": "2026-08-14T07:42:09.080466+00:00"
       }
     ]
   }
