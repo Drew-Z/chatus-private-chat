@@ -112,3 +112,11 @@ authority, preserve counters, and restart the affected observation window.
   zero unexpected access rows, three deployment-SHA mismatches, `status=anomaly`.
   The 14-day window has not cleared, so write/read observation, read-disable,
   cleanup approval, and archive remain open.
+- PR #83 passed path classification in run `31756788734` and squash-merged as
+  exact main SHA `536d13fab8fcf6a469d629ce538224f33cca655e`. It contained only
+  evidence records and produced no production deployment.
+- Scheduled shell census run `31769590170` retained artifact `9207618241` and
+  repeated the strict aggregate anomaly (`rowCount=4`, `totalCount=53`, zero
+  unknown callers, zero unexpected access rows, three deployment-SHA mismatches).
+  The scheduled ancestor policy works; only the historical 14-day buckets keep
+  observation and read-disable open.
