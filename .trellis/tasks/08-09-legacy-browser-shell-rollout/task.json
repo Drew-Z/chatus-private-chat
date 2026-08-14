@@ -15,8 +15,8 @@
   "branch": "codex/schedule-browser-shell-census",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "5030245d9eef7bc4b94620839ee583e92fc02a22",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/84",
+  "commit": "20620bd34087dbb85ef44d9edd1a6c0edb7f1753",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/85",
   "subtasks": [],
   "children": [],
   "parent": "08-05-legacy-surface-disable-observation",
@@ -185,6 +185,18 @@
         "status": "passed",
         "summary": "Scheduled exact-main-ancestor 14-day shell census retained artifact 9207618241 and reached the strict aggregate gate with 53 reads, zero unknown callers, zero unexpected access rows, and three deployment-SHA mismatches; historical buckets remain the only anomaly.",
         "at": "2026-08-14T04:21:33.000000+00:00"
+      },
+      {
+        "command": "gh run view 31772562158",
+        "status": "passed",
+        "summary": "PR 84 final head 8040d81a115dc0169dec892fd6aac6669df6d39f passed path classification; quality and browser jobs were correctly skipped for evidence-only records.",
+        "at": "2026-08-14T05:18:10.000000+00:00"
+      },
+      {
+        "command": "gh pr view 84",
+        "status": "passed",
+        "summary": "PR 84 squash-merged into main as exact SHA 4142d21913bdeb74057b2345764974968520c887; no production deployment was triggered.",
+        "at": "2026-08-14T05:27:00.000000+00:00"
       }
     ],
     "delivery": {
