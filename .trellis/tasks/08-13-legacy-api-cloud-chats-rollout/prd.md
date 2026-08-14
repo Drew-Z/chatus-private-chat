@@ -52,11 +52,11 @@ and recovery behavior.
 - [x] AC2. Agent parity covers list/read/upsert/delete/migrate, pagination,
       tombstones, retries, cleanup, metadata, sync, and stable errors using only
       deterministic local fixtures.
-- [ ] AC3. Identity/resource migration maps reconcile one-to-one and satisfy the
+- [x] AC3. Identity/resource migration maps reconcile one-to-one and satisfy the
       ACL identity planning gate without implying disable completion.
 - [ ] AC4. Write-disable produces no authoritative legacy mutation, hidden
       sync, quota/accounting side effect, or Agent/UserState divergence.
-- [ ] AC5. Capture/restore and compatibility-read rollback pass before the write
+- [x] AC5. Capture/restore and compatibility-read rollback pass before the write
       observation window completes.
 - [ ] AC6. Read-disable is reversible and its independent 30-day window passes
       with no unexplained caller.

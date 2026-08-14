@@ -394,7 +394,7 @@ function fixtureCaptureAdapters(
       object.stateClass,
       object.restoreBehavior,
       durableSnapshotBytes(object.schemaVersion, object.kind),
-      object.kind === "user_state" || object.kind === "conversation_team_agent" ? 1 : 0,
+      object.kind === "user_state" ? 2 : object.kind === "conversation_team_agent" ? 1 : 0,
     ));
   }
   adapters.push(captureAdapter("ephemeral_state", "sessions-and-leases", "ephemeral-v1", "excluded", "exclude",
@@ -614,6 +614,33 @@ function durableSnapshotBytes(schemaVersion: string, kind: InstanceObjectKind): 
           deleted_at: 0,
         }],
       }]
+    : kind === "user_state"
+      ? [{
+          name: "chats",
+          schema: "CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, summary TEXT NOT NULL, summary_until INTEGER NOT NULL, message_count INTEGER NOT NULL, content TEXT NOT NULL)",
+          rows: [{
+            id: "conversation-restore-drill",
+            title: "Restore drill",
+            created_at: FIXED_NOW.getTime(),
+            updated_at: FIXED_NOW.getTime() + 1,
+            summary: "",
+            summary_until: 0,
+            message_count: 1,
+            content: JSON.stringify({
+              id: "conversation-restore-drill",
+              title: "Restore drill",
+              createdAt: FIXED_NOW.getTime(),
+              updatedAt: FIXED_NOW.getTime() + 1,
+              summary: "",
+              summaryUntil: 0,
+              pinned: false,
+              routeId: "primary",
+              parentChatId: "",
+              skillIds: [],
+              messages: [{ role: "user", content: "Restore fixture" }],
+            }),
+          }],
+        }]
     : kind === "identity_registry"
     ? [
       {
