@@ -100,3 +100,7 @@ affected observation window.
   instrumentation became live at `2026-08-13T16:21:12Z`, the first scheduled
   slot eligible to prove a full 30-day quiet period is `2026-09-13T02:37:00Z`
   (Beijing `2026-09-13 10:37`); earlier snapshots are monitoring evidence only.
+- PR #88 final head `8417ae8d46785e501088cda0e6406f06e89e12d1` passed all
+  four CI jobs in run `31781128802` and squash-merged as exact main SHA
+  `c319fe851f37060ba568bb607b2844e0044b99bc`. The merge triggered no production
+  deployment and did not change the `instrumented` ceiling or start a window.
