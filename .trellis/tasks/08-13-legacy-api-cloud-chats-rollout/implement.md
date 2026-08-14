@@ -10,10 +10,12 @@
 - [x] Build deterministic legacy-versus-Agent parity fixtures for list/read,
       upsert/delete/migrate, ordering, pagination, tombstones, retries,
       metadata, cleanup, import/sync, identity mappings, and stable errors.
-- [ ] Persist census and one-to-one identity/resource reconciliation evidence for
+- [x] Persist census and one-to-one identity/resource reconciliation evidence for
       the ACL identity gate.
-- [ ] Rehearse compatibility-read rollback and capture/restore, then stop legacy
-      writes only after every caller and hidden mutation path is migrated.
+- [x] Rehearse compatibility-read rollback and capture/restore against retained
+      UserState, Agent, stable-identity, and exact surface-control state.
+- [ ] Stop legacy writes only after every caller and hidden mutation path is
+      migrated.
 - [ ] Retain the complete 30-day write evidence, disable legacy reads
       reversibly, and retain the separate 30-day read evidence.
 - [ ] Advance only this record to `approved_for_cleanup`; delete no route or
@@ -47,16 +49,14 @@ affected observation window.
   zero-SHA evidence, read/write disable responses, and zero persistence for a
   disabled PUT. Existing deterministic cloud-chat tests cover CRUD/migrate
   conflict, tombstone, cleanup, and Agent synchronization behavior.
-- Production census is now policy-gated for manual 30-day cloud-chats runs, but
-  no production census has been run for this surface and no observation window
-  has started. Capture/restore, compatibility rollback, identity reconciliation,
-  write/read observation, and cleanup approval remain open.
-- Local quality gates pass: focused manifest/census/Worker tests, full Vitest
-  (51 files, 794 tests), `npm run check:frontend`, `npm run typecheck`,
+- Production census is policy-gated for exact 30-day cloud-chats runs. The first
+  exact-main aggregate is clear, but no observation window has started.
+- Local quality gates pass: focused cloud-chats rollback and restore tests, full
+  Vitest (51 files, 795 tests), `npm run check:frontend`, `npm run typecheck`,
   `npx wrangler deploy --dry-run`, Agent Playwright (3 passed), Workspace
   Playwright (110 passed, 55 configured skips), `git diff --check`, and
-  repository-wide Trellis consistency. Commit, PR, deployment, and production
-  census evidence are recorded only after their respective actions complete.
+  repository-wide Trellis consistency. Commit and PR delivery evidence remain
+  pending until those actions complete.
 - PR #76 merged as exact `main` SHA
   `36db0f0b048db75dc0943672d352d052cf1f29e1`. GitHub Actions deployment run
   `31719901675` passed exact-main guards, full quality, Worker upload, and
@@ -71,5 +71,20 @@ affected observation window.
   `deploymentMismatchRows=0`, and `status=clear`; artifact `9189023771` is
   retained through 2026-11-11. Raw census rows were not inspected or retained
   here. This is a clean read-only baseline and does not start the 30-day write
-  or read observation windows; rollback, disable, identity reconciliation, and
-  cleanup gates remain open.
+  or read observation windows; production disable, observation, and cleanup
+  gates remain open.
+- The completed stable-principal/resource task and the current isolated restore
+  mapping now prove one-to-one principal, Root, UserState, and conversation-Agent
+  target identities without using browser labels as authority. AC3 is complete;
+  this does not imply a disable or observation transition.
+- The local cloud-chats route rehearsal captures the complete pre-test surface
+  atom, proves a disabled write changes neither legacy UserState nor Agent state,
+  executes real write rollback to `shadowing`, executes real compatibility-read
+  rollback to `recovery_proven`, and proves the retained read works while writes
+  remain disabled. The exact original atom is restored in `finally`.
+- The isolated restore drill uses the runtime-exported UserState and TeamAgent
+  schema versions, restores non-empty compatible rows to unique stable targets,
+  retains the exact cloud-chats control projection, reports zero loss/unresolved
+  references, and keeps target writes closed. AC5 is complete. Production write
+  disable, both 30-day windows, read-disable, cleanup approval, and archive remain
+  open.

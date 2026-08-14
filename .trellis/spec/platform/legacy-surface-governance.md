@@ -562,6 +562,14 @@ PUT /api/chats, DELETE /api/chats, POST /api/chats/migrate
 - Capture/isolated restore retains transitional UserState and Agent state;
   `compatibility_read` rollback re-enables the retained route against the same
   authoritative source without mixing restored/source data.
+- The local pre-disable rehearsal captures the complete surface atom, exercises
+  the real write rollback to `shadowing`, then exercises the real read rollback
+  to `recovery_proven`. The retained compatibility read becomes available while
+  writes stay disabled, and the exact pre-test atom is restored in `finally`.
+- Isolated restore uses the runtime-exported UserState and TeamAgent schema
+  versions, retains non-empty compatible UserState and conversation-Agent rows,
+  preserves one-to-one stable principal/resource mappings plus the exact
+  `legacy.api.cloud-chats` registry atom, and keeps target writes closed.
 - Any unexplained caller, parity divergence, or recovery failure resets only
   the affected observation window.
 
@@ -570,6 +578,12 @@ PUT /api/chats, DELETE /api/chats, POST /api/chats/migrate
 - Worker tests cover all four methods, all declared callers, content-free
   counters, server-owned SHA, read/write controls, and zero side effects on
   disabled writes.
+- The route rehearsal must use real rollback RPCs, prove legacy and Agent state
+  stay unchanged on a blocked write, restore compatibility reads without
+  reopening writes, and restore the exact code-owned surface atom after the test.
+- The isolated restore drill must decode the current UserState and TeamAgent
+  snapshots, prove their non-empty conversation mapping and unique stable target
+  identities, retain the cloud-chats registry projection, and emit no content.
 - Census policy tests require the exact 30-day window, caller allowlist, and
   aggregate anomaly gate; production collection remains read-only and
   GitHub-Actions-only.
