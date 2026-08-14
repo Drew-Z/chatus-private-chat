@@ -55,8 +55,8 @@ affected observation window.
   Vitest (51 files, 795 tests), `npm run check:frontend`, `npm run typecheck`,
   `npx wrangler deploy --dry-run`, Agent Playwright (3 passed), Workspace
   Playwright (110 passed, 55 configured skips), `git diff --check`, and
-  repository-wide Trellis consistency. Commit and PR delivery evidence remain
-  pending until those actions complete.
+  repository-wide Trellis consistency. Commit and PR delivery evidence is
+  recorded below.
 - PR #76 merged as exact `main` SHA
   `36db0f0b048db75dc0943672d352d052cf1f29e1`. GitHub Actions deployment run
   `31719901675` passed exact-main guards, full quality, Worker upload, and
@@ -88,3 +88,9 @@ affected observation window.
   references, and keeps target writes closed. AC5 is complete. Production write
   disable, both 30-day windows, read-disable, cleanup approval, and archive remain
   open.
+- PR #86 final head `b48a1f91863fc4956f0292824685de9a1501368e` passed
+  `changes` and `quality` in CI run `31776316693`; the browser jobs were correctly
+  path-classified out after their impacted suites passed locally. It squash-merged
+  as exact main SHA `11006c32d5aa5158bb6ad0583597769254c27908`, which has no
+  associated Actions run and triggered no production deployment. The
+  `instrumented` phase ceiling and every remaining rollout gate are unchanged.
