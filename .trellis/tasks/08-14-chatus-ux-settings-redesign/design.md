@@ -2,11 +2,13 @@
 
 ## Status And Approval Gate
 
-This is a planning artifact for `08-14-chatus-ux-settings-redesign`. It describes the proposed member experience and the implementation boundary; it does not change production code. `task.py start` and UI implementation remain blocked until the user approves the final PRD, this design, the Figma direction, and `implement.md`.
+This is the approved design artifact for `08-14-chatus-ux-settings-redesign`. The original planning gate was approved before `task.py start`; the user later requested and authorized the visual revision recorded below. Production deployment and all legacy rollout gates remain outside this task.
 
 ## Design Intent
 
-Chatus should feel like a durable daily workbench inside the BIAU PORT / 泊岸 family. The parent brand supplies the relationship, wordmark, and a restrained atmospheric vocabulary. The active work surface stays quiet: neutral surfaces, deep navy text, stable reading width, sparse warm-gold emphasis, and explicit semantic status colors. The product identity is `泊语 HarborTalk | Chatus`; the first milestone does not invent a separate logo or app icon.
+Chatus should feel like a durable daily workbench inside the BIAU PORT / 泊岸 family. The parent brand supplies the relationship, wordmark, and a restrained atmospheric vocabulary. The revised active work surface is deliberately lighter and more editorial: a pearl-white canvas, near-black text, weak neutral borders, soft elevation, stable reading width, and a sparse cobalt accent for actions and selection. The product identity is `泊语 HarborTalk | Chatus`; the first milestone does not invent a separate logo or app icon.
+
+The visual reference is pattern-level inspiration from mature AI workbenches such as OpenAI and DeepSeek: generous whitespace, quiet navigation, composer-first empty states, and clean master-detail settings. It is not a request to copy their logos, assets, exact color values, or component styling. The current teal-led and navy/slate-heavy treatment is superseded because it makes the workspace feel heavy and competes with the content.
 
 The design is Figma-first and implementation-ready. It keeps the existing member chat and account contracts, separates conversation-scoped controls from member-global preferences, and gives every responsive state a clear owner.
 
@@ -158,24 +160,25 @@ The following names are semantic contracts for Figma and the eventual `client/sr
 
 | Token | Light direction | Dark direction | Use |
 | --- | --- | --- | --- |
-| `color.surface.canvas` | `#F4F7F7` | `#101820` | App background |
-| `color.surface.default` | `#FFFFFF` | `#151F29` | Main panels and controls |
-| `color.surface.muted` | `#EEF3F3` | `#1B2833` | Rail, quiet rows, code/table backing |
-| `color.surface.elevated` | `#FFFFFF` | `#1E2D39` | Dialogs and inspector |
-| `color.ink.primary` | `#152A3C` | `#F1F6F7` | Main text and headings |
-| `color.ink.secondary` | `#5E6E77` | `#AEBEC4` | Supporting text |
-| `color.line.default` | `#D8E3E4` | `#30434E` | Separators and borders |
-| `color.line.strong` | `#B8C9CC` | `#48606B` | Focused/selected control boundaries |
-| `color.brand.accent` | `#187C83` | `#75C8CC` | Primary action and selected state |
-| `color.brand.accentSoft` | `#E2F2F2` | `#173A3E` | Low-emphasis brand state |
+| `color.surface.canvas` | `#F7F8FA` | `#111214` | App background |
+| `color.surface.default` | `#FFFFFF` | `#191A1D` | Main panels and controls |
+| `color.surface.muted` | `#F3F4F6` | `#222428` | Rail, quiet rows, code/table backing |
+| `color.surface.strong` | `#ECEEF2` | `#2B2D32` | Hover/selected backing and control groups |
+| `color.surface.elevated` | `#FFFFFF` | `#24262B` | Dialogs and inspector |
+| `color.ink.primary` | `#15171A` | `#F5F6F7` | Main text and headings |
+| `color.ink.secondary` | `#6F747C` | `#A8ADB5` | Supporting text |
+| `color.line.default` | `#E5E7EB` | `#34363C` | Separators and borders |
+| `color.line.strong` | `#D1D5DB` | `#4A4D55` | Focused/selected control boundaries |
+| `color.brand.accent` | `#4D6BFE` | `#8EA2FF` | Sparse primary action and selected state |
+| `color.brand.accentSoft` | `#EEF2FF` | `#293153` | Low-emphasis brand state |
 | `color.brand.warm` | `#A96F2D` | `#D7A65F` | Sparse emphasis and attention |
 | `color.brand.blush` | `#D89192` | `#D39A9E` | Bounded brand moments only |
 | `color.status.success` | `#2E795F` | `#6CC39D` | Success/connected |
 | `color.status.warning` | `#94621B` | `#E1B767` | Warning/recovery |
 | `color.status.danger` | `#B24752` | `#EE8F98` | Destructive/error |
-| `color.focus.ring` | `#187C83` at 30% | `#75C8CC` at 45% | Keyboard focus |
+| `color.focus.ring` | `#4D6BFE` at 28% | `#8EA2FF` at 45% | Keyboard focus |
 
-The brand accent is intentionally restrained. Status colors are separate semantic roles, and atmospheric cyan/blush never replaces error, warning, or success tokens.
+The brand accent is intentionally restrained and cobalt rather than teal. Status colors are separate semantic roles, and atmospheric cyan/blush never replaces error, warning, or success tokens.
 
 ### Layout And Type Variables
 

@@ -40,6 +40,8 @@ The work is Figma-first: agree on information architecture, interaction states, 
 - Member appearance settings provide three theme choices: follow system, light, and dark. Follow system is the default.
 - Persist the first-milestone theme preference on the current device/browser. Do not add a server-side member preference field or cross-device theme synchronization in this task.
 - Keep operational surfaces neutral and high-contrast in both themes; atmospheric brand colors must not reduce transcript readability or compete with semantic status colors.
+- Revised visual direction (2026-08-15): the member workspace should feel clean, premium, and calm in the pattern language of mature AI workbenches such as OpenAI and DeepSeek. Use a pearl-white neutral canvas, near-black typography, weak separators, restrained elevation, and one sparse cobalt accent. These are pattern references only; do not copy logos, assets, or exact styling. Remove the previous dominant teal, dark filled user bubble, saturated selected rows, and navy/slate-heavy dark theme.
+- The primary visual anchor is the composer and transcript reading column. The rail, header, inspector, and settings navigation should recede into quiet surfaces with subtle selected states. Warm BIAU colors remain rare brand details only and must not drive the operational palette.
 - Define a Figma design system for color, typography, spacing, elevation, separators, icons, controls, focus, motion, and responsive layout.
 
 ### R3. Settings Ownership

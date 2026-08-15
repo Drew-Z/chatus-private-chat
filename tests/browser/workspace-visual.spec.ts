@@ -728,7 +728,7 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await attachScreenshot(page, testInfo, "guest-workspace");
 });
 
-test("member Skill mode switches between automatic and exact manual selection", async ({ page }) => {
+test("member Skill mode switches between automatic and exact manual selection", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "查看线路与状态" }).click();
   await page.getByRole("button", { name: "Skills", exact: true }).click();
   const mode = page.getByRole("group", { name: "Skill 模式" });
@@ -747,6 +747,7 @@ test("member Skill mode switches between automatic and exact manual selection", 
   await expect(projectSkill).toBeEnabled();
   await projectSkill.uncheck();
   await expect(projectSkill).not.toBeChecked();
+  if (testInfo.project.name === "desktop-1440") await attachScreenshot(page, testInfo, "conversation-inspector");
 });
 
 test("member settings center keeps global preferences out of conversation context", async ({ page }, testInfo) => {
@@ -769,6 +770,7 @@ test("member settings center keeps global preferences out of conversation contex
     bodyFits: document.body.scrollWidth <= document.body.clientWidth,
   }));
   expect(geometry).toEqual({ documentFits: true, bodyFits: true });
+  await attachScreenshot(page, testInfo, "member-settings");
   await page.keyboard.press("Escape");
   await expect(center).toHaveCount(0);
 });
@@ -791,9 +793,13 @@ test("message edit restores focus and rich content remains visible", async ({ pa
   const colors = await page.evaluate(() => {
     const heading = document.querySelector<HTMLElement>(".message.user .markdown-content h1");
     const code = document.querySelector<HTMLElement>(".message.user .markdown-content code");
-    return { heading: heading ? getComputedStyle(heading).color : "", code: code ? getComputedStyle(code).color : "" };
+    return {
+      heading: heading ? getComputedStyle(heading).color : "",
+      code: code ? getComputedStyle(code).color : "",
+      ink: getComputedStyle(document.documentElement).color,
+    };
   });
-  expect(colors.heading).toBe("rgb(255, 255, 255)");
+  expect(colors.heading).toBe(colors.ink);
   expect(colors.code).not.toBe(colors.heading);
 });
 

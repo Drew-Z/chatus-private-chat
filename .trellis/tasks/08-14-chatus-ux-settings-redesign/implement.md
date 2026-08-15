@@ -50,6 +50,8 @@ This checklist is intentionally not started while the task is in `planning`. The
 - [x] Keep touch-visible actions at least 44px and desktop icon controls at the approved compact size.
 - [x] Use only low-motion transitions and preserve the existing reduced-motion behavior.
 - [x] Ensure model/route labels, long titles, file names, errors, and status text wrap or locally scroll without page overflow.
+- [x] Revise the visual system after review feedback: use pearl-white neutral surfaces, near-black ink, subtle separators, restrained elevation, and sparse cobalt emphasis; remove dominant teal and dark filled message treatments from the member workspace.
+- [x] Recheck the composer-first empty state, quiet rail selection, header hierarchy, inspector/settings surfaces, and neutral near-black dark theme against the approved pattern references.
 
 ### 6. Responsive And Accessibility Pass
 
@@ -115,5 +117,12 @@ Likely implementation files are limited to the typed client and its focused test
 - Implemented the approved member shell split: history rail, on-demand conversation inspector, and member settings center, while retaining existing API, permission, revision, MCP, memory, sharing, export, revoke, delete, and logout owners.
 - Implemented device-local `follow-system | light | dark` theme preference with semantic light/dark variables and representative dark states. No server preference or cross-device synchronization was added.
 - Added fixture and unit coverage for theme preference behavior, settings ownership, responsive containment, pending/retry states, and focus restoration.
-- Validation completed: `git diff --check`, `npm run check:frontend`, `npm run typecheck`, `npm test` (`52` files, `799` tests), `npm run test:browser:workspace` (`112` passed, `58` skipped), and `npx wrangler deploy --dry-run`.
+- Validation completed: `git diff --check`, `npm run check:frontend`, `npm run typecheck`, `npm test` (`52` files, `799` tests), `npm run test:browser:workspace` (`112` passed, `58` skipped across 170 projects), and `npx wrangler deploy --dry-run`.
 - Scope audit completed: no `public/` legacy source, legacy rollout task, production gate, deployment workflow, API contract, secret, conversation content, or stored memory was changed.
+
+### Visual Revision Record — 2026-08-15
+
+- User feedback: the implemented UI felt visually heavy and not premium enough; requested a cleaner direction similar in pattern quality to OpenAI and DeepSeek.
+- Decision: preserve the approved information architecture and contracts, but supersede the teal-led visual tokens with pearl white (`#F7F8FA`), white surfaces, near-black ink, neutral gray separators, and sparse cobalt (`#4D6BFE`).
+- Decision: make the composer/transcript the primary anchor, reduce header and rail competition, use subtle active rows instead of saturated fills, and use a neutral near-black dark theme rather than navy/slate panels.
+- Boundary: references inform hierarchy and restraint only; no third-party logo, asset, exact styling, or legacy rollout surface is copied or changed.
