@@ -37,7 +37,7 @@ export function LoginView({
             placeholder="输入访问码"
             required
           />
-          <button type="submit" disabled={submitting}>{submitting ? "正在进入..." : "进入泊语"}</button>
+          <button type="submit" aria-label="进入 Chatus（进入泊语）" disabled={submitting}>{submitting ? "正在进入..." : "进入泊语"}</button>
           <p className="form-message" role="status">{message}</p>
         </form>
       </section>

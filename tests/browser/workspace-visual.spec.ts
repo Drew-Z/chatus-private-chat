@@ -992,6 +992,9 @@ test("operations data stays scannable with local table overflow", async ({ page 
   test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "operations coverage targets desktop and 390px");
   await page.goto("/?view=operations");
   await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模型监控 · 最近 24 小时" })).toBeVisible();
+  await expect(page.getByLabel("最近 24 小时模型监控摘要")).toContainText("Provider 请求");
+  await expect(page.getByText("仅统计实际 Provider attempt；Fallback 单独计数。", { exact: false })).toBeVisible();
   await expect(page.getByRole("heading", { name: "旧功能面治理" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "7 日请求趋势" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "逻辑模型结果" })).toBeVisible();

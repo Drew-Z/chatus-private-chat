@@ -21,7 +21,7 @@ import {
   resolveMessageActionAvailability,
   type TurnPhase,
 } from "../../../../client/src/lib/state";
-import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
+import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, ModelMonitorSnapshot, SessionProjection } from "../../../../client/src/lib/api";
 import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
 import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
 import type { ThemePreference } from "../../../../client/src/lib/device-preferences";
@@ -499,6 +499,85 @@ const operationBudgetReservations: AdminOperationsSnapshot["finance"]["providers
   reviewAfter: 1782699200000 + index * 60_000,
 }));
 
+const operationMonitorGeneratedAt = 1785032000000;
+const operationMonitorPeriodStart = operationMonitorGeneratedAt - 86_400_000;
+const operationModelMonitor: ModelMonitorSnapshot = {
+  version: 1,
+  window: "24h",
+  generatedAt: operationMonitorGeneratedAt,
+  periodStart: operationMonitorPeriodStart,
+  periodEnd: operationMonitorGeneratedAt,
+  totals: {
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  },
+  trend: Array.from({ length: 24 }, (_, index) => ({
+    bucketStart: operationMonitorPeriodStart + index * 3_600_000,
+    bucketEnd: operationMonitorPeriodStart + (index + 1) * 3_600_000,
+    attempts: index === 23 ? 42 : 0,
+    succeeded: index === 23 ? 36 : 0,
+    failures: index === 23 ? 4 : 0,
+    inFlight: index === 23 ? 2 : 0,
+    fallbacks: index === 23 ? 6 : 0,
+  })),
+  routes: [{
+    id: "reasoning",
+    label: "高质量推理逻辑模型",
+    model: "reasoning-model",
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  }],
+  providers: [{
+    id: "provider-fixture",
+    label: "Fixture Provider",
+    model: "reasoning-model",
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  }],
+  models: [{
+    id: "reasoning-model",
+    label: "reasoning-model",
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  }],
+  runKinds: [{
+    runKind: "main_answer",
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  }],
+  failureClasses: [{ errorClass: "upstream_timeout", count: 4 }],
+};
+
 const operationsSnapshot: AdminOperationsSnapshot = {
   stats: {
     day: "2026-07-26",
@@ -523,6 +602,7 @@ const operationsSnapshot: AdminOperationsSnapshot = {
   },
   audit: operationAudit,
   feedback: operationFeedback,
+  modelMonitor: operationModelMonitor,
   finance: {
     version: 1,
     generatedAt: 1785032000000,

@@ -10,6 +10,7 @@ import {
   deleteUserData,
   discoverMemberMcpOAuthTools,
   exportUserData,
+  fetchModelAvailability,
   fetchMcpOAuthConnections,
   listAgentConversations,
   revokeMcpOAuthConnection,
@@ -19,6 +20,7 @@ import {
   updateAgentConversation,
   type AgentConversationBranchAction,
   type AgentConversation,
+  type MemberModelAvailability,
   type SessionProjection,
 } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
@@ -119,17 +121,39 @@ export function ChatWorkspace({
   const [mcpBusyServerId, setMcpBusyServerId] = useState("");
   const [mcpConnectionNotice, setMcpConnectionNotice] = useState<McpConnectionNotice | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
+  const [modelAvailability, setModelAvailability] = useState<MemberModelAvailability | null>(null);
+  const [modelAvailabilityRefreshing, setModelAvailabilityRefreshing] = useState(false);
   const bootstrapped = useRef(false);
   const logoutInFlight = useRef(false);
   const mcpRefresh = useRef<Promise<void> | null>(null);
   const conversationSnapshots = useRef(new Map<string, AgentConversation>());
   const conversationRefreshGeneration = useRef(0);
   const settingsQueues = useRef(new Map<string, Promise<void>>());
+  const modelAvailabilityRefreshAt = useRef(0);
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
   const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
   const logoutPending = logoutState.status === "pending";
   const accountActionBusy = accountBusy || logoutPending;
   const accountOperationBusy = accountActionBusy || Boolean(mcpBusyServerId);
+
+  const refreshModelAvailability = useCallback(async (force = false): Promise<void> => {
+    if (session.access !== "member") return;
+    const now = Date.now();
+    if (!force && now - modelAvailabilityRefreshAt.current < 60_000) return;
+    modelAvailabilityRefreshAt.current = now;
+    setModelAvailabilityRefreshing(true);
+    try {
+      setModelAvailability(await fetchModelAvailability());
+    } catch {
+      // Availability is advisory. Keep the last projection and never block chat.
+    } finally {
+      setModelAvailabilityRefreshing(false);
+    }
+  }, [session.access]);
+
+  useEffect(() => {
+    void refreshModelAvailability(true);
+  }, [refreshModelAvailability, session.user]);
 
   const refreshMcpConnections = useCallback((): Promise<void> => {
     if (session.access !== "member") return Promise.resolve();
@@ -288,17 +312,29 @@ export function ChatWorkspace({
       throw new Error("当前共享角色不允许创建分支。");
     }
     setWorkspaceError("");
-    const currentSource = conversationSnapshots.current.get(source.id) || source;
-    const result = await createAgentConversationBranch(currentSource, {
+    let branchSource = conversationSnapshots.current.get(source.id) || source;
+    const branchInput = {
       requestId: `branch-${crypto.randomUUID()}`,
       action,
       sourceMessageId,
       ...(editedText === undefined ? {} : { editedText }),
-    });
+    };
+    let result: Awaited<ReturnType<typeof createAgentConversationBranch>>;
+    try {
+      result = await createAgentConversationBranch(branchSource, branchInput);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== "conversation_conflict") throw error;
+      const refreshed = await refreshConversations(source.id);
+      const latestSource = refreshed?.find((conversation) => conversation.id === source.id);
+      if (!latestSource || latestSource.updatedAt <= branchSource.updatedAt) throw error;
+      branchSource = latestSource;
+      result = await createAgentConversationBranch(branchSource, branchInput);
+    }
+    updateConversationInList(branchSource);
     updateConversationInList(result.conversation);
     setActiveId(result.conversation.id);
     setSidebarOpen(false);
-  }, [accountOperationBusy, busy, updateConversationInList]);
+  }, [accountOperationBusy, busy, refreshConversations, updateConversationInList]);
 
   const refreshAfterAccessChange = useCallback(async (conversationId: string) => {
     await refreshConversations(conversationId).catch((error) => {
@@ -417,6 +453,7 @@ export function ChatWorkspace({
     setSidebarView(section === "files" ? "files" : "settings");
     setSidebarOpen(false);
     writeDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open", true);
+    if (section === "model") void refreshModelAvailability();
   };
   const closeInspector = () => {
     setInspectorOpen(false);
@@ -478,10 +515,11 @@ export function ChatWorkspace({
   };
 
   const handleConversationChanged = useCallback(() => {
+    void refreshModelAvailability(true);
     void refreshConversations(activeId).catch((error) => {
       setWorkspaceError(errorMessage(error, "会话已完成，但列表暂时无法刷新。"));
     });
-  }, [activeId, refreshConversations]);
+  }, [activeId, refreshConversations, refreshModelAvailability]);
 
   const handleRefresh = useCallback(() => {
     setWorkspaceError("");
@@ -498,6 +536,8 @@ export function ChatWorkspace({
         routeId={routeId}
         mcpConnections={mcpConnections}
         connectionState={connectionState}
+        modelAvailability={modelAvailability}
+        modelAvailabilityRefreshing={modelAvailabilityRefreshing}
         busy={busy}
         accountBusy={accountOperationBusy}
         logoutPending={logoutPending}
@@ -586,6 +626,7 @@ export function ChatWorkspace({
           session={session}
           conversation={activeConversation}
           routeId={routeId}
+          modelAvailability={modelAvailability}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState={settingsSave.conversationId === activeConversation?.id ? settingsSave.state : "idle"}

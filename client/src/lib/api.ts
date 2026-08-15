@@ -15,6 +15,14 @@ import type {
   ConversationSkillMode,
 } from "../../../src/contracts/agent";
 import { normalizeAgentRequestId } from "../../../src/contracts/agent-error";
+import type {
+  MemberModelAvailabilityV1,
+  ModelMonitorFailureClassV1,
+  ModelMonitorGroupV1,
+  ModelMonitorRunKindV1,
+  ModelMonitorSnapshotV1,
+  ModelMonitorTrendBucketV1,
+} from "../../../src/contracts/model-monitoring";
 import {
   isConversationAccessRole,
   isConversationGrantRole,
@@ -52,6 +60,9 @@ export type RouteProjection = {
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   healthOutcome?: string;
 };
+
+export type ModelMonitorSnapshot = ModelMonitorSnapshotV1;
+export type MemberModelAvailability = MemberModelAvailabilityV1;
 
 export type SkillProjection = {
   id: string;
@@ -678,6 +689,7 @@ export type AdminOperationsSnapshot = {
   feedback: AdminFeedbackEntry[];
   finance: AdminProviderFinanceSnapshot;
   legacySurfaces: AdminLegacySurfaceSnapshot;
+  modelMonitor?: ModelMonitorSnapshot;
 };
 
 export type AdminSkillConfig = {
@@ -1179,13 +1191,30 @@ export async function fetchAdminReliability(): Promise<AdminReliabilitySnapshot>
   return data;
 }
 
+export async function fetchAdminModelMonitor(): Promise<ModelMonitorSnapshot> {
+  const data = await requestJson("/api/admin/model-monitor?window=24h&bucket=hour");
+  if (!isModelMonitorSnapshot(data)) {
+    throw new ApiError("invalid_admin_model_monitor_response", "模型监控数据格式无效。", 502);
+  }
+  return data;
+}
+
+export async function fetchModelAvailability(): Promise<MemberModelAvailability> {
+  const data = await requestJson("/api/model-availability");
+  if (!isMemberModelAvailability(data)) {
+    throw new ApiError("invalid_model_availability_response", "模型可用性数据格式无效。", 502);
+  }
+  return data;
+}
+
 export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
-  const [stats, audit, feedback, finance, legacySurfaces] = await Promise.all([
+  const [stats, audit, feedback, finance, legacySurfaces, modelMonitor] = await Promise.all([
     requestJson("/api/admin/stats"),
     requestJson("/api/admin/audit"),
     requestJson("/api/admin/feedback"),
     requestJson("/api/admin/provider-finance?limit=100"),
     fetchAdminLegacySurfaces(),
+    fetchAdminModelMonitor().catch(() => undefined),
   ]);
   if (!isAdminOperationsStats(stats)) {
     throw new ApiError("invalid_admin_stats_response", "运营统计格式无效。", 502);
@@ -1199,7 +1228,7 @@ export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
   if (!isAdminProviderFinanceSnapshot(finance)) {
     throw new ApiError("invalid_admin_provider_finance_response", "服务商成本数据格式无效。", 502);
   }
-  return { stats, audit: audit.entries, feedback: feedback.entries, finance, legacySurfaces };
+  return { stats, audit: audit.entries, feedback: feedback.entries, finance, legacySurfaces, ...(modelMonitor ? { modelMonitor } : {}) };
 }
 
 export async function fetchAdminLegacySurfaces(
@@ -2091,6 +2120,174 @@ export function isAdminReliabilitySnapshot(value: unknown): value is AdminReliab
   }
   const providerIds = value.providers.map((provider) => provider.providerId);
   return new Set(providerIds).size === providerIds.length;
+}
+
+export function isModelMonitorSnapshot(value: unknown): value is ModelMonitorSnapshot {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["version", "window", "generatedAt", "periodStart", "periodEnd", "totals", "trend", "routes", "providers", "models", "runKinds", "failureClasses"])
+    || value.version !== 1
+    || value.window !== "24h"
+    || !isNonNegativeInteger(value.generatedAt)
+    || !isNonNegativeInteger(value.periodStart)
+    || !isNonNegativeInteger(value.periodEnd)
+    || value.periodEnd < value.periodStart
+    || value.generatedAt !== value.periodEnd) return false;
+  const { periodStart, periodEnd, totals, trend, routes, providers, models, runKinds, failureClasses } = value;
+  if (!isModelMonitorTotals(totals)
+    || !Array.isArray(trend)
+    || trend.length !== 24
+    || !trend.every((item) => isModelMonitorTrend(item, periodStart, periodEnd))
+    || !Array.isArray(routes)
+    || !routes.every(isModelMonitorGroup)
+    || !Array.isArray(providers)
+    || !providers.every(isModelMonitorGroup)
+    || !Array.isArray(models)
+    || !models.every(isModelMonitorGroup)
+    || !Array.isArray(runKinds)
+    || !runKinds.every(isModelMonitorRunKind)
+    || !Array.isArray(failureClasses)
+    || !failureClasses.every(isModelMonitorFailureClass)) return false;
+  const unique = [routes, providers, models].every((groups) => {
+    const ids = groups.map((group) => group.id);
+    return new Set(ids).size === ids.length;
+  }) && new Set(trend.map((item) => item.bucketStart)).size === trend.length
+    && new Set(runKinds.map((item) => item.runKind)).size === runKinds.length
+    && new Set(failureClasses.map((item) => item.errorClass)).size === failureClasses.length;
+  return unique
+    && monitorCountsMatch(totals, trend)
+    && monitorCountsMatch(totals, routes)
+    && monitorCountsMatch(totals, providers)
+    && monitorCountsMatch(totals, models)
+    && monitorCountsMatch(totals, runKinds)
+    && failureClasses.reduce((sum, item) => sum + item.count, 0) === totals.failures;
+}
+
+export function isMemberModelAvailability(value: unknown): value is MemberModelAvailability {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["version", "generatedAt", "window", "routes"])
+    || value.version !== 1
+    || !isNonNegativeInteger(value.generatedAt)
+    || value.window !== "24h"
+    || !Array.isArray(value.routes)
+    || !value.routes.every(isMemberModelAvailabilityRoute)) return false;
+  const ids = value.routes.map((route) => route.routeId);
+  return new Set(ids).size === ids.length;
+}
+
+function isModelMonitorTotals(value: unknown): value is ModelMonitorSnapshot["totals"] {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["attempts", "succeeded", "failures", "inFlight", "completed", "successRate", "fallbacks", "averageLatencyMs"])) return false;
+  return isModelMonitorCountFields(value);
+}
+
+function isModelMonitorCountFields(value: Record<string, unknown>): boolean {
+  const { attempts, succeeded, failures, inFlight, completed, fallbacks } = value;
+  if (!isNonNegativeInteger(attempts)
+    || !isNonNegativeInteger(succeeded)
+    || !isNonNegativeInteger(failures)
+    || !isNonNegativeInteger(inFlight)
+    || !isNonNegativeInteger(completed)
+    || !isNonNegativeInteger(fallbacks)) return false;
+  if (attempts !== completed + inFlight || completed !== succeeded + failures) return false;
+  const expectedRate = completed > 0 ? succeeded / completed : null;
+  return isNullableRate(value.successRate)
+    && value.successRate === expectedRate
+    && isNullableNonNegativeInteger(value.averageLatencyMs);
+}
+
+function monitorCountsMatch(
+  totals: ModelMonitorSnapshot["totals"],
+  rows: Array<{ attempts: number; succeeded: number; failures: number; inFlight: number; fallbacks: number }>,
+): boolean {
+  return rows.reduce((sum, row) => sum + row.attempts, 0) === totals.attempts
+    && rows.reduce((sum, row) => sum + row.succeeded, 0) === totals.succeeded
+    && rows.reduce((sum, row) => sum + row.failures, 0) === totals.failures
+    && rows.reduce((sum, row) => sum + row.inFlight, 0) === totals.inFlight
+    && rows.reduce((sum, row) => sum + row.fallbacks, 0) === totals.fallbacks;
+}
+
+function isModelMonitorGroup(value: unknown): value is ModelMonitorGroupV1 {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, ["id", "label", "model", "attempts", "succeeded", "failures", "inFlight", "completed", "successRate", "fallbacks", "averageLatencyMs"])
+    || !isNonEmptyString(value.id)
+    || !isNonEmptyString(value.label)
+    || (value.model !== undefined && !isNonEmptyString(value.model))
+    || !isModelMonitorCountFields(value)) return false;
+  return true;
+}
+
+function isModelMonitorTrend(value: unknown, periodStart: number, periodEnd: number): value is ModelMonitorTrendBucketV1 {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["bucketStart", "bucketEnd", "attempts", "succeeded", "failures", "inFlight", "fallbacks"])
+    || !isNonNegativeInteger(value.bucketStart)
+    || !isNonNegativeInteger(value.bucketEnd)
+    || value.bucketStart < periodStart
+    || value.bucketEnd <= value.bucketStart
+    || value.bucketEnd > periodEnd
+    || !isNonNegativeInteger(value.attempts)
+    || !isNonNegativeInteger(value.succeeded)
+    || !isNonNegativeInteger(value.failures)
+    || !isNonNegativeInteger(value.inFlight)
+    || !isNonNegativeInteger(value.fallbacks)) return false;
+  return value.attempts === value.succeeded + value.failures + value.inFlight;
+}
+
+function isModelMonitorRunKind(value: unknown): value is ModelMonitorRunKindV1 {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["runKind", "attempts", "succeeded", "failures", "inFlight", "completed", "successRate", "fallbacks", "averageLatencyMs"])
+    || !isModelMonitorRunKindValue(value.runKind)
+    || !isModelMonitorCountFields(value)) return false;
+  return true;
+}
+
+function isModelMonitorFailureClass(value: unknown): value is ModelMonitorFailureClassV1 {
+  return isRecord(value)
+    && hasExactKeys(value, ["errorClass", "count"])
+    && isModelMonitorFailureClassValue(value.errorClass)
+    && isNonNegativeInteger(value.count)
+    && value.count > 0;
+}
+
+function isMemberModelAvailabilityRoute(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, ["routeId", "label", "model", "status", "confidence", "speed", "observedAt", "fallbackRecentlyUsed", "message"])
+    && isNonEmptyString(value.routeId)
+    && isNonEmptyString(value.label)
+    && isNonEmptyString(value.model)
+    && isMemberAvailabilityStatus(value.status)
+    && value.message === value.status
+    && isMemberAvailabilityConfidence(value.confidence)
+    && isMemberAvailabilitySpeed(value.speed)
+    && (value.observedAt === null || isNonNegativeInteger(value.observedAt))
+    && typeof value.fallbackRecentlyUsed === "boolean";
+}
+
+function isNullableRate(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1);
+}
+
+function isNullableNonNegativeInteger(value: unknown): value is number | null {
+  return value === null || isNonNegativeInteger(value);
+}
+
+function isModelMonitorRunKindValue(value: unknown): value is ModelMonitorRunKindV1["runKind"] {
+  return typeof value === "string" && ["main_answer", "automatic_skill", "memory_suggestion", "conversation_summary", "model_discovery", "tool_continuation", "legacy_capability"].includes(value);
+}
+
+function isModelMonitorFailureClassValue(value: unknown): value is ModelMonitorFailureClassV1["errorClass"] {
+  return typeof value === "string" && ["provider_busy", "upstream_timeout", "upstream_rate_limited", "upstream_authentication_failed", "upstream_request_rejected", "provider_protocol_error", "upstream_unavailable", "upstream_error", "request_cancelled"].includes(value);
+}
+
+function isMemberAvailabilityStatus(value: unknown): value is MemberModelAvailability["routes"][number]["status"] {
+  return value === "healthy" || value === "degraded" || value === "unavailable" || value === "unknown";
+}
+
+function isMemberAvailabilityConfidence(value: unknown): value is MemberModelAvailability["routes"][number]["confidence"] {
+  return value === "recent" || value === "limited" || value === "stale";
+}
+
+function isMemberAvailabilitySpeed(value: unknown): value is MemberModelAvailability["routes"][number]["speed"] {
+  return value === "fast" || value === "normal" || value === "slow" || value === "unknown";
 }
 
 export function isAdminOperationsStats(value: unknown): value is AdminOperationsStats {

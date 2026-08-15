@@ -94,6 +94,12 @@ import type {
 } from "./contracts/provider";
 import { createProviderTurnId } from "./contracts/provider-attempt";
 import {
+  MODEL_MONITORING_WINDOW_MS,
+  classifyMemberAvailability,
+  type MemberModelAvailabilityV1,
+  type ProviderAttemptAvailabilityEvidenceV1,
+} from "./contracts/model-monitoring";
+import {
   PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
   decodeProviderBudgetOperatorActionRequest,
   decodeProviderBudgetPolicyMutationInput,
@@ -233,6 +239,7 @@ import {
   createProviderPlanRuntime,
   type PreparedProviderRoute,
 } from "./services/provider-plan-runtime";
+import { mergeProviderAttemptMonitoringRows } from "./services/model-monitoring";
 import {
   createProviderAttemptRuntime,
   isProviderAttemptBlockingError,
@@ -2500,6 +2507,10 @@ async function handleApi(
     return jsonResponse(await buildSessionProjection(env, session, maintenance.blocked));
   }
 
+  if (url.pathname === "/api/model-availability" && request.method === "GET") {
+    return handleModelAvailability(env, session);
+  }
+
   if (url.pathname === "/api/chat" && request.method === "POST") {
     const legacyRead = await recordLegacySurfaceUse(
       LEGACY_API_CHAT_POST_SURFACE_ID,
@@ -3006,6 +3017,10 @@ async function handleAdminApi(
 
   if (url.pathname === "/api/admin/provider-finance" && request.method === "GET") {
     return handleAdminProviderFinance(env, url);
+  }
+
+  if (url.pathname === "/api/admin/model-monitor" && request.method === "GET") {
+    return handleAdminModelMonitor(env, url);
   }
 
   if (url.pathname === "/api/admin/legacy-surfaces" && request.method === "GET") {
@@ -7179,6 +7194,102 @@ async function handleAdminProviderAttempts(env: Env, url: URL): Promise<Response
   }
   const attempts = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent({ limit: parsedLimit });
   return jsonResponse({ providerId, attempts });
+}
+
+async function handleAdminModelMonitor(env: Env, url: URL): Promise<Response> {
+  const window = url.searchParams.get("window") || "24h";
+  const bucket = url.searchParams.get("bucket") || "hour";
+  if (window !== "24h" || bucket !== "hour") {
+    return jsonResponse({ error: "invalid_model_monitor_query" }, 400);
+  }
+  const generatedAt = Date.now();
+  const periodStart = generatedAt - MODEL_MONITORING_WINDOW_MS;
+  const config = await loadAppConfig(env);
+  const providerLabels = configuredProviderLabels(config);
+  for (const [routeId, route] of Object.entries(config.routes)) {
+    for (const candidate of resolveProviderRouteCandidates(routeId, route, config.providers)) {
+      if (!providerLabels.has(candidate.providerId)) providerLabels.set(candidate.providerId, candidate.providerId);
+    }
+  }
+  try {
+    const shardRows = await Promise.all(
+      [...providerLabels.keys()].map((providerId) => env.PROVIDER_ATTEMPT_LEDGER
+        .getByName(providerId)
+        .getMonitoringAggregate({ periodStart, periodEnd: generatedAt })),
+    );
+    const routeLabels = new Map(Object.entries(config.routes).map(([routeId, route]) => [routeId, route.label || routeId]));
+    const snapshot = mergeProviderAttemptMonitoringRows(
+      shardRows.flat(),
+      { routes: routeLabels, providers: providerLabels },
+      generatedAt,
+      periodStart,
+      generatedAt,
+    );
+    return jsonResponse(snapshot);
+  } catch {
+    return jsonResponse({ error: "model_monitor_unavailable", retryable: true }, 503);
+  }
+}
+
+async function handleModelAvailability(env: Env, session: Session): Promise<Response> {
+  if (session.kind !== "member") return jsonResponse({ error: "member_required" }, 403);
+  const config = await loadAppConfig(env);
+  const access = await getRouteAccess(config, session, env);
+  const generatedAt = Date.now();
+  const periodStart = generatedAt - MODEL_MONITORING_WINDOW_MS;
+  const providerIds = new Set<string>();
+  for (const route of access.routes) {
+    const configured = config.routes[route.id];
+    if (!configured) continue;
+    for (const candidate of resolveProviderRouteCandidates(route.id, configured, config.providers)) {
+      providerIds.add(candidate.providerId);
+    }
+  }
+  const routeIds = access.routes.map((route) => route.id);
+  try {
+    const [evidenceShards, reliability] = await Promise.all([
+      Promise.all([...providerIds].map((providerId) => env.PROVIDER_ATTEMPT_LEDGER
+        .getByName(providerId)
+        .listAvailabilityEvidence({ periodStart, periodEnd: generatedAt, routeIds }))),
+      Promise.all(access.routes.map(async (route) => {
+        const configured = config.routes[route.id];
+        const candidates = configured
+          ? resolveProviderRouteCandidates(route.id, configured, config.providers)
+          : [];
+        const records = await Promise.all(candidates.map((candidate) => loadProviderRouteReliability(env, route.id, candidate.providerId)));
+        const recent = records
+          .filter((record) => isRecentProviderRouteReliability(record) && Date.parse(record.observedAt) >= periodStart)
+          .sort((left, right) => (Date.parse(right!.observedAt) - Date.parse(left!.observedAt)));
+        return [route.id, recent[0]?.averageFirstVisibleLatencyMs ?? recent[0]?.lastFirstVisibleLatencyMs ?? null] as const;
+      })),
+    ]);
+    const evidenceByRoute = new Map<string, ProviderAttemptAvailabilityEvidenceV1[]>();
+    for (const shard of evidenceShards) {
+      for (const item of shard) {
+        const current = evidenceByRoute.get(item.logicalRouteId) || [];
+        current.push(item);
+        evidenceByRoute.set(item.logicalRouteId, current);
+      }
+    }
+    const reliabilityByRoute = new Map(reliability);
+    const routes: MemberModelAvailabilityV1["routes"] = access.routes.map((route) => {
+      const classified = classifyMemberAvailability(
+        evidenceByRoute.get(route.id) || [],
+        generatedAt,
+        reliabilityByRoute.get(route.id),
+      );
+      return {
+        routeId: route.id,
+        label: route.label,
+        model: route.model,
+        ...classified,
+        message: classified.status,
+      };
+    });
+    return jsonResponse({ version: 1, generatedAt, window: "24h", routes });
+  } catch {
+    return jsonResponse({ error: "model_availability_unavailable", retryable: true }, 503);
+  }
 }
 
 function routeModelsUrl(route: ResolvedProviderRoute): string {

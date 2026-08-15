@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Files, Plug, Route, Share2, Sparkles, Wrench, X } from "lucide-react";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
-import type { AgentConversation, SessionProjection } from "../lib/api";
+import type { AgentConversation, MemberModelAvailability, SessionProjection } from "../lib/api";
 import { resolveConversationAccessPermissions } from "../lib/state";
 import { ConversationShareDialog } from "./ConversationShareDialog";
+import { ModelAvailabilityBadge, availabilitySpeedLabel, availabilityStatusDescription } from "./ModelAvailabilityBadge";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
 
 export type InspectorSection = "model" | "skills" | "tools" | "files" | "sharing";
@@ -15,6 +16,7 @@ export function ConversationInspector({
   session,
   conversation,
   routeId,
+  modelAvailability,
   skillMode,
   skillIds,
   saveState,
@@ -33,6 +35,7 @@ export function ConversationInspector({
   session: SessionProjection;
   conversation: AgentConversation | null;
   routeId: string;
+  modelAvailability?: MemberModelAvailability | null;
   skillMode: ConversationSkillMode;
   skillIds: string[];
   saveState: ConversationSettingsSaveState;
@@ -56,6 +59,7 @@ export function ConversationInspector({
   shareOpenRef.current = shareOpen;
   const permissions = resolveConversationAccessPermissions(conversation?.accessRole);
   const routeSupportsTools = session.routes.find((route) => route.id === routeId)?.supportsTools === true;
+  const availabilityRoute = modelAvailability?.routes.find((route) => route.routeId === routeId);
   const selectedToolIds = useMemo(
     () => new Set(routeSupportsTools
       ? session.skills.filter((skill) => skillIds.includes(skill.id)).flatMap((skill) => skill.toolIds)
@@ -152,7 +156,24 @@ export function ConversationInspector({
             )}
             <small>{session.routes.length === 0
               ? "请联系管理员配置模型线路"
-              : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}</small>
+              : availabilityRoute
+                ? `${availabilityStatusDescription(availabilityRoute.status)}${availabilityRoute.speed !== "unknown" ? ` · ${availabilitySpeedLabel(availabilityRoute.speed)}` : ""}`
+                : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}</small>
+            {availabilityRoute?.fallbackRecentlyUsed && <small className="model-availability-fallback">最近请求已自动切换备用线路。</small>}
+            {modelAvailability && session.routes.length > 0 && (
+              <div className="model-availability-list" aria-label="模型可用性">
+                {session.routes.map((route) => {
+                  const status = modelAvailability.routes.find((candidate) => candidate.routeId === route.id);
+                  return (
+                    <div className="model-availability-row" key={route.id}>
+                      <span><strong>{route.label}</strong><small>{route.model}</small></span>
+                      <ModelAvailabilityBadge route={status} compact />
+                    </div>
+                  );
+                })}
+                <small className="model-availability-footnote">状态基于最近 Chatus 流量，仅作选择参考，不保证下一次请求。</small>
+              </div>
+            )}
             <SaveState state={saveState} onRetry={onRetrySave} />
           </section>
         )}

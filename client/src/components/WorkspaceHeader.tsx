@@ -1,7 +1,8 @@
 import { ArrowLeft, Brain, Cable, Download, Eye, LogIn, LogOut, Menu, PanelRightOpen, Pencil, Route, Settings, Wifi, WifiOff } from "lucide-react";
-import type { AgentConversation, SessionProjection } from "../lib/api";
+import type { AgentConversation, MemberModelAvailability, SessionProjection } from "../lib/api";
 import { resolveConversationAccessPermissions } from "../lib/state";
 import { ProductBrand } from "./ProductBrand";
+import { ModelAvailabilityBadge } from "./ModelAvailabilityBadge";
 
 export type ConnectionState = "connecting" | "ready" | "error";
 
@@ -11,6 +12,8 @@ export function WorkspaceHeader({
   routeId,
   mcpConnections,
   connectionState,
+  modelAvailability,
+  modelAvailabilityRefreshing,
   busy,
   accountBusy,
   logoutPending,
@@ -30,6 +33,8 @@ export function WorkspaceHeader({
   routeId: string;
   mcpConnections: SessionProjection["mcpConnections"];
   connectionState: ConnectionState;
+  modelAvailability?: MemberModelAvailability | null;
+  modelAvailabilityRefreshing?: boolean;
   busy: boolean;
   accountBusy: boolean;
   logoutPending: boolean;
@@ -46,6 +51,7 @@ export function WorkspaceHeader({
 }) {
   const route = session.routes.find((candidate) => candidate.id === routeId);
   const health = routeHealthLabel(route?.healthStatus);
+  const availability = modelAvailability?.routes.find((candidate) => candidate.routeId === routeId);
   const connection = connectionLabel(connectionState);
   const connectedMcpCount = mcpConnections.filter((item) => item.connected).length;
   const logoutLabel = logoutPending ? "正在退出登录" : "退出登录";
@@ -93,7 +99,7 @@ export function WorkspaceHeader({
             <Route size={14} aria-hidden="true" />
             <span className="header-route-copy">
               <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
-              <small>{health}</small>
+              <small>{availability ? <><ModelAvailabilityBadge route={availability} compact /> · {health}</> : health}{modelAvailabilityRefreshing ? " · 更新中" : ""}</small>
             </span>
           </div>
         ) : (
@@ -101,7 +107,7 @@ export function WorkspaceHeader({
             <Route size={14} aria-hidden="true" />
             <span className="header-route-copy">
               <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
-              <small>{health}</small>
+              <small>{availability ? <><ModelAvailabilityBadge route={availability} compact /> · {health}</> : health}{modelAvailabilityRefreshing ? " · 更新中" : ""}</small>
             </span>
           </button>
         )}

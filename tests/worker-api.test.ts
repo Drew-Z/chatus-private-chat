@@ -7599,6 +7599,26 @@ describe("Worker API", () => {
     expect(JSON.stringify(payload)).not.toContain(summaryMarker);
     expect(JSON.stringify(payload)).not.toContain("test-route-key");
     expect(JSON.stringify(payload)).not.toContain(endpoint);
+
+    const monitorResponse = await apiRequest("/api/admin/model-monitor?window=24h&bucket=hour", adminCookie);
+    expect(monitorResponse.status, await monitorResponse.clone().text()).toBe(200);
+    const monitor = await monitorResponse.json() as any;
+    expect(monitor).toMatchObject({ version: 1, window: "24h" });
+    expect(monitor.totals).toMatchObject({ attempts: 2, succeeded: 2, failures: 0, inFlight: 0 });
+    expect(monitor.routes).toEqual(expect.arrayContaining([expect.objectContaining({ id: "auxiliary", attempts: 2 })]));
+    expect(JSON.stringify(monitor)).not.toContain(promptMarker);
+    expect(JSON.stringify(monitor)).not.toContain(endpoint);
+
+    const availabilityResponse = await apiRequest("/api/model-availability", cookie);
+    expect(availabilityResponse.status, await availabilityResponse.clone().text()).toBe(200);
+    const availability = await availabilityResponse.json() as any;
+    expect(availability.routes).toEqual([expect.objectContaining({
+      routeId: "auxiliary",
+      status: "unknown",
+      confidence: "limited",
+    })]);
+    expect(JSON.stringify(availability)).not.toContain(providerId);
+    expect(JSON.stringify(availability)).not.toContain(endpoint);
   });
 
   it("projects hard budget policy denial for memory suggestions and summaries without Provider calls", async () => {

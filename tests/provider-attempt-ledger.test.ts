@@ -751,6 +751,40 @@ describe("ProviderAttemptLedger", () => {
     expect(snapshot.budgetReservations[0]).toMatchObject({ status: "reconciled", settledMicros: 100, heldMicros: 0 });
     expect(snapshot.budgetBalances[0]).toMatchObject({ mode: "soft", settledMicros: 100, availableMicros: 400 });
   });
+
+  it("returns complete monitoring aggregates independently from the recent-attempt limit", async () => {
+    const providerId = uniqueId("monitoring");
+    const ledger = env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId);
+    const periodStart = Date.now() - 86_400_000;
+    const create = async (status: "succeeded" | "failed" | "cancelled" | "timed_out" | "started", offset: number, fallbackIndex = 0) => {
+      const input = startInput(providerId, periodStart + offset);
+      input.logicalRouteId = "route-monitor";
+      input.model = "model-monitor";
+      input.fallbackIndex = fallbackIndex;
+      input.idempotencyKey = providerAttemptIdempotencyKey(input.operation.fenceId, input.runId, fallbackIndex);
+      const started = await ledger.start(input);
+      if (status !== "started") {
+        await ledger.terminal({
+          version: 1,
+          attemptId: started.attempt.attemptId,
+          status,
+          errorClass: status === "succeeded" ? "none" : status === "timed_out" ? "upstream_timeout" : "upstream_unavailable",
+          endedAt: input.startedAt + 100,
+        });
+      }
+    };
+    await create("succeeded", 1_000);
+    await create("failed", 2_000, 1);
+    await create("cancelled", 3_000);
+    await create("started", 4_000);
+    const rows = await ledger.getMonitoringAggregate({ periodStart, periodEnd: Date.now() });
+    expect(rows.reduce((sum, row) => sum + row.attempts, 0)).toBe(4);
+    expect(rows.reduce((sum, row) => sum + row.succeeded, 0)).toBe(1);
+    expect(rows.reduce((sum, row) => sum + row.failures, 0)).toBe(2);
+    expect(rows.reduce((sum, row) => sum + row.inFlight, 0)).toBe(1);
+    expect(rows.reduce((sum, row) => sum + row.fallbacks, 0)).toBe(1);
+    await expect(ledger.listAvailabilityEvidence({ periodStart, periodEnd: Date.now(), routeIds: ["route-monitor"] })).resolves.toHaveLength(4);
+  });
 });
 
 describe("provider attempt runtime", () => {
