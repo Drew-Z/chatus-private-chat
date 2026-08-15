@@ -70,3 +70,37 @@ Revised the member workspace from teal/navy-heavy styling to a pearl-white neutr
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Model monitoring and member availability
+
+**Date**: 2026-08-16
+**Task**: Model monitoring and member availability
+**Branch**: `codex/chatus-ux-settings-redesign-ui`
+
+### Summary
+
+Implemented strict rolling 24-hour Provider-attempt monitoring, privacy-safe member route availability, Operations and workspace UI, exact decoders, synthetic browser coverage, platform spec, and validation evidence. Archived the task after npm, browser, typecheck, Wrangler dry-run, diff, and Trellis checks passed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `daaf236` | (see git log) |
+| `be80f80` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
