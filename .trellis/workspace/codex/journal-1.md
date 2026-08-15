@@ -37,3 +37,36 @@ Implemented the approved Chatus member shell split, device-local light/dark them
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Refine Chatus visual system
+
+**Date**: 2026-08-16
+**Task**: Refine Chatus visual system
+**Branch**: `codex/chatus-ux-settings-redesign-ui`
+
+### Summary
+
+Revised the member workspace from teal/navy-heavy styling to a pearl-white neutral system with near-black ink and sparse cobalt accents. Quieted rail/header/inspector states, made the composer the visual anchor, updated neutral dark theme and visual assertions, and validated frontend, typecheck, 799 Vitest tests, 170 browser projects (112 passed / 58 skipped), Wrangler dry-run, and scope isolation. Task remains active because no PR URL was authorized.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9532f2f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
