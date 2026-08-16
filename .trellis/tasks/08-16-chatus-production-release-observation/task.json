@@ -29,8 +29,9 @@
       "mergedAt": "2026-08-16T15:31:08Z",
       "deploymentRun": "31955998267",
       "deployedAt": "2026-08-16T15:36:42.875Z",
+      "observationStartedAt": "2026-08-16T15:37:12Z",
       "acceptanceRun": "31956295236",
-      "observationEndsAt": "2026-08-17T15:36:42.875Z"
+      "observationEndsAt": "2026-08-17T15:37:12Z"
     },
     "validation": [
       {
@@ -66,8 +67,8 @@
       {
         "command": "passive-observation-start",
         "status": "in_progress",
-        "summary": "Observation started at the verified deployment timestamp; no synthetic model traffic was generated.",
-        "at": "2026-08-16T15:36:42.875Z"
+        "summary": "Observation started after the deployment Workflow and production smoke verification completed; no synthetic model traffic was generated.",
+        "at": "2026-08-16T15:37:12Z"
       }
     ]
   }

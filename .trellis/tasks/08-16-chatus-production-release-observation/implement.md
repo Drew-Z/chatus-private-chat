@@ -35,7 +35,7 @@ Rollback point: if deployment fails before Worker promotion, fix through a new r
 
 ## 5. Observe For 24 Hours
 
-- [x] Record the verified deployment timestamp as the observation start: `2026-08-16T15:36:42.875Z`.
+- [x] Record the verified deployment timestamp as the observation start: `2026-08-16T15:37:12Z` (deployment Workflow terminal success after production smoke verification).
 - [ ] Inspect member route-availability presentation and administrator aggregate monitoring without recording prohibited data.
 - [ ] At or after 24 hours, record aggregate freshness and attempt/success/failure reconciliation or the legitimate no-data state.
 - [ ] Confirm no release-critical UX, authorization, privacy, routing, or monitoring regression remains open.

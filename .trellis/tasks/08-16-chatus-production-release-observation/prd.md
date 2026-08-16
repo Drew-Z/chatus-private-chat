@@ -48,7 +48,7 @@ This task begins after product design, implementation, and pre-production valida
 - Deployment: `Deploy to Cloudflare` run `31955998267` succeeded for `main` at the merge SHA; validation, Worker deployment, and production smoke verification passed.
 - Production metadata: `/release.json` and `/react-chat/` `chatus-release` both returned `fd6a2690ac3bf5026fde3ee736f35e32d14f940d`; `/react-chat/` returned HTTP 200.
 - Acceptance: `Production member acceptance` run `31956295236` passed its deployed-revision guard and temporary-member acceptance for the same SHA.
-- Observation start: `2026-08-16T15:36:42.875Z`, the deployment release-metadata timestamp. Observation is passive and remains open until `2026-08-17T15:36:42.875Z`.
+- Observation start: `2026-08-16T15:37:12Z`, after the deployment Workflow completed its production smoke verification. The release metadata was generated at `2026-08-16T15:36:42.875Z`; observation is passive and remains open until `2026-08-17T15:37:12Z`.
 
 ## Out Of Scope
 
