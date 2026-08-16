@@ -137,3 +137,38 @@ Configured the local @gethopp/figma-mcp-bridge STDIO server in D:/Agent/codex/co
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Complete Chatus UX design sync
+
+**Date**: 2026-08-16
+**Task**: Complete Chatus UX design sync
+**Branch**: `codex/chatus-ux-settings-redesign-ui`
+
+### Summary
+
+Synced the approved Figma member workspace and settings direction into the typed client, passed the full quality gate, pushed the branch, opened draft PR #90, and archived the Trellis task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bd823f9` | (see git log) |
+| `73a94ea` | (see git log) |
+| `6a751d9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
