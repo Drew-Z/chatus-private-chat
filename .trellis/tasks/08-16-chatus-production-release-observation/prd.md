@@ -8,11 +8,12 @@ This task begins after product design, implementation, and pre-production valida
 
 ## Confirmed Facts
 
-- Pull request #90 targets `main` from `codex/chatus-ux-settings-redesign-ui`; its checks pass, but it is still a Draft and has not been merged.
-- The pull request contains both the approved Chatus member UX/settings work and the separately approved model-monitoring/member-availability implementation. Its current title and body understate that backend/API scope.
+- Pull request #90 targets `main` from `codex/chatus-ux-settings-redesign-ui`; it is no longer a Draft and merged after all required checks passed.
+- The reviewed PR head is `28f9a6f10df3efc716e3c3748ebbca0d083ddca8`; the resulting `main` merge SHA is `fd6a2690ac3bf5026fde3ee736f35e32d14f940d`.
+- The pull request contains both the approved Chatus member UX/settings work and the separately approved model-monitoring/member-availability implementation, including the Worker/API and Provider-attempt ledger scope.
 - Production deployment is manually dispatched from `main` through `.github/workflows/deploy.yml`; local production Wrangler deployment is prohibited.
 - Production member acceptance is manually dispatched from `main` through `.github/workflows/production-acceptance.yml`.
-- The current live release predates pull request #90. A successful merge alone does not deploy production.
+- The exact merge SHA is now running in production; the 24-hour passive observation window is in progress and is not complete yet.
 
 ## Requirements
 
@@ -31,14 +32,23 @@ This task begins after product design, implementation, and pre-production valida
 
 ## Acceptance Criteria
 
-- [ ] AC1: Pull request #90 accurately describes both member UX/settings and model-monitoring/member-availability changes and is no longer a Draft.
-- [ ] AC2: The reviewed PR head has successful checks and is merged into `main`; the exact merge SHA is recorded.
-- [ ] AC3: `Deploy to Cloudflare` succeeds for the exact merge SHA, including validation, Worker deployment, and production smoke steps.
-- [ ] AC4: Production `/release.json` and `/react-chat/` release metadata both equal the merge SHA and the member workspace returns an expected successful response.
-- [ ] AC5: `Production member acceptance` succeeds for the same SHA.
+- [x] AC1: Pull request #90 accurately describes both member UX/settings and model-monitoring/member-availability changes and is no longer a Draft.
+- [x] AC2: The reviewed PR head has successful checks and is merged into `main`; the exact merge SHA is recorded.
+- [x] AC3: `Deploy to Cloudflare` succeeds for the exact merge SHA, including validation, Worker deployment, and production smoke steps.
+- [x] AC4: Production `/release.json` and `/react-chat/` release metadata both equal the merge SHA and the member workspace returns an expected successful response.
+- [x] AC5: `Production member acceptance` succeeds for the same SHA.
 - [ ] AC6: A 24-hour passive observation records monitoring freshness and reconciled attempt/success/failure evidence without exposing prohibited data or running synthetic health probes.
 - [ ] AC7: No release-critical regression remains open at the end of observation; otherwise rollback evidence and the resulting live SHA are recorded.
 - [ ] AC8: No legacy rollout task, gate, workflow state, or evidence is changed or advanced by this task.
+
+## Release Evidence
+
+- PR checks: GitHub Actions run `31954615529`, attempt 2; `changes`, `quality`, `workspace-browser`, and `agent-browser` passed.
+- Merge: PR #90 merged at `2026-08-16T15:31:08Z`; merge SHA `fd6a2690ac3bf5026fde3ee736f35e32d14f940d` contains reviewed head `28f9a6f10df3efc716e3c3748ebbca0d083ddca8`.
+- Deployment: `Deploy to Cloudflare` run `31955998267` succeeded for `main` at the merge SHA; validation, Worker deployment, and production smoke verification passed.
+- Production metadata: `/release.json` and `/react-chat/` `chatus-release` both returned `fd6a2690ac3bf5026fde3ee736f35e32d14f940d`; `/react-chat/` returned HTTP 200.
+- Acceptance: `Production member acceptance` run `31956295236` passed its deployed-revision guard and temporary-member acceptance for the same SHA.
+- Observation start: `2026-08-16T15:36:42.875Z`, the deployment release-metadata timestamp. Observation is passive and remains open until `2026-08-17T15:36:42.875Z`.
 
 ## Out Of Scope
 
