@@ -1,0 +1,77 @@
+name: Production model observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployed_sha:
+        description: Exact deployed release SHA to observe
+        required: true
+        type: string
+      observation_started_at:
+        description: ISO timestamp when the verified release observation began
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatus-production-mutation
+  cancel-in-progress: false
+
+jobs:
+  observation:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Refuse a stale main revision before observation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/assert-main-tip.mjs
+
+      - name: Collect 24-hour model monitor
+        id: collect
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
+          EXPECTED_MAIN_SHA: ${{ github.sha }}
+          EXPECTED_RELEASE_SHA: ${{ inputs.deployed_sha }}
+          OBSERVATION_STARTED_AT: ${{ inputs.observation_started_at }}
+          OBSERVATION_OUTPUT: artifacts/production-model-observation/observation.json
+        run: node scripts/collect-production-model-observation.mjs
+
+      - name: Verify member availability without model traffic
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          PRODUCTION_URL: ${{ vars.CHATUS_PRODUCTION_URL }}
+          EXPECTED_RELEASE_SHA: ${{ inputs.deployed_sha }}
+        run: npm run acceptance:production
+
+      - name: Refuse a stale main revision after observation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/assert-main-tip.mjs
+
+      - name: Retain model observation summary
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-model-observation-${{ steps.collect.outputs.deployed_sha }}
+          path: artifacts/production-model-observation/observation.json
+          if-no-files-found: error
+          retention-days: 90

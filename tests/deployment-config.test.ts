@@ -497,6 +497,9 @@ describe("repository deployment contract", () => {
     expect(acceptanceProductionSource).toContain("await runProductionAcceptanceCleanup({");
     expect(acceptanceProductionSource).toContain("const memberCleanupAttempts = 8");
     expect(acceptanceProductionSource).toContain("await waitForTemporaryMemberSessionRevocation(");
+    expect(acceptanceProductionSource).toContain('request("/api/model-availability", { cookie: member.cookie })');
+    expect(acceptanceProductionSource).toContain("isMemberAvailabilityProjection");
+    expect(acceptanceProductionSource).not.toContain('request("/api/chat"');
     expect(acceptanceProductionSource).toContain("if (response.status === 200)");
     expect(acceptanceCleanupSource).toContain("for (const member of members)");
     expect(acceptanceCleanupSource).toContain("await attempt(() => purgeMember(member), \"member purge\")");

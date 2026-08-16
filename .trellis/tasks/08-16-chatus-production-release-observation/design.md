@@ -70,6 +70,12 @@ Evidence may record aggregate attempt, success, failure, in-flight, fallback, la
 
 If no real model traffic occurs, the correct result is a no-data or unknown state, not a fabricated success rate. UI reachability and production acceptance remain independently verifiable.
 
+### Observation Evidence Path
+
+The final gate uses `.github/workflows/production-model-observation.yml`, a manual, main-only Workflow that is separate from deployment and legacy census workflows. It receives the exact deployed SHA and verified observation start timestamp as explicit inputs, checks that the deployed release is an ancestor of the current main revision, and refuses to run before the 24-hour window ends.
+
+The collector logs in through the existing admin session boundary, reads only `GET /api/admin/model-monitor?window=24h&bucket=hour`, validates the exact 24-bucket contract and all aggregate reconciliations, logs out, and verifies the deployed release did not change. Its retained artifact contains only the deployed SHA, timestamps, totals, and bounded group counts; it never writes route, Provider, model, failure-class, prompt, response, conversation, credential, or member data to evidence. The existing model-request-free production acceptance is run in the same serialized environment and now validates the member `/api/model-availability` projection shape and privacy boundary for temporary members.
+
 ## Rollback
 
 Rollback is required for release-critical authentication, chat, settings, authorization, monitoring privacy, or Worker regressions. Select the last known-good `main` revision already evidenced by a successful production deploy, dispatch the repository deployment workflow for that revision through the approved GitHub mechanism, and verify the resulting live release metadata. Do not use local Wrangler or modify legacy rollout gates.

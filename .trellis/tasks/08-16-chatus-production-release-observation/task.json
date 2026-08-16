@@ -15,12 +15,109 @@
   "branch": null,
   "base_branch": "codex/chatus-ux-settings-redesign-ui",
   "worktree_path": null,
-  "commit": null,
-  "pr_url": null,
+  "commit": "fd6a2690ac3bf5026fde3ee736f35e32d14f940d",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/90",
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "release": {
+      "reviewedHead": "28f9a6f10df3efc716e3c3748ebbca0d083ddca8",
+      "mergeSha": "fd6a2690ac3bf5026fde3ee736f35e32d14f940d",
+      "mergedAt": "2026-08-16T15:31:08Z",
+      "deploymentRun": "31955998267",
+      "deployedAt": "2026-08-16T15:36:42.875Z",
+      "observationStartedAt": "2026-08-16T15:37:12Z",
+      "acceptanceRun": "31956295236",
+      "observationEndsAt": "2026-08-17T15:37:12Z"
+    },
+    "validation": [
+      {
+        "command": "pr-90-required-checks",
+        "status": "passed",
+        "summary": "GitHub Actions run 31954615529 attempt 2 passed changes, quality, workspace-browser, and agent-browser.",
+        "at": "2026-08-16T15:29:48Z"
+      },
+      {
+        "command": "pr-90-merge",
+        "status": "passed",
+        "summary": "PR 90 merged as fd6a2690ac3bf5026fde3ee736f35e32d14f940d; reviewed head is contained.",
+        "at": "2026-08-16T15:31:08Z"
+      },
+      {
+        "command": "production-deploy",
+        "status": "passed",
+        "summary": "Deploy workflow 31955998267 succeeded for the merge SHA, including smoke verification.",
+        "at": "2026-08-16T15:37:12Z"
+      },
+      {
+        "command": "production-release-metadata",
+        "status": "passed",
+        "summary": "release.json and react-chat release metadata match the merge SHA; react-chat returned HTTP 200.",
+        "at": "2026-08-16T15:37:20Z"
+      },
+      {
+        "command": "production-member-acceptance",
+        "status": "passed",
+        "summary": "Production acceptance workflow 31956295236 passed deployed-revision guard and temporary-member acceptance.",
+        "at": "2026-08-16T15:38:28Z"
+      },
+      {
+        "command": "passive-observation-start",
+        "status": "in_progress",
+        "summary": "Observation started after the deployment Workflow and production smoke verification completed; no synthetic model traffic was generated.",
+        "at": "2026-08-16T15:37:12Z"
+      },
+      {
+        "command": "production-observation-collector-contract",
+        "status": "passed",
+        "summary": "Exact 24-hour aggregate validation, release fencing, content-free summary, member availability projection, and workflow governance checks passed locally.",
+        "at": "2026-08-16T18:09:27Z"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structural checks passed.",
+        "at": "2026-08-16T22:51:29.532770+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "54 test files and 809 tests passed.",
+        "at": "2026-08-16T22:52:02.181541+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-16T22:52:32.048001+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler local dry-run validated bindings and assets without deployment.",
+        "at": "2026-08-16T22:53:05.237288+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Working-tree diff has no whitespace errors.",
+        "at": "2026-08-16T22:53:43.125655+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency validation passed.",
+        "at": "2026-08-16T22:54:17.918076+00:00"
+      },
+      {
+        "command": "npx vitest run tests/model-monitoring-observation.test.ts tests/delivery-governance.test.ts tests/deployment-config.test.ts",
+        "status": "passed",
+        "summary": "97 focused observation, delivery-governance, and deployment-config tests passed.",
+        "at": "2026-08-16T22:54:50.753336+00:00"
+      }
+    ]
+  }
 }
