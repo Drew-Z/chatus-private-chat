@@ -666,6 +666,7 @@ test("branch origin hint returns to parent and handles missing parents", async (
   const origin = page.getByRole("button", { name: "返回父会话：第二个会话" });
   await expect(origin).toBeVisible();
   await expect(origin).toContainText("来自 第二个会话");
+  await expect(page.locator(".header-context-line")).toContainText("已连接");
 
   const geometry = await page.evaluate(() => {
     const header = document.querySelector<HTMLElement>(".workspace-header");
@@ -734,6 +735,7 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
 
 test("member Skill mode switches between automatic and exact manual selection", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "查看线路与状态" }).click();
+  await expect(page.locator(".model-availability-footnote")).toContainText("更新时间：");
   await page.getByRole("button", { name: "Skills", exact: true }).click();
   const mode = page.getByRole("group", { name: "Skill 模式" });
   const automatic = mode.getByRole("button", { name: "自动" });
@@ -1000,6 +1002,9 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "模型监控 · 最近 24 小时" })).toBeVisible();
   await expect(page.getByLabel("最近 24 小时模型监控摘要")).toContainText("Provider 请求");
   await expect(page.getByText("仅统计实际 Provider attempt；Fallback 单独计数。", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "模型监控线路：下一页" })).toBeVisible();
+  await page.getByRole("button", { name: "模型监控线路：下一页" }).click();
+  await expect(page.getByText("线路 · 监控线路 21", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "旧功能面治理" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "7 日请求趋势" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "逻辑模型结果" })).toBeVisible();

@@ -2122,6 +2122,10 @@ export function isAdminReliabilitySnapshot(value: unknown): value is AdminReliab
   return new Set(providerIds).size === providerIds.length;
 }
 
+const MODEL_MONITORING_HOUR_MS = 60 * 60 * 1_000;
+const MODEL_MONITORING_BUCKETS = 24;
+const MODEL_MONITORING_GROUP_LIMIT = 500;
+
 export function isModelMonitorSnapshot(value: unknown): value is ModelMonitorSnapshot {
   if (!isRecord(value)
     || !hasExactKeys(value, ["version", "window", "generatedAt", "periodStart", "periodEnd", "totals", "trend", "routes", "providers", "models", "runKinds", "failureClasses"])
@@ -2135,17 +2139,27 @@ export function isModelMonitorSnapshot(value: unknown): value is ModelMonitorSna
   const { periodStart, periodEnd, totals, trend, routes, providers, models, runKinds, failureClasses } = value;
   if (!isModelMonitorTotals(totals)
     || !Array.isArray(trend)
-    || trend.length !== 24
-    || !trend.every((item) => isModelMonitorTrend(item, periodStart, periodEnd))
+    || periodEnd - periodStart !== MODEL_MONITORING_BUCKETS * MODEL_MONITORING_HOUR_MS
+    || trend.length !== MODEL_MONITORING_BUCKETS
+    || !trend.every((item, index) => {
+      if (!isModelMonitorTrend(item, periodStart, periodEnd)) return false;
+      return item.bucketStart === periodStart + index * MODEL_MONITORING_HOUR_MS
+        && item.bucketEnd === item.bucketStart + MODEL_MONITORING_HOUR_MS;
+    })
     || !Array.isArray(routes)
+    || routes.length > MODEL_MONITORING_GROUP_LIMIT
     || !routes.every(isModelMonitorGroup)
     || !Array.isArray(providers)
+    || providers.length > MODEL_MONITORING_GROUP_LIMIT
     || !providers.every(isModelMonitorGroup)
     || !Array.isArray(models)
+    || models.length > MODEL_MONITORING_GROUP_LIMIT
     || !models.every(isModelMonitorGroup)
     || !Array.isArray(runKinds)
+    || runKinds.length > 7
     || !runKinds.every(isModelMonitorRunKind)
     || !Array.isArray(failureClasses)
+    || failureClasses.length > 9
     || !failureClasses.every(isModelMonitorFailureClass)) return false;
   const unique = [routes, providers, models].every((groups) => {
     const ids = groups.map((group) => group.id);

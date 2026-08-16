@@ -21,7 +21,7 @@ import {
   resolveMessageActionAvailability,
   type TurnPhase,
 } from "../../../../client/src/lib/state";
-import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, ModelMonitorSnapshot, SessionProjection } from "../../../../client/src/lib/api";
+import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, MemberModelAvailability, ModelMonitorSnapshot, SessionProjection } from "../../../../client/src/lib/api";
 import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
 import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
 import type { ThemePreference } from "../../../../client/src/lib/device-preferences";
@@ -150,6 +150,23 @@ const memberSession: SessionProjection = {
     status: "connected",
   }],
   agent: { transport: "websocket", basePath: "agent", instance: "visual-fixture" },
+};
+
+const memberModelAvailability: MemberModelAvailability = {
+  version: 1,
+  generatedAt: now - 60_000,
+  window: "24h",
+  routes: [{
+    routeId: "reasoning",
+    label: "高质量推理线路",
+    model: "synthetic-reasoning-model-with-a-long-name",
+    status: "healthy",
+    confidence: "recent",
+    speed: "normal",
+    observedAt: now - 90_000,
+    fallbackRecentlyUsed: false,
+    message: "healthy",
+  }],
 };
 
 const guestSession: SessionProjection = {
@@ -526,19 +543,25 @@ const operationModelMonitor: ModelMonitorSnapshot = {
     inFlight: index === 23 ? 2 : 0,
     fallbacks: index === 23 ? 6 : 0,
   })),
-  routes: [{
-    id: "reasoning",
-    label: "高质量推理逻辑模型",
-    model: "reasoning-model",
-    attempts: 42,
-    succeeded: 36,
-    failures: 4,
-    inFlight: 2,
-    completed: 40,
-    successRate: 0.9,
-    fallbacks: 6,
-    averageLatencyMs: 420,
-  }],
+  routes: Array.from({ length: 21 }, (_, index) => {
+    const succeeded = index < 18 ? 2 : 0;
+    const failures = index >= 18 && index < 20 ? 2 : 0;
+    const inFlight = index === 20 ? 2 : 0;
+    const completed = succeeded + failures;
+    return {
+      id: index === 0 ? "reasoning" : `monitor-route-${index + 1}`,
+      label: index === 0 ? "高质量推理逻辑模型" : `监控线路 ${index + 1}`,
+      model: "reasoning-model",
+      attempts: 2,
+      succeeded,
+      failures,
+      inFlight,
+      completed,
+      successRate: completed > 0 ? succeeded / completed : null,
+      fallbacks: index < 3 ? 2 : 0,
+      averageLatencyMs: completed > 0 ? 420 : null,
+    };
+  }),
   providers: [{
     id: "provider-fixture",
     label: "Fixture Provider",
@@ -1085,6 +1108,8 @@ function WorkspaceFixture() {
             conversation={activeConversation}
             routeId={routeId}
             connectionState={connectionState}
+            modelAvailability={memberModelAvailability}
+            modelAvailabilityRefreshing={false}
             busy={turnBusy}
             accountBusy={logoutPending}
             logoutPending={logoutPending}
@@ -1170,6 +1195,8 @@ function WorkspaceFixture() {
           session={session}
           conversation={activeConversation}
           routeId={routeId}
+          modelAvailability={memberModelAvailability}
+          modelAvailabilityRefreshing={false}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState="idle"

@@ -17,6 +17,7 @@ export function ConversationInspector({
   conversation,
   routeId,
   modelAvailability,
+  modelAvailabilityRefreshing,
   skillMode,
   skillIds,
   saveState,
@@ -36,6 +37,7 @@ export function ConversationInspector({
   conversation: AgentConversation | null;
   routeId: string;
   modelAvailability?: MemberModelAvailability | null;
+  modelAvailabilityRefreshing?: boolean;
   skillMode: ConversationSkillMode;
   skillIds: string[];
   saveState: ConversationSettingsSaveState;
@@ -158,7 +160,7 @@ export function ConversationInspector({
               ? "请联系管理员配置模型线路"
               : availabilityRoute
                 ? `${availabilityStatusDescription(availabilityRoute.status)}${availabilityRoute.speed !== "unknown" ? ` · ${availabilitySpeedLabel(availabilityRoute.speed)}` : ""}`
-                : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}</small>
+                : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}{modelAvailabilityRefreshing ? " · 正在更新可用性" : ""}</small>
             {availabilityRoute?.fallbackRecentlyUsed && <small className="model-availability-fallback">最近请求已自动切换备用线路。</small>}
             {modelAvailability && session.routes.length > 0 && (
               <div className="model-availability-list" aria-label="模型可用性">
@@ -171,7 +173,7 @@ export function ConversationInspector({
                     </div>
                   );
                 })}
-                <small className="model-availability-footnote">状态基于最近 Chatus 流量，仅作选择参考，不保证下一次请求。</small>
+                <small className="model-availability-footnote">状态基于最近 Chatus 流量，仅作选择参考，不保证下一次请求。更新时间：{formatAvailabilityTime(modelAvailability.generatedAt)}{modelAvailabilityRefreshing ? " · 正在更新" : ""}</small>
               </div>
             )}
             <SaveState state={saveState} onRetry={onRetrySave} />
@@ -273,6 +275,10 @@ function routeStatusText(status: SessionProjection["routes"][number]["healthStat
   if (status === "healthy") return "最近真实任务运行正常";
   if (status === "unhealthy") return "最近真实任务出现异常，可切换其他线路";
   return "尚无近期真实任务记录";
+}
+
+function formatAvailabilityTime(timestamp: number): string {
+  return new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(timestamp);
 }
 
 function toolSourceText(source: SessionProjection["tools"][number]["source"]): string {

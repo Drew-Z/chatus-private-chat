@@ -128,6 +128,7 @@ export function ChatWorkspace({
   const mcpRefresh = useRef<Promise<void> | null>(null);
   const conversationSnapshots = useRef(new Map<string, AgentConversation>());
   const conversationRefreshGeneration = useRef(0);
+  const modelAvailabilityGeneration = useRef(0);
   const settingsQueues = useRef(new Map<string, Promise<void>>());
   const modelAvailabilityRefreshAt = useRef(0);
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
@@ -141,13 +142,15 @@ export function ChatWorkspace({
     const now = Date.now();
     if (!force && now - modelAvailabilityRefreshAt.current < 60_000) return;
     modelAvailabilityRefreshAt.current = now;
+    const generation = ++modelAvailabilityGeneration.current;
     setModelAvailabilityRefreshing(true);
     try {
-      setModelAvailability(await fetchModelAvailability());
+      const next = await fetchModelAvailability();
+      if (generation === modelAvailabilityGeneration.current) setModelAvailability(next);
     } catch {
       // Availability is advisory. Keep the last projection and never block chat.
     } finally {
-      setModelAvailabilityRefreshing(false);
+      if (generation === modelAvailabilityGeneration.current) setModelAvailabilityRefreshing(false);
     }
   }, [session.access]);
 
@@ -620,6 +623,7 @@ export function ChatWorkspace({
           conversation={activeConversation}
           routeId={routeId}
           modelAvailability={modelAvailability}
+          modelAvailabilityRefreshing={modelAvailabilityRefreshing}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState={settingsSave.conversationId === activeConversation?.id ? settingsSave.state : "idle"}

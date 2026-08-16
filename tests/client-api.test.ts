@@ -2024,6 +2024,30 @@ describe("React client runtime validation", () => {
     expect(isModelMonitorSnapshot(monitor)).toBe(true);
     expect(isModelMonitorSnapshot({ ...monitor, providerId: "hidden" })).toBe(false);
     expect(isModelMonitorSnapshot({ ...monitor, totals: { ...totals, completed: 2 } })).toBe(false);
+    expect(isModelMonitorSnapshot({
+      ...monitor,
+      trend: monitor.trend.map((item, index) => index === 7 ? { ...item, bucketStart: item.bucketStart + 1 } : item),
+    })).toBe(false);
+    expect(isModelMonitorSnapshot({
+      ...monitor,
+      trend: monitor.trend.map((item, index) => index === 7 ? { ...item, bucketEnd: item.bucketEnd - 1 } : item),
+    })).toBe(false);
+    const emptyGroup = {
+      id: "empty-route",
+      label: "Empty route",
+      attempts: 0,
+      succeeded: 0,
+      failures: 0,
+      inFlight: 0,
+      completed: 0,
+      successRate: null,
+      fallbacks: 0,
+      averageLatencyMs: null,
+    };
+    expect(isModelMonitorSnapshot({
+      ...monitor,
+      routes: [monitor.routes[0], ...Array.from({ length: 500 }, (_, index) => ({ ...emptyGroup, id: `empty-route-${index}` }))],
+    })).toBe(false);
 
     const availability = {
       version: 1,

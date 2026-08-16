@@ -713,8 +713,18 @@ export function AdminOperationsContent({
 }
 
 function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
+  const [groupKind, setGroupKind] = useState<ModelMonitorGroupKind>("routes");
+  const [groupPageNumber, setGroupPageNumber] = useState(1);
   const maxAttempts = Math.max(1, ...snapshot.trend.map((item) => item.attempts));
   const total = snapshot.totals;
+  const groups = groupKind === "routes" ? snapshot.routes : groupKind === "providers" ? snapshot.providers : snapshot.models;
+  const groupPage = paginateOperations(groups, groupPageNumber);
+
+  function selectGroupKind(nextKind: ModelMonitorGroupKind) {
+    setGroupKind(nextKind);
+    setGroupPageNumber(1);
+  }
+
   return (
     <div className="model-monitor-content">
       <dl className="model-monitor-summary" aria-label="最近 24 小时模型监控摘要">
@@ -741,12 +751,22 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
         </div>
         <div>
           <h3>线路 / Provider / 模型</h3>
-          <div className="model-monitor-groups">
-            {snapshot.routes.slice(0, 8).map((group) => <MonitorGroupRow key={`route:${group.id}`} prefix="线路" group={group} />)}
-            {snapshot.providers.slice(0, 8).map((group) => <MonitorGroupRow key={`provider:${group.id}`} prefix="Provider" group={group} />)}
-            {snapshot.models.slice(0, 8).map((group) => <MonitorGroupRow key={`model:${group.id}`} prefix="模型" group={group} />)}
-            {!snapshot.routes.length && !snapshot.providers.length && !snapshot.models.length && <p className="typed-admin-empty">最近 24 小时无 Provider 请求</p>}
+          <div className="model-monitor-group-switcher" role="group" aria-label="模型监控分组">
+            {([
+              ["routes", "线路"],
+              ["providers", "Provider"],
+              ["models", "模型"],
+            ] as const).map(([kind, label]) => (
+              <button key={kind} type="button" aria-pressed={groupKind === kind} onClick={() => selectGroupKind(kind)}>
+                {label}
+              </button>
+            ))}
           </div>
+          <div className="model-monitor-groups">
+            {groupPage.items.map((group) => <MonitorGroupRow key={`${groupKind}:${group.id}`} prefix={groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"} group={group} />)}
+            {!groupPage.total && <p className="typed-admin-empty">当前分组暂无记录</p>}
+          </div>
+          <PaginationControls label={`模型监控${groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"}`} page={groupPage} onPageChange={setGroupPageNumber} />
         </div>
       </div>
       <div className="model-monitor-foot">
@@ -756,6 +776,8 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
     </div>
   );
 }
+
+type ModelMonitorGroupKind = "routes" | "providers" | "models";
 
 function MonitorGroupRow({ prefix, group }: { prefix: string; group: ModelMonitorSnapshot["routes"][number] }) {
   return (

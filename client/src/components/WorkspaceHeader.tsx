@@ -83,11 +83,10 @@ export function WorkspaceHeader({
               {sharedRole === "editor" ? <Pencil size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
               <span>{sharedRole === "editor" ? "编辑者" : "查看者"}</span>
             </span>
-          ) : (
-            <span className={`header-context-line ${connectionState}`} role="status">
-              {route?.label || "默认线路"} · {connection}
-            </span>
-          )}
+          ) : null}
+          <span className={`header-context-line ${connectionState}`} role="status">
+            {route?.label || "默认线路"} · {connection}
+          </span>
         </div>
         {session.access === "guest" || !permissions.canManageSettings ? (
           <div className="header-route-button static" title={route ? `${route.label} · ${route.model}` : "未选择线路"}>

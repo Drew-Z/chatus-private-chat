@@ -1,0 +1,48 @@
+# Chatus production release and 24-hour observation
+
+## Goal
+
+Safely integrate and release the completed Chatus member workspace, member settings, and model-monitoring work in pull request #90, then prove that the exact merged revision is running in production and remains usable during a 24-hour passive observation window.
+
+This task begins after product design, implementation, and pre-production validation have completed. It owns integration and release evidence only; it does not reopen the approved UX design or advance any legacy-surface rollout.
+
+## Confirmed Facts
+
+- Pull request #90 targets `main` from `codex/chatus-ux-settings-redesign-ui`; its checks pass, but it is still a Draft and has not been merged.
+- The pull request contains both the approved Chatus member UX/settings work and the separately approved model-monitoring/member-availability implementation. Its current title and body understate that backend/API scope.
+- Production deployment is manually dispatched from `main` through `.github/workflows/deploy.yml`; local production Wrangler deployment is prohibited.
+- Production member acceptance is manually dispatched from `main` through `.github/workflows/production-acceptance.yml`.
+- The current live release predates pull request #90. A successful merge alone does not deploy production.
+
+## Requirements
+
+- R2a. Resolve the pre-merge review findings without expanding product scope: enforce the exact 24-hour monitor contract at the browser boundary, preserve all monitor groups through a discoverable segmented/paginated view, expose availability freshness and connection state, and fence overlapping availability refreshes so older results cannot win.
+
+- R1. Update pull request #90 metadata so reviewers can see the complete UX, Worker/API, monitoring, privacy, and test scope. Do not claim that backend or API contracts are unchanged.
+- R2. Keep the pull request branch clean and all required checks successful. Review the actual diff for security, privacy, authorization, regression, and production-boundary risks before marking it Ready or merging it.
+- R3. Merge pull request #90 into `main` only if it remains mergeable, its head SHA is unchanged from the reviewed revision, and all checks are successful.
+- R4. Dispatch `Deploy to Cloudflare` only from the exact merged `main` revision. Do not deploy from a local Wrangler account or from the feature branch.
+- R5. Require the deployment workflow, Worker deployment step, and production smoke verification to succeed. Verify that both `/release.json` and the `/react-chat/` release meta identify the merged revision.
+- R6. Dispatch `Production member acceptance` from the same deployed `main` revision and require the release guard plus temporary-member acceptance to succeed.
+- R7. Observe the release for 24 hours using passive Chatus request evidence. Check model attempts, completed successes/failures, success rate semantics, stale/unknown member availability, and UI reachability without generating synthetic model traffic merely to improve health status.
+- R8. Treat any release-critical regression as a rollback condition. Use the repository-owned GitHub Actions deployment workflow for rollback to the last known-good `main` revision; do not mutate production locally.
+- R9. Do not modify, advance, or use evidence from `legacy-api-chat-post-rollout`, `legacy-browser-shell-rollout`, or any other legacy rollout as proof for this Chatus release.
+- R10. Do not expose or record secrets, access codes, prompts, responses, conversation content, stored memories, raw Provider payloads, or member identities in task evidence.
+
+## Acceptance Criteria
+
+- [ ] AC1: Pull request #90 accurately describes both member UX/settings and model-monitoring/member-availability changes and is no longer a Draft.
+- [ ] AC2: The reviewed PR head has successful checks and is merged into `main`; the exact merge SHA is recorded.
+- [ ] AC3: `Deploy to Cloudflare` succeeds for the exact merge SHA, including validation, Worker deployment, and production smoke steps.
+- [ ] AC4: Production `/release.json` and `/react-chat/` release metadata both equal the merge SHA and the member workspace returns an expected successful response.
+- [ ] AC5: `Production member acceptance` succeeds for the same SHA.
+- [ ] AC6: A 24-hour passive observation records monitoring freshness and reconciled attempt/success/failure evidence without exposing prohibited data or running synthetic health probes.
+- [ ] AC7: No release-critical regression remains open at the end of observation; otherwise rollback evidence and the resulting live SHA are recorded.
+- [ ] AC8: No legacy rollout task, gate, workflow state, or evidence is changed or advanced by this task.
+
+## Out Of Scope
+
+- Further visual redesign or new Figma work.
+- New model-monitoring features, synthetic probes, billing telemetry, or per-member surveillance.
+- Legacy browser/API rollout work and production legacy census governance.
+- Changing Cloudflare bindings, credentials, storage schemas, routing configuration, or deployment workflows.
