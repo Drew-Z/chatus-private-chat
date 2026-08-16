@@ -117,6 +117,12 @@
         "status": "passed",
         "summary": "97 focused observation, delivery-governance, and deployment-config tests passed.",
         "at": "2026-08-16T22:54:50.753336+00:00"
+      },
+      {
+        "command": "trellis-spec-update-review",
+        "status": "passed",
+        "summary": "Model monitoring spec now records the passive 24-hour observation evidence contract, privacy bounds, and exact workflow gates.",
+        "at": "2026-08-16T23:25:07.893743+00:00"
       }
     ]
   }

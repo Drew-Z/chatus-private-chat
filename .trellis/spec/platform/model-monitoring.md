@@ -72,3 +72,75 @@ const snapshot = mergeProviderAttemptMonitoringRows(rows, labels, generatedAt, p
 ```
 
 The server merges bounded aggregate rows, keeps terminal semantics explicit, and produces separate privacy-scoped admin/member projections.
+
+## Scenario: Passive 24-Hour Production Observation Evidence
+
+### 1. Scope / Trigger
+
+Use this contract when a deployed Chatus revision needs a release-level observation result. The observation is a read-only evidence gate for the existing monitor and member availability endpoints; it is not a deployment, health probe, routing gate, or synthetic model test.
+
+### 2. Signatures
+
+```text
+Workflow: .github/workflows/production-model-observation.yml
+Collector: node scripts/collect-production-model-observation.mjs
+Input: deployed_sha, observation_started_at
+Read: GET /api/admin/model-monitor?window=24h&bucket=hour
+Acceptance: npm run acceptance:production
+```
+
+### 3. Contracts
+
+- The workflow is `workflow_dispatch` only, runs from `refs/heads/main`, uses the non-canceling `chatus-production-mutation` concurrency group, and has a 15-minute timeout.
+- `deployed_sha` and `observation_started_at` are required inputs. The collector requires the deployed SHA to be a lowercase 40-character SHA, the start timestamp to be valid, and the current time to be at least 86,400,000 ms after the start.
+- The collector verifies `/release.json` before and after the read, requires the deployed release to be an ancestor of the current main SHA, logs in through the existing admin session, reads exactly the 24-hour hourly monitor contract, and logs out before producing evidence.
+- The retained JSON may contain only the deployed SHA, observation timestamps, period timestamps, totals, and bounded group counts. It must not contain route, Provider, model, failure-class, attempt, turn, member, prompt, response, conversation, credential, cookie, or raw error identifiers.
+- The same serialized run invokes model-request-free production acceptance, including the member `/api/model-availability` projection check. It must never call `/api/chat`, Wrangler, or a completion endpoint.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Workflow ref is not `refs/heads/main` | Stop before production reads |
+| Observation window is shorter than 24 hours | Stop without an artifact |
+| Deployed SHA is not current or not a main ancestor | Stop before monitor read |
+| Monitor response has unknown fields, fewer/more than 24 contiguous buckets, invalid counts/rates, or unreconciled groups | Reject the complete snapshot |
+| Admin logout fails | Fail the run even if the monitor read passed |
+| Release marker changes after the read | Fail the run and do not retain a success result |
+| Artifact contains a prohibited identity or content field | Governance test fails and the evidence contract is invalid |
+| No real model traffic exists | Retain a reconciled no-data/unknown aggregate, never a fabricated success |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the exact deployed release remains stable, all 24 buckets reconcile to totals and breakdowns, admin logout succeeds, member availability is checked without a model request, and the artifact contains only aggregates.
+- Base: no attempts occurred, so `completed=0` and `successRate=null`; availability may be unknown while chat remains usable.
+- Bad: issue a hidden completion prompt to create traffic, truncate the monitor to a recent-attempt list, retain Provider or route labels in the artifact, or accept a different deployed SHA.
+
+### 6. Tests Required
+
+- Unit-test the exact 24-hour period, 24 contiguous buckets, terminal/in-flight semantics, fallback totals, success-rate denominator, all breakdown reconciliations, unknown-key rejection, and content/identity leakage rejection.
+- Parse the workflow structurally and assert main-only dispatch, exact inputs, non-canceling concurrency, bounded timeout, early/late main guards, artifact path/retention, and absence of Wrangler or model-call commands.
+- Assert production acceptance requests `/api/model-availability` and rejects Provider, credential, content, and duplicate-route fields without issuing `/api/chat`.
+- Retain only aggregate counters and group counts in the artifact fixture; assert route, Provider, model, failure-class, prompt, response, cookie, and member identifiers are absent.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```js
+const attempts = await fetch("/api/admin/model-monitor?window=24h");
+await fetch("/api/chat", { method: "POST", body: syntheticPrompt });
+writeArtifact({ attempts, provider: "upstream" });
+```
+
+This uses an incomplete query, generates traffic, and leaks Provider identity into evidence.
+
+#### Correct
+
+```js
+const snapshot = await read("/api/admin/model-monitor?window=24h&bucket=hour");
+assert(isModelMonitorSnapshot(snapshot));
+writeArtifact(summarizeModelMonitorSnapshot(snapshot, { deployedSha, observedAt }));
+```
+
+The correct path reads the exact existing aggregate contract, validates every reconciliation, and writes a content-free summary after release and session fences pass.
