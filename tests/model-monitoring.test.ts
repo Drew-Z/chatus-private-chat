@@ -74,4 +74,3 @@ describe("model monitoring contracts", () => {
     expect(snapshot.trend).toHaveLength(24);
   });
 });
-

@@ -41,4 +41,3 @@ export function availabilitySpeedLabel(speed: MemberModelAvailability["routes"][
   if (speed === "slow") return "响应偏慢";
   return "速度未知";
 }
-
