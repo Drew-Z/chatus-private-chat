@@ -203,8 +203,8 @@ export function MessageComposer({
             <button className="composer-action" type="submit" disabled={sendDisabled} title="发送" aria-label="发送"><SendHorizontal size={18} /></button>
           )}
         </div>
+        <span className="composer-status" role="status" aria-live="polite" aria-atomic="true" aria-hidden={!statusText}>{statusText || "\u00a0"}</span>
       </div>
-      <span className="composer-status" role="status" aria-live="polite" aria-atomic="true" aria-hidden={!statusText}>{statusText || "\u00a0"}</span>
     </form>
   );
 }

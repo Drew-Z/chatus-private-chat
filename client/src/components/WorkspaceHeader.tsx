@@ -1,4 +1,4 @@
-import { ArrowLeft, Brain, Cable, Download, Eye, LogIn, LogOut, Menu, PanelRightOpen, Pencil, Route, Settings, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, Download, Eye, LogIn, LogOut, Menu, PanelRightOpen, Pencil, Route } from "lucide-react";
 import type { AgentConversation, MemberModelAvailability, SessionProjection } from "../lib/api";
 import { resolveConversationAccessPermissions } from "../lib/state";
 import { ProductBrand } from "./ProductBrand";
@@ -10,7 +10,6 @@ export function WorkspaceHeader({
   session,
   conversation,
   routeId,
-  mcpConnections,
   connectionState,
   modelAvailability,
   modelAvailabilityRefreshing,
@@ -21,9 +20,6 @@ export function WorkspaceHeader({
   parentMissing,
   onOpenSidebar,
   onOpenRouteSettings,
-  onOpenMemory,
-  onOpenMcpConnections,
-  onOpenMemberSettings = () => undefined,
   onReturnToParent,
   onMemberLogin,
   onLogout,
@@ -31,7 +27,6 @@ export function WorkspaceHeader({
   session: SessionProjection;
   conversation: AgentConversation | null;
   routeId: string;
-  mcpConnections: SessionProjection["mcpConnections"];
   connectionState: ConnectionState;
   modelAvailability?: MemberModelAvailability | null;
   modelAvailabilityRefreshing?: boolean;
@@ -42,9 +37,6 @@ export function WorkspaceHeader({
   parentMissing: boolean;
   onOpenSidebar: () => void;
   onOpenRouteSettings: () => void;
-  onOpenMemory: () => void;
-  onOpenMcpConnections: () => void;
-  onOpenMemberSettings?: () => void;
   onReturnToParent: () => void;
   onMemberLogin: () => void;
   onLogout: () => Promise<void>;
@@ -53,7 +45,6 @@ export function WorkspaceHeader({
   const health = routeHealthLabel(route?.healthStatus);
   const availability = modelAvailability?.routes.find((candidate) => candidate.routeId === routeId);
   const connection = connectionLabel(connectionState);
-  const connectedMcpCount = mcpConnections.filter((item) => item.connected).length;
   const logoutLabel = logoutPending ? "正在退出登录" : "退出登录";
   const permissions = resolveConversationAccessPermissions(conversation?.accessRole);
   const sharedRole = conversation?.accessRole && conversation.accessRole !== "owner"
@@ -64,7 +55,7 @@ export function WorkspaceHeader({
     <header className="workspace-header">
       <div className="header-leading">
         <button className="icon-button mobile-only" type="button" onClick={onOpenSidebar} title="打开会话" aria-label="打开会话"><Menu size={19} /></button>
-        <ProductBrand compact meta={session.displayName} />
+        <div className="header-mobile-brand"><ProductBrand compact /></div>
       </div>
 
       <div className="header-conversation">
@@ -92,7 +83,11 @@ export function WorkspaceHeader({
               {sharedRole === "editor" ? <Pencil size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
               <span>{sharedRole === "editor" ? "编辑者" : "查看者"}</span>
             </span>
-          ) : null}
+          ) : (
+            <span className={`header-context-line ${connectionState}`} role="status">
+              {route?.label || "默认线路"} · {connection}
+            </span>
+          )}
         </div>
         {session.access === "guest" || !permissions.canManageSettings ? (
           <div className="header-route-button static" title={route ? `${route.label} · ${route.model}` : "未选择线路"}>
@@ -114,21 +109,10 @@ export function WorkspaceHeader({
       </div>
 
       <div className="header-actions">
-        <div className={`connection compact ${connectionState}`} role="status" aria-label={`连接状态：${connection}`}>
-          {connectionState === "error" ? <WifiOff size={15} aria-hidden="true" /> : <Wifi size={15} aria-hidden="true" />}
-          <span>{connection}</span>
-        </div>
         <button id="installAppButton" className="icon-button" type="button" hidden title="安装应用" aria-label="安装应用"><Download size={18} /></button>
-        {session.capabilities.memory && permissions.canManageSettings && (
-          <button className="icon-text-button quiet-button memory-trigger" type="button" onClick={onOpenMemory} disabled={accountBusy}><Brain size={17} /><span>记忆</span></button>
-        )}
-        {session.access === "member" && permissions.canUseConversationTools && (
-          <button className={`icon-button mcp-connections-trigger ${connectedMcpCount ? "connected" : ""}`} type="button" onClick={onOpenMcpConnections} disabled={busy || accountBusy} title={`MCP 连接${connectedMcpCount ? ` · ${connectedMcpCount} 已连接` : ""}`} aria-label={`MCP 连接${connectedMcpCount ? `，${connectedMcpCount} 个已连接` : ""}`}><Cable size={18} /></button>
-        )}
         {(session.access === "guest" || permissions.canManageSettings) && (
-          <button className="icon-button inspector-trigger" type="button" onClick={onOpenRouteSettings} disabled={busy || accountBusy} title="会话配置" aria-label="会话配置"><PanelRightOpen size={18} /></button>
+          <button className="icon-text-button inspector-trigger" type="button" onClick={onOpenRouteSettings} disabled={busy || accountBusy} title="打开对话上下文" aria-label="打开对话上下文"><PanelRightOpen size={17} /><span>上下文</span></button>
         )}
-        <button className="icon-button" type="button" onClick={onOpenMemberSettings} disabled={busy || accountBusy} title="成员设置" aria-label="成员设置"><Settings size={18} /></button>
         {session.access === "guest" ? (
           <button className="icon-text-button quiet-button" type="button" onClick={onMemberLogin} disabled={busy || accountBusy} title="成员登录" aria-label="成员登录"><LogIn size={17} /><span>成员登录</span></button>
         ) : (

@@ -126,3 +126,13 @@ Likely implementation files are limited to the typed client and its focused test
 - Decision: preserve the approved information architecture and contracts, but supersede the teal-led visual tokens with pearl white (`#F7F8FA`), white surfaces, near-black ink, neutral gray separators, and sparse cobalt (`#4D6BFE`).
 - Decision: make the composer/transcript the primary anchor, reduce header and rail competition, use subtle active rows instead of saturated fills, and use a neutral near-black dark theme rather than navy/slate panels.
 - Boundary: references inform hierarchy and restraint only; no third-party logo, asset, exact styling, or legacy rollout surface is copied or changed.
+
+### Figma-to-Typed-Client Sync Record — 2026-08-16
+
+- User approved the final Figma direction and authorized implementation. Synced the approved `Member Workspace` and `Member Settings` structure into the typed React client without changing API, Agent, provider, storage, legacy, or rollout contracts.
+- Moved the workspace header into the main column, kept the conversation rail and inspector as independent responsive regions, and made member settings a desktop master-detail / mobile list-to-detail center.
+- Removed crowded top-level memory/MCP/settings shortcuts from the header; those capabilities remain owned by the rail, inspector, and settings surfaces. No Figma bridge-generated code or third-party assets were copied into the client.
+- Repaired browser fixture assertions to match the approved information architecture: logout coverage no longer requires a removed MCP header action, and narrow guest coverage opens context through the visible drawer action when the sidebar scrim is active.
+- Current validation: `npm run check:frontend`, `npm run test:browser:workspace` (`112` passed, `58` skipped), `npm run test:browser:agent` (`3` passed), `npm run typecheck`, `npx wrangler deploy --dry-run`, and `git diff --check` passed. Frontend Vitest subset passed (`3` files, `102` tests).
+- Full `npm test` was attempted after the final CSS/test sync but the local Cloudflare Durable Object runner produced no final summary and remained active beyond the normal run window; it was stopped after confirming the process was not progressing. The previously recorded full baseline remains `52` files / `799` tests passed.
+- Scope audit repeated: only typed client components/styles, browser fixture/tests, the frontend structure check, and this task documentation changed; no `public/` legacy source, legacy rollout task, production gate, deployment workflow, API contract, secret, conversation content, or stored memory was changed.

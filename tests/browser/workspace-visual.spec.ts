@@ -284,7 +284,8 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   expect(geometry.documentFits).toBe(true);
   expect(geometry.bodyFits).toBe(true);
   expect(geometry.header.height).toBeLessThanOrEqual(60);
-  expect(geometry.header.bottom).toBeLessThanOrEqual(geometry.layout.top + 1);
+  expect(geometry.header.top).toBeGreaterThanOrEqual(geometry.layout.top - 1);
+  expect(geometry.header.bottom).toBeLessThanOrEqual(geometry.layout.bottom + 1);
   expect(geometry.headerLeading.right).toBeLessThanOrEqual(geometry.headerTitle.left + 1);
   expect(geometry.headerTitle.right).toBeLessThanOrEqual(geometry.headerRoute.left + 1);
   expect(geometry.headerRoute.right).toBeLessThanOrEqual(geometry.headerActions.left + 1);
@@ -358,7 +359,6 @@ test("member logout keeps pending and retry recovery accessible and contained", 
   await expect(pendingLogout).toBeDisabled();
   await expect(pendingLogout).toHaveAttribute("title", "正在退出登录");
   await expect(page.getByRole("button", { name: "查看线路与状态" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /MCP 连接/ })).toBeDisabled();
   await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
 
   await page.goto("/?logout=error");
@@ -704,8 +704,12 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await expect(page.getByRole("button", { name: "查看线路与状态" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "记忆" })).toHaveCount(0);
   const openSidebar = page.getByRole("button", { name: "打开会话" });
-  if (await openSidebar.isVisible()) await openSidebar.click();
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  if (await openSidebar.isVisible()) {
+    await openSidebar.click();
+    await page.getByRole("button", { name: "上下文", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "打开对话上下文" }).click();
+  }
   await expect(page.getByRole("group", { name: "Skill 模式" })).toHaveCount(0);
   await expect(page.getByText("Skills", { exact: true })).toHaveCount(0);
   await expect(page.locator(".skill-option")).toHaveCount(0);
@@ -752,18 +756,19 @@ test("member Skill mode switches between automatic and exact manual selection", 
 
 test("member settings center keeps global preferences out of conversation context", async ({ page }, testInfo) => {
   test.skip(!["desktop-1440", "mobile-480"].includes(testInfo.project.name), "settings coverage targets desktop and mobile");
-  await page.getByRole("button", { name: "成员设置" }).first().click();
-  const center = page.getByRole("dialog", { name: "成员设置" });
+  if ((page.viewportSize()?.width || 0) <= 780) await page.getByRole("button", { name: "打开会话" }).click();
+  await page.locator(".sidebar-footer-actions").getByRole("button", { name: "设置", exact: true }).click();
+  const center = page.getByRole("dialog", { name: "设置" });
   await expect(center).toBeVisible();
   await center.getByRole("button", { name: "外观" }).click();
   await expect(center.locator('[role="group"][aria-label="主题"]')).toBeVisible();
   await center.getByRole("button", { name: "深色" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  if ((page.viewportSize()?.width || 0) <= 780) await center.getByRole("button", { name: "设置", exact: true }).click();
+  if ((page.viewportSize()?.width || 0) <= 780) await center.getByRole("button", { name: "返回设置列表" }).click();
   await center.getByRole("button", { name: "连接" }).click();
   await expect(center).toContainText("MCP");
-  if ((page.viewportSize()?.width || 0) <= 780) await center.getByRole("button", { name: "设置", exact: true }).click();
-  await center.getByRole("button", { name: "账号与数据" }).click();
+  if ((page.viewportSize()?.width || 0) <= 780) await center.getByRole("button", { name: "返回设置列表" }).click();
+  await center.getByRole("button", { name: "账户与数据" }).click();
   await expect(center).toContainText("导出我的数据");
   const geometry = await page.evaluate(() => ({
     documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
@@ -2041,7 +2046,7 @@ test("viewer and editor receive only their bounded conversation controls", async
   await expect(viewerRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
   await expect(viewerRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "设置", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "上下文", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "查看线路与状态" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "记忆" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /MCP 连接/ })).toHaveCount(0);
@@ -2057,7 +2062,7 @@ test("viewer and editor receive only their bounded conversation controls", async
   await expect(editorRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
   await expect(editorRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "设置", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "上下文", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "编辑并分支发送" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "重新生成并创建分支" })).toHaveCount(0);
 

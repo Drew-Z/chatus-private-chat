@@ -530,33 +530,6 @@ export function ChatWorkspace({
 
   return (
     <main className="workspace-shell">
-      <WorkspaceHeader
-        session={session}
-        conversation={activeConversation}
-        routeId={routeId}
-        mcpConnections={mcpConnections}
-        connectionState={connectionState}
-        modelAvailability={modelAvailability}
-        modelAvailabilityRefreshing={modelAvailabilityRefreshing}
-        busy={busy}
-        accountBusy={accountOperationBusy}
-        logoutPending={logoutPending}
-        parentConversation={parentConversation}
-        parentMissing={parentMissing}
-        onOpenSidebar={() => setSidebarOpen(true)}
-        onOpenRouteSettings={openRouteSettings}
-        onOpenMemberSettings={() => { setSettingsOpen(true); setSidebarOpen(false); }}
-        onOpenMemory={() => setMemoryOpen(true)}
-        onOpenMcpConnections={() => {
-          setMcpConnectionsOpen(true);
-          setMcpConnectionNotice(null);
-          void refreshMcpConnections();
-        }}
-        onReturnToParent={returnToParentConversation}
-        onMemberLogin={onMemberLogin}
-        onLogout={handleLogout}
-      />
-
       <div className={`workspace-layout ${inspectorOpen ? "inspector-open" : ""}`}>
         <ConversationSidebar
           open={sidebarOpen}
@@ -586,40 +559,60 @@ export function ChatWorkspace({
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
 
-        <section className="chat-panel" aria-label="对话">
-          {logoutState.status === "error" && (
-            <MemberLogoutNotice message={logoutState.message} onRetry={handleLogout} />
-          )}
-          {workspaceError && (
-            <div className="workspace-error" role="alert">
-              <span>{workspaceError}</span>
-              <button className="icon-button" type="button" onClick={handleRefresh} disabled={accountOperationBusy} title="重新读取" aria-label="重新读取"><RefreshCw size={16} /></button>
-            </div>
-          )}
-          {loading ? (
-            <div className="chat-loading">正在恢复会话...</div>
-          ) : activeConversation ? (
-            <ConversationChat
-              key={`${activeConversation.resourceId || activeConversation.id}:${activeConversation.accessRevision || 0}`}
-              session={session}
-              conversation={activeConversation}
-              routeId={routeId}
-              skillMode={skillMode}
-              skillIds={skillIds}
-              blocked={accountOperationBusy}
-              onBusyChange={setBusy}
-              onConnectionStateChange={setConnectionState}
-              onConversationChanged={handleConversationChanged}
-              onAccessInvalidated={handleConversationAccessInvalidated}
-              onBranch={handleBranch}
-            />
-          ) : (
-            <div className="chat-loading">
-              <strong>无法打开会话</strong>
-              <button className="primary-button" type="button" onClick={() => void createConversation()} disabled={accountOperationBusy}>新建对话</button>
-            </div>
-          )}
-        </section>
+        <div className="workspace-main">
+          <WorkspaceHeader
+            session={session}
+            conversation={activeConversation}
+            routeId={routeId}
+            connectionState={connectionState}
+            modelAvailability={modelAvailability}
+            modelAvailabilityRefreshing={modelAvailabilityRefreshing}
+            busy={busy}
+            accountBusy={accountOperationBusy}
+            logoutPending={logoutPending}
+            parentConversation={parentConversation}
+            parentMissing={parentMissing}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onOpenRouteSettings={openRouteSettings}
+            onReturnToParent={returnToParentConversation}
+            onMemberLogin={onMemberLogin}
+            onLogout={handleLogout}
+          />
+          <section className="chat-panel" aria-label="对话">
+            {logoutState.status === "error" && (
+              <MemberLogoutNotice message={logoutState.message} onRetry={handleLogout} />
+            )}
+            {workspaceError && (
+              <div className="workspace-error" role="alert">
+                <span>{workspaceError}</span>
+                <button className="icon-button" type="button" onClick={handleRefresh} disabled={accountOperationBusy} title="重新读取" aria-label="重新读取"><RefreshCw size={16} /></button>
+              </div>
+            )}
+            {loading ? (
+              <div className="chat-loading">正在恢复会话...</div>
+            ) : activeConversation ? (
+              <ConversationChat
+                key={`${activeConversation.resourceId || activeConversation.id}:${activeConversation.accessRevision || 0}`}
+                session={session}
+                conversation={activeConversation}
+                routeId={routeId}
+                skillMode={skillMode}
+                skillIds={skillIds}
+                blocked={accountOperationBusy}
+                onBusyChange={setBusy}
+                onConnectionStateChange={setConnectionState}
+                onConversationChanged={handleConversationChanged}
+                onAccessInvalidated={handleConversationAccessInvalidated}
+                onBranch={handleBranch}
+              />
+            ) : (
+              <div className="chat-loading">
+                <strong>无法打开会话</strong>
+                <button className="primary-button" type="button" onClick={() => void createConversation()} disabled={accountOperationBusy}>新建对话</button>
+              </div>
+            )}
+          </section>
+        </div>
         <ConversationInspector
           open={inspectorOpen}
           section={inspectorSection}

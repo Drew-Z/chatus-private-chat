@@ -1039,28 +1039,6 @@ function WorkspaceFixture() {
 
   return (
     <main className="workspace-shell" data-visual-fixture="true">
-      <WorkspaceHeader
-        session={session}
-        conversation={activeConversation}
-        routeId={routeId}
-        mcpConnections={session.mcpConnections}
-        connectionState={connectionState}
-        busy={turnBusy}
-        accountBusy={logoutPending}
-        logoutPending={logoutPending}
-        parentConversation={parentConversation}
-        parentMissing={parentMissing}
-        onOpenSidebar={() => setSidebarOpen(true)}
-        onOpenRouteSettings={() => { setInspectorSection("model"); setInspectorOpen(true); setSidebarOpen(false); }}
-        onOpenMemberSettings={() => { setMemberSettingsOpen(true); setSidebarOpen(false); }}
-        onOpenMemory={() => undefined}
-        onOpenMcpConnections={() => undefined}
-        onReturnToParent={() => {
-          if (parentConversation) setActiveId(parentConversation.id);
-        }}
-        onMemberLogin={() => undefined}
-        onLogout={async () => setLogoutState("pending")}
-      />
       <div className={`workspace-layout ${inspectorOpen ? "inspector-open" : ""}`}>
         <ConversationSidebar
           open={sidebarOpen}
@@ -1101,71 +1079,91 @@ function WorkspaceFixture() {
           onOpenMemberSettings={() => { setMemberSettingsOpen(true); setSidebarOpen(false); }}
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
-        <section className="chat-panel" aria-label="对话">
-          {logoutState === "error" && (
-            <MemberLogoutNotice
-              message="合成成员会话撤销失败，请重试。当前工作区和草稿保持不变。"
-              onRetry={() => setLogoutState("pending")}
-            />
-          )}
-          <div className="conversation-chat" data-turn-phase={turnPhase}>
-            <div className="message-list" aria-live="polite">
-              <div className="message-column">
-                {messages.map((message, index) => (
-                  <MessageView
-                    key={message.id}
-                    message={message}
-                    onApprove={() => undefined}
-                    onAction={session.capabilities.messageActions ? handleMessageAction : undefined}
-                    onFeedback={session.capabilities.feedback ? async () => undefined : undefined}
-                    availability={resolveMessageActionAvailability({
-                      phase: turnPhase,
-                      role: message.role,
-                      isLatestMessage: index === messages.length - 1,
-                      online,
-                      blocked: workspaceBlocked,
-                      routeAvailable,
-                      messageActionsEnabled: session.capabilities.messageActions,
-                      feedbackEnabled: session.capabilities.feedback,
-                      hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
-                      canContinue: message.role === "assistant",
-                      toolApprovalPending: message.parts.some(isPendingToolApprovalPart),
-                      accessRole: activeConversation?.accessRole,
-                    })}
-                  />
-                ))}
-                {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>{progressText || (turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出")}</span></div>}
+        <div className="workspace-main">
+          <WorkspaceHeader
+            session={session}
+            conversation={activeConversation}
+            routeId={routeId}
+            connectionState={connectionState}
+            busy={turnBusy}
+            accountBusy={logoutPending}
+            logoutPending={logoutPending}
+            parentConversation={parentConversation}
+            parentMissing={parentMissing}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onOpenRouteSettings={() => { setInspectorSection("model"); setInspectorOpen(true); setSidebarOpen(false); }}
+            onReturnToParent={() => {
+              if (parentConversation) setActiveId(parentConversation.id);
+            }}
+            onMemberLogin={() => undefined}
+            onLogout={async () => setLogoutState("pending")}
+          />
+          <section className="chat-panel" aria-label="对话">
+            {logoutState === "error" && (
+              <MemberLogoutNotice
+                message="合成成员会话撤销失败，请重试。当前工作区和草稿保持不变。"
+                onRetry={() => setLogoutState("pending")}
+              />
+            )}
+            <div className="conversation-chat" data-turn-phase={turnPhase}>
+              <div className="message-list" aria-live="polite">
+                <div className="message-column">
+                  {messages.map((message, index) => (
+                    <MessageView
+                      key={message.id}
+                      message={message}
+                      onApprove={() => undefined}
+                      onAction={session.capabilities.messageActions ? handleMessageAction : undefined}
+                      onFeedback={session.capabilities.feedback ? async () => undefined : undefined}
+                      availability={resolveMessageActionAvailability({
+                        phase: turnPhase,
+                        role: message.role,
+                        isLatestMessage: index === messages.length - 1,
+                        online,
+                        blocked: workspaceBlocked,
+                        routeAvailable,
+                        messageActionsEnabled: session.capabilities.messageActions,
+                        feedbackEnabled: session.capabilities.feedback,
+                        hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
+                        canContinue: message.role === "assistant",
+                        toolApprovalPending: message.parts.some(isPendingToolApprovalPart),
+                        accessRole: activeConversation?.accessRole,
+                      })}
+                    />
+                  ))}
+                  {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>{progressText || (turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出")}</span></div>}
+                </div>
               </div>
+              {activePermissions.canSend ? <MessageComposer
+                value={input}
+                attachments={attachments}
+                imagePolicy={session.imageInput}
+                filePolicy={session.fileInput}
+                imagesSupported={activePermissions.canUseWorkspace && session.capabilities.imageInput && params.get("images") !== "0"}
+                filesSupported={activePermissions.canUseWorkspace && session.capabilities.fileInput}
+                onChange={setInput}
+                onAddAttachments={addAttachments}
+                onRemoveAttachment={(id: string) => setAttachments((current) => {
+                  const removed = current.filter((attachment) => attachment.id === id);
+                  releaseAttachmentPreviews(removed);
+                  return current.filter((attachment) => attachment.id !== id);
+                })}
+                onRetryAttachment={(id: string) => setAttachments((current) => current.map((attachment) => (
+                  attachment.id === id ? { ...attachment, status: "reading", error: undefined } : attachment
+                )))}
+                onSubmit={() => setBusy(true)}
+                onStop={() => setBusy(false)}
+                busy={turnBusy}
+                blocked={workspaceBlocked}
+                online={online}
+                routeAvailable={routeAvailable}
+                agentReady
+                placeholder="输入消息"
+                statusText={turnBusy ? "Agent 正在继续处理" : ""}
+              /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
             </div>
-            {activePermissions.canSend ? <MessageComposer
-              value={input}
-              attachments={attachments}
-              imagePolicy={session.imageInput}
-              filePolicy={session.fileInput}
-              imagesSupported={activePermissions.canUseWorkspace && session.capabilities.imageInput && params.get("images") !== "0"}
-              filesSupported={activePermissions.canUseWorkspace && session.capabilities.fileInput}
-              onChange={setInput}
-              onAddAttachments={addAttachments}
-              onRemoveAttachment={(id: string) => setAttachments((current) => {
-                const removed = current.filter((attachment) => attachment.id === id);
-                releaseAttachmentPreviews(removed);
-                return current.filter((attachment) => attachment.id !== id);
-              })}
-              onRetryAttachment={(id: string) => setAttachments((current) => current.map((attachment) => (
-                attachment.id === id ? { ...attachment, status: "reading", error: undefined } : attachment
-              )))}
-              onSubmit={() => setBusy(true)}
-              onStop={() => setBusy(false)}
-              busy={turnBusy}
-              blocked={workspaceBlocked}
-              online={online}
-              routeAvailable={routeAvailable}
-              agentReady
-              placeholder="输入消息"
-              statusText={turnBusy ? "Agent 正在继续处理" : ""}
-            /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
-          </div>
-        </section>
+          </section>
+        </div>
         <ConversationInspector
           open={inspectorOpen}
           section={inspectorSection}

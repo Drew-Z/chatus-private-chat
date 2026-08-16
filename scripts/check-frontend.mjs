@@ -128,7 +128,7 @@ assert(reactClient.includes("followTranscriptRef") && reactClient.includes("onSc
 assert(reactInspector.includes("session.tools.map") && reactInspector.includes("selectedToolIds"), "React inspector: assigned tools and current Skill activation must remain visible");
 assert(reactInspector.includes('tool.source === "mcp"'), "React inspector: MCP tools must remain distinguishable without exposing server details");
 assert(reactMemberSettings.includes("onRevokeAllSessions") && reactMemberSettings.includes("onDeleteUserData") && reactMemberSettings.includes("onExportUserData"), "React settings: account data actions are missing");
-assert(reactMemberSettings.includes("账号与数据") && reactMemberSettings.includes("清空我的数据") && reactMemberSettings.includes("注销所有设备"), "React settings: account data controls need explicit labels and destructive copy");
+assert(reactMemberSettings.includes("账户与数据") && reactMemberSettings.includes("删除账户数据") && reactMemberSettings.includes("注销所有设备"), "React settings: account data controls need explicit labels and destructive copy");
 assert(reactMemberSettings.includes("<ConfirmDialog") && reactMemberSettings.includes("tone={confirmation === \"delete\" ? \"danger\" : \"default\"}"), "React settings: account data confirmations must be modal and destructive-aware");
 assert(reactSidebar.includes("data-sidebar-initial-focus") && reactSidebar.includes('event.key === "Escape"') && reactSidebar.includes("previousSidebarFocusRef.current?.focus()"), "React sidebar: mobile drawer must trap focus, close on Escape, and restore focus");
 assert(reactSidebar.includes("conversation-delete-dialog") && !reactSidebar.includes("window.confirm"), "React sidebar: conversation deletion needs an accessible modal instead of window.confirm");

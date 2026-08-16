@@ -202,6 +202,16 @@ Create one Figma file with these pages:
 
 Use variables and component variants rather than detached screen-specific colors. The minimum approval prototype is the two-flow chain in the PRD; every destructive and async state must be represented as a component state even if not linked in the prototype.
 
+### Figma MCP Bridge Evaluation — 2026-08-16
+
+The open-source [`gethopp/figma-mcp-bridge`](https://github.com/gethopp/figma-mcp-bridge) project is a viable optional transport for the Figma-first milestone. Its local MCP server and imported Figma plugin stream the live document over a local WebSocket, so reads and supported writes do not consume the official Figma API request allowance. The server also supports multiple connected files through `fileKey`.
+
+The bridge is suitable for the first draft of this file: it can create and edit frames, text, basic shapes, images, fills, strokes, effects, auto-layout, selections, and screenshots. It requires the Figma file to be open with the bridge plugin running, and write operations require an Editor-capable Figma seat; Dev Mode and View seats are read-only for bridge edits.
+
+It is not a replacement for the approved design-system authoring plan. The current release can read variable definitions but cannot create Figma Variables, Styles, Components, Instances, or component properties/bindings. Therefore the bridge may be used to accelerate editable screen scaffolding and review screenshots, while Foundations and Components still need native Figma authoring (or a future bridge release with those write APIs). Do not install or configure it as part of this task until the user explicitly authorizes the local MCP change and confirms an Editor seat.
+
+The related `vkhanhqui/figma-mcp-go` fork is excluded from consideration because its GitHub repository is disabled under a DMCA notice alleging copied bridge implementation and license-attribution problems.
+
 ## Compatibility, Migration, And Rollback
 
 - No backend schema, API, Worker, Agent, Provider, ACL, memory, MCP, or storage migration is required by this design.

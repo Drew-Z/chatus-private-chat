@@ -4,6 +4,7 @@ import type { AgentConversation, SessionProjection } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
 import { resolveConversationAccessPermissions } from "../lib/state";
 import { ConversationShareDialog } from "./ConversationShareDialog";
+import { ProductBrand } from "./ProductBrand";
 
 export type SidebarView = "history" | "files" | "settings";
 
@@ -164,9 +165,12 @@ export function ConversationSidebar({
 
 
   return (
-    <aside ref={sidebarRef} className={`conversation-sidebar ${open ? "open" : ""}`} aria-label="会话与设置">
+    <aside ref={sidebarRef} className={`conversation-sidebar ${open ? "open" : ""}`} aria-label="会话导航">
+      <div className="sidebar-brand">
+        <ProductBrand meta={session.access === "member" ? "Chatus · Member" : "Chatus · Guest"} />
+      </div>
       <div className="sidebar-topbar">
-        <div className="sidebar-title"><strong>对话</strong><span>{conversations.length}</span></div>
+        <div className="sidebar-title"><strong>最近对话</strong><span>{conversations.length}</span></div>
         <button className="icon-button mobile-only" data-sidebar-initial-focus type="button" onClick={onClose} title="关闭侧栏" aria-label="关闭侧栏"><X size={18} /></button>
       </div>
       <button className="new-conversation" type="button" onClick={() => void onCreate()} disabled={busy || loading}>
@@ -213,9 +217,9 @@ export function ConversationSidebar({
           <button type="button" aria-pressed={view === "files"} onClick={() => { onViewChange("files"); onClose(); }}><Files size={16} /><span>文件</span></button>
         )}
         {(session.access === "guest" || activePermissions.canManageSettings) && (
-          <button type="button" aria-pressed={view === "settings"} onClick={() => { onViewChange("settings"); onClose(); }}><SlidersHorizontal size={16} /><span>设置</span></button>
+          <button type="button" aria-pressed={view === "settings"} onClick={() => { onViewChange("settings"); onClose(); }}><SlidersHorizontal size={16} /><span>上下文</span></button>
         )}
-        <button type="button" onClick={() => { onOpenMemberSettings(); onClose(); }}><Settings size={16} /><span>成员设置</span></button>
+        <button type="button" onClick={() => { onOpenMemberSettings(); onClose(); }}><Settings size={16} /><span>设置</span></button>
       </div>
       {conversationToDelete && (
         <ConversationDeleteDialog

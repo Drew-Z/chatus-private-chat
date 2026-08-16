@@ -122,15 +122,15 @@ export function ConversationInspector({
   if (!open) return null;
 
   return (
-    <aside ref={panelRef} className="conversation-inspector" aria-label="会话检查器">
+    <aside ref={panelRef} className="conversation-inspector" aria-label="对话上下文">
       <header className="inspector-header">
         <div>
-          <strong>会话检查器</strong>
+          <strong>对话上下文</strong>
           <span title={conversation?.title}>{conversation?.title || "当前对话"}</span>
         </div>
-        <button ref={closeRef} className="icon-button" type="button" onClick={onClose} title="关闭会话检查器" aria-label="关闭会话检查器"><X size={18} /></button>
+        <button ref={closeRef} className="icon-button" type="button" onClick={onClose} title="关闭对话上下文" aria-label="关闭对话上下文"><X size={18} /></button>
       </header>
-      <nav className="inspector-tabs" aria-label="会话检查器分区">
+      <nav className="inspector-tabs" aria-label="对话上下文分区">
         {availableSections.map((candidate) => {
           const item = inspectorNavItem(candidate);
           const Icon = item.icon;
