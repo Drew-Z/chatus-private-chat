@@ -6,6 +6,7 @@ import ciWorkflowRaw from "../.github/workflows/ci.yml?raw";
 import deployWorkflowRaw from "../.github/workflows/deploy.yml?raw";
 import acceptanceWorkflowRaw from "../.github/workflows/production-acceptance.yml?raw";
 import legacyCensusWorkflowRaw from "../.github/workflows/production-legacy-census.yml?raw";
+import modelObservationWorkflowRaw from "../.github/workflows/production-model-observation.yml?raw";
 import dependabotRaw from "../.github/dependabot.yml?raw";
 import checkFrontendSourceRaw from "../scripts/check-frontend.mjs?raw";
 import agentRunnerSourceRaw from "../scripts/run-browser-agent-e2e.mjs?raw";
@@ -61,6 +62,8 @@ const parsedCiWorkflow = parseWorkflow(ciWorkflow, "ci.yml");
 const parsedDeployWorkflow = parseWorkflow(deployWorkflow, "deploy.yml");
 const parsedAcceptanceWorkflow = parseWorkflow(acceptanceWorkflow, "production-acceptance.yml");
 const parsedLegacyCensusWorkflow = parseWorkflow(legacyCensusWorkflow, "production-legacy-census.yml");
+const modelObservationWorkflow = normalizeText(modelObservationWorkflowRaw);
+const parsedModelObservationWorkflow = parseWorkflow(modelObservationWorkflow, "production-model-observation.yml");
 const dependabotDocument = parseDocument(normalizeText(dependabotRaw), {
   prettyErrors: true,
   uniqueKeys: true,
@@ -368,6 +371,7 @@ describe("workflow structural governance", () => {
     });
     expectJobTimeouts(parsedAcceptanceWorkflow, { acceptance: 15 });
     expectJobTimeouts(parsedLegacyCensusWorkflow, { census: 10 });
+    expectJobTimeouts(parsedModelObservationWorkflow, { observation: 15 });
   });
 
   it("uses only approved Node 24 official action majors", () => {
@@ -376,7 +380,7 @@ describe("workflow structural governance", () => {
       "actions/setup-node@v7",
       "actions/upload-artifact@v7",
     ]);
-    const used = [parsedCiWorkflow, parsedDeployWorkflow, parsedAcceptanceWorkflow, parsedLegacyCensusWorkflow]
+    const used = [parsedCiWorkflow, parsedDeployWorkflow, parsedAcceptanceWorkflow, parsedLegacyCensusWorkflow, parsedModelObservationWorkflow]
       .flatMap((workflow) => Object.values(workflow.jobs))
       .flatMap((job) => job.steps ?? [])
       .flatMap((step) => step.uses ? [step.uses] : []);
@@ -429,6 +433,11 @@ describe("workflow structural governance", () => {
     expectArtifact(parsedLegacyCensusWorkflow, "census", "Retain production legacy census", {
       name: "production-legacy-census-${{ env.LEGACY_SURFACE_ID }}-${{ steps.collect.outputs.deployed_sha }}",
       path: "artifacts/legacy-surface-census/census.json",
+      retentionDays: 90,
+    });
+    expectArtifact(parsedModelObservationWorkflow, "observation", "Retain model observation summary", {
+      name: "production-model-observation-${{ steps.collect.outputs.deployed_sha }}",
+      path: "artifacts/production-model-observation/observation.json",
       retentionDays: 90,
     });
     expectAlwaysStepBefore(parsedCiWorkflow, "quality", "Write quality manifest", "Retain quality manifest");
@@ -544,6 +553,51 @@ describe("main deployment governance", () => {
     expect(getNamedStepIndex(census, "Retain production legacy census"))
       .toBeLessThan(getNamedStepIndex(census, "Check census anomalies"));
     expect(joinWorkflowRuns(parsedLegacyCensusWorkflow)).not.toMatch(/wrangler deploy|acceptance:production|api\/chat/i);
+  });
+
+  it("keeps the Chatus observation main-only, bounded, exact-SHA, and model-call free", () => {
+    expect(parsedModelObservationWorkflow.on).toEqual({
+      workflow_dispatch: {
+        inputs: {
+          deployed_sha: expect.objectContaining({ required: true, type: "string" }),
+          observation_started_at: expect.objectContaining({ required: true, type: "string" }),
+        },
+      },
+    });
+    expect(parsedModelObservationWorkflow.permissions).toEqual({ contents: "read" });
+    expect(parsedModelObservationWorkflow.concurrency).toEqual({
+      group: "chatus-production-mutation",
+      "cancel-in-progress": false,
+    });
+    const observation = getJob(parsedModelObservationWorkflow, "observation");
+    expect(observation.if).toBe("github.ref == 'refs/heads/main'");
+    expect(observation.environment).toBe("production");
+    expect(getNamedStep(observation, "Checkout").with).toEqual({ "fetch-depth": 0 });
+    expectCommandsInOrder(observation, [
+      "assert-main-tip.mjs",
+      "collect-production-model-observation.mjs",
+      "acceptance:production",
+      "assert-main-tip.mjs",
+    ]);
+    const collector = getNamedStep(observation, "Collect 24-hour model monitor");
+    expect(collector.id).toBe("collect");
+    expect(collector.env).toEqual({
+      ADMIN_TOKEN: "${{ secrets.ADMIN_TOKEN }}",
+      PRODUCTION_URL: "${{ vars.CHATUS_PRODUCTION_URL }}",
+      EXPECTED_MAIN_SHA: "${{ github.sha }}",
+      EXPECTED_RELEASE_SHA: "${{ inputs.deployed_sha }}",
+      OBSERVATION_STARTED_AT: "${{ inputs.observation_started_at }}",
+      OBSERVATION_OUTPUT: "artifacts/production-model-observation/observation.json",
+    });
+    const acceptance = getNamedStep(observation, "Verify member availability without model traffic");
+    expect(acceptance.env).toEqual({
+      ADMIN_TOKEN: "${{ secrets.ADMIN_TOKEN }}",
+      PRODUCTION_URL: "${{ vars.CHATUS_PRODUCTION_URL }}",
+      EXPECTED_RELEASE_SHA: "${{ inputs.deployed_sha }}",
+    });
+    expect(joinWorkflowRuns(parsedModelObservationWorkflow)).not.toMatch(/wrangler deploy|api\/chat|smoke:production/i);
+    expect(getNamedStepIndex(observation, "Retain model observation summary"))
+      .toBeGreaterThan(getNamedStepIndex(observation, "Verify member availability without model traffic"));
   });
 
   it("validates the remote main revision without leaking command failures", async () => {

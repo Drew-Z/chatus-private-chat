@@ -195,6 +195,59 @@ async function sessionProjection(member) {
   return payload;
 }
 
+async function modelAvailability(member) {
+  const response = await request("/api/model-availability", { cookie: member.cookie });
+  await expectStatus(response, 200, "member model availability");
+  const payload = await json(response, "member model availability");
+  assert(isMemberAvailabilityProjection(payload), "member model availability: invalid or privacy-unsafe projection");
+  return payload.routes.length;
+}
+
+function isMemberAvailabilityProjection(value) {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["version", "generatedAt", "window", "routes"])
+    || value.version !== 1
+    || !isNonNegativeInteger(value.generatedAt)
+    || value.window !== "24h"
+    || !Array.isArray(value.routes)
+    || value.routes.length > 500) return false;
+  const ids = new Set();
+  for (const route of value.routes) {
+    if (!isRecord(route)
+      || !hasExactKeys(route, ["routeId", "label", "model", "status", "confidence", "speed", "observedAt", "fallbackRecentlyUsed", "message"])
+      || !isBoundedString(route.routeId, 200)
+      || !isBoundedString(route.label, 300)
+      || !isBoundedString(route.model, 200)
+      || !["healthy", "degraded", "unavailable", "unknown"].includes(route.status)
+      || route.message !== route.status
+      || !["recent", "limited", "stale"].includes(route.confidence)
+      || !["fast", "normal", "slow", "unknown"].includes(route.speed)
+      || (route.observedAt !== null && !isNonNegativeInteger(route.observedAt))
+      || typeof route.fallbackRecentlyUsed !== "boolean"
+      || ids.has(route.routeId)) return false;
+    ids.add(route.routeId);
+  }
+  return true;
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value, keys) {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isBoundedString(value, maximum) {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+
 async function listConversations(member) {
   const response = await request("/api/agent/conversations", { cookie: member.cookie });
   await expectStatus(response, 200, "conversation list");
@@ -461,6 +514,10 @@ try {
   const sessions = await Promise.all(members.map(sessionProjection));
   assert(sessions[0].agent.instance !== sessions[1].agent.instance, "member isolation: Agent instances are shared");
   console.log("Authentication and per-member Agent identity passed");
+
+  const availabilityRouteCounts = await Promise.all(members.map(modelAvailability));
+  assert(availabilityRouteCounts.every((count) => Number.isSafeInteger(count) && count >= 0), "member model availability: route count missing");
+  console.log("Member model availability projection passed");
 
   const initialLists = await Promise.all(members.map(listConversations));
   assert(initialLists.every((list) => list.length === 0), "member isolation: temporary member had existing conversations");

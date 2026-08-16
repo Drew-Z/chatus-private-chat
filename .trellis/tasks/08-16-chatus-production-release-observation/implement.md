@@ -36,6 +36,9 @@ Rollback point: if deployment fails before Worker promotion, fix through a new r
 ## 5. Observe For 24 Hours
 
 - [x] Record the verified deployment timestamp as the observation start: `2026-08-16T15:37:12Z` (deployment Workflow terminal success after production smoke verification).
+- [x] Add a main-only, serialized, exact-SHA observation Workflow that reads the admin aggregate through the existing session boundary and retains only bounded aggregate evidence.
+- [x] Extend model-request-free production acceptance to validate the member `/api/model-availability` projection shape and privacy boundary.
+- [x] Add contract and workflow-governance regressions for exact 24-hour buckets, reconciliation, release fencing, artifact bounds, and no model-call paths.
 - [ ] Inspect member route-availability presentation and administrator aggregate monitoring without recording prohibited data.
 - [ ] At or after 24 hours, record aggregate freshness and attempt/success/failure reconciliation or the legitimate no-data state.
 - [ ] Confirm no release-critical UX, authorization, privacy, routing, or monitoring regression remains open.
