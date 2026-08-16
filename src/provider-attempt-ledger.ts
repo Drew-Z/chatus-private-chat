@@ -45,6 +45,11 @@ import {
   type ProviderUsageTokenField,
 } from "./contracts/provider-finance";
 import type { InstanceCoordinator } from "./instance-coordinator";
+import {
+  MODEL_MONITORING_BUCKET_MS,
+  type ProviderAttemptAvailabilityEvidenceV1,
+  type ProviderAttemptMonitoringRowV1,
+} from "./contracts/model-monitoring";
 import { captureDurableObjectState } from "./services/durable-object-capture";
 import { INSTANCE_MAINTENANCE_COORDINATOR } from "./services/instance-capture";
 
@@ -90,6 +95,30 @@ type ProviderAttemptProjectionRow = {
   error_class: ProviderAttemptProjectionV1["errorClass"];
   started_at: number;
   ended_at: number;
+};
+
+type ProviderAttemptMonitoringSqlRow = {
+  logical_route_id: string;
+  provider_id: string;
+  model: string;
+  run_kind: ProviderAttemptProjectionV1["runKind"];
+  error_class: ProviderAttemptProjectionV1["errorClass"];
+  bucket_start: number;
+  attempts: number;
+  succeeded: number;
+  failures: number;
+  in_flight: number;
+  fallbacks: number;
+  latency_sum_ms: number;
+  latency_count: number;
+};
+
+type ProviderAttemptAvailabilityEvidenceRow = {
+  logical_route_id: string;
+  status: ProviderAttemptProjectionV1["status"];
+  started_at: number;
+  ended_at: number;
+  fallback_index: number;
 };
 
 type ProviderUsageProjectionRow = {
@@ -638,6 +667,75 @@ export class ProviderAttemptLedger extends DurableObject<ProviderAttemptLedgerEn
       `${projectionSelect()} ORDER BY started_at DESC, attempt_id DESC LIMIT ?`,
       limit,
     ).toArray().map(projectionFromRow).map(providerAttemptDiagnostic);
+  }
+
+  getMonitoringAggregate(input: { periodStart: number; periodEnd: number }): ProviderAttemptMonitoringRowV1[] {
+    const { periodStart, periodEnd } = normalizeMonitoringPeriod(input);
+    return this.ctx.storage.sql.exec<ProviderAttemptMonitoringSqlRow>(
+      `SELECT
+         logical_route_id,
+         provider_id,
+         model,
+         run_kind,
+         error_class,
+         ? + CAST((started_at - ?) / ? AS INTEGER) * ? AS bucket_start,
+         COUNT(*) AS attempts,
+         SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
+         SUM(CASE WHEN status IN ('failed', 'cancelled', 'timed_out') THEN 1 ELSE 0 END) AS failures,
+         SUM(CASE WHEN status = 'started' THEN 1 ELSE 0 END) AS in_flight,
+         SUM(CASE WHEN fallback_index > 0 THEN 1 ELSE 0 END) AS fallbacks,
+         COALESCE(SUM(CASE
+           WHEN status <> 'started' AND ended_at >= started_at THEN ended_at - started_at
+           ELSE 0
+         END), 0) AS latency_sum_ms,
+         SUM(CASE WHEN status <> 'started' AND ended_at >= started_at THEN 1 ELSE 0 END) AS latency_count
+       FROM provider_attempt_projection
+       WHERE started_at >= ? AND started_at <= ?
+       GROUP BY logical_route_id, provider_id, model, run_kind, error_class, bucket_start
+       ORDER BY bucket_start ASC, logical_route_id ASC, model ASC, run_kind ASC, error_class ASC`,
+      periodStart,
+      periodStart,
+      MODEL_MONITORING_BUCKET_MS,
+      MODEL_MONITORING_BUCKET_MS,
+      periodStart,
+      periodEnd,
+    ).toArray().map(monitoringRowFromSql);
+  }
+
+  listAvailabilityEvidence(input: {
+    periodStart: number;
+    periodEnd: number;
+    routeIds: string[];
+  }): ProviderAttemptAvailabilityEvidenceV1[] {
+    const { periodStart, periodEnd } = normalizeMonitoringPeriod(input);
+    const routeIds = normalizeMonitoringRouteIds(input.routeIds);
+    if (!routeIds.length) return [];
+    const placeholders = routeIds.map(() => "?").join(", ");
+    return this.ctx.storage.sql.exec<ProviderAttemptAvailabilityEvidenceRow>(
+      `WITH ranked AS (
+         SELECT logical_route_id, status, started_at, ended_at, fallback_index,
+           ROW_NUMBER() OVER (
+             PARTITION BY logical_route_id
+             ORDER BY started_at DESC, attempt_id DESC
+           ) AS route_rank
+         FROM provider_attempt_projection
+         WHERE started_at >= ? AND started_at <= ?
+           AND logical_route_id IN (${placeholders})
+       )
+       SELECT logical_route_id, status, started_at, ended_at, fallback_index
+       FROM ranked
+       WHERE route_rank <= 20
+       ORDER BY logical_route_id ASC, started_at DESC`,
+      periodStart,
+      periodEnd,
+      ...routeIds,
+    ).toArray().map((row) => ({
+      logicalRouteId: row.logical_route_id,
+      status: row.status,
+      startedAt: requireNonNegativeAggregate(row.started_at),
+      endedAt: requireNonNegativeAggregate(row.ended_at),
+      fallbackIndex: requireNonNegativeAggregate(row.fallback_index),
+    }));
   }
 
   async addPriceCatalog(input: unknown): Promise<ProviderPriceCatalogResultV1> {
@@ -2128,6 +2226,54 @@ function projectionSelect(): string {
     credential_class, operation_id, fence_id, operation_kind,
     operation_started_at, status, error_class, started_at, ended_at
     FROM provider_attempt_projection`;
+}
+
+function normalizeMonitoringPeriod(input: { periodStart: number; periodEnd: number }): { periodStart: number; periodEnd: number } {
+  if (!input || !Number.isSafeInteger(input.periodStart) || !Number.isSafeInteger(input.periodEnd)
+    || input.periodStart < 0 || input.periodEnd < input.periodStart) {
+    throw new Error("provider_monitoring_period_invalid");
+  }
+  return { periodStart: input.periodStart, periodEnd: input.periodEnd };
+}
+
+function normalizeMonitoringRouteIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 100) throw new Error("provider_monitoring_routes_invalid");
+  const routeIds = value.filter((item): item is string => typeof item === "string" && /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,159}$/.test(item));
+  if (routeIds.length !== value.length || new Set(routeIds).size !== routeIds.length) {
+    throw new Error("provider_monitoring_routes_invalid");
+  }
+  return routeIds;
+}
+
+function monitoringRowFromSql(row: ProviderAttemptMonitoringSqlRow): ProviderAttemptMonitoringRowV1 {
+  const values = [
+    row.bucket_start,
+    row.attempts,
+    row.succeeded,
+    row.failures,
+    row.in_flight,
+    row.fallbacks,
+    row.latency_sum_ms,
+    row.latency_count,
+  ];
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new Error("provider_monitoring_aggregate_invalid");
+  }
+  return {
+    logicalRouteId: row.logical_route_id,
+    providerId: row.provider_id,
+    model: row.model,
+    runKind: row.run_kind,
+    errorClass: row.error_class,
+    bucketStart: row.bucket_start,
+    attempts: row.attempts,
+    succeeded: row.succeeded,
+    failures: row.failures,
+    inFlight: row.in_flight,
+    fallbacks: row.fallbacks,
+    latencySumMs: row.latency_sum_ms,
+    latencyCount: row.latency_count,
+  };
 }
 
 function projectionFromRow(row: ProviderAttemptProjectionRow): ProviderAttemptProjectionV1 {

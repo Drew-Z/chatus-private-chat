@@ -58,12 +58,19 @@ export function FileWorkspacePanel({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const directoryInputRef = useRef<HTMLInputElement>(null);
   const retryInputRef = useRef<HTMLInputElement>(null);
+  const restoreUploadFocusRef = useRef(false);
   const requestSequence = useRef(0);
   const renameButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
     directoryInputRef.current?.setAttribute("webkitdirectory", "");
   }, []);
+
+  useEffect(() => {
+    if (!restoreUploadFocusRef.current || deleteTarget) return;
+    restoreUploadFocusRef.current = false;
+    window.setTimeout(() => uploadButtonRef.current?.focus(), 0);
+  }, [deleteTarget]);
 
   const load = useCallback(async (append = false) => {
     const sequence = ++requestSequence.current;
@@ -395,6 +402,7 @@ export function FileWorkspacePanel({
           fallbackFocus={() => uploadButtonRef.current}
           onCancel={() => setDeleteTarget(null)}
           onConfirm={async () => {
+            restoreUploadFocusRef.current = true;
             const result = await deleteWorkspaceFile(deleteTarget, "delete-" + crypto.randomUUID());
             removeConversationRef(deleteTarget.id);
             if (result.deleted) {

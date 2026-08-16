@@ -1,0 +1,47 @@
+{
+  "id": "figma-mcp-bridge-setup",
+  "name": "figma-mcp-bridge-setup",
+  "title": "Figma MCP Bridge local setup",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-16",
+  "completedAt": "2026-08-16",
+  "branch": null,
+  "base_branch": "codex/chatus-ux-settings-redesign-ui",
+  "worktree_path": null,
+  "commit": "5b4305018102d7e3d684c916d8868dcbc1de02cd",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "python tomllib parse config.toml",
+        "status": "passed",
+        "summary": "TOML parsed; figma-bridge command and args asserted; no secrets emitted",
+        "at": "2026-08-16T05:52:42.681315+00:00"
+      },
+      {
+        "command": "codex mcp list",
+        "status": "passed",
+        "summary": "figma-bridge listed enabled as npx STDIO server",
+        "at": "2026-08-16T05:52:43.112050+00:00"
+      },
+      {
+        "command": "npx @gethopp/figma-mcp-bridge MCP initialize/tools-list",
+        "status": "passed",
+        "summary": "server 0.0.19 initialized and returned tools/list; process stopped after verification",
+        "at": "2026-08-16T05:52:43.291296+00:00"
+      }
+    ]
+  }
+}

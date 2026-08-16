@@ -1,7 +1,9 @@
-import { StrictMode, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
+import { ConversationInspector, type InspectorSection } from "../../../../client/src/components/ConversationInspector";
+import { MemberSettingsCenter } from "../../../../client/src/components/MemberSettingsCenter";
 import { MessageComposer } from "../../../../client/src/components/MessageComposer";
 import { MessageView, type MessageAction } from "../../../../client/src/components/MessageView";
 import { AdminOperationsContent, AdminOperationsPanel } from "../../../../client/src/components/AdminOperationsPanel";
@@ -19,9 +21,10 @@ import {
   resolveMessageActionAvailability,
   type TurnPhase,
 } from "../../../../client/src/lib/state";
-import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, SessionProjection } from "../../../../client/src/lib/api";
+import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, MemberModelAvailability, ModelMonitorSnapshot, SessionProjection } from "../../../../client/src/lib/api";
 import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
 import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
+import type { ThemePreference } from "../../../../client/src/lib/device-preferences";
 import {
   addDraftAttachmentFiles,
   readDraftAttachment,
@@ -147,6 +150,23 @@ const memberSession: SessionProjection = {
     status: "connected",
   }],
   agent: { transport: "websocket", basePath: "agent", instance: "visual-fixture" },
+};
+
+const memberModelAvailability: MemberModelAvailability = {
+  version: 1,
+  generatedAt: now - 60_000,
+  window: "24h",
+  routes: [{
+    routeId: "reasoning",
+    label: "高质量推理线路",
+    model: "synthetic-reasoning-model-with-a-long-name",
+    status: "healthy",
+    confidence: "recent",
+    speed: "normal",
+    observedAt: now - 90_000,
+    fallbackRecentlyUsed: false,
+    message: "healthy",
+  }],
 };
 
 const guestSession: SessionProjection = {
@@ -496,6 +516,91 @@ const operationBudgetReservations: AdminOperationsSnapshot["finance"]["providers
   reviewAfter: 1782699200000 + index * 60_000,
 }));
 
+const operationMonitorGeneratedAt = 1785032000000;
+const operationMonitorPeriodStart = operationMonitorGeneratedAt - 86_400_000;
+const operationModelMonitor: ModelMonitorSnapshot = {
+  version: 1,
+  window: "24h",
+  generatedAt: operationMonitorGeneratedAt,
+  periodStart: operationMonitorPeriodStart,
+  periodEnd: operationMonitorGeneratedAt,
+  totals: {
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  },
+  trend: Array.from({ length: 24 }, (_, index) => ({
+    bucketStart: operationMonitorPeriodStart + index * 3_600_000,
+    bucketEnd: operationMonitorPeriodStart + (index + 1) * 3_600_000,
+    attempts: index === 23 ? 42 : 0,
+    succeeded: index === 23 ? 36 : 0,
+    failures: index === 23 ? 4 : 0,
+    inFlight: index === 23 ? 2 : 0,
+    fallbacks: index === 23 ? 6 : 0,
+  })),
+  routes: Array.from({ length: 21 }, (_, index) => {
+    const succeeded = index < 18 ? 2 : 0;
+    const failures = index >= 18 && index < 20 ? 2 : 0;
+    const inFlight = index === 20 ? 2 : 0;
+    const completed = succeeded + failures;
+    return {
+      id: index === 0 ? "reasoning" : `monitor-route-${index + 1}`,
+      label: index === 0 ? "高质量推理逻辑模型" : `监控线路 ${index + 1}`,
+      model: "reasoning-model",
+      attempts: 2,
+      succeeded,
+      failures,
+      inFlight,
+      completed,
+      successRate: completed > 0 ? succeeded / completed : null,
+      fallbacks: index < 3 ? 2 : 0,
+      averageLatencyMs: completed > 0 ? 420 : null,
+    };
+  }),
+  providers: [{
+    id: "provider-fixture",
+    label: "Fixture Provider",
+    model: "reasoning-model",
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  }],
+  models: [{
+    id: "reasoning-model",
+    label: "reasoning-model",
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  }],
+  runKinds: [{
+    runKind: "main_answer",
+    attempts: 42,
+    succeeded: 36,
+    failures: 4,
+    inFlight: 2,
+    completed: 40,
+    successRate: 0.9,
+    fallbacks: 6,
+    averageLatencyMs: 420,
+  }],
+  failureClasses: [{ errorClass: "upstream_timeout", count: 4 }],
+};
+
 const operationsSnapshot: AdminOperationsSnapshot = {
   stats: {
     day: "2026-07-26",
@@ -520,6 +625,7 @@ const operationsSnapshot: AdminOperationsSnapshot = {
   },
   audit: operationAudit,
   feedback: operationFeedback,
+  modelMonitor: operationModelMonitor,
   finance: {
     version: 1,
     generatedAt: 1785032000000,
@@ -681,6 +787,19 @@ function WorkspaceFixture() {
   const [activeId, setActiveId] = useState(initialActiveId);
   const [sidebarOpen, setSidebarOpen] = useState(params.get("drawer") === "open");
   const [sidebarView, setSidebarView] = useState<SidebarView>("history");
+  const [inspectorOpen, setInspectorOpen] = useState(params.get("inspector") === "open");
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>(params.get("section") === "files" ? "files" : "model");
+  const [memberSettingsOpen, setMemberSettingsOpen] = useState(params.get("settings") === "open");
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
+    const value = params.get("theme");
+    return value === "light" || value === "dark" ? value : "follow-system";
+  });
+  useEffect(() => {
+    const resolved = themePreference === "follow-system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : themePreference;
+    document.documentElement.dataset.theme = resolved;
+  }, [themePreference]);
   const [input, setInput] = useState(params.get("draft") === "long" ? "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行" : "准备发送的合成消息");
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
@@ -943,28 +1062,7 @@ function WorkspaceFixture() {
 
   return (
     <main className="workspace-shell" data-visual-fixture="true">
-      <WorkspaceHeader
-        session={session}
-        conversation={activeConversation}
-        routeId={routeId}
-        mcpConnections={session.mcpConnections}
-        connectionState={connectionState}
-        busy={turnBusy}
-        accountBusy={logoutPending}
-        logoutPending={logoutPending}
-        parentConversation={parentConversation}
-        parentMissing={parentMissing}
-        onOpenSidebar={() => setSidebarOpen(true)}
-        onOpenRouteSettings={() => { setSidebarView("settings"); setSidebarOpen(true); }}
-        onOpenMemory={() => undefined}
-        onOpenMcpConnections={() => undefined}
-        onReturnToParent={() => {
-          if (parentConversation) setActiveId(parentConversation.id);
-        }}
-        onMemberLogin={() => undefined}
-        onLogout={async () => setLogoutState("pending")}
-      />
-      <div className="workspace-layout">
+      <div className={`workspace-layout ${inspectorOpen ? "inspector-open" : ""}`}>
         <ConversationSidebar
           open={sidebarOpen}
           session={session}
@@ -977,7 +1075,12 @@ function WorkspaceFixture() {
           busy={turnBusy || workspaceBlocked}
           loading={false}
           onClose={() => setSidebarOpen(false)}
-          onViewChange={setSidebarView}
+          onViewChange={(view) => {
+            setSidebarView(view);
+            if (view === "files") setInspectorSection("files");
+            else if (view === "settings") setInspectorSection("model");
+            if (view !== "history") setInspectorOpen(true);
+          }}
           onSelect={(conversation) => setActiveId(conversation.id)}
           onCreate={async () => undefined}
           onRename={async (conversation, title) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, title } : item))}
@@ -996,74 +1099,133 @@ function WorkspaceFixture() {
           onRevokeAllSessions={async () => undefined}
           onDeleteUserData={async () => undefined}
           onExportUserData={async () => ({ truncated: false })}
+          onOpenMemberSettings={() => { setMemberSettingsOpen(true); setSidebarOpen(false); }}
         />
         {sidebarOpen && <button className="sidebar-scrim mobile-only" type="button" onClick={() => setSidebarOpen(false)} aria-label="关闭侧栏" />}
-        <section className="chat-panel" aria-label="对话">
-          {logoutState === "error" && (
-            <MemberLogoutNotice
-              message="合成成员会话撤销失败，请重试。当前工作区和草稿保持不变。"
-              onRetry={() => setLogoutState("pending")}
-            />
-          )}
-          <div className="conversation-chat" data-turn-phase={turnPhase}>
-            <div className="message-list" aria-live="polite">
-              <div className="message-column">
-                {messages.map((message, index) => (
-                  <MessageView
-                    key={message.id}
-                    message={message}
-                    onApprove={() => undefined}
-                    onAction={session.capabilities.messageActions ? handleMessageAction : undefined}
-                    onFeedback={session.capabilities.feedback ? async () => undefined : undefined}
-                    availability={resolveMessageActionAvailability({
-                      phase: turnPhase,
-                      role: message.role,
-                      isLatestMessage: index === messages.length - 1,
-                      online,
-                      blocked: workspaceBlocked,
-                      routeAvailable,
-                      messageActionsEnabled: session.capabilities.messageActions,
-                      feedbackEnabled: session.capabilities.feedback,
-                      hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
-                      canContinue: message.role === "assistant",
-                      toolApprovalPending: message.parts.some(isPendingToolApprovalPart),
-                      accessRole: activeConversation?.accessRole,
-                    })}
-                  />
-                ))}
-                {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>{progressText || (turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出")}</span></div>}
+        <div className="workspace-main">
+          <WorkspaceHeader
+            session={session}
+            conversation={activeConversation}
+            routeId={routeId}
+            connectionState={connectionState}
+            modelAvailability={memberModelAvailability}
+            modelAvailabilityRefreshing={false}
+            busy={turnBusy}
+            accountBusy={logoutPending}
+            logoutPending={logoutPending}
+            parentConversation={parentConversation}
+            parentMissing={parentMissing}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            onOpenRouteSettings={() => { setInspectorSection("model"); setInspectorOpen(true); setSidebarOpen(false); }}
+            onReturnToParent={() => {
+              if (parentConversation) setActiveId(parentConversation.id);
+            }}
+            onMemberLogin={() => undefined}
+            onLogout={async () => setLogoutState("pending")}
+          />
+          <section className="chat-panel" aria-label="对话">
+            {logoutState === "error" && (
+              <MemberLogoutNotice
+                message="合成成员会话撤销失败，请重试。当前工作区和草稿保持不变。"
+                onRetry={() => setLogoutState("pending")}
+              />
+            )}
+            <div className="conversation-chat" data-turn-phase={turnPhase}>
+              <div className="message-list" aria-live="polite">
+                <div className="message-column">
+                  {messages.map((message, index) => (
+                    <MessageView
+                      key={message.id}
+                      message={message}
+                      onApprove={() => undefined}
+                      onAction={session.capabilities.messageActions ? handleMessageAction : undefined}
+                      onFeedback={session.capabilities.feedback ? async () => undefined : undefined}
+                      availability={resolveMessageActionAvailability({
+                        phase: turnPhase,
+                        role: message.role,
+                        isLatestMessage: index === messages.length - 1,
+                        online,
+                        blocked: workspaceBlocked,
+                        routeAvailable,
+                        messageActionsEnabled: session.capabilities.messageActions,
+                        feedbackEnabled: session.capabilities.feedback,
+                        hasText: message.parts.some((part) => part.type === "text" && Boolean(part.text.trim())),
+                        canContinue: message.role === "assistant",
+                        toolApprovalPending: message.parts.some(isPendingToolApprovalPart),
+                        accessRole: activeConversation?.accessRole,
+                      })}
+                    />
+                  ))}
+                  {(turnPhase === "submitted" || turnPhase === "waiting-first-output") && <div className="thinking-row" role="status"><span className="thinking-indicator" aria-hidden="true" /><span>{progressText || (turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出")}</span></div>}
+                </div>
               </div>
+              {activePermissions.canSend ? <MessageComposer
+                value={input}
+                attachments={attachments}
+                imagePolicy={session.imageInput}
+                filePolicy={session.fileInput}
+                imagesSupported={activePermissions.canUseWorkspace && session.capabilities.imageInput && params.get("images") !== "0"}
+                filesSupported={activePermissions.canUseWorkspace && session.capabilities.fileInput}
+                onChange={setInput}
+                onAddAttachments={addAttachments}
+                onRemoveAttachment={(id: string) => setAttachments((current) => {
+                  const removed = current.filter((attachment) => attachment.id === id);
+                  releaseAttachmentPreviews(removed);
+                  return current.filter((attachment) => attachment.id !== id);
+                })}
+                onRetryAttachment={(id: string) => setAttachments((current) => current.map((attachment) => (
+                  attachment.id === id ? { ...attachment, status: "reading", error: undefined } : attachment
+                )))}
+                onSubmit={() => setBusy(true)}
+                onStop={() => setBusy(false)}
+                busy={turnBusy}
+                blocked={workspaceBlocked}
+                online={online}
+                routeAvailable={routeAvailable}
+                agentReady
+                placeholder="输入消息"
+                statusText={turnBusy ? "Agent 正在继续处理" : ""}
+              /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
             </div>
-            {activePermissions.canSend ? <MessageComposer
-              value={input}
-              attachments={attachments}
-              imagePolicy={session.imageInput}
-              filePolicy={session.fileInput}
-              imagesSupported={activePermissions.canUseWorkspace && session.capabilities.imageInput && params.get("images") !== "0"}
-              filesSupported={activePermissions.canUseWorkspace && session.capabilities.fileInput}
-              onChange={setInput}
-              onAddAttachments={addAttachments}
-              onRemoveAttachment={(id: string) => setAttachments((current) => {
-                const removed = current.filter((attachment) => attachment.id === id);
-                releaseAttachmentPreviews(removed);
-                return current.filter((attachment) => attachment.id !== id);
-              })}
-              onRetryAttachment={(id: string) => setAttachments((current) => current.map((attachment) => (
-                attachment.id === id ? { ...attachment, status: "reading", error: undefined } : attachment
-              )))}
-              onSubmit={() => setBusy(true)}
-              onStop={() => setBusy(false)}
-              busy={turnBusy}
-              blocked={workspaceBlocked}
-              online={online}
-              routeAvailable={routeAvailable}
-              agentReady
-              placeholder="输入消息"
-              statusText={turnBusy ? "Agent 正在继续处理" : ""}
-            /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
-          </div>
-        </section>
+          </section>
+        </div>
+        <ConversationInspector
+          open={inspectorOpen}
+          section={inspectorSection}
+          session={session}
+          conversation={activeConversation}
+          routeId={routeId}
+          modelAvailability={memberModelAvailability}
+          modelAvailabilityRefreshing={false}
+          skillMode={skillMode}
+          skillIds={skillIds}
+          saveState="idle"
+          busy={turnBusy || workspaceBlocked}
+          onClose={() => setInspectorOpen(false)}
+          onSectionChange={setInspectorSection}
+          onConversationUpdated={(conversation) => setConversations((current) => current.map((item) => item.id === conversation.id ? conversation : item))}
+          onAccessChanged={(conversation, accessRevision) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, accessRevision } : item))}
+          onRouteChange={() => undefined}
+          onSkillModeChange={(nextSkillMode) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillMode: nextSkillMode } : conversation))}
+          onSkillChange={(nextSkillIds) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillIds: nextSkillIds } : conversation))}
+          onRetrySave={() => undefined}
+        />
       </div>
+      <MemberSettingsCenter
+        open={memberSettingsOpen}
+        nestedOpen={false}
+        session={session}
+        themePreference={themePreference}
+        connectedMcpCount={session.mcpConnections.filter((item) => item.connected).length}
+        busy={workspaceBlocked}
+        onClose={() => setMemberSettingsOpen(false)}
+        onThemePreferenceChange={(next) => { setThemePreference(next); return true; }}
+        onOpenMemory={() => undefined}
+        onOpenMcpConnections={() => undefined}
+        onExportUserData={async () => ({ truncated: false })}
+        onRevokeAllSessions={async () => undefined}
+        onDeleteUserData={async () => undefined}
+      />
     </main>
   );
 }

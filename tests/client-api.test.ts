@@ -29,6 +29,8 @@ import {
   isMcpOAuthRevokeResponse,
   isMcpOAuthStartResponse,
   isMcpOAuthStatusResponse,
+  isMemberModelAvailability,
+  isModelMonitorSnapshot,
   isAdminUsageResetResponse,
   isAdminOperationsStats,
   isAdminProviderFinanceSnapshot,
@@ -1981,5 +1983,90 @@ describe("React client runtime validation", () => {
     })).toBe(true);
     expect(isMcpOAuthRevokeResponse({ ok: true, serverId: "docs" })).toBe(true);
     expect(isMcpOAuthRevokeResponse({ ok: true, serverId: "docs", refreshToken: "hidden" })).toBe(false);
+  });
+
+  it("validates exact model monitor and member availability projections", () => {
+    const generatedAt = 1_900_000_000_000;
+    const periodStart = generatedAt - 86_400_000;
+    const totals = {
+      attempts: 3,
+      succeeded: 2,
+      failures: 1,
+      inFlight: 0,
+      completed: 3,
+      successRate: 2 / 3,
+      fallbacks: 1,
+      averageLatencyMs: 200,
+    };
+    const group = { id: "route-a", label: "Route A", model: "model-a", ...totals };
+    const monitor = {
+      version: 1,
+      window: "24h",
+      generatedAt,
+      periodStart,
+      periodEnd: generatedAt,
+      totals,
+      trend: Array.from({ length: 24 }, (_, index) => ({
+        bucketStart: periodStart + index * 3_600_000,
+        bucketEnd: periodStart + (index + 1) * 3_600_000,
+        attempts: index === 0 ? 3 : 0,
+        succeeded: index === 0 ? 2 : 0,
+        failures: index === 0 ? 1 : 0,
+        inFlight: 0,
+        fallbacks: index === 0 ? 1 : 0,
+      })),
+      routes: [group],
+      providers: [{ ...group, id: "provider-a", label: "Provider A" }],
+      models: [{ ...group, id: "model-a", label: "model-a" }],
+      runKinds: [{ runKind: "main_answer", ...totals }],
+      failureClasses: [{ errorClass: "upstream_timeout", count: 1 }],
+    };
+    expect(isModelMonitorSnapshot(monitor)).toBe(true);
+    expect(isModelMonitorSnapshot({ ...monitor, providerId: "hidden" })).toBe(false);
+    expect(isModelMonitorSnapshot({ ...monitor, totals: { ...totals, completed: 2 } })).toBe(false);
+    expect(isModelMonitorSnapshot({
+      ...monitor,
+      trend: monitor.trend.map((item, index) => index === 7 ? { ...item, bucketStart: item.bucketStart + 1 } : item),
+    })).toBe(false);
+    expect(isModelMonitorSnapshot({
+      ...monitor,
+      trend: monitor.trend.map((item, index) => index === 7 ? { ...item, bucketEnd: item.bucketEnd - 1 } : item),
+    })).toBe(false);
+    const emptyGroup = {
+      id: "empty-route",
+      label: "Empty route",
+      attempts: 0,
+      succeeded: 0,
+      failures: 0,
+      inFlight: 0,
+      completed: 0,
+      successRate: null,
+      fallbacks: 0,
+      averageLatencyMs: null,
+    };
+    expect(isModelMonitorSnapshot({
+      ...monitor,
+      routes: [monitor.routes[0], ...Array.from({ length: 500 }, (_, index) => ({ ...emptyGroup, id: `empty-route-${index}` }))],
+    })).toBe(false);
+
+    const availability = {
+      version: 1,
+      generatedAt,
+      window: "24h",
+      routes: [{
+        routeId: "route-a",
+        label: "Route A",
+        model: "Model A",
+        status: "degraded",
+        confidence: "recent",
+        speed: "normal",
+        observedAt: generatedAt - 1_000,
+        fallbackRecentlyUsed: true,
+        message: "degraded",
+      }],
+    };
+    expect(isMemberModelAvailability(availability)).toBe(true);
+    expect(isMemberModelAvailability({ ...availability, routes: [{ ...availability.routes[0], providerId: "hidden" }] })).toBe(false);
+    expect(isMemberModelAvailability({ ...availability, routes: [{ ...availability.routes[0], message: "healthy" }] })).toBe(false);
   });
 });

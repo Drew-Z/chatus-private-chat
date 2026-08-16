@@ -42,6 +42,8 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - MCP discovery remains read-only until its result is merged into the latest revisioned configuration. A conflict preserves the response in `pendingDiscovery`; retry merges it over the refreshed snapshot instead of replaying an old full config.
 - Failed-turn retry uses the latest parent conversation snapshot and the latest user message ID, so a stream error can be retried as a durable resend branch without replaying stale conversation metadata.
 - Transcript auto-scroll is conditional on a near-bottom check; a reader who scrolls upward is not pulled back to the newest chunk.
+- Member theme preference is a device-local value keyed by the signed-in member label. The only accepted values are `follow-system`, `light`, and `dark`; malformed, unavailable, or missing storage falls back to `follow-system`. Applying a theme must not add a server preference field or cross-device synchronization.
+- Conversation-scoped route/model, Skills, tools, files, and sharing state belongs to the active conversation inspector; member-global appearance, memory, MCP, account/data, and session/device actions belong to the member settings center. Moving a control between these surfaces must reuse the existing API/dialog owner and preserve its revision, permission, pending, retry, and confirmation behavior.
 
 ## Server State
 

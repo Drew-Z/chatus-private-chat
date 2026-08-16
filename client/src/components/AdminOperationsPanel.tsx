@@ -26,6 +26,7 @@ import {
   type AdminProviderFinanceProvider,
   type AdminProviderPriceCatalog,
   type AdminProviderReconciliationInput,
+  type ModelMonitorSnapshot,
 } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -378,6 +379,18 @@ export function AdminOperationsContent({
         {summary.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
       </dl>
 
+      <OperationsSection
+        icon={<Activity size={17} />}
+        title="模型监控 · 最近 24 小时"
+        meta={snapshot.modelMonitor ? `生成于 ${formatMonitorTime(snapshot.modelMonitor.generatedAt)} · 滚动窗口` : "暂无监控快照"}
+      >
+        {snapshot.modelMonitor ? (
+          <ModelMonitorSection snapshot={snapshot.modelMonitor} />
+        ) : (
+          <p className="typed-admin-empty">模型监控暂时不可用；不影响现有运营统计和消息发送。</p>
+        )}
+      </OperationsSection>
+
       <OperationsSection icon={<ListChecks size={17} />} title="旧功能面治理" meta={pageCountMeta(legacySurfacePage)}>
         <div className="legacy-surface-list">
           {legacySurfacePage.items.map((surface) => (
@@ -695,6 +708,82 @@ export function AdminOperationsContent({
           onConfirm={confirmLegacySurfaceTransition}
         />
       )}
+    </div>
+  );
+}
+
+function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
+  const [groupKind, setGroupKind] = useState<ModelMonitorGroupKind>("routes");
+  const [groupPageNumber, setGroupPageNumber] = useState(1);
+  const maxAttempts = Math.max(1, ...snapshot.trend.map((item) => item.attempts));
+  const total = snapshot.totals;
+  const groups = groupKind === "routes" ? snapshot.routes : groupKind === "providers" ? snapshot.providers : snapshot.models;
+  const groupPage = paginateOperations(groups, groupPageNumber);
+
+  function selectGroupKind(nextKind: ModelMonitorGroupKind) {
+    setGroupKind(nextKind);
+    setGroupPageNumber(1);
+  }
+
+  return (
+    <div className="model-monitor-content">
+      <dl className="model-monitor-summary" aria-label="最近 24 小时模型监控摘要">
+        <div><dt>Provider 请求</dt><dd>{total.attempts}</dd></div>
+        <div><dt>成功</dt><dd>{total.succeeded}</dd></div>
+        <div><dt>失败</dt><dd>{total.failures}</dd></div>
+        <div><dt>进行中</dt><dd>{total.inFlight}</dd></div>
+        <div><dt>成功率</dt><dd>{total.successRate === null ? "—" : `${Math.round(total.successRate * 1000) / 10}%`}</dd></div>
+        <div><dt>Fallback</dt><dd>{total.fallbacks}</dd></div>
+        <div><dt>平均延迟</dt><dd>{total.averageLatencyMs === null ? "未知" : `${total.averageLatencyMs} ms`}</dd></div>
+      </dl>
+      <div className="model-monitor-grid">
+        <div>
+          <h3>小时趋势</h3>
+          <div className="model-monitor-trend">
+            {snapshot.trend.map((item) => (
+              <div className="model-monitor-trend-row" key={item.bucketStart}>
+                <span>{new Date(item.bucketStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                <progress max={maxAttempts} value={item.attempts} aria-label={`${formatMonitorTime(item.bucketStart)} 请求 ${item.attempts}`} />
+                <small>{item.attempts} · 成 {item.succeeded} · 败 {item.failures} · F {item.fallbacks}</small>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <h3>线路 / Provider / 模型</h3>
+          <div className="model-monitor-group-switcher" role="group" aria-label="模型监控分组">
+            {([
+              ["routes", "线路"],
+              ["providers", "Provider"],
+              ["models", "模型"],
+            ] as const).map(([kind, label]) => (
+              <button key={kind} type="button" aria-pressed={groupKind === kind} onClick={() => selectGroupKind(kind)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="model-monitor-groups">
+            {groupPage.items.map((group) => <MonitorGroupRow key={`${groupKind}:${group.id}`} prefix={groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"} group={group} />)}
+            {!groupPage.total && <p className="typed-admin-empty">当前分组暂无记录</p>}
+          </div>
+          <PaginationControls label={`模型监控${groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"}`} page={groupPage} onPageChange={setGroupPageNumber} />
+        </div>
+      </div>
+      <div className="model-monitor-foot">
+        <span>失败类别：{snapshot.failureClasses.length ? snapshot.failureClasses.map((item) => `${item.errorClass} ${item.count}`).join(" · ") : "无"}</span>
+        <span>仅统计实际 Provider attempt；Fallback 单独计数。窗口：{formatMonitorTime(snapshot.periodStart)} — {formatMonitorTime(snapshot.periodEnd)}</span>
+      </div>
+    </div>
+  );
+}
+
+type ModelMonitorGroupKind = "routes" | "providers" | "models";
+
+function MonitorGroupRow({ prefix, group }: { prefix: string; group: ModelMonitorSnapshot["routes"][number] }) {
+  return (
+    <div className="model-monitor-group-row">
+      <span><strong>{prefix} · {group.label}</strong><small>{group.model || group.id}</small></span>
+      <em>{group.attempts} 次 · 成 {group.succeeded} · 败 {group.failures} · {group.successRate === null ? "—" : `${Math.round(group.successRate * 100)}%`}</em>
     </div>
   );
 }
@@ -1518,6 +1607,10 @@ function formatShortDate(value: number): string {
 }
 
 function formatShortDateTime(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(value);
+}
+
+function formatMonitorTime(value: number): string {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(value);
 }
 
