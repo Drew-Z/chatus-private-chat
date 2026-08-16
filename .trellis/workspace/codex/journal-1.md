@@ -104,3 +104,36 @@ Implemented strict rolling 24-hour Provider-attempt monitoring, privacy-safe mem
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Configure Figma MCP Bridge
+
+**Date**: 2026-08-16
+**Task**: Configure Figma MCP Bridge
+**Branch**: `codex/chatus-ux-settings-redesign-ui`
+
+### Summary
+
+Configured the local @gethopp/figma-mcp-bridge STDIO server in D:/Agent/codex/config.toml after a backup-first repair of an unrelated invalid [agents] block. Verified TOML parsing, codex mcp list/get, and a direct MCP initialize/tools-list handshake against bridge 0.0.19. Kept the prior Chatus design.md change untouched; Figma file connection still requires the companion plugin and an Editor-capable seat.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5b43050` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

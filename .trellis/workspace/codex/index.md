@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
+- **Total Sessions**: 4
 - **Last Active**: 2026-08-16
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~106 | Active |
+| `journal-1.md` | ~139 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-08-16 | Configure Figma MCP Bridge | `5b43050` | `codex/chatus-ux-settings-redesign-ui` |
 | 3 | 2026-08-16 | Model monitoring and member availability | `daaf236`, `be80f80` | `codex/chatus-ux-settings-redesign-ui` |
 | 2 | 2026-08-16 | Refine Chatus visual system | `9532f2f` | `codex/chatus-ux-settings-redesign-ui` |
 | 1 | 2026-08-14 | Chatus member workspace and settings redesign | `2fad5b0` | `codex/chatus-ux-settings-redesign-ui` |
