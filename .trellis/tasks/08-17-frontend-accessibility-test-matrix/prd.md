@@ -14,12 +14,12 @@ Turn the audit's responsive and accessibility expectations into a maintainable b
 
 ## Acceptance Criteria
 
-- [ ] Browser tests include 781, 1024, 1280, and 1439px assertions in addition to phone and wide desktop coverage.
-- [ ] At least one normal-motion and one reduced-motion project/scenario run.
-- [ ] Automated accessibility scans cover authenticated member and admin workspaces with documented intentional exclusions only.
-- [ ] A non-Chromium engine runs a representative smoke/accessibility subset, or a documented deterministic capability check skips it.
-- [ ] Chat/model endpoints are intercepted and unexpected provider traffic fails the test.
-- [ ] CI/local commands remain documented and deterministic.
+- [x] Browser tests include 781, 1024, 1280, and 1439px assertions in addition to phone and wide desktop coverage.
+- [x] At least one normal-motion and one reduced-motion project/scenario run.
+- [x] Automated accessibility scans cover authenticated member and admin workspaces with documented intentional exclusions only.
+- [x] A non-Chromium engine runs a representative smoke/accessibility subset, or a documented deterministic capability check skips it.
+- [x] Chat/model endpoints are intercepted and unexpected provider traffic fails the test.
+- [x] CI/local commands remain documented and deterministic.
 
 ## Notes
 

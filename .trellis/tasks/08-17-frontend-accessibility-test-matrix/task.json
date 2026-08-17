@@ -3,7 +3,7 @@
   "name": "frontend-accessibility-test-matrix",
   "title": "Frontend accessibility test matrix",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": "frontend product experience optimization; no production deployment, live model probes, production observation task, or legacy rollout changes",
   "package": null,
@@ -15,12 +15,69 @@
   "branch": "codex/chatus-product-optimization",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "6be541836e789f5c19afc74ffafebc625e1046a3",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": "08-17-chatus-product-experience-optimization",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and matrix governance checks passed.",
+        "at": "2026-08-17T09:02:56.219628+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "56 files and 829 tests passed.",
+        "at": "2026-08-17T09:02:56.784947+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "123 passed and 82 configured capability or viewport conditions skipped.",
+        "at": "2026-08-17T09:02:57.328995+00:00"
+      },
+      {
+        "command": "npm run test:browser:accessibility",
+        "status": "passed",
+        "summary": "6 axe baseline tests passed across normal and reduced motion; Firefox capability skip was deterministic because the executable was unavailable.",
+        "at": "2026-08-17T09:02:57.884194+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 local fake-provider Agent browser tests passed; no external Provider traffic.",
+        "at": "2026-08-17T09:02:58.511054+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-17T09:02:59.061073+00:00"
+      },
+      {
+        "command": "npx vitest run tests/delivery-governance.test.ts",
+        "status": "passed",
+        "summary": "50 delivery governance tests passed.",
+        "at": "2026-08-17T09:02:59.614257+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Cloudflare Worker and asset packaging dry-run passed without deployment.",
+        "at": "2026-08-17T09:03:00.170465+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-17T09:03:00.739356+00:00"
+      }
+    ]
+  }
 }
