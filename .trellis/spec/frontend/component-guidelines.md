@@ -35,6 +35,13 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - The model inspector keeps stale rows visible with an explicit old-data warning and timestamp. Initial errors expose a retry command, while a successful empty response explicitly says that it differs from a read failure.
 - Pure transition tests cover all five states. The synthetic Workspace fixture renders loading, success, empty, stale, error, and retry states while aborting unexpected requests.
 
+## Quota-Aware Member Composer
+
+- Derive Composer quota state only from the exact session usage projection. A complete positive-limit projection is `available` or `exhausted`; missing, malformed, or refresh-failed data is `unknown` and must not disable sending.
+- Known exhaustion makes the textarea read-only, disables attachment acquisition and every submit path, and exposes the server-reported used/limit values plus a `刷新额度` command. The form submit handler repeats the same guard so Enter/requestSubmit cannot bypass the disabled send button.
+- Available usage displays `今日剩余 remaining / limit` in the reserved Composer status row. Active turn lifecycle copy takes priority while a turn is running; unknown usage does not display a false zero.
+- The synthetic Workspace fixture covers available, unknown, exhausted, refresh failure with retained exhaustion, and successful recovery without any API or Agent request.
+
 ## Admin Provider Discovery And Logical Model Offerings
 
 - Keep `routeModelInput` as an ordinary manual text input. A native `datalist` is not an acceptable full-list browser because the browser filters options using the current input value.

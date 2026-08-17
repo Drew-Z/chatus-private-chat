@@ -813,6 +813,8 @@ function WorkspaceFixture() {
   const [logoutState, setLogoutState] = useState(() => readLogoutFixtureState(params.get("logout")));
   const [modelAvailabilityState, setModelAvailabilityState] = useState(() => readModelAvailabilityFixtureState(params.get("availability")));
   const [modelAvailabilityRetryCount, setModelAvailabilityRetryCount] = useState(0);
+  const [composerUsage, setComposerUsage] = useState(() => readComposerUsageFixture(params.get("quota")));
+  const [usageRefreshCount, setUsageRefreshCount] = useState(0);
   const [operationsFilter, setOperationsFilter] = useState("");
   const [operationsFixtureSnapshot, setOperationsFixtureSnapshot] = useState(operationsSnapshot);
   const [legacySurfaceFixtureDirty, setLegacySurfaceFixtureDirty] = useState(false);
@@ -1191,6 +1193,12 @@ function WorkspaceFixture() {
                 online={online}
                 routeAvailable={routeAvailable}
                 agentReady
+                usage={session.access === "member" ? composerUsage : null}
+                usageRefreshing={false}
+                onRefreshUsage={() => {
+                  setUsageRefreshCount((current) => current + 1);
+                  if (params.get("quotaRefresh") !== "error") setComposerUsage(memberSession.usage);
+                }}
                 placeholder="输入消息"
                 statusText={turnBusy ? "Agent 正在继续处理" : ""}
               /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
@@ -1223,6 +1231,7 @@ function WorkspaceFixture() {
         />
       </div>
       <output data-testid="model-availability-retry-count" hidden>{modelAvailabilityRetryCount}</output>
+      <output data-testid="usage-refresh-count" hidden>{usageRefreshCount}</output>
       <MemberSettingsCenter
         open={memberSettingsOpen}
         nestedOpen={false}
@@ -1306,6 +1315,14 @@ function readModelAvailabilityFixtureState(value: string | null): ModelAvailabil
   const ready = completeModelAvailabilityRefresh(memberModelAvailability);
   if (value === "stale") return failModelAvailabilityRefresh(ready, "合成刷新失败。");
   return ready;
+}
+
+function readComposerUsageFixture(value: string | null): SessionProjection["usage"] | null {
+  if (value === "unknown") return null;
+  if (value === "exhausted") {
+    return { used: memberSession.usage.limit, limit: memberSession.usage.limit, remaining: 0 };
+  }
+  return memberSession.usage;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><WorkspaceFixture /></StrictMode>);

@@ -13,11 +13,11 @@ Keep visible session usage current after chat turns and prevent members from com
 
 ## Acceptance Criteria
 
-- [ ] Session usage refreshes after successful and failed terminal turn outcomes.
-- [ ] The composer visibly explains and blocks send when the server-reported quota is exhausted.
-- [ ] A usage-refresh failure preserves the last known value and does not erase the chat result.
-- [ ] Unknown quota state does not falsely disable the composer.
-- [ ] Tests cover refresh timing, exhausted/available/unknown states, and refresh failure.
+- [x] Session usage refreshes after successful and failed terminal turn outcomes.
+- [x] The composer visibly explains and blocks send when the server-reported quota is exhausted.
+- [x] A usage-refresh failure preserves the last known value and does not erase the chat result.
+- [x] Unknown quota state does not falsely disable the composer.
+- [x] Tests cover refresh timing, exhausted/available/unknown states, and refresh failure.
 
 ## Notes
 

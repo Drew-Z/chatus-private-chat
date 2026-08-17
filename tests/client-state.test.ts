@@ -7,6 +7,7 @@ import {
   hasVisibleAssistantOutputAfterLatestUser,
   isActiveTurnPhase,
   resolveMessageActionAvailability,
+  resolveComposerQuota,
   resolveConversationAccessPermissions,
   restoreRejectedDraft,
   resolveLoadedMemoryDraft,
@@ -31,6 +32,24 @@ describe("React client state recovery", () => {
   it("restores a rejected send without overwriting newer input", () => {
     expect(restoreRejectedDraft("", "  original draft  ")).toBe("  original draft  ");
     expect(restoreRejectedDraft("newer input", "original draft")).toBe("newer input");
+  });
+
+  it("blocks only a complete exhausted server quota projection", () => {
+    expect(resolveComposerQuota({ used: 3, limit: 10, remaining: 7 })).toEqual({
+      status: "available",
+      used: 3,
+      limit: 10,
+      remaining: 7,
+    });
+    expect(resolveComposerQuota({ used: 10, limit: 10, remaining: 0 })).toEqual({
+      status: "exhausted",
+      used: 10,
+      limit: 10,
+      remaining: 0,
+    });
+    expect(resolveComposerQuota(null)).toEqual({ status: "unknown" });
+    expect(resolveComposerQuota({ used: 10, limit: 0, remaining: 0 })).toEqual({ status: "unknown" });
+    expect(resolveComposerQuota({ used: 3, limit: 10, remaining: 11 })).toEqual({ status: "unknown" });
   });
 
   it("refreshes memory metadata while preserving a conflicted local draft", () => {

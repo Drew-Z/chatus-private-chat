@@ -96,6 +96,7 @@ export function ChatWorkspace({
   onMemberLogin,
   themePreference,
   onThemePreferenceChange,
+  onSessionUsageRefresh,
   onLogout,
 }: {
   session: SessionProjection;
@@ -104,6 +105,7 @@ export function ChatWorkspace({
   onMemberLogin: () => void;
   themePreference: ThemePreference;
   onThemePreferenceChange: (preference: ThemePreference) => boolean;
+  onSessionUsageRefresh: () => Promise<void>;
   onLogout: () => Promise<void>;
 }) {
   const [deviceStorage] = useState(getDeviceStorage);
@@ -134,9 +136,11 @@ export function ChatWorkspace({
   const [mcpConnectionNotice, setMcpConnectionNotice] = useState<McpConnectionNotice | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [modelAvailabilityState, setModelAvailabilityState] = useState(createModelAvailabilityViewState);
+  const [usageRefreshing, setUsageRefreshing] = useState(false);
   const bootstrapped = useRef(false);
   const logoutInFlight = useRef(false);
   const mcpRefresh = useRef<Promise<void> | null>(null);
+  const usageRefresh = useRef<Promise<void> | null>(null);
   const conversationSnapshots = useRef(new Map<string, AgentConversation>());
   const conversationRefreshGeneration = useRef(0);
   const modelAvailabilityGeneration = useRef(0);
@@ -182,6 +186,26 @@ export function ChatWorkspace({
   useEffect(() => {
     void refreshModelAvailability(true);
   }, [refreshModelAvailability, session.user]);
+
+  const refreshSessionUsage = useCallback((): Promise<void> => {
+    if (session.access !== "member") return Promise.resolve();
+    if (usageRefresh.current) return usageRefresh.current;
+    setUsageRefreshing(true);
+    const task = onSessionUsageRefresh().finally(() => {
+      if (usageRefresh.current !== task) return;
+      usageRefresh.current = null;
+      setUsageRefreshing(false);
+    });
+    usageRefresh.current = task;
+    return task;
+  }, [onSessionUsageRefresh, session.access]);
+
+  useEffect(() => {
+    if (session.access !== "member") return;
+    const refreshOnFocus = () => { void refreshSessionUsage().catch(() => undefined); };
+    window.addEventListener("focus", refreshOnFocus);
+    return () => window.removeEventListener("focus", refreshOnFocus);
+  }, [refreshSessionUsage, session.access]);
 
   const refreshMcpConnections = useCallback((): Promise<void> => {
     if (session.access !== "member") return Promise.resolve();
@@ -544,10 +568,11 @@ export function ChatWorkspace({
 
   const handleConversationChanged = useCallback(() => {
     void refreshModelAvailability(true);
+    void refreshSessionUsage().catch(() => undefined);
     void refreshConversations(activeId).catch((error) => {
       setWorkspaceError(errorMessage(error, "会话已完成，但列表暂时无法刷新。"));
     });
-  }, [activeId, refreshConversations, refreshModelAvailability]);
+  }, [activeId, refreshConversations, refreshModelAvailability, refreshSessionUsage]);
 
   const handleRefresh = useCallback(() => {
     setWorkspaceError("");
@@ -627,10 +652,13 @@ export function ChatWorkspace({
                 routeId={routeId}
                 skillMode={skillMode}
                 skillIds={skillIds}
+                usage={session.access === "member" ? session.usage : null}
+                usageRefreshing={usageRefreshing}
                 blocked={accountOperationBusy}
                 onBusyChange={setBusy}
                 onConnectionStateChange={setConnectionState}
                 onConversationChanged={handleConversationChanged}
+                onRefreshUsage={() => { void refreshSessionUsage().catch(() => undefined); }}
                 onAccessInvalidated={handleConversationAccessInvalidated}
                 onBranch={handleBranch}
               />
@@ -711,10 +739,13 @@ function ConversationChat({
   routeId,
   skillMode,
   skillIds,
+  usage,
+  usageRefreshing,
   blocked,
   onBusyChange,
   onConnectionStateChange,
   onConversationChanged,
+  onRefreshUsage,
   onAccessInvalidated,
   onBranch,
 }: {
@@ -725,10 +756,13 @@ function ConversationChat({
   routeId: string;
   skillMode: ConversationSkillMode;
   skillIds: string[];
+  usage: SessionProjection["usage"] | null;
+  usageRefreshing: boolean;
   blocked: boolean;
   onBusyChange: (busy: boolean) => void;
   onConnectionStateChange: (state: ConnectionState) => void;
   onConversationChanged: () => void;
+  onRefreshUsage: () => void;
   onAccessInvalidated: (conversationId: string) => void;
   onBranch: (
     source: AgentConversation,
@@ -1191,6 +1225,9 @@ function ConversationChat({
         online={online}
         routeAvailable={routeAvailable}
         agentReady={agent.identified}
+        usage={usage}
+        usageRefreshing={usageRefreshing}
+        onRefreshUsage={onRefreshUsage}
         placeholder={!online ? "等待网络恢复" : routeAvailable ? "输入消息" : "等待管理员配置线路"}
         statusText={turnPhase === "recovering"
           ? "正在恢复任务"

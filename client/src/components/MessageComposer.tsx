@@ -6,6 +6,7 @@ import {
   attachmentErrorLabel,
   type DraftAttachment,
 } from "../lib/image-input";
+import { resolveComposerQuota } from "../lib/state";
 
 export const COMPOSER_MAX_HEIGHT = 180;
 
@@ -35,6 +36,9 @@ export function MessageComposer({
   online,
   routeAvailable,
   agentReady,
+  usage,
+  usageRefreshing,
+  onRefreshUsage,
   placeholder,
   statusText,
 }: {
@@ -55,6 +59,9 @@ export function MessageComposer({
   online: boolean;
   routeAvailable: boolean;
   agentReady: boolean;
+  usage?: { used: number; limit: number; remaining: number } | null;
+  usageRefreshing?: boolean;
+  onRefreshUsage?: () => void;
   placeholder: string;
   statusText: string;
 }) {
@@ -62,7 +69,9 @@ export function MessageComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
-  const attachDisabled = busy || blocked || !online || !routeAvailable || !agentReady || (!imagesSupported && !filesSupported);
+  const quota = resolveComposerQuota(usage);
+  const quotaExhausted = quota.status === "exhausted";
+  const attachDisabled = busy || blocked || quotaExhausted || !online || !routeAvailable || !agentReady || (!imagesSupported && !filesSupported);
   const attachmentsSettled = attachments.every((attachment) => attachment.status === "ready");
   const hasReadyAttachment = attachments.some((attachment) => attachment.status === "ready");
   const hasUnsupportedAttachment = attachments.some((attachment) => (
@@ -75,7 +84,14 @@ export function MessageComposer({
     || !online
     || !agentReady
     || !routeAvailable
+    || quotaExhausted
     || hasUnsupportedAttachment;
+  const quotaStatusText = quota.status === "exhausted"
+    ? `今日消息额度已用完（${quota.used} / ${quota.limit}）。刷新额度后可继续。`
+    : quota.status === "available"
+      ? `今日剩余 ${quota.remaining} / ${quota.limit}`
+      : "";
+  const visibleStatusText = quotaExhausted ? quotaStatusText : statusText || quotaStatusText;
 
   useEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
@@ -116,7 +132,10 @@ export function MessageComposer({
   return (
     <form
       className={`composer${dragging ? " is-dragging" : ""}`}
-      onSubmit={(event) => { event.preventDefault(); onSubmit(); }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!busy && !sendDisabled) onSubmit();
+      }}
       onDragEnter={handleDragEnter}
       onDragOver={(event) => {
         if (!attachDisabled && event.dataTransfer.types.includes("Files")) event.preventDefault();
@@ -192,10 +211,12 @@ export function MessageComposer({
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={placeholder}
+            placeholder={quotaExhausted ? "今日消息额度已用完" : placeholder}
             rows={1}
             disabled={busy || blocked || !online || !routeAvailable}
+            readOnly={quotaExhausted}
             aria-label="消息"
+            aria-describedby="composer-status"
           />
           {busy ? (
             <button className="composer-action stop" type="button" onClick={onStop} title="停止生成" aria-label="停止生成"><Square size={17} /></button>
@@ -203,7 +224,14 @@ export function MessageComposer({
             <button className="composer-action" type="submit" disabled={sendDisabled} title="发送" aria-label="发送"><SendHorizontal size={18} /></button>
           )}
         </div>
-        <span className="composer-status" role="status" aria-live="polite" aria-atomic="true" aria-hidden={!statusText}>{statusText || "\u00a0"}</span>
+        <div className="composer-status-row">
+          <span id="composer-status" className="composer-status" role="status" aria-live="polite" aria-atomic="true" aria-hidden={!visibleStatusText}>{visibleStatusText || "\u00a0"}</span>
+          {quotaExhausted && onRefreshUsage && (
+            <button className="composer-quota-refresh" type="button" onClick={onRefreshUsage} disabled={usageRefreshing}>
+              <RefreshCw size={14} aria-hidden="true" /><span>{usageRefreshing ? "刷新中" : "刷新额度"}</span>
+            </button>
+          )}
+        </div>
       </div>
     </form>
   );

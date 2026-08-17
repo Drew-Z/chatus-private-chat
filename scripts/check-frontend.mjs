@@ -79,6 +79,7 @@ const reactMcpConnections = await readText(path.join(root, "client/src/component
 const reactMcpOAuth = await readText(path.join(root, "client/src/lib/mcp-oauth.ts"));
 const reactDevicePreferences = await readText(path.join(root, "client/src/lib/device-preferences.ts"));
 const reactModelAvailabilityState = await readText(path.join(root, "client/src/lib/model-availability.ts"));
+const reactState = await readText(path.join(root, "client/src/lib/state.ts"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
 const reactAdminWorkspace = await readText(path.join(root, "client/src/components/AdminWorkspace.tsx"));
 const reactAdminSetup = await readText(path.join(root, "client/src/components/AdminSetupGuide.tsx"));
@@ -149,7 +150,11 @@ assert(reactWorkspaceHeader.includes("模型可用性：") && reactWorkspaceHead
 assert(["loading", "success", "empty", "stale", "error"].every((status) => reactModelAvailabilityState.includes(`\"${status}\"`)), "React model availability: explicit loading, success, empty, stale, and error states are required");
 assert(reactInspector.includes("onRetryModelAvailability") && reactInspector.includes("当前显示上次成功结果") && reactInspector.includes("这与读取失败不同"), "React model availability: retry, stale-data, and empty-state recovery UI is missing");
 assert(reactClient.includes("<MessageComposer") && reactComposer.includes("resizeComposerTextarea") && reactComposer.includes('rows={1}'), "React composer: bounded textarea auto-growth is missing");
-assert(reactComposer.includes('statusText || "\\u00a0"') && reactComposer.includes("aria-hidden={!statusText}"), "React composer: status space must remain reserved while idle");
+assert(reactComposer.includes('visibleStatusText || "\\u00a0"') && reactComposer.includes("aria-hidden={!visibleStatusText}"), "React composer: status space must remain reserved while idle");
+assert(["unknown", "available", "exhausted"].every((status) => reactState.includes(`\"${status}\"`)) && reactState.includes("resolveComposerQuota"), "React composer: quota state must distinguish unknown, available, and exhausted projections");
+assert(reactApp.includes("refreshSessionUsage") && reactApp.includes("usage: next.usage"), "React app: session ownership must refresh server-reported member usage without replacing chat state");
+assert(reactClient.includes("const handleConversationChanged = useCallback") && reactClient.includes("void refreshSessionUsage().catch(() => undefined);"), "React workspace: every terminal turn must trigger a secondary usage refresh");
+assert(reactComposer.includes("quotaExhausted") && reactComposer.includes("if (!busy && !sendDisabled) onSubmit();") && reactComposer.includes("刷新额度"), "React composer: exhausted quota must explain and guard every submit path while remaining retryable");
 assert(reactComposer.includes("<Paperclip") && reactComposer.includes("onPaste={addClipboardImages}") && reactComposer.includes("onDrop={handleDrop}"), "React composer: picker, paste, and drop acquisition must share the attachment workflow");
 assert(reactComposer.includes("attachment-strip") && reactComposer.includes("onRemoveAttachment") && reactComposer.includes("onRetryAttachment"), "React composer: attachment previews need remove and retry actions");
 assert(reactClient.includes("toAttachmentFileParts(attachments)") && reactClient.includes("releaseAttachmentPreviews"), "React client: attachment messages and preview cleanup are missing");

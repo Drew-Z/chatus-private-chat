@@ -44,6 +44,8 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - Transcript auto-scroll is conditional on a near-bottom check; a reader who scrolls upward is not pulled back to the newest chunk.
 - Member theme preference is a device-local value keyed by the signed-in member label. The only accepted values are `follow-system`, `light`, and `dark`; malformed, unavailable, or missing storage falls back to `follow-system`. Applying a theme must not add a server preference field or cross-device synchronization.
 - Conversation-scoped route/model, Skills, tools, files, and sharing state belongs to the active conversation inspector; member-global appearance, memory, MCP, account/data, and session/device actions belong to the member settings center. Moving a control between these surfaces must reuse the existing API/dialog owner and preserve its revision, permission, pending, retry, and confirmation behavior.
+- `ChatApp` owns the authenticated session usage projection. A secondary refresh replaces only `session.usage` for the same member; a failed or unauthenticated refresh leaves the last known session and transcript untouched.
+- Member usage refresh is deduplicated and triggered after every busy-to-terminal turn transition and when the workspace regains focus. The turn result never awaits it, and a later successful refresh automatically clears a stale exhausted Composer state.
 
 ## Server State
 

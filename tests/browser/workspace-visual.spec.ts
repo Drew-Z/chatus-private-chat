@@ -766,6 +766,34 @@ test("member model availability keeps loading empty error stale and success dist
   await expect(page.locator(".header-route-button")).toContainText("任务健康：");
 });
 
+test("member composer blocks only known exhausted quota and recovers after refresh", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "quota state matrix needs one deterministic browser pass");
+
+  await page.goto("/?quota=available");
+  await expect(page.locator(".composer-status")).toContainText("今日剩余");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+
+  await page.goto("/?quota=unknown");
+  await expect(page.locator(".composer-status")).not.toContainText("额度已用完");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+
+  await page.goto("/?quota=exhausted&quotaRefresh=error");
+  const textarea = page.getByRole("textbox", { name: "消息" });
+  await expect(textarea).toHaveAttribute("readonly", "");
+  await expect(page.locator(".composer-status")).toContainText("今日消息额度已用完");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "刷新额度" }).click();
+  await expect(page.getByTestId("usage-refresh-count")).toHaveText("1");
+  await expect(page.locator(".composer-status")).toContainText("今日消息额度已用完");
+
+  await page.goto("/?quota=exhausted");
+  await page.getByRole("button", { name: "刷新额度" }).click();
+  await expect(page.getByTestId("usage-refresh-count")).toHaveText("1");
+  await expect(page.getByRole("textbox", { name: "消息" })).not.toHaveAttribute("readonly", "");
+  await expect(page.locator(".composer-status")).toContainText("今日剩余");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+});
+
 test("member Skill mode switches between automatic and exact manual selection", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "查看线路与状态" }).click();
   await expect(page.locator(".model-availability-footnote")).toContainText("更新时间：");

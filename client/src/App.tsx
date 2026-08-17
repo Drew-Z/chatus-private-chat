@@ -43,6 +43,14 @@ function ChatApp() {
     }
   }, []);
 
+  const refreshSessionUsage = useCallback(async (): Promise<void> => {
+    const next = await fetchSession();
+    if (!next || next.access !== "member") throw new Error("成员用量暂时无法刷新。");
+    setState((current) => current.status === "authenticated" && current.session.user === next.user
+      ? { ...current, session: { ...current.session, usage: next.usage } }
+      : current);
+  }, []);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -88,6 +96,7 @@ function ChatApp() {
         onMemberLogin={() => setMemberLoginOpen(true)}
         themePreference={themePreference}
         onThemePreferenceChange={setThemePreference}
+        onSessionUsageRefresh={refreshSessionUsage}
         onLogout={async () => {
           await logout();
           setState({ status: "loading" });
