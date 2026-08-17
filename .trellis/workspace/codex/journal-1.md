@@ -172,3 +172,36 @@ Synced the approved Figma member workspace and settings direction into the typed
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Capability catalog and adoption
+
+**Date**: 2026-08-18
+**Task**: Capability catalog and adoption
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Implemented and verified the revisioned Chatus capability catalog, five instruction-only default Skills, safe installation and assignment flows, member-safe projections, responsive administrator Catalog UI, and regression coverage; archived child 1 without touching production observation or legacy rollout work.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b42d180` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
