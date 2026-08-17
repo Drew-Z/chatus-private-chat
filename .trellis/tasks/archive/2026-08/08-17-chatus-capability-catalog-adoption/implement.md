@@ -22,7 +22,7 @@ None. This is the first implementation child of
   guest, inheritance, deny-all, collision, rename/delete, and responsive states.
 - [x] Load `trellis-check`; run focused checks, then the required child quality
   gate with fake/local services only.
-- [ ] Update applicable specs, commit only this child plus inherited parent task
+- [x] Update applicable specs, commit only this child plus inherited parent task
   metadata, and archive it before child 2 starts.
 
 ## Rollback
