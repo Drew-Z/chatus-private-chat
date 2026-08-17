@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
@@ -12,6 +12,8 @@ import { AgentErrorBanner } from "../../../../client/src/components/AgentErrorBa
 import { ConfirmDialog } from "../../../../client/src/components/ConfirmDialog";
 import { McpConnectionsDialog, type McpConnectionNotice } from "../../../../client/src/components/McpConnectionsDialog";
 import { MemberLogoutNotice } from "../../../../client/src/components/MemberLogoutNotice";
+import { WorkspaceLoadFallback } from "../../../../client/src/App";
+import { useTranscriptFollow } from "../../../../client/src/lib/transcript-follow";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import {
@@ -41,6 +43,8 @@ import {
 import { DEFAULT_FILE_INPUT_POLICY } from "../../../../src/contracts/file";
 import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../../../../src/contracts/agent";
 import "../../../../client/src/styles.css";
+
+const LazyWorkspaceFixture = lazy(() => import("./LazyWorkspaceFixture"));
 
 const now = Date.now();
 const initialConversations: AgentConversation[] = [
@@ -779,6 +783,29 @@ function fixtureAttachments(mode: string | null): DraftAttachment[] {
   }];
 }
 
+function TranscriptFollowFixture({ active }: { active: boolean }) {
+  const [rows, setRows] = useState(() => Array.from({ length: 40 }, (_, index) => `消息 ${index + 1}`));
+  const { messageListRef, endRef, trackTranscriptScroll } = useTranscriptFollow({
+    conversationId: "transcript-follow-fixture",
+    followKey: rows,
+    active,
+  });
+  return (
+    <main data-visual-fixture="true">
+      <button type="button" onClick={() => setRows((current) => [...current, `流式片段 ${current.length + 1}`])}>追加流式片段</button>
+      <div
+        ref={messageListRef}
+        data-testid="transcript-follow-scroll"
+        onScroll={trackTranscriptScroll}
+        style={{ width: 320, height: 180, overflowY: "auto" }}
+      >
+        {rows.map((row) => <p key={row} style={{ minHeight: 28, margin: 0 }}>{row}</p>)}
+        <div ref={endRef} />
+      </div>
+    </main>
+  );
+}
+
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
   const fixtureAccessRole = readFixtureAccessRole(params.get("acl"));
@@ -877,7 +904,7 @@ function WorkspaceFixture() {
     : null;
   const parentMissing = Boolean(activeConversation?.parentChatId && !parentConversation);
 
-  const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
+  const handleMessageAction = async (_messageId: string, _action: MessageAction, _editedText?: string) => undefined;
 
   const handlePinChange = async (conversation: AgentConversation, pinned: boolean) => {
     setPinAttempts((count) => count + 1);
@@ -916,6 +943,14 @@ function WorkspaceFixture() {
       });
     }
   };
+
+  if (params.get("view") === "lazy-workspace") {
+    return <Suspense fallback={<WorkspaceLoadFallback />}><LazyWorkspaceFixture /></Suspense>;
+  }
+
+  if (params.get("view") === "transcript-follow") {
+    return <TranscriptFollowFixture active={params.get("active") === "1"} />;
+  }
 
   if (params.get("view") === "reliability") {
     return (

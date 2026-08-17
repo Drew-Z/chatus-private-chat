@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useState, type ReactNode } from "react";
 import { LoginView } from "./components/LoginView";
 import { MemberLoginDialog } from "./components/MemberLoginDialog";
-import { ChatWorkspace } from "./components/ChatWorkspace";
-import { AdminApp } from "./components/AdminApp";
 import { PageState } from "./components/PageState";
 import { createGuestSession, fetchSession, login, logout, type SessionProjection } from "./lib/api";
 import type { ClientSurface } from "./lib/routing";
@@ -16,6 +14,9 @@ import {
   type ThemePreference,
 } from "./lib/device-preferences";
 
+const ChatWorkspace = lazy(() => import("./components/ChatWorkspace").then((module) => ({ default: module.ChatWorkspace })));
+const AdminApp = lazy(() => import("./components/AdminApp").then((module) => ({ default: module.AdminApp })));
+
 type AppState =
   | { status: "loading" }
   | { status: "login"; message?: string }
@@ -23,8 +24,32 @@ type AppState =
   | { status: "authenticated"; session: SessionProjection };
 
 export function App({ surface = "chat" }: { surface?: ClientSurface }) {
-  if (surface === "admin") return <AdminApp />;
-  return <ChatApp />;
+  return (
+    <WorkspaceLoadBoundary key={surface}>
+      <Suspense fallback={<WorkspaceLoadFallback />}>
+        {surface === "admin" ? <AdminApp /> : <ChatApp />}
+      </Suspense>
+    </WorkspaceLoadBoundary>
+  );
+}
+
+export function WorkspaceLoadFallback() {
+  return <PageState title="正在打开工作区" detail="正在加载当前工作区。" />;
+}
+
+class WorkspaceLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: true } {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <PageState title="工作区加载失败" detail="请检查网络连接后重试。" onRetry={() => window.location.reload()} />;
+    }
+    return this.props.children;
+  }
 }
 
 function ChatApp() {

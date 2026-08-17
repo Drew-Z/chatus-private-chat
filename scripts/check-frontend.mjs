@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -78,6 +78,7 @@ const reactMemberLogoutNotice = await readText(path.join(root, "client/src/compo
 const reactMcpConnections = await readText(path.join(root, "client/src/components/McpConnectionsDialog.tsx"));
 const reactMcpOAuth = await readText(path.join(root, "client/src/lib/mcp-oauth.ts"));
 const reactDevicePreferences = await readText(path.join(root, "client/src/lib/device-preferences.ts"));
+const reactTranscriptFollow = await readText(path.join(root, "client/src/lib/transcript-follow.ts"));
 const reactModelAvailabilityState = await readText(path.join(root, "client/src/lib/model-availability.ts"));
 const reactState = await readText(path.join(root, "client/src/lib/state.ts"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
@@ -96,6 +97,7 @@ const reactApi = await readText(path.join(root, "client/src/lib/api.ts"));
 const reactApp = await readText(path.join(root, "client/src/App.tsx"));
 const reactMain = await readText(path.join(root, "client/src/main.tsx"));
 const reactBuild = await readText(path.join(root, "public/react-chat/index.html"));
+const reactAssetFiles = await readdir(path.join(root, "public/react-chat/assets"));
 const legacyBuild = await readText(path.join(root, "public/legacy/index.html"));
 const reactSourceHtml = await readText(path.join(root, "client/index.html"));
 const deployWorkflow = await readText(path.join(root, ".github/workflows/deploy.yml"));
@@ -129,7 +131,7 @@ assert(!reactClient.includes("localStorage") && !reactApp.includes("localStorage
 assert(reactDevicePreferences.includes("createDebouncedDeviceWriter") && reactClient.includes("draftStorageWriter.schedule(key, value || null)"), "React client: member draft writes must stay debounced and flushable");
 assert(reactClient.includes("draftGeneration.current === submittedDraftGeneration") && reactClient.includes("setAttachments(submittedAttachments)"), "React client: rejected sends must restore the complete submitted draft only when no newer draft exists");
 assert(reactClient.includes("retryFailedTurn") && reactClient.includes('onBranch(conversation, "resend"'), "React client: failed turns need an in-place retry branch action");
-assert(reactClient.includes("followTranscriptRef") && reactClient.includes("onScroll={trackTranscriptScroll}"), "React client: streaming scroll must respect manual transcript scrolling");
+assert(reactClient.includes("useTranscriptFollow({") && reactClient.includes("onScroll={trackTranscriptScroll}") && reactTranscriptFollow.includes("isTranscriptNearBottom"), "React client: streaming scroll must respect manual transcript scrolling");
 assert(reactInspector.includes("session.tools.map") && reactInspector.includes("selectedToolIds"), "React inspector: assigned tools and current Skill activation must remain visible");
 assert(reactInspector.includes('tool.source === "mcp"'), "React inspector: MCP tools must remain distinguishable without exposing server details");
 assert(reactMemberSettings.includes("onRevokeAllSessions") && reactMemberSettings.includes("onDeleteUserData") && reactMemberSettings.includes("onExportUserData"), "React settings: account data actions are missing");
@@ -174,6 +176,27 @@ assert(reactClient.includes('className="sr-only" role="status" aria-live="polite
 assert(reactStyles.includes("--focus-ring: #3451d1") && reactStyles.includes("--focus-ring: #aebcff"), "React styles: light and dark focus rings need opaque high-contrast tokens");
 assert(reactApp.includes("status: \"authenticated\""), "React client: authenticated session gate is missing");
 assert(reactApp.includes('surface === "admin"'), "React admin: typed route gate is missing");
+assert(
+  reactApp.includes('lazy(() => import("./components/ChatWorkspace")')
+    && reactApp.includes('lazy(() => import("./components/AdminApp")')
+    && reactApp.includes("<Suspense fallback={<WorkspaceLoadFallback />}")
+    && !reactApp.includes('import { ChatWorkspace }')
+    && !reactApp.includes('import { AdminApp }'),
+  "React app: member and admin workspaces must stay behind role-specific lazy boundaries",
+);
+assert(
+  reactAssetFiles.some((file) => /^ChatWorkspace-[A-Za-z0-9_-]{8,}\.js$/u.test(file))
+    && reactAssetFiles.some((file) => /^AdminApp-[A-Za-z0-9_-]{8,}\.js$/u.test(file)),
+  "React build: role workspaces must emit separate fingerprinted chunks",
+);
+assert(
+  reactClient.includes("useTranscriptFollow({")
+    && reactTranscriptFollow.includes("createFrameScheduler")
+    && reactTranscriptFollow.includes('behavior: activeRef.current || reducedMotion ? "auto" : "smooth"')
+    && reactMessageView.includes("memo(function MessageView")
+    && reactClient.includes("? handleMessageAction"),
+  "React transcript: streaming must coalesce follow-scroll work and preserve unchanged message renders",
+);
 assert(reactMain.includes("resolveClientSurface(window.location.pathname)"), "React admin: pathname routing must stay at the composition root");
 assert(reactAdminApp.includes("fetchAdminSession()") && reactAdminApp.includes("adminLogin(token)"), "React admin: authenticated session gate is missing");
 assert(reactAdminApp.includes("finally {\n      setSubmitting(false);"), "React admin: login submit state must recover after rejected requests");

@@ -317,6 +317,52 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   await attachScreenshot(page, testInfo, "workspace");
 });
 
+test("lazy workspace renders an accessible fallback before its chunk resolves", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "lazy boundary coverage needs one desktop pass");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(/LazyWorkspaceFixture\.tsx/, async (route) => {
+    await gate;
+    await route.continue();
+  });
+
+  const navigation = page.goto("/?view=lazy-workspace");
+  await expect(page.getByRole("heading", { name: "正在打开工作区" })).toBeVisible();
+  release();
+  await navigation;
+  await expect(page.getByRole("region", { name: "已加载工作区" })).toHaveText("工作区已加载");
+});
+
+test("transcript follow coalesces streaming motion and preserves manual scroll", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "stream-follow coverage needs one desktop pass");
+  await page.addInitScript(() => {
+    const target = window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] };
+    target.__transcriptScrollBehaviors = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function scrollIntoView(options?: boolean | ScrollIntoViewOptions) {
+      if (typeof options === "object" && options.behavior) target.__transcriptScrollBehaviors.push(options.behavior);
+      return original.call(this, options);
+    };
+  });
+  await page.goto("/?view=transcript-follow&active=1");
+  const transcript = page.getByTestId("transcript-follow-scroll");
+  await expect.poll(() => transcript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.at(-1))).toBe("auto");
+
+  await transcript.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const followCalls = await page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.length);
+  await page.getByRole("button", { name: "追加流式片段" }).click();
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await transcript.evaluate((element) => element.scrollTop)).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.length)).toBe(followCalls);
+
+  await page.goto("/?view=transcript-follow&active=0");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.at(-1))).toBe("auto");
+});
+
 test("intermediate widths keep persisted panels from shrinking the chat", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-1440", "intermediate matrix runs once with explicit viewport sizes");
 

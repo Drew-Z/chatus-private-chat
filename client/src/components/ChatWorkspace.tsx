@@ -83,6 +83,7 @@ import {
   type DeviceStorage,
   type ThemePreference,
 } from "../lib/device-preferences";
+import { useTranscriptFollow } from "../lib/transcript-follow";
 
 type LogoutState =
   | { status: "idle" }
@@ -809,9 +810,6 @@ function ConversationChat({
   const [stopRequested, setStopRequested] = useState(false);
   const [lastSubmittedText, setLastSubmittedText] = useState("");
   const [lastSubmittedAttachments, setLastSubmittedAttachments] = useState<DraftAttachment[]>([]);
-  const messageListRef = useRef<HTMLDivElement | null>(null);
-  const endRef = useRef<HTMLDivElement | null>(null);
-  const followTranscriptRef = useRef(true);
   const wasBusy = useRef(false);
   const submissionGeneration = useRef(0);
   const draftGeneration = useRef(0);
@@ -848,6 +846,11 @@ function ConversationChat({
       ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
     }),
   });
+  const approvalHandlerRef = useRef(chat.addToolApprovalResponse);
+  approvalHandlerRef.current = chat.addToolApprovalResponse;
+  const handleToolApproval = useCallback((input: { id: string; approved: boolean }) => {
+    approvalHandlerRef.current(input);
+  }, []);
   const turnPhase = resolveTurnPhase({
     status: chat.status,
     isStreaming: chat.isStreaming,
@@ -857,6 +860,11 @@ function ConversationChat({
     messages: chat.messages,
   });
   const busy = isActiveTurnPhase(turnPhase);
+  const { messageListRef, endRef, trackTranscriptScroll } = useTranscriptFollow({
+    conversationId: conversation.id,
+    followKey: chat.messages,
+    active: busy || chat.isRecovering,
+  });
   const waitingFirstOutput = turnPhase === "submitted" || turnPhase === "waiting-first-output";
   const waitingFirstOutputRef = useRef(waitingFirstOutput);
   waitingFirstOutputRef.current = waitingFirstOutput;
@@ -985,22 +993,6 @@ function ConversationChat({
     ]);
   }, []);
 
-  useEffect(() => {
-    followTranscriptRef.current = true;
-  }, [conversation.id]);
-
-  useEffect(() => {
-    if (!followTranscriptRef.current) return;
-    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
-    window.requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: "end", behavior }));
-  }, [chat.messages, chat.isRecovering]);
-
-  const trackTranscriptScroll = () => {
-    const container = messageListRef.current;
-    if (!container) return;
-    followTranscriptRef.current = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
-  };
-
   const finishAttachmentRead = (attachment: DraftAttachment) => {
     void readDraftAttachment(attachment, session.fileInput).then((updated) => {
       setAttachments((current) => current.map((item) => item.id === updated.id ? updated : item));
@@ -1122,32 +1114,32 @@ function ConversationChat({
     }
   };
 
-  const handleMessageAction = async (message: UIMessage, action: MessageAction, editedText?: string) => {
+  const handleMessageAction = useCallback(async (messageId: string, action: MessageAction, editedText?: string) => {
     setMessageActionError("");
     try {
-      await onBranch(conversation, action, message.id, editedText);
+      await onBranch(conversation, action, messageId, editedText);
     } catch (error) {
       const messageText = error instanceof ApiError ? error.message : "消息操作失败，请稍后重试。";
       setMessageActionError(messageText);
       throw error;
     }
-  };
+  }, [conversation, onBranch]);
 
-  const handleFeedback = async (message: UIMessage, rating: "up" | "down") => {
+  const handleFeedback = useCallback(async (messageId: string, rating: "up" | "down") => {
     setMessageActionError("");
     try {
       await submitFeedback({
         rating,
         routeId,
         chatId: conversation.id,
-        messageId: message.id,
+        messageId,
         ...(rating === "down" ? { reason: "other" } : {}),
       });
     } catch (error) {
       setMessageActionError(error instanceof ApiError ? error.message : "反馈提交失败，请稍后重试。");
       throw error;
     }
-  };
+  }, [conversation.id, routeId]);
 
   const stop = () => {
     if (!permissions.canSend) return;
@@ -1191,12 +1183,12 @@ function ConversationChat({
               <MessageView
                 key={message.id}
                 message={message}
-                onApprove={chat.addToolApprovalResponse}
+                onApprove={handleToolApproval}
                 onAction={session.capabilities.messageActions && permissions.canBranch
-                  ? (action, editedText) => handleMessageAction(message, action, editedText)
+                  ? handleMessageAction
                   : undefined}
                 onFeedback={session.capabilities.feedback && permissions.canSubmitFeedback
-                  ? (rating) => handleFeedback(message, rating)
+                  ? handleFeedback
                   : undefined}
                 availability={availability}
               />

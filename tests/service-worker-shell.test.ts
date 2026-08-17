@@ -279,6 +279,22 @@ describe("service worker shell isolation", () => {
     expect(await cache.match("/").then((response) => response?.text())).toBe("root-shell");
   });
 
+  it("runtime-caches a fingerprinted React chunk and serves it offline", async () => {
+    const harness = new ServiceWorkerHarness();
+    const request: WorkerRequest = { method: "GET", mode: "cors", url: `${ORIGIN}/react-chat/assets/ChatWorkspace-abcdef12.js` };
+    harness.setNetworkHandler(async () => basicResponse("member-workspace-chunk"));
+
+    expect(await harness.fetch(request).then((response) => response?.text())).toBe("member-workspace-chunk");
+    expect(harness.fetchCalls.map((call) => call.pathname)).toEqual(["/react-chat/assets/ChatWorkspace-abcdef12.js"]);
+
+    harness.setNetworkHandler(async () => { throw new Error("offline"); });
+    expect(await harness.fetch(request).then((response) => response?.text())).toBe("member-workspace-chunk");
+    expect(harness.fetchCalls.map((call) => call.pathname)).toEqual([
+      "/react-chat/assets/ChatWorkspace-abcdef12.js",
+      "/react-chat/assets/ChatWorkspace-abcdef12.js",
+    ]);
+  });
+
   it("deletes stale cache versions and claims clients on activation", async () => {
     const harness = new ServiceWorkerHarness();
     await harness.cacheStorage.open("chatus-shell-v5");

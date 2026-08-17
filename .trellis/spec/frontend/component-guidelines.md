@@ -19,6 +19,14 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Legacy page modules use module-scoped state. Reusable helpers accept explicit values and return data or DOM-safe output.
 - Pass the owning entity explicitly for asynchronous work. Cloud saves and summaries retain the chat/session ID so results do not update whichever chat happens to be active later.
 
+## Role-Specific Loading And Transcript Rendering
+
+- Keep `App.tsx` as the small eager session gate. Load the member `ChatWorkspace` and administrator `AdminApp` through separate `React.lazy` boundaries so one authenticated role does not evaluate the other role's full workspace.
+- Every role boundary uses the shared accessible loading status and the application error boundary. A chunk failure must expose the reload recovery action instead of leaving a blank shell.
+- Content-hashed same-origin scripts and styles under `/react-chat/assets/` are runtime-cacheable after their first successful response. Do not pre-cache every role chunk or cache non-fingerprinted API/navigation responses under this rule.
+- A streaming message keeps the same message object identity supplied by the Agent hook. Pass streaming/action state separately; do not map the full transcript merely to decorate one message.
+- Memoized message rows receive stable handlers that accept the owning `messageId`. Avoid per-row closure recreation in the transcript map, and include every visible action-availability value in the memo comparison.
+
 ## Workspace Interaction Accessibility
 
 - Shared focus-ring tokens must be opaque and keep at least 3:1 contrast against adjacent light and dark workspace surfaces. Do not rely on translucent browser blending for the only visible focus indicator.
