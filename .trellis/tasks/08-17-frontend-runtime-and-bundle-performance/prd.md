@@ -14,12 +14,12 @@ Reduce avoidable initial JavaScript and per-token rendering work without weakeni
 
 ## Acceptance Criteria
 
-- [ ] Initial role-specific entry does not eagerly evaluate both full workspace branches.
-- [ ] Lazy chunks load online and can be served from runtime cache after a successful first load.
-- [ ] Streaming updates do not rebuild unchanged message objects solely for status decoration.
-- [ ] Follow-scroll runs at most once per animation frame and does not pull a user who has scrolled away.
-- [ ] Reduced-motion behavior remains respected.
-- [ ] Unit/browser tests cover lazy fallback, cache matching, and streaming scroll behavior.
+- [x] Initial role-specific entry does not eagerly evaluate both full workspace branches.
+- [x] Lazy chunks load online and can be served from runtime cache after a successful first load.
+- [x] Streaming updates do not rebuild unchanged message objects solely for status decoration.
+- [x] Follow-scroll runs at most once per animation frame and does not pull a user who has scrolled away.
+- [x] Reduced-motion behavior remains respected.
+- [x] Unit/browser tests cover lazy fallback, cache matching, and streaming scroll behavior.
 
 ## Notes
 
