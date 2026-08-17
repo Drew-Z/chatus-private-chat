@@ -42,6 +42,14 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Available usage displays `今日剩余 remaining / limit` in the reserved Composer status row. Active turn lifecycle copy takes priority while a turn is running; unknown usage does not display a false zero.
 - The synthetic Workspace fixture covers available, unknown, exhausted, refresh failure with retained exhaustion, and successful recovery without any API or Agent request.
 
+## Intermediate Workspace Layout
+
+- At `1440px` and wider, the workspace may use the persistent rail/chat/inspector grid. From `1024px` through `1439px`, keep the conversation rail and present the inspector as a right overlay. From `781px` through `1023px`, both the rail and inspector are overlays and the chat owns the full grid track.
+- The medium grid uses `var(--rail-width) minmax(520px, 1fr)` and every main/panel track keeps `min-width: 0`; an open inspector must not add a grid column below 1440px.
+- Overlay presentation does not delete the persisted inspector preference. CSS decides whether open state consumes a track, while the React owner keeps the same open/close persistence contract.
+- Inspector overlay focus behavior uses `(max-width: 1439px)` and sidebar drawer behavior uses `(max-width: 1023px)`. These media queries must move with their CSS breakpoints so initial focus, Tab containment, Escape, and focus restoration remain aligned with visual presentation.
+- Inspector overlays render a dismissible scrim below the panel. Browser coverage loops through `781`, `1024`, `1280`, and `1439` pixels with persisted panel state off/on, asserts unchanged main width, composer containment, no page overflow, focus/Escape behavior, and retained screenshots.
+
 ## Admin Provider Discovery And Logical Model Offerings
 
 - Keep `routeModelInput` as an ordinary manual text input. A native `datalist` is not an acceptable full-list browser because the browser filters options using the current input value.

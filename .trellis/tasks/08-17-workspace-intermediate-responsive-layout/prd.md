@@ -13,11 +13,11 @@ Keep chat readable and operable from small tablet through narrow desktop widths,
 
 ## Acceptance Criteria
 
-- [ ] At 781, 1024, 1280, and 1439px, the primary chat column remains readable and composer controls are not clipped.
-- [ ] Reopening with a persisted inspector cannot leave an unusably narrow main column.
-- [ ] Conversation and inspector panels remain discoverable and keyboard operable.
-- [ ] No new horizontal page overflow occurs at the target widths.
-- [ ] Browser tests cover target widths with panel state persisted on and off.
+- [x] At 781, 1024, 1280, and 1439px, the primary chat column remains readable and composer controls are not clipped.
+- [x] Reopening with a persisted inspector cannot leave an unusably narrow main column.
+- [x] Conversation and inspector panels remain discoverable and keyboard operable.
+- [x] No new horizontal page overflow occurs at the target widths.
+- [x] Browser tests cover target widths with panel state persisted on and off.
 
 ## Notes
 

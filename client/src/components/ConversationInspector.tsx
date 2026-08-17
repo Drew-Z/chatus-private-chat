@@ -84,9 +84,9 @@ export function ConversationInspector({
   useEffect(() => {
     if (!open) return;
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const mobile = window.matchMedia("(max-width: 780px)").matches;
+    const overlay = window.matchMedia("(max-width: 1439px)").matches;
     const frame = window.requestAnimationFrame(() => {
-      if (mobile) closeRef.current?.focus();
+      if (overlay) closeRef.current?.focus();
     });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (shareOpenRef.current) return;
@@ -95,7 +95,7 @@ export function ConversationInspector({
         onCloseRef.current();
         return;
       }
-      if (!mobile || event.key !== "Tab") return;
+      if (!overlay || event.key !== "Tab") return;
       const panel = panelRef.current;
       if (!panel) return;
       const focusable = [...panel.querySelectorAll<HTMLElement>(

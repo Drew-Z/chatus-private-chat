@@ -670,6 +670,7 @@ export function ChatWorkspace({
             )}
           </section>
         </div>
+        {inspectorOpen && <button className="inspector-scrim" type="button" onClick={closeInspector} aria-label="关闭对话上下文" />}
         <ConversationInspector
           open={inspectorOpen}
           section={inspectorSection}

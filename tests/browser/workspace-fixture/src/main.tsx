@@ -1205,6 +1205,7 @@ function WorkspaceFixture() {
             </div>
           </section>
         </div>
+        {inspectorOpen && <button className="inspector-scrim" type="button" onClick={() => setInspectorOpen(false)} aria-label="关闭上下文遮罩" />}
         <ConversationInspector
           open={inspectorOpen}
           section={inspectorSection}

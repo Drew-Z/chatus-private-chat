@@ -317,6 +317,47 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   await attachScreenshot(page, testInfo, "workspace");
 });
 
+test("intermediate widths keep persisted panels from shrinking the chat", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "intermediate matrix runs once with explicit viewport sizes");
+
+  for (const width of [781, 1024, 1280, 1439]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    const closed = await intermediateGeometry(page);
+    expect(closed.documentFits).toBe(true);
+    expect(closed.composerFits).toBe(true);
+    expect(closed.mainWidth).toBeGreaterThanOrEqual(width <= 1023 ? width - 1 : width - 253);
+
+    await page.goto("/?inspector=open");
+    const inspector = page.locator(".conversation-inspector");
+    await expect(inspector).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "关闭对话上下文" })).toBeFocused();
+    await expect(page.locator(".inspector-scrim")).toBeVisible();
+    const open = await intermediateGeometry(page);
+    expect(open.documentFits).toBe(true);
+    expect(open.composerFits).toBe(true);
+    expect(Math.abs(open.mainWidth - closed.mainWidth)).toBeLessThanOrEqual(1);
+    await attachScreenshot(page, testInfo, `intermediate-${width}`);
+    await page.keyboard.press("Escape");
+    await expect(inspector).toHaveCount(0);
+
+    if (width <= 1023) {
+      const opener = page.getByRole("button", { name: "打开会话" });
+      await expect(opener).toBeVisible();
+      await opener.click();
+      const sidebar = page.locator(".conversation-sidebar.open");
+      await expect(sidebar).toBeVisible();
+      await expect(sidebar.getByRole("button", { name: "关闭侧栏" })).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".conversation-sidebar.open")).toHaveCount(0);
+      await expect(opener).toBeFocused();
+    } else {
+      await expect(page.getByRole("button", { name: "打开会话" })).toHaveCount(0);
+      await expect(page.locator(".conversation-sidebar")).toBeVisible();
+    }
+  }
+});
+
 test("bounded Provider progress stays neutral and contained", async ({ page }, testInfo) => {
   test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "Provider progress targets desktop and 390px");
 
@@ -2165,6 +2206,26 @@ test("mobile drawer and delete confirmation preserve focus", async ({ page }, te
 async function releaseLegacySurfaceTransition(page: Page): Promise<void> {
   await page.evaluate(() => {
     window.dispatchEvent(new Event("chatus:fixture:legacy-surface-transition-release"));
+  });
+}
+
+async function intermediateGeometry(page: Page): Promise<{
+  mainWidth: number;
+  documentFits: boolean;
+  composerFits: boolean;
+}> {
+  return page.evaluate(() => {
+    const main = document.querySelector<HTMLElement>(".workspace-main");
+    const composer = document.querySelector<HTMLElement>(".composer-box");
+    if (!main || !composer) throw new Error("missing intermediate workspace geometry");
+    const mainRect = main.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    return {
+      mainWidth: mainRect.width,
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth
+        && document.body.scrollWidth <= document.body.clientWidth,
+      composerFits: composerRect.left >= 0 && composerRect.right <= window.innerWidth,
+    };
   });
 }
 

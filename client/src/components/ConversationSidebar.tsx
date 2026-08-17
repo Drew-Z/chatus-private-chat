@@ -82,7 +82,7 @@ export function ConversationSidebar({
   const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
 
   useEffect(() => {
-    if (!open || !window.matchMedia("(max-width: 780px)").matches) {
+    if (!open || !window.matchMedia("(max-width: 1023px)").matches) {
       if (sidebarWasOpenRef.current) {
         sidebarWasOpenRef.current = false;
         const previousFocus = previousSidebarFocusRef.current;

@@ -163,6 +163,9 @@ for (const token of ["--workspace-header-height", "--rail-width", "--transcript-
 }
 assert(reactStyles.includes("width: min(100%, var(--transcript-max-width))"), "React styles: transcript width must consume the shared readable-width token");
 assert(reactStyles.includes("position: sticky") && reactStyles.includes("env(safe-area-inset-bottom)"), "React styles: composer must remain pinned with mobile safe-area padding");
+assert(reactStyles.includes("@media (max-width: 1439px)") && reactStyles.includes("@media (max-width: 1023px)") && reactStyles.includes("minmax(520px, 1fr)"), "React styles: intermediate workspace bands must protect a practical chat column");
+assert(reactStyles.includes(".inspector-scrim") && reactClient.includes('className="inspector-scrim"'), "React workspace: overlay inspector needs a dismissible scrim without consuming a grid track");
+assert(reactInspector.includes('matchMedia("(max-width: 1439px)")') && reactSidebar.includes('matchMedia("(max-width: 1023px)")'), "React workspace: overlay focus traps must follow the intermediate inspector and sidebar breakpoints");
 assert(/@media \(max-width: 780px\)[\s\S]*?\.message-actions \.icon-button \{ width: var\(--touch-target\)/.test(reactStyles), "React styles: touch message actions must use the shared 44px target");
 assert(!reactStyles.includes(".message-actions .icon-button { opacity: 0") && !reactStyles.includes(".message-actions { pointer-events: none"), "React styles: message actions must not depend on hover for discovery");
 assert(reactStyles.includes(".message.user .markdown-content h1") && reactStyles.includes(".message.user .markdown-content code"), "React styles: user-bubble Markdown needs role-specific contrast");
