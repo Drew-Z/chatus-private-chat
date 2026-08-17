@@ -172,3 +172,37 @@ Synced the approved Figma member workspace and settings direction into the typed
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Frontend performance and accessibility regression coverage
+
+**Date**: 2026-08-17
+**Task**: Frontend performance and accessibility regression coverage
+**Branch**: `codex/chatus-product-optimization`
+
+### Summary
+
+Split role workspaces and reduced streaming render/scroll work; added fixture-backed axe motion matrix, deterministic Firefox capability handling, and CI artifact coverage. Full validation passed without production deployment or live Provider probes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `765bae7` | (see git log) |
+| `6be5418` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
