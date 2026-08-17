@@ -1261,28 +1261,36 @@ export async function fetchModelAvailability(): Promise<MemberModelAvailability>
   return data;
 }
 
-export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
-  const [stats, audit, feedback, finance, legacySurfaces, modelMonitor] = await Promise.all([
-    requestJson("/api/admin/stats"),
-    requestJson("/api/admin/audit"),
-    requestJson("/api/admin/feedback"),
-    requestJson("/api/admin/provider-finance?limit=100"),
-    fetchAdminLegacySurfaces(),
-    fetchAdminModelMonitor().catch(() => undefined),
-  ]);
-  if (!isAdminOperationsStats(stats)) {
+export async function fetchAdminOperationsStats(): Promise<AdminOperationsStats> {
+  const data = await requestJson("/api/admin/stats");
+  if (!isAdminOperationsStats(data)) {
     throw new ApiError("invalid_admin_stats_response", "运营统计格式无效。", 502);
   }
-  if (!isAdminAuditSnapshot(audit)) {
+  return data;
+}
+
+export async function fetchAdminOperationsAudit(): Promise<AdminAuditEntry[]> {
+  const data = await requestJson("/api/admin/audit");
+  if (!isAdminAuditSnapshot(data)) {
     throw new ApiError("invalid_admin_audit_response", "管理审计格式无效。", 502);
   }
-  if (!isAdminFeedbackSnapshot(feedback)) {
+  return data.entries;
+}
+
+export async function fetchAdminOperationsFeedback(): Promise<AdminFeedbackEntry[]> {
+  const data = await requestJson("/api/admin/feedback");
+  if (!isAdminFeedbackSnapshot(data)) {
     throw new ApiError("invalid_admin_feedback_response", "成员反馈格式无效。", 502);
   }
-  if (!isAdminProviderFinanceSnapshot(finance)) {
+  return data.entries;
+}
+
+export async function fetchAdminOperationsFinance(): Promise<AdminProviderFinanceSnapshot> {
+  const data = await requestJson("/api/admin/provider-finance?limit=100");
+  if (!isAdminProviderFinanceSnapshot(data)) {
     throw new ApiError("invalid_admin_provider_finance_response", "服务商成本数据格式无效。", 502);
   }
-  return { stats, audit: audit.entries, feedback: feedback.entries, finance, legacySurfaces, ...(modelMonitor ? { modelMonitor } : {}) };
+  return data;
 }
 
 export async function fetchAdminLegacySurfaces(

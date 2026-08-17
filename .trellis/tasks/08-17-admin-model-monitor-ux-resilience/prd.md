@@ -14,12 +14,12 @@ Make model monitoring searchable, correctly visualized, and resilient when unrel
 
 ## Acceptance Criteria
 
-- [ ] Search filters model-monitor groups and displays a clear no-match state.
-- [ ] Trend presentation distinguishes attempts and outcomes or exposes an equivalent success-rate signal with accessible text.
-- [ ] Independent section failures render local retry/error states while healthy sections remain usable.
-- [ ] Model-monitor failure remains visible and retryable.
-- [ ] No legacy rollout file, endpoint, control, gate, state, or evidence is changed.
-- [ ] Tests cover filtering, trend semantics, and partial failures with mocked responses.
+- [x] Search filters model-monitor groups and displays a clear no-match state.
+- [x] Trend presentation distinguishes attempts and outcomes or exposes an equivalent success-rate signal with accessible text.
+- [x] Independent section failures render local retry/error states while healthy sections remain usable.
+- [x] Model-monitor failure remains visible and retryable.
+- [x] No legacy rollout file, endpoint, control, gate, state, or evidence is changed.
+- [x] Tests cover filtering, trend semantics, and partial failures with mocked responses.
 
 ## Notes
 

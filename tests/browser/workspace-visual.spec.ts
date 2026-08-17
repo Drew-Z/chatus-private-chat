@@ -1104,6 +1104,14 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "模型监控 · 最近 24 小时" })).toBeVisible();
   await expect(page.getByLabel("最近 24 小时模型监控摘要")).toContainText("Provider 请求");
   await expect(page.getByText("仅统计实际 Provider attempt；Fallback 单独计数。", { exact: false })).toBeVisible();
+  await expect(page.getByRole("img", { name: /尝试 42，成功 36，失败 4，进行中 2，完成成功率 90%/ })).toBeVisible();
+  await page.getByLabel("筛选运营数据").fill("Fixture Provider");
+  await page.getByRole("button", { name: "Provider", exact: true }).click();
+  await expect(page.getByText("Provider · Fixture Provider", { exact: true })).toBeVisible();
+  await page.getByLabel("筛选运营数据").fill("monitor-no-match");
+  await expect(page.getByText("没有匹配的模型监控记录", { exact: true })).toBeVisible();
+  await page.getByLabel("筛选运营数据").fill("");
+  await page.getByRole("button", { name: "线路", exact: true }).click();
   await expect(page.getByRole("button", { name: "模型监控线路：下一页" })).toBeVisible();
   await page.getByRole("button", { name: "模型监控线路：下一页" }).click();
   await expect(page.getByText("线路 · 监控线路 21", { exact: true })).toBeVisible();
@@ -1729,6 +1737,75 @@ test("operations initial error is distinct from loading and retryable", async ({
   allowSuccess = true;
   await page.getByRole("button", { name: "重试读取运营数据" }).click();
   await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
+});
+
+test("operations isolates section failures and retries only the requested read", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "partial failure coverage needs one desktop browser pass");
+  let financeReads = 0;
+  let monitorReads = 0;
+  await page.route("**/api/admin/**", async (route) => {
+    const url = new URL(route.request().url());
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (url.pathname === "/api/admin/stats") {
+      await json({
+        day: "2026-07-26",
+        days: ["2026-07-26"],
+        totals: { requests: 3, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 },
+        trend: [{ day: "2026-07-26", requests: 3, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 }],
+        routeStats: [], users: [], routes: [], configSource: "kv", accessCodeSource: "managed",
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/audit" || url.pathname === "/api/admin/feedback") {
+      await json({ entries: [] });
+      return;
+    }
+    if (url.pathname === "/api/admin/legacy-surfaces") {
+      await json({
+        version: 1,
+        manifestDigest: "a".repeat(64),
+        generatedAt: 1785032000000,
+        total: 1,
+        surfaces: [{
+          version: 1, surfaceId: "legacy.surface-alpha", revision: 0, manifestVersion: 1,
+          manifestDigest: "a".repeat(64), phase: "discovered", readControl: "enabled", writeControl: "enabled",
+          owner: "unassigned", blockerCodes: ["maximum_phase_reached", "owner_unassigned"], observationStartedAt: 0,
+          observationRequiredUntil: 0, lastTransitionAt: 0, lastDeploymentSha: "",
+          evidence: { required: 0, present: 0, complete: true }, allowedActions: [],
+        }],
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/provider-finance") {
+      financeReads += 1;
+      await json(financeReads <= 2
+        ? { error: "finance_unavailable", message: "合成 Provider 财务读取失败。" }
+        : { version: 1, generatedAt: 1785032000000, periodStart: 1782440000000, hardBudgetEnforcement: "instance_provider_v1", providers: [] }, financeReads <= 2 ? 503 : 200);
+      return;
+    }
+    if (url.pathname === "/api/admin/model-monitor") {
+      monitorReads += 1;
+      await json({ error: "model_monitor_unavailable", message: "合成模型监控读取失败。", retryable: true }, 503);
+      return;
+    }
+    throw new Error(`unexpected partial operations request: ${route.request().method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=operations-panel");
+  await expect(page.getByLabel("7 日运营摘要")).toContainText("3");
+  await expect(page.getByRole("heading", { name: "7 日请求趋势" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试Provider 财务与预算" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试模型监控" })).toBeVisible();
+  expect({ financeReads, monitorReads }).toEqual({ financeReads: 2, monitorReads: 2 });
+
+  await page.getByRole("button", { name: "重试Provider 财务与预算" }).click();
+  await expect(page.getByRole("button", { name: "重试Provider 财务与预算" })).toHaveCount(0);
+  expect({ financeReads, monitorReads }).toEqual({ financeReads: 3, monitorReads: 2 });
+  await expect(page.getByRole("heading", { name: "Provider 容量" })).toBeVisible();
+
+  await page.getByRole("button", { name: "重试模型监控" }).click();
+  await expect(page.getByRole("button", { name: "重试模型监控" })).toBeVisible();
+  expect(monitorReads).toBe(3);
 });
 
 test("member policy editing and usage reset stay usable on desktop and touch", async ({ page }, testInfo) => {

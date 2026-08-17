@@ -443,6 +443,12 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .admin-operations-summary dd, .admin-operations-summary dt { margin: 0; overflow-wrap: anywhere; }
 .admin-operations-summary dd { grid-row: 1; color: var(--ink); font-size: 20px; font-weight: 800; }
 .admin-operations-summary dt { grid-row: 2; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.admin-operations-source-failures { min-width: 0; display: grid; gap: 8px; }
+.admin-operations-section-failure { min-width: 0; display: grid; grid-template-columns: minmax(150px, auto) minmax(0, 1fr) auto; align-items: center; gap: 10px 16px; padding: 12px 14px; border: 1px solid #e7c6c1; border-radius: 8px; background: var(--danger-soft); }
+.admin-operations-section-failure > span { display: grid; gap: 2px; }
+.admin-operations-section-failure strong { color: var(--danger); font-size: 12px; }
+.admin-operations-section-failure small, .admin-operations-section-failure p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.admin-operations-section-failure .quiet-button { justify-self: end; }
 .model-monitor-content { min-width: 0; display: grid; gap: 16px; }
 .model-monitor-summary { min-width: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 0; border-block: 1px solid var(--line); background: #f7f9f8; }
 .model-monitor-summary > div { min-width: 0; display: grid; padding: 12px 14px; border-left: 1px solid var(--line); }
@@ -458,7 +464,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .model-monitor-group-switcher button[aria-pressed="true"] { color: var(--ink); background: var(--surface); box-shadow: 0 1px 2px rgb(20 35 30 / 10%); }
 .model-monitor-trend-row { min-width: 0; display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 30px; border-bottom: 1px solid #edf1ef; font-size: 10px; }
 .model-monitor-trend-row > span, .model-monitor-trend-row small { color: var(--muted); }
+.model-monitor-outcome-bars { min-width: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
 .model-monitor-trend-row progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.model-monitor-trend-row progress.failure { accent-color: var(--danger); }
+.model-monitor-trend-row progress.in-flight { accent-color: var(--warning); }
 .model-monitor-group-row { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #edf1ef; }
 .model-monitor-group-row > span { min-width: 0; display: grid; gap: 2px; }
 .model-monitor-group-row strong, .model-monitor-group-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1238,6 +1247,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .admin-operations-summary > div { border-bottom: 1px solid var(--line); }
   .admin-operations-summary > div:nth-child(odd) { border-left: 0; }
   .admin-operations-summary > div:last-child { grid-column: 1 / -1; border-bottom: 0; }
+  .admin-operations-section-failure { grid-template-columns: 1fr; }
+  .admin-operations-section-failure .quiet-button { min-height: var(--touch-target); justify-self: start; }
   .model-monitor-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .model-monitor-summary > div:nth-child(odd) { border-left: 0; }
   .model-monitor-summary > div { border-bottom: 1px solid var(--line); }

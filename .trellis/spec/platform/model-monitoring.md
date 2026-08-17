@@ -12,6 +12,13 @@ GET /api/model-availability
 
 ProviderAttemptLedger.getMonitoringAggregate({ periodStart, periodEnd })
 ProviderAttemptLedger.listAvailabilityEvidence({ periodStart, periodEnd, routeIds })
+
+fetchAdminOperationsStats()
+fetchAdminOperationsAudit()
+fetchAdminOperationsFeedback()
+fetchAdminOperationsFinance()
+fetchAdminLegacySurfaces()
+fetchAdminModelMonitor()
 ```
 
 The admin endpoint requires the existing admin session. The member endpoint requires a signed-in member session and derives route access from the existing `getRouteAccess()` projection.
@@ -25,6 +32,9 @@ The admin endpoint requires the existing admin session. The member endpoint requ
 - The member projection contains only already-allowed logical route ID/label/model plus `healthy | degraded | unavailable | unknown`, confidence, coarse first-visible speed, freshness evidence, and a fallback-used hint. It must not include Provider identity, exact counts/rates, or raw failure classes.
 - Member status is advisory: one recent failure is `degraded`; three latest terminal failures within 15 minutes with no later success are `unavailable`; later success recovers the route. Existing permission, configuration, credential, candidate, and send checks remain authoritative.
 - Member availability refreshes on bootstrap, model inspector opening, and request settlement with a 60-second client guard. A read failure retains the last projection and must not block the composer. Admin monitoring is best-effort in Operations and must not remove the existing seven-day or finance projections.
+- The React Operations owner loads statistics, audit, feedback, finance, legacy-surface projection, and model monitoring as six independently versioned reads. One source failure preserves every successful source, keeps that source's last successful projection when available, and exposes a retry that replays only the same model-free GET. A response may commit only when its per-source generation is current.
+- The shared Operations query filters monitor routes, Providers, and models by normalized `id`, `label`, and `model`. A filtered empty group says that no monitoring records match; it is not presented as a monitoring outage.
+- Hourly monitor rows expose attempts, succeeded, terminal failures, in-flight attempts, and completed-attempt success rate in accessible text. Visual bars distinguish success, failure, and in-flight values; in-flight attempts never enter the completed success-rate denominator.
 
 ## 4. Validation & Error Matrix
 
@@ -38,12 +48,18 @@ The admin endpoint requires the existing admin session. The member endpoint requ
 | Only in-flight evidence | Keep it out of the success denominator and do not claim success |
 | Decoder sees unknown fields, negative/fractional counts, duplicate IDs, impossible rates, invalid buckets, or Provider/secret/content fields | Reject the complete response before rendering |
 | Monitoring fetch fails or evidence is stale | Preserve chat/send behavior and show stale/unknown guidance rather than changing routing |
+| One Operations read fails while another succeeds | Render the healthy sections and a source-scoped error/retry; do not replace the page with a global error |
+| A source refresh fails after prior success | Keep the prior source projection, label it as retained data, and keep its retry local |
+| An older source request settles after a retry | Ignore both its success and failure by generation |
+| Monitor query has no matching group | Render `没有匹配的模型监控记录`; do not claim the monitor is unavailable |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: the Worker fans out to configured ledger shards, merges complete aggregate rows, reconciles every breakdown to totals, and returns exact null/unknown values where evidence is incomplete.
+- Good: finance fails while seven-day statistics succeed; Operations keeps the trend usable, labels finance unavailable, and the finance retry sends no monitor or Provider request.
 - Base: a member sees a compact status beside model selection, can still choose a degraded/unavailable route, and receives a safe fallback hint without seeing the physical Provider.
 - Bad: derive totals from a 25-row recent-attempt list, sum per-Provider user turns as if they were attempts, return a partial denominator, expose a Provider ID to a member, or disable sending because passive telemetry says unavailable.
+- Bad: wrap every Operations GET in one `Promise.all`, swallow monitor failure as `undefined`, or retry all sources when only one failed.
 
 ## 6. Tests Required
 
@@ -52,6 +68,7 @@ The admin endpoint requires the existing admin session. The member endpoint requ
 - Worker tests assert admin/member authorization, bounded query errors, exact reconciliation, shard-failure fail-closed behavior, allowed-route projection, privacy redaction, and advisory send behavior.
 - Browser API tests reject unknown keys, invalid counts/rates/buckets, duplicate IDs, and Provider/credential/content leakage.
 - Synthetic Workspace/Operations browser fixtures use no `/api` or Agent calls and cover model status copy, monitoring summary rendering, 1920px/1440px/780px/480px/390px containment, keyboard focus, and local table overflow.
+- Pure frontend tests cover monitor group filtering and the exact attempts/success/failure/in-flight trend summary. Browser request fixtures fail finance and monitoring independently, assert healthy statistics remain visible, and prove each retry increments only its own GET counter.
 
 ## 7. Wrong vs Correct
 
@@ -69,6 +86,9 @@ This truncates the denominator, treats in-flight rows as failures or successes, 
 ```typescript
 const rows = await ledger.getMonitoringAggregate({ periodStart, periodEnd });
 const snapshot = mergeProviderAttemptMonitoringRows(rows, labels, generatedAt, periodStart, periodEnd);
+
+// Browser Operations owner: each read has its own generation and retry.
+await loadSection("modelMonitor", fetchAdminModelMonitor);
 ```
 
 The server merges bounded aggregate rows, keeps terminal semantics explicit, and produces separate privacy-scoped admin/member projections.

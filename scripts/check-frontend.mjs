@@ -211,7 +211,15 @@ assert(reactLogicalModelAdmin.includes("createLogicalModelDraft") && reactLogica
 assert(reactLogicalModelAdmin.includes("hasLogicalModelIdConflict") && reactLogicalModelAdmin.includes("图片能力") && reactLogicalModelAdmin.includes("工具能力"), "React admin: logical-model offering edits need collision guards and capability overrides");
 assert(reactReliabilityAdmin.includes("fetchAdminReliability()") && reactReliabilityAdmin.includes("真实任务被动记录") && !reactReliabilityAdmin.includes("discoverAdminProviderModels"), "React admin: reliability must remain passive and model-call free");
 assert(reactReliabilityAdmin.includes("averageFirstVisibleLatencyMs") && reactReliabilityAdmin.includes("lastStreamShape") && reactReliabilityAdmin.includes("progressiveSamples"), "React admin: truthful first-output and stream-shape evidence is missing");
-assert(reactOperationsAdmin.includes("fetchAdminOperations()") && reactOperationsAdmin.includes("不含消息内容") && !reactOperationsAdmin.includes("chatId}</") && !reactOperationsAdmin.includes("messageId}</"), "React admin: operations must expose only aggregate and metadata views");
+assert(
+  reactOperationsAdmin.includes("fetchAdminOperationsStats")
+    && reactOperationsAdmin.includes("fetchAdminOperationsFinance")
+    && reactOperationsAdmin.includes("fetchAdminModelMonitor")
+    && reactOperationsAdmin.includes("不含消息内容")
+    && !reactOperationsAdmin.includes("chatId}</")
+    && !reactOperationsAdmin.includes("messageId}</"),
+  "React admin: operations must expose only aggregate and metadata views",
+);
 assert(reactOperationsAdmin.includes("operations-user-table-wrap") && reactStyles.includes(".operations-user-table-wrap { max-width: 100%; overflow-x: auto; }"), "React admin: operations member usage needs local table overflow");
 assert(reactOperationsAdmin.includes("OPERATIONS_PAGE_SIZE = 20") && reactOperationsAdmin.includes("paginateOperations") && reactOperationsAdmin.includes("当前显示") && reactOperationsAdmin.includes("重试读取运营数据"), "React admin: operations lists need reachable 20-item pagination with explicit counts and retry state");
 assert(reactCapabilityAdmin.includes("putAdminConfig(config, snapshot.revision)") && reactCapabilityAdmin.includes('error.code === "config_conflict"') && reactCapabilityAdmin.includes("使用服务器版本"), "React admin: capability drafts need revisioned saves and explicit conflict recovery");
