@@ -9,6 +9,7 @@ import {
   resolveMessageActionAvailability,
   resolveComposerQuota,
   resolveConversationAccessPermissions,
+  orderConversationRail,
   restoreRejectedDraft,
   resolveLoadedMemoryDraft,
   resolvePendingDraftAction,
@@ -32,6 +33,27 @@ describe("React client state recovery", () => {
   it("restores a rejected send without overwriting newer input", () => {
     expect(restoreRejectedDraft("", "  original draft  ")).toBe("  original draft  ");
     expect(restoreRejectedDraft("newer input", "original draft")).toBe("newer input");
+  });
+
+  it("orders the conversation rail by pin state then recency without mutating input", () => {
+    const conversations = [
+      { id: "recent-unpinned", pinned: false, updatedAt: 30 },
+      { id: "older-pinned", pinned: true, updatedAt: 10 },
+      { id: "recent-pinned", pinned: true, updatedAt: 20 },
+      { id: "tied-unpinned", pinned: false, updatedAt: 30 },
+    ];
+    expect(orderConversationRail(conversations).map(({ id }) => id)).toEqual([
+      "recent-pinned",
+      "older-pinned",
+      "recent-unpinned",
+      "tied-unpinned",
+    ]);
+    expect(conversations.map(({ id }) => id)).toEqual([
+      "recent-unpinned",
+      "older-pinned",
+      "recent-pinned",
+      "tied-unpinned",
+    ]);
   });
 
   it("blocks only a complete exhausted server quota projection", () => {

@@ -3098,6 +3098,55 @@ describe("Worker API", () => {
     await expect(env.CHAT_STORE.get(legacyMemoryKey)).resolves.toBe("legacy preference");
   });
 
+  it("persists conversation pinning through the Agent projection and rejects stale or malformed writes", async () => {
+    const { cookie } = await login(`agent-pin-${crypto.randomUUID().slice(0, 12)}`);
+    const conversationId = `pin-chat-${crypto.randomUUID()}`;
+    const createdResponse = await apiRequest("/api/agent/conversations", cookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: conversationId, title: "Pinned release work" }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as any;
+
+    const pinnedResponse = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: true, expectedUpdatedAt: created.conversation.updatedAt }),
+    });
+    expect(pinnedResponse.status).toBe(200);
+    const pinned = await pinnedResponse.json() as any;
+    expect(pinned.conversation).toMatchObject({ id: conversationId, pinned: true });
+    expect(pinned.conversation.updatedAt).toBeGreaterThan(created.conversation.updatedAt);
+
+    await expect(apiRequest("/api/agent/conversations", cookie).then((response) => response.json()))
+      .resolves.toMatchObject({ conversations: [expect.objectContaining({ id: conversationId, pinned: true })] });
+
+    const malformed = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: "yes", expectedUpdatedAt: pinned.conversation.updatedAt }),
+    });
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({ error: "invalid_conversation_pin" });
+
+    const stale = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: false, expectedUpdatedAt: created.conversation.updatedAt }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "conversation_conflict" });
+
+    const unpinnedResponse = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: false, expectedUpdatedAt: pinned.conversation.updatedAt }),
+    });
+    expect(unpinnedResponse.status).toBe(200);
+    await expect(unpinnedResponse.json()).resolves.toMatchObject({ conversation: { id: conversationId, pinned: false } });
+  });
+
   it("enforces exact conversation ACL roles across list, share, title, and owner-only paths", async () => {
     const owner = await login(`acl-owner-${crypto.randomUUID().slice(0, 12)}`);
     const collaborator = await login(`acl-collaborator-${crypto.randomUUID().slice(0, 12)}`);
@@ -3225,6 +3274,18 @@ describe("Worker API", () => {
       accessRole: "editor",
       accessRevision: 3,
     });
+
+    const editorPin = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, collaborator.cookie, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resourceId,
+        pinned: true,
+        expectedUpdatedAt: renamed.conversation.updatedAt,
+      }),
+    });
+    expect(editorPin.status).toBe(403);
+    await expect(editorPin.json()).resolves.toMatchObject({ error: "conversation_action_denied" });
 
     const editorSettings = await apiRequest(`/api/agent/conversations/${encodeURIComponent(conversationId)}`, collaborator.cookie, {
       method: "PATCH",

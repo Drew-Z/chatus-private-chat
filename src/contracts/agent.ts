@@ -201,6 +201,7 @@ export type AgentConversationPatch = {
   id: string;
   expectedUpdatedAt: number;
   title?: string;
+  pinned?: boolean;
   routeId?: string;
   skillMode?: ConversationSkillMode;
   skillIds?: string[];

@@ -1627,7 +1627,7 @@ export async function createAgentConversation(input: {
 
 export async function updateAgentConversation(
   conversation: AgentConversation,
-  patch: { title?: string; routeId?: string; skillMode?: ConversationSkillMode; skillIds?: string[] },
+  patch: { title?: string; pinned?: boolean; routeId?: string; skillMode?: ConversationSkillMode; skillIds?: string[] },
 ): Promise<AgentConversation> {
   const data = await requestJson(`/api/agent/conversations/${encodeURIComponent(conversation.id)}`, {
     method: "PATCH",

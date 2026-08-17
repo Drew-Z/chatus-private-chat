@@ -13,12 +13,12 @@ Let members pin important conversations using the existing conversation projecti
 
 ## Acceptance Criteria
 
-- [ ] Members can pin and unpin from keyboard, pointer, and touch with a clear accessible name/state.
-- [ ] Pinned conversations render before unpinned conversations with stable recency ordering.
-- [ ] Successful changes survive reload through the existing projection.
-- [ ] Failed changes roll back or refresh to server truth and expose a retryable error.
-- [ ] In-flight controls prevent duplicate contradictory updates.
-- [ ] Tests cover ordering, success, failure, and accessibility semantics.
+- [x] Members can pin and unpin from keyboard, pointer, and touch with a clear accessible name/state.
+- [x] Pinned conversations render before unpinned conversations with stable recency ordering.
+- [x] Successful changes survive reload through the existing projection.
+- [x] Failed changes roll back or refresh to server truth and expose a retryable error.
+- [x] In-flight controls prevent duplicate contradictory updates.
+- [x] Tests cover ordering, success, failure, and accessibility semantics.
 
 ## Notes
 

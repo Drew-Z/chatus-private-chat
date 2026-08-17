@@ -2150,6 +2150,7 @@ test("viewer and editor receive only their bounded conversation controls", async
   await expect(page.locator(".composer")).toHaveCount(0);
   await expect(page.getByText("查看者权限：可以阅读这段对话，但不能发送消息或修改内容。", { exact: true })).toBeVisible();
   await expect(viewerRow.getByRole("button", { name: "重命名", exact: true })).toHaveCount(0);
+  await expect(viewerRow.getByRole("button", { name: /置顶会话|取消置顶/ })).toHaveCount(0);
   await expect(viewerRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
   await expect(viewerRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
@@ -2166,6 +2167,7 @@ test("viewer and editor receive only their bounded conversation controls", async
   await expect(page.locator(".composer")).toBeVisible();
   await expect(page.getByRole("button", { name: "当前会话不支持附件" })).toBeDisabled();
   await expect(editorRow.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+  await expect(editorRow.getByRole("button", { name: /置顶会话|取消置顶/ })).toHaveCount(0);
   await expect(editorRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
   await expect(editorRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
@@ -2178,6 +2180,42 @@ test("viewer and editor receive only their bounded conversation controls", async
     bodyFits: document.body.scrollWidth <= document.body.clientWidth,
   }));
   expect(containment).toEqual({ documentFits: true, bodyFits: true });
+});
+
+test("conversation rail pin controls preserve order, accessibility state, and duplicate safety", async ({ page }) => {
+  await page.goto("/?pin=rail&drawer=open");
+  const rows = page.locator(".conversation-row");
+  await expect(rows.nth(0)).toContainText("第二个会话");
+  const longRow = rows.filter({ hasText: "整理一个很长很长的项目复盘标题" });
+  const pinButton = longRow.locator("button.conversation-pin");
+  const pinAccessibleButton = longRow.getByRole("button", { name: /置顶会话：整理一个很长很长的项目复盘标题/ });
+  await expect(pinButton).toHaveAttribute("aria-pressed", "false");
+  await pinAccessibleButton.click();
+  await expect(pinButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".conversation-row").first()).toContainText("整理一个很长很长的项目复盘标题");
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "1");
+
+  await page.goto("/?pin=fail&drawer=open");
+  const failedRow = page.locator(".conversation-row").filter({ hasText: "整理一个很长很长的项目复盘标题" });
+  const failedButton = failedRow.locator("button.conversation-pin");
+  await failedButton.click();
+  await expect(failedButton).toBeDisabled();
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "1");
+  await page.evaluate(() => window.dispatchEvent(new Event("chatus:fixture:pin-release")));
+  await expect(page.getByRole("alert")).toContainText("会话置顶保存失败");
+  await expect(failedButton).toBeEnabled();
+  await failedButton.click();
+  await page.evaluate(() => window.dispatchEvent(new Event("chatus:fixture:pin-release")));
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "2");
+
+  await page.goto("/?pin=pending&drawer=open");
+  const pendingRow = page.locator(".conversation-row").filter({ hasText: "整理一个很长很长的项目复盘标题" });
+  const pendingButton = pendingRow.locator("button.conversation-pin");
+  await pendingButton.click();
+  await expect(pendingButton).toBeDisabled();
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "1");
+  await page.evaluate(() => window.dispatchEvent(new Event("chatus:fixture:pin-release")));
+  await expect(pendingButton).toHaveAttribute("aria-pressed", "true");
 });
 
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {

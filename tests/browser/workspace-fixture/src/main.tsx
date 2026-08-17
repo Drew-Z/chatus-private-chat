@@ -782,7 +782,12 @@ function fixtureAttachments(mode: string | null): DraftAttachment[] {
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
   const fixtureAccessRole = readFixtureAccessRole(params.get("acl"));
-  const startingConversations = fixtureAccessRole ? aclConversations : initialConversations;
+  const pinBehavior = params.get("pin");
+  const startingConversations = fixtureAccessRole
+    ? aclConversations
+    : pinBehavior
+      ? initialConversations.map((conversation, index) => index === 1 ? { ...conversation, pinned: true } : conversation)
+      : initialConversations;
   const initialActiveId = fixtureAccessRole
     ? `acl-${fixtureAccessRole}`
     : params.get("branch") === "present"
@@ -815,6 +820,8 @@ function WorkspaceFixture() {
   const [modelAvailabilityRetryCount, setModelAvailabilityRetryCount] = useState(0);
   const [composerUsage, setComposerUsage] = useState(() => readComposerUsageFixture(params.get("quota")));
   const [usageRefreshCount, setUsageRefreshCount] = useState(0);
+  const [pinAttempts, setPinAttempts] = useState(0);
+  const [pinNotice, setPinNotice] = useState("");
   const [operationsFilter, setOperationsFilter] = useState("");
   const [operationsFixtureSnapshot, setOperationsFixtureSnapshot] = useState(operationsSnapshot);
   const [legacySurfaceFixtureDirty, setLegacySurfaceFixtureDirty] = useState(false);
@@ -871,6 +878,23 @@ function WorkspaceFixture() {
   const parentMissing = Boolean(activeConversation?.parentChatId && !parentConversation);
 
   const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
+
+  const handlePinChange = async (conversation: AgentConversation, pinned: boolean) => {
+    setPinAttempts((count) => count + 1);
+    setPinNotice("");
+    if (pinBehavior === "pending" || pinBehavior === "fail") {
+      await new Promise<void>((resolve) => {
+        window.addEventListener("chatus:fixture:pin-release", () => resolve(), { once: true });
+      });
+    }
+    if (pinBehavior === "fail") {
+      setPinNotice("会话置顶保存失败，请重试。");
+      throw new Error("fixture_pin_failed");
+    }
+    setConversations((current) => current.map((item) => item.id === conversation.id
+      ? { ...item, pinned, updatedAt: Date.now() }
+      : item));
+  };
 
   const addAttachments = (files: File[]) => {
     const currentIds = new Set(attachments.map((attachment) => attachment.id));
@@ -1096,6 +1120,7 @@ function WorkspaceFixture() {
           onCreate={async () => undefined}
           onRename={async (conversation, title) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, title } : item))}
           onDelete={async (conversation) => setConversations((current) => current.filter((item) => item.id !== conversation.id))}
+          onPinChange={handlePinChange}
           onAccessChanged={(conversation, accessRevision) => setConversations((current) => current.map((item) => (
             item.id === conversation.id ? { ...item, accessRevision } : item
           )))}
@@ -1134,6 +1159,7 @@ function WorkspaceFixture() {
             onLogout={async () => setLogoutState("pending")}
           />
           <section className="chat-panel" aria-label="对话">
+            {pinNotice && <div className="workspace-error" role="alert"><span>{pinNotice}</span></div>}
             {logoutState === "error" && (
               <MemberLogoutNotice
                 message="合成成员会话撤销失败，请重试。当前工作区和草稿保持不变。"
@@ -1203,6 +1229,7 @@ function WorkspaceFixture() {
                 statusText={turnBusy ? "Agent 正在继续处理" : ""}
               /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
             </div>
+            {pinBehavior && <output data-testid="pin-fixture-state" data-attempts={pinAttempts} data-pinned={String(conversations.find((item) => item.id === "visual-second")?.pinned === true)} />}
           </section>
         </div>
         {inspectorOpen && <button className="inspector-scrim" type="button" onClick={() => setInspectorOpen(false)} aria-label="关闭上下文遮罩" />}

@@ -1510,6 +1510,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const title = patch.title === undefined
       ? current.title
       : normalizeTitle(patch.title) || current.title;
+    const pinned = patch.pinned === undefined ? current.pinned === 1 : patch.pinned;
     const routeId = patch.routeId === undefined
       ? current.route_id
       : boundedString(patch.routeId, 80) || "";
@@ -1522,7 +1523,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const updatedAt = monotonicNow(current.updated_at);
     this.sql`
       UPDATE chatus_conversations
-      SET title = ${title}, route_id = ${routeId}, skill_mode = ${skillMode},
+      SET title = ${title}, pinned = ${pinned ? 1 : 0}, route_id = ${routeId}, skill_mode = ${skillMode},
         skill_ids = ${JSON.stringify(skillIds)}, updated_at = ${updatedAt}
       WHERE id = ${id} AND deleted_at = 0
     `;

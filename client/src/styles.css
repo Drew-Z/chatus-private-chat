@@ -709,6 +709,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .conversation-select span { margin-top: 5px; color: var(--muted); font-size: 11px; }
 .conversation-actions { display: flex; padding-right: 4px; }
 .conversation-actions .icon-button { width: 32px; height: 32px; flex-basis: 32px; color: #718079; }
+.conversation-actions .conversation-pin[aria-pressed="true"] { color: var(--accent-hover); }
 .conversation-actions .icon-button:hover:not(:disabled), .conversation-row:focus-within .conversation-actions .icon-button { color: var(--ink); background: var(--surface-strong); }
 .conversation-row form { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 4px; align-items: center; padding: 6px; }
 .conversation-row form input { min-height: 34px; }

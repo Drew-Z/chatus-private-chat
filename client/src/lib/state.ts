@@ -30,6 +30,25 @@ export function conversationAgentClientName(rootInstance: string, chatId: string
   return JSON.stringify([rootInstance, chatId]);
 }
 
+export function orderConversationRail<T extends {
+  id: string;
+  pinned: boolean;
+  updatedAt: number;
+}>(conversations: readonly T[]): T[] {
+  return conversations
+    .map((conversation, index) => ({ conversation, index }))
+    .sort((left, right) => {
+      if (left.conversation.pinned !== right.conversation.pinned) {
+        return left.conversation.pinned ? -1 : 1;
+      }
+      if (left.conversation.updatedAt !== right.conversation.updatedAt) {
+        return right.conversation.updatedAt - left.conversation.updatedAt;
+      }
+      return left.index - right.index;
+    })
+    .map(({ conversation }) => conversation);
+}
+
 export type ConversationAccessPermissions = {
   canSend: boolean;
   canRename: boolean;

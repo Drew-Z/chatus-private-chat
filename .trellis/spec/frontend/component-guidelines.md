@@ -50,6 +50,75 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Inspector overlay focus behavior uses `(max-width: 1439px)` and sidebar drawer behavior uses `(max-width: 1023px)`. These media queries must move with their CSS breakpoints so initial focus, Tab containment, Escape, and focus restoration remain aligned with visual presentation.
 - Inspector overlays render a dismissible scrim below the panel. Browser coverage loops through `781`, `1024`, `1280`, and `1439` pixels with persisted panel state off/on, asserts unchanged main width, composer containment, no page overflow, focus/Escape behavior, and retained screenshots.
 
+## Scenario: Conversation Rail Pinning
+
+### 1. Scope / Trigger
+
+- Trigger: changing the member conversation rail, conversation summary ordering, or the existing `PATCH /api/agent/conversations/:id` metadata mutation to expose pin/unpin.
+
+### 2. Signatures
+
+```typescript
+type AgentConversationPatch = {
+  id: string;
+  expectedUpdatedAt: number;
+  pinned?: boolean;
+  // existing title/route/Skill fields
+};
+
+orderConversationRail<T extends { id: string; pinned: boolean; updatedAt: number }>(items: readonly T[]): T[]
+```
+
+### 3. Contracts
+
+- `pinned` is an optional boolean in the existing client, Worker, and TeamAgent patch contract. The Worker validates it at the request boundary and treats it as a conversation-settings mutation, which is owner-only under the existing ACL matrix; shared editor/viewer requests are denied without changing storage.
+- TeamAgent preserves all omitted fields, updates the conversation version monotonically, and returns the authoritative conversation projection. The client sends `expectedUpdatedAt` and replaces the local item only with the exact decoded response; it does not optimistically invent a pin state.
+- The rail derives a new array with pinned conversations first, then descending `updatedAt`, then original input position for deterministic ties. The server projection and React state array are never sorted in place.
+- Each pin button is a native button with `aria-pressed`, a 44px touch target at the mobile breakpoint, and an accessible label containing the conversation title. Pin/unpin, rename, share, and delete controls for that row are disabled while its pin request is in flight.
+- One in-flight guard is kept per conversation, so repeated pointer, keyboard, or touch activation cannot submit contradictory updates. Failed mutations leave the previous projection visible and expose the existing retryable workspace error/refresh path.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| `pinned` is missing | Preserve the stored value |
+| `pinned` is not boolean | `400 invalid_conversation_pin`; perform no write |
+| Shared editor/viewer sends pin patch | Existing `conversation_action_denied`; perform no write |
+| `expectedUpdatedAt` is stale | Existing `conversation_conflict`; preserve current server state |
+| Pin response is successful | Replace the row with the returned authoritative projection and re-derive order |
+| Pin response fails or is lost | Keep the prior row, expose a retryable error, and never fabricate pin state |
+| Same row is activated twice while pending | At most one request is sent |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a member pins an older conversation, the row moves ahead of unpinned conversations, reload returns `pinned: true`, and keyboard/touch users can announce and reverse the state.
+- Base: two rows have the same timestamp; their source order remains stable while the pinned group still precedes the unpinned group.
+- Bad: let editor/viewer pin an owner-global preference, sort the canonical server array in place, or toggle optimistically twice before the first versioned response returns.
+
+### 6. Tests Required
+
+- Client API tests assert the boolean request body, `expectedUpdatedAt`, authoritative response replacement, and rejection of an injected extra conversation field.
+- TeamAgent/Worker tests cover pin, unpin, reload projection, stale version, malformed boolean, owner ACL success, and editor/viewer denial without any model or Provider request.
+- Pure state tests cover pinned-first ordering, descending recency, deterministic ties, and non-mutation of the input array.
+- Synthetic Workspace browser coverage asserts accessible names/state, pinned ordering, success, failure/retry, pending duplicate prevention, mobile target semantics, and absence of pin controls for shared roles. The fixture must remain unauthenticated and model-free.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+conversation.pinned = !conversation.pinned;
+conversations.sort((left, right) => Number(right.pinned) - Number(left.pinned));
+```
+
+#### Correct
+
+```typescript
+const updated = await updateAgentConversation(current, { pinned: nextPinned });
+setConversations((items) => items.map((item) => item.id === updated.id ? updated : item));
+const visible = orderConversationRail(conversations);
+```
+
 ## Admin Provider Discovery And Logical Model Offerings
 
 - Keep `routeModelInput` as an ordinary manual text input. A native `datalist` is not an acceptable full-list browser because the browser filters options using the current input value.

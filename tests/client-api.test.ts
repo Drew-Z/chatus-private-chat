@@ -1796,6 +1796,25 @@ describe("React client runtime validation", () => {
       expectedUpdatedAt: 20,
       resourceId: conversation.resourceId,
     });
+
+    const pinned = { ...manual, updatedAt: 22, pinned: true };
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, conversation: pinned }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(updateAgentConversation(manual, { pinned: true })).resolves.toEqual(pinned);
+    expect(JSON.parse(String((fetchSpy.mock.calls[2][1] as RequestInit).body))).toEqual({
+      pinned: true,
+      expectedUpdatedAt: 21,
+      resourceId: conversation.resourceId,
+    });
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: true,
+      conversation: { ...pinned, privateOwner: "must-not-enter-client-state" },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(updateAgentConversation(pinned, { pinned: false }))
+      .rejects.toMatchObject({ code: "invalid_conversation_response", status: 502 });
     fetchSpy.mockRestore();
   });
 

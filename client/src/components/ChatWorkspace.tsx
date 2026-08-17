@@ -350,7 +350,7 @@ export function ChatWorkspace({
       return (exists
         ? current.map((conversation) => conversation.id === updated.id ? updated : conversation)
         : [updated, ...current]
-      ).sort((left, right) => right.updatedAt - left.updatedAt);
+      );
     });
   }, []);
 
@@ -417,6 +417,24 @@ export function ChatWorkspace({
       updateConversationInList(await updateAgentConversation(current, { title }));
     } catch (error) {
       setWorkspaceError(errorMessage(error, "重命名失败，请刷新后重试。"));
+      if (!(await recoverConversationAccess(error, conversation.id)) && error instanceof ApiError && error.code === "conversation_conflict") {
+        await refreshConversations(conversation.id);
+      }
+      throw error;
+    }
+  };
+
+  const pinConversation = async (conversation: AgentConversation, pinned: boolean) => {
+    if (!resolveConversationAccessPermissions(conversation.accessRole).canManageSettings) {
+      throw new Error("当前共享角色不允许修改会话置顶状态。");
+    }
+    setWorkspaceError("");
+    try {
+      await settingsQueues.current.get(conversation.id);
+      const current = conversationSnapshots.current.get(conversation.id) || conversation;
+      updateConversationInList(await updateAgentConversation(current, { pinned }));
+    } catch (error) {
+      setWorkspaceError(errorMessage(error, "会话置顶状态保存失败，请刷新后重试。"));
       if (!(await recoverConversationAccess(error, conversation.id)) && error instanceof ApiError && error.code === "conversation_conflict") {
         await refreshConversations(conversation.id);
       }
@@ -604,6 +622,7 @@ export function ChatWorkspace({
           onCreate={createConversation}
           onRename={renameConversation}
           onDelete={removeConversation}
+          onPinChange={pinConversation}
           onAccessChanged={(conversation, accessRevision) => {
             updateConversationInList({ ...conversation, accessRevision });
             void refreshAfterAccessChange(conversation.id);
