@@ -48,12 +48,14 @@ function createConfig(): AdminConfig {
 describe("typed capability administration helpers", () => {
   it("renames and deletes Skills while repairing every explicit assignment", () => {
     const source = createConfig();
+    source.skills.coding = { ...source.skills.coding, activation: "explicit_turn", origin: "chatus" };
     const draft = { ...createSkillDraft(source.skills.coding, "coding-v2"), label: "Coding V2" };
     expect(validateSkillDraft(draft, source, "coding")).toEqual({ ok: true });
 
     const renamed = applySkillDraft(source, "coding", draft);
     expect(renamed.skills.coding).toBeUndefined();
     expect(renamed.skills["coding-v2"].label).toBe("Coding V2");
+    expect(renamed.skills["coding-v2"]).toMatchObject({ activation: "explicit_turn", origin: "chatus" });
     expect(renamed.defaults.allowedSkills).toEqual(["coding-v2"]);
     expect(renamed.users.bill.allowedSkills).toEqual(["coding-v2", "writing"]);
     expect(renamed.users.alice.allowedSkills).toEqual(["coding-v2"]);
@@ -73,6 +75,7 @@ describe("typed capability administration helpers", () => {
 
   it("updates tool policy without replacing schema or executor", () => {
     const config = createConfig();
+    config.tools["mcp:docs:search"] = { ...config.tools["mcp:docs:search"], capabilityRole: "web_search" };
     const original = config.tools["mcp:docs:search"];
     const draft = { ...createToolPolicyDraft(original), enabled: false, label: "Docs search" };
     expect(validateToolPolicyDraft(original, draft)).toEqual({ ok: true });
@@ -83,6 +86,7 @@ describe("typed capability administration helpers", () => {
       executor: original.executor,
       inputSchema: original.inputSchema,
       schemaFingerprint: original.schemaFingerprint,
+      capabilityRole: "web_search",
     });
   });
 

@@ -14,6 +14,18 @@ import type {
   AgentSkillSelectionMetadata,
   ConversationSkillMode,
 } from "../../../src/contracts/agent";
+import type {
+  AdminCapabilityCatalogSnapshotV1,
+  AdminCapabilityPackItemStatus,
+  CapabilityActivation,
+  CapabilityAugmentation,
+  CapabilityAvailability,
+  CapabilityOrigin,
+  CapabilityUnavailableReason,
+  PublicCapabilityDisclosureV1,
+  PublicCapabilityV1,
+  SkillActivation,
+} from "../../../src/contracts/capability";
 import { normalizeAgentRequestId } from "../../../src/contracts/agent-error";
 import type {
   MemberModelAvailabilityV1,
@@ -98,6 +110,7 @@ export type SessionProjection = {
     feedback: boolean;
     accountData: boolean;
   };
+  availableCapabilities: PublicCapabilityV1[];
   skills: SkillProjection[];
   tools: ToolProjection[];
   mcpConnections: McpOAuthConnection[];
@@ -121,6 +134,7 @@ export type AdminUserConfig = {
   allowedRoutes?: string[];
   allowedSkills?: string[];
   allowedTools?: string[];
+  allowedAugmentations?: CapabilityAugmentation[];
   allowBringYourOwnKey?: boolean;
   dailyMessageLimit?: number;
   minuteMessageLimit?: number;
@@ -699,6 +713,8 @@ export type AdminSkillConfig = {
   instructions: string;
   toolIds: string[];
   order?: number;
+  activation?: SkillActivation;
+  origin?: CapabilityOrigin;
   [key: string]: unknown;
 };
 
@@ -716,6 +732,7 @@ export type AdminToolConfig = {
   sideEffect?: "read" | "write" | "destructive";
   reviewRevision?: string;
   reviewRequired?: boolean;
+  capabilityRole?: "web_search";
   [key: string]: unknown;
 };
 
@@ -735,6 +752,17 @@ export type AdminConfigSnapshot = {
   config: AdminConfig;
   source: "kv" | "secret" | "default";
   revision: string;
+};
+
+export type AdminCapabilityCatalogSnapshot = AdminCapabilityCatalogSnapshotV1;
+
+export type AdminCapabilityPackInstallResponse = {
+  ok: true;
+  config: AdminConfig;
+  source: "kv";
+  revision: string;
+  installed: string[];
+  skipped: string[];
 };
 
 export type AdminLegacyRouteMigrationStatus = {
@@ -1001,6 +1029,29 @@ export async function fetchAdminConfig(): Promise<AdminConfigSnapshot> {
   const data = await requestJson("/api/admin/config");
   if (!isAdminConfigSnapshot(data)) {
     throw new ApiError("invalid_admin_config_response", "管理配置格式无效。", 502);
+  }
+  return data;
+}
+
+export async function fetchAdminCapabilityCatalog(): Promise<AdminCapabilityCatalogSnapshot> {
+  const data = await requestJson("/api/admin/capability-packs");
+  if (!isAdminCapabilityCatalogSnapshot(data)) {
+    throw new ApiError("invalid_admin_capability_catalog_response", "能力目录格式无效。", 502);
+  }
+  return data;
+}
+
+export async function installAdminCapabilityPack(
+  packId: string,
+  itemIds: string[],
+  expectedRevision: string,
+): Promise<AdminCapabilityPackInstallResponse> {
+  const data = await requestJson("/api/admin/capability-packs/install", {
+    method: "POST",
+    body: JSON.stringify({ packId, itemIds, expectedRevision }),
+  });
+  if (!isAdminCapabilityPackInstallResponse(data, itemIds)) {
+    throw new ApiError("invalid_admin_capability_install_response", "能力目录安装结果格式无效。", 502);
   }
   return data;
 }
@@ -1840,10 +1891,12 @@ export function isSessionProjection(value: unknown): value is SessionProjection 
   if (!isImageInputPolicy(value.imageInput)) return false;
   if (!isFileInputPolicy(value.fileInput)) return false;
   if (!Array.isArray(value.routes) || !value.routes.every(isRouteProjection)) return false;
+  if (!Array.isArray(value.availableCapabilities) || !value.availableCapabilities.every(isPublicCapability)) return false;
   if (!Array.isArray(value.skills) || !value.skills.every(isSkillProjection)) return false;
   if (!Array.isArray(value.tools) || !value.tools.every(isToolProjection)) return false;
   if (!Array.isArray(value.mcpConnections) || !value.mcpConnections.every(isMcpOAuthConnection)) return false;
   const routeIds = value.routes.map((route) => route.id);
+  const capabilityIds = value.availableCapabilities.map((capability) => capability.id);
   const skillIds = value.skills.map((skill) => skill.id);
   const toolIds = value.tools.map((tool) => tool.id);
   if (!((value.access === "guest" || value.access === "member")
@@ -1854,6 +1907,7 @@ export function isSessionProjection(value: unknown): value is SessionProjection 
     && typeof value.hasUserSystemPrompt === "boolean"
     && ((routeIds.length === 0 && value.defaultRoute === "") || routeIds.includes(value.defaultRoute))
     && new Set(routeIds).size === routeIds.length
+    && new Set(capabilityIds).size === capabilityIds.length
     && new Set(skillIds).size === skillIds.length
     && new Set(toolIds).size === toolIds.length
     && new Set(value.mcpConnections.map((connection) => connection.serverId)).size === value.mcpConnections.length
@@ -1883,6 +1937,7 @@ function isGuestSessionProjection(value: SessionProjection, routeIds: string[]):
   const imageInputAllowed = value.routes.some((route) => route.supportsImages);
   return value.allowBringYourOwnKey === false
     && value.hasUserSystemPrompt === false
+    && value.availableCapabilities.length === 0
     && value.skills.length === 0
     && value.tools.length === 0
     && value.mcpConnections.length === 0
@@ -1902,6 +1957,165 @@ export function isAdminConfigSnapshot(value: unknown): value is AdminConfigSnaps
     && isAdminConfig(value.config)
     && (value.source === "kv" || value.source === "secret" || value.source === "default")
     && isNonEmptyString(value.revision);
+}
+
+export function isAdminCapabilityCatalogSnapshot(value: unknown): value is AdminCapabilityCatalogSnapshot {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["version", "packs"])
+    || value.version !== 1
+    || !Array.isArray(value.packs)
+    || value.packs.length < 1
+    || value.packs.length > 20
+    || !value.packs.every(isAdminCapabilityPack)) {
+    return false;
+  }
+  const packs = value.packs as AdminCapabilityCatalogSnapshot["packs"];
+  const packIds = packs.map((pack) => pack.id);
+  const itemIds = packs.flatMap((pack) => pack.items.map((item) => item.id));
+  return new Set(packIds).size === packIds.length && new Set(itemIds).size === itemIds.length;
+}
+
+export function isAdminCapabilityPackInstallResponse(
+  value: unknown,
+  requestedIds?: string[],
+): value is AdminCapabilityPackInstallResponse {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["ok", "config", "source", "revision", "installed", "skipped"])
+    || value.ok !== true
+    || value.source !== "kv"
+    || !isAdminConfig(value.config)
+    || !isNonEmptyString(value.revision)
+    || !isUniqueCapabilityIdArray(value.installed, 80, 50)
+    || !isUniqueCapabilityIdArray(value.skipped, 80, 50)) {
+    return false;
+  }
+  const installed = value.installed as string[];
+  const skipped = value.skipped as string[];
+  if (installed.some((id) => skipped.includes(id))) return false;
+  if (requestedIds === undefined) return true;
+  return isUniqueCapabilityIdArray(requestedIds, 80, 50)
+    && requestedIds.every((id) => installed.includes(id) || skipped.includes(id))
+    && [...installed, ...skipped].every((id) => requestedIds.includes(id));
+}
+
+function isPublicCapability(value: unknown): value is PublicCapabilityV1 {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      "id",
+      "label",
+      "description",
+      "source",
+      "activation",
+      "availability",
+      "disclosure",
+      "unavailableReason",
+    ])
+    || !isCapabilityId(value.id, 80)
+    || !isBoundedText(value.label, 80, false)
+    || !isBoundedText(value.description, 500, true)
+    || !isCapabilityOrigin(value.source)
+    || !isCapabilityActivation(value.activation)
+    || !isCapabilityAvailability(value.availability)
+    || !isPublicCapabilityDisclosure(value.disclosure)
+    || (value.unavailableReason !== undefined && !isCapabilityUnavailableReason(value.unavailableReason))) {
+    return false;
+  }
+  return value.availability === "unavailable" || value.availability === "requires_setup"
+    ? value.unavailableReason !== undefined
+    : value.unavailableReason === undefined;
+}
+
+function isAdminCapabilityPack(value: unknown): boolean {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["id", "version", "label", "description", "items"])
+    || !isCapabilityId(value.id, 80)
+    || !isPositiveInteger(value.version)
+    || !isBoundedText(value.label, 80, false)
+    || !isBoundedText(value.description, 500, false)
+    || !Array.isArray(value.items)
+    || value.items.length < 1
+    || value.items.length > 50
+    || !value.items.every(isAdminCapabilityPackItem)) {
+    return false;
+  }
+  const ids = (value.items as Array<{ id: string }>).map((item) => item.id);
+  return new Set(ids).size === ids.length;
+}
+
+function isAdminCapabilityPackItem(value: unknown): boolean {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
+      "id",
+      "label",
+      "description",
+      "source",
+      "activation",
+      "status",
+      "installable",
+      "disclosure",
+    ])
+    || !isCapabilityId(value.id, 80)
+    || !isBoundedText(value.label, 80, false)
+    || !isBoundedText(value.description, 500, false)
+    || value.source !== "chatus"
+    || !isCapabilityActivation(value.activation)
+    || !isAdminCapabilityPackItemStatus(value.status)
+    || typeof value.installable !== "boolean"
+    || !isPublicCapabilityDisclosure(value.disclosure)) {
+    return false;
+  }
+  return value.installable === (value.status === "missing");
+}
+
+function isPublicCapabilityDisclosure(value: unknown): value is PublicCapabilityDisclosureV1 {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["execution", "externalRequest", "dataClasses", "latency", "cost"])
+    || (value.execution !== "instructions"
+      && value.execution !== "trusted_local"
+      && value.execution !== "auxiliary_provider"
+      && value.execution !== "reviewed_mcp")
+    || typeof value.externalRequest !== "boolean"
+    || !Array.isArray(value.dataClasses)
+    || value.dataClasses.length < 1
+    || value.dataClasses.length > 3
+    || !value.dataClasses.every((item) => item === "prompt_text" || item === "search_query" || item === "image")
+    || new Set(value.dataClasses).size !== value.dataClasses.length
+    || (value.latency !== "none" && value.latency !== "small" && value.latency !== "variable")
+    || (value.cost !== "none" && value.cost !== "provider_request" && value.cost !== "external_service")) {
+    return false;
+  }
+  return value.externalRequest
+    ? (value.execution === "auxiliary_provider" || value.execution === "reviewed_mcp") && value.cost !== "none"
+    : (value.execution === "instructions" || value.execution === "trusted_local") && value.cost === "none";
+}
+
+function isCapabilityOrigin(value: unknown): value is CapabilityOrigin {
+  return value === "chatus" || value === "administrator";
+}
+
+function isCapabilityActivation(value: unknown): value is CapabilityActivation {
+  return value === "workflow" || value === "explicit_turn" || value === "route_augmentation";
+}
+
+function isCapabilityAvailability(value: unknown): value is CapabilityAvailability {
+  return value === "available" || value === "unavailable" || value === "requires_setup" || value === "disabled";
+}
+
+function isCapabilityUnavailableReason(value: unknown): value is CapabilityUnavailableReason {
+  return value === "not_assigned"
+    || value === "route_incompatible"
+    || value === "helper_unavailable"
+    || value === "tool_unavailable"
+    || value === "review_required"
+    || value === "connection_required";
+}
+
+function isAdminCapabilityPackItemStatus(value: unknown): value is AdminCapabilityPackItemStatus {
+  return value === "installed"
+    || value === "missing"
+    || value === "disabled"
+    || value === "conflict"
+    || value === "requires_setup";
 }
 
 export function isAdminLegacyRouteMigrationResponse(value: unknown): value is AdminLegacyRouteMigrationResponse {
@@ -2867,6 +3081,7 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
     || assignment.allowedRoutes?.some((id) => !routeIds.has(id))
     || assignment.allowedSkills?.some((id) => !skillIds.has(id))
     || assignment.allowedTools?.some((id) => !toolIds.has(id))
+    || assignment.allowedAugmentations?.some((id) => id !== "vision_assist")
   ))) return false;
   if (!Object.values(skills).every((skill) => skill.toolIds.every((id) => toolIds.has(id)))) return false;
   return Object.entries(tools).every(([id, tool]) => (
@@ -3343,6 +3558,12 @@ function isAdminUserConfig(value: unknown): value is AdminUserConfig {
     && (value.allowedRoutes === undefined || isUniqueStringIdArray(value.allowedRoutes))
     && (value.allowedSkills === undefined || isUniqueStringIdArray(value.allowedSkills))
     && (value.allowedTools === undefined || isUniqueStringIdArray(value.allowedTools))
+    && (value.allowedAugmentations === undefined || (
+      Array.isArray(value.allowedAugmentations)
+      && value.allowedAugmentations.length <= 1
+      && value.allowedAugmentations.every((item) => item === "vision_assist")
+      && new Set(value.allowedAugmentations).size === value.allowedAugmentations.length
+    ))
     && (value.allowBringYourOwnKey === undefined || typeof value.allowBringYourOwnKey === "boolean")
     && (value.dailyMessageLimit === undefined || isPositiveInteger(value.dailyMessageLimit))
     && (value.minuteMessageLimit === undefined || isPositiveInteger(value.minuteMessageLimit))
@@ -3771,13 +3992,15 @@ function hasValidAdminStreamEvidence(value: Record<string, unknown>, successes: 
 
 function isAdminSkillConfig(value: unknown): value is AdminSkillConfig {
   return isRecord(value)
-    && hasOnlyKeys(value, ["enabled", "label", "description", "instructions", "toolIds", "order"])
+    && hasOnlyKeys(value, ["enabled", "label", "description", "instructions", "toolIds", "order", "activation", "origin"])
     && typeof value.enabled === "boolean"
     && isBoundedText(value.label, 80, false)
     && (value.description === undefined || isBoundedText(value.description, 500, true))
     && isBoundedText(value.instructions, 8_000, false)
     && isUniqueCapabilityIdArray(value.toolIds, 160, 200)
-    && (value.order === undefined || (typeof value.order === "number" && Number.isInteger(value.order) && value.order >= -10_000 && value.order <= 10_000));
+    && (value.order === undefined || (typeof value.order === "number" && Number.isInteger(value.order) && value.order >= -10_000 && value.order <= 10_000))
+    && (value.activation === undefined || value.activation === "automatic" || value.activation === "explicit_turn")
+    && (value.origin === undefined || value.origin === "chatus" || value.origin === "administrator");
 }
 
 function isAdminToolConfig(value: unknown): value is AdminToolConfig {
@@ -3794,6 +4017,7 @@ function isAdminToolConfig(value: unknown): value is AdminToolConfig {
       "sideEffect",
       "reviewRevision",
       "reviewRequired",
+      "capabilityRole",
     ])
     || typeof value.enabled !== "boolean"
     || !isBoundedText(value.label, 80, false)
@@ -3815,9 +4039,11 @@ function isAdminToolConfig(value: unknown): value is AdminToolConfig {
     || (value.reviewRequired !== undefined && typeof value.reviewRequired !== "boolean")) {
     return false;
   }
+  if (value.capabilityRole !== undefined && value.capabilityRole !== "web_search") return false;
   if (value.executor.type === "builtin") {
     return hasExactKeys(value.executor, ["type", "name"])
       && value.executor.name === "text_stats"
+      && value.capabilityRole === undefined
       && (value.confirmation === "auto" || value.confirmation === "always")
       && value.schemaFingerprint === undefined
       && value.securityFingerprint === undefined

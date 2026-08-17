@@ -1,0 +1,32 @@
+{
+  "id": "chatus-default-capability-packs",
+  "name": "chatus-default-capability-packs",
+  "title": "Chatus default capability packs",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": "default member capability catalog, model capability augmentation, reviewed web/vision tools, UX, telemetry, and fixture-only validation; excludes production deployment, PR #93, production observation, and legacy rollout work",
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": null,
+  "branch": "codex/chatus-default-capability-packs",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-17-chatus-capability-catalog-adoption",
+    "08-17-chatus-auxiliary-vision",
+    "08-17-chatus-web-research",
+    "08-17-chatus-capability-experience-monitoring",
+    "08-17-chatus-capability-integration-hardening"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

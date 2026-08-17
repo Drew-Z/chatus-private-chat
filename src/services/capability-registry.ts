@@ -2,6 +2,8 @@ import type {
   CapabilityAssignment,
   CapabilityRegistryConfig,
   NormalizedToolDefinition,
+  PublicCapabilityDisclosureV1,
+  PublicCapabilityV1,
   PublicSkill,
   PublicTool,
   SelectedSkill,
@@ -17,7 +19,7 @@ type CapabilityFingerprint = (value: string) => Promise<string>;
 export function getPublicCapabilities(
   config: CapabilityRegistryConfig,
   assignment: CapabilityAssignment,
-): { skills: PublicSkill[]; tools: PublicTool[] } {
+): { capabilities: PublicCapabilityV1[]; skills: PublicSkill[]; tools: PublicTool[] } {
   const allowedSkillIds = getAllowedSkillIds(assignment);
   const allowedToolIds = new Set(assignment.allowedTools || []);
   const tools = Object.entries(config.tools || {})
@@ -37,7 +39,11 @@ export function getPublicCapabilities(
 
   const publicToolIds = new Set(tools.map((tool) => tool.id));
   const skills = Object.entries(config.skills || {})
-    .filter(([id, skill]) => skill.enabled === true && (!allowedSkillIds || allowedSkillIds.has(id)))
+    .filter(([id, skill]) => (
+      skill.enabled === true
+      && skill.activation !== "explicit_turn"
+      && (!allowedSkillIds || allowedSkillIds.has(id))
+    ))
     .sort(([leftId, left], [rightId, right]) => (
       (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId)
     ))
@@ -48,7 +54,48 @@ export function getPublicCapabilities(
       toolIds: (skill.toolIds || []).filter((toolId) => publicToolIds.has(toolId)),
     }));
 
-  return { skills, tools };
+  const capabilities = Object.entries(config.skills || {})
+    .filter(([id, skill]) => skill.enabled === true && (!allowedSkillIds || allowedSkillIds.has(id)))
+    .sort(([leftId, left], [rightId, right]) => (
+      (left.order || 0) - (right.order || 0) || compareStableText(leftId, rightId)
+    ))
+    .map(([id, skill]): PublicCapabilityV1 => {
+      const referencedTools = (skill.toolIds || [])
+        .map((toolId) => config.tools?.[toolId])
+        .filter((tool): tool is ToolConfig => Boolean(tool));
+      const executable = (skill.toolIds || []).every((toolId) => publicToolIds.has(toolId));
+      return {
+        id,
+        label: skill.label,
+        description: skill.description || "",
+        source: skill.origin || "administrator",
+        activation: skill.activation === "explicit_turn" ? "explicit_turn" : "workflow",
+        availability: executable ? "available" : "unavailable",
+        disclosure: capabilityDisclosure(referencedTools),
+        ...(executable ? {} : { unavailableReason: "tool_unavailable" as const }),
+      };
+    });
+
+  if (assignment.allowedAugmentations?.includes("vision_assist")) {
+    capabilities.push({
+      id: "chatus:vision_assist",
+      label: "视觉辅助",
+      description: "通过管理员选择的原生视觉线路为文本模型生成受限图像证据。",
+      source: "chatus",
+      activation: "route_augmentation",
+      availability: "requires_setup",
+      unavailableReason: "helper_unavailable",
+      disclosure: {
+        execution: "auxiliary_provider",
+        externalRequest: true,
+        dataClasses: ["image"],
+        latency: "variable",
+        cost: "provider_request",
+      },
+    });
+  }
+
+  return { capabilities, skills, tools };
 }
 
 export function getSelectedSkills(
@@ -62,6 +109,7 @@ export function getSelectedSkills(
     .filter(([id, skill]) => (
       requested.has(id)
       && skill.enabled === true
+      && skill.activation !== "explicit_turn"
       && (!allowedSkillIds || allowedSkillIds.has(id))
     ))
     .sort(([leftId, left], [rightId, right]) => (
@@ -141,4 +189,23 @@ function normalizeCapabilityId(value: unknown, maxChars: number): string {
   if (typeof value !== "string") return "";
   const id = value.trim();
   return id.length > 0 && id.length <= maxChars && CAPABILITY_ID_PATTERN.test(id) ? id : "";
+}
+
+function capabilityDisclosure(tools: ToolConfig[]): PublicCapabilityDisclosureV1 {
+  const hasMcp = tools.some((tool) => tool.executor.type === "mcp");
+  const hasBuiltin = tools.some((tool) => tool.executor.type === "builtin");
+  const hasWebSearch = tools.some((tool) => tool.capabilityRole === "web_search");
+  return {
+    execution: hasMcp ? "reviewed_mcp" : hasBuiltin ? "trusted_local" : "instructions",
+    externalRequest: hasMcp,
+    dataClasses: hasWebSearch ? ["search_query"] : ["prompt_text"],
+    latency: hasMcp ? "variable" : hasBuiltin ? "small" : "none",
+    cost: hasMcp ? "external_service" : "none",
+  };
+}
+
+function compareStableText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }

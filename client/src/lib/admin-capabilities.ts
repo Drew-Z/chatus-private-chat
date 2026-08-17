@@ -22,6 +22,8 @@ export type SkillDraft = {
   instructions: string;
   toolIds: string[];
   order: number;
+  activation?: AdminSkillConfig["activation"];
+  origin?: AdminSkillConfig["origin"];
 };
 
 export type ToolPolicyDraft = {
@@ -77,6 +79,8 @@ export function createSkillDraft(skill: AdminSkillConfig | undefined, id: string
     instructions: skill?.instructions || "",
     toolIds: [...(skill?.toolIds || [])],
     order: skill?.order ?? 0,
+    activation: skill?.activation,
+    origin: skill?.origin,
   };
 }
 
@@ -167,6 +171,8 @@ export function applySkillDraft(config: AdminConfig, previousId: string | null, 
     instructions: draft.instructions.trim(),
     toolIds: unique(draft.toolIds),
     order: draft.order,
+    ...(draft.activation ? { activation: draft.activation } : {}),
+    ...(draft.origin ? { origin: draft.origin } : {}),
   };
   if (!previousId || previousId === draft.id) return { ...config, skills };
   return replaceAssignmentReference({ ...config, skills }, "allowedSkills", previousId, draft.id);
@@ -319,12 +325,20 @@ function rebaseRegistry<T>(latest: Record<string, T>, local: Record<string, T>, 
   return next;
 }
 
-function rebaseAssignment<T extends { allowedSkills?: string[]; allowedTools?: string[] }>(latest: T, local: T, base: T): T {
+function rebaseAssignment<T extends {
+  allowedSkills?: string[];
+  allowedTools?: string[];
+  allowedAugmentations?: Array<"vision_assist">;
+}>(latest: T, local: T, base: T): T {
   const next = { ...latest };
   for (const field of ["allowedSkills", "allowedTools"] as const) {
     if (sameValue(base[field], local[field])) continue;
     if (local[field] === undefined) delete next[field];
     else next[field] = [...local[field]];
+  }
+  if (!sameValue(base.allowedAugmentations, local.allowedAugmentations)) {
+    if (local.allowedAugmentations === undefined) delete next.allowedAugmentations;
+    else next.allowedAugmentations = [...local.allowedAugmentations];
   }
   return next;
 }

@@ -71,6 +71,8 @@ describe("typed admin capability assignment", () => {
     expect(draft.allowedSkills).toEqual(["coding"]);
     expect(draft.inheritTools).toBe(true);
     expect(draft.allowedTools).toEqual(["builtin:text_stats"]);
+    expect(draft.inheritAugmentations).toBe(true);
+    expect(draft.allowedAugmentations).toEqual([]);
     expect(draft.inheritRoutes).toBe(true);
     expect(draft.allowedRoutes).toEqual(["primary", "secondary"]);
     expect(draft.routeSelectionMode).toBe("selected");
@@ -93,9 +95,12 @@ describe("typed admin capability assignment", () => {
       inheritSkills: false,
       allowedSkills: [],
       inheritTools: true,
+      inheritAugmentations: false,
+      allowedAugmentations: [],
     });
     expect(next.users.bill).toMatchObject({ displayName: "Bill", timezone: "Asia/Shanghai", allowedSkills: [] });
     expect(next.users.bill.allowedTools).toBeUndefined();
+    expect(next.users.bill.allowedAugmentations).toEqual([]);
     expect(next.providers.shared).toEqual(config.providers.shared);
     expect(next.routes).toEqual(config.routes);
     expect(next.users.bill.defaultRoute).toBe("primary");
@@ -103,6 +108,24 @@ describe("typed admin capability assignment", () => {
     expect(next.users.bill.enabled).toBeUndefined();
     expect(next.users.bill.dailyMessageLimit).toBeUndefined();
     expect(next.users.bill.minuteMessageLimit).toBeUndefined();
+  });
+
+  it("inherits, denies, and rebases vision augmentation independently", () => {
+    const config = configFixture();
+    config.defaults.allowedAugmentations = ["vision_assist"];
+    const inherited = createCapabilityAssignmentDraft(config, "bill");
+    expect(inherited.inheritAugmentations).toBe(true);
+    expect(inherited.allowedAugmentations).toEqual(["vision_assist"]);
+    expect(applyCapabilityAssignmentDraft(config, "bill", inherited).users.bill.allowedAugmentations).toBeUndefined();
+
+    const denied = { ...inherited, inheritAugmentations: false, allowedAugmentations: [] as [] };
+    expect(applyCapabilityAssignmentDraft(config, "bill", denied).users.bill.allowedAugmentations).toEqual([]);
+
+    const latest = configFixture();
+    latest.defaults.allowedAugmentations = [];
+    const rebased = rebaseCapabilityAssignmentDraft(latest, "bill", inherited);
+    expect(rebased.inheritAugmentations).toBe(true);
+    expect(rebased.allowedAugmentations).toEqual([]);
   });
 
   it("writes member status and quotas atomically while preserving unrelated fields", () => {

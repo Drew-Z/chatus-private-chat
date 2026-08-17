@@ -125,6 +125,147 @@ const selectedSkills = getSelectedSkills(reloadedConfig, attempt.skillIds, reloa
 
 The root conversation is authoritative, logical fallback is excluded, the hard boundary rejects late results, and current assignment is enforced immediately before execution.
 
+## Scenario: Code-owned Capability Catalog And Safe Adoption
+
+### 1. Scope / Trigger
+
+- Trigger: changing built-in workflow Skills, capability activation/origin/disclosure,
+  augmentation assignment, the administrator Catalog, or capability-pack adoption.
+- This contract spans the code-owned catalog service, configuration defaults and
+  normalization, revisioned Worker APIs, exact browser decoders, member projection,
+  Skill selection, and the typed administrator workspace.
+
+### 2. Signatures
+
+```text
+GET  /api/admin/capability-packs
+  -> { version: 1, packs: AdminCapabilityPackV1[] }
+
+POST /api/admin/capability-packs/install
+  <- { packId: string, itemIds: string[], expectedRevision: string }
+  -> { ok: true, config: SanitizedAdminConfig, source: "kv",
+       revision: string, installed: string[], skipped: string[] }
+
+GET /api/session
+  -> { availableCapabilities: PublicCapabilityV1[], skills, tools, ... }
+```
+
+```typescript
+type SkillActivation = "automatic" | "explicit_turn";
+type CapabilityOrigin = "chatus" | "administrator";
+type CapabilityAugmentation = "vision_assist";
+
+type CapabilityAssignment = {
+  allowedSkills?: string[];
+  allowedTools?: string[];
+  allowedAugmentations?: CapabilityAugmentation[];
+};
+```
+
+### 3. Contracts
+
+- Catalog version 1 owns exactly five instruction-only workflow Skills:
+  `chatus:writing`, `chatus:summarize`, `chatus:translate`,
+  `chatus:code_explanation`, and `chatus:structured_output`. Their canonical
+  instructions live only in the server catalog; the browser receives labels,
+  descriptions, status, activation, source, and disclosure.
+- `getDefaultAppConfig()` seeds the five Skills and the explicit default
+  `allowedSkills` list only for a truly unconfigured instance.
+  `normalizeAppConfig()` never injects catalog items or assignments into KV or
+  deployment-Secret configurations.
+- Existing custom Skills keep omission-compatible automatic behavior.
+  `activation: "explicit_turn"` Skills may be projected as capabilities, but
+  ordinary/manual Skill lists, automatic selection, and selected prompt
+  composition exclude them. The automatic selector still applies at most three
+  workflow Skills.
+- `allowedAugmentations === undefined` inherits through the effective-user merge;
+  default omission grants none. An explicit empty array is deny-all. Guests always
+  receive no Skills, tools, augmentations, or `availableCapabilities`.
+- `availableCapabilities` is derived after assignment, enabled-state, and tool
+  readiness filtering. Instructions and credentials are never projected. Until
+  the auxiliary helper exists, assigned `vision_assist` projects exactly as
+  `route_augmentation`, `requires_setup`, and `helper_unavailable`.
+- Install accepts one known bounded pack and unique known workflow IDs, acquires
+  the shared admin-config mutation lease, reloads the editable config, and checks
+  `expectedRevision` before classification. A different definition at any chosen
+  ID is a collision for the complete request.
+- A successful install preserves unrelated configuration, appends new IDs to an
+  existing explicit default allow-list, validates the merged config, performs one
+  KV config write, and audits only `capability-pack.install` plus pack ID/item
+  count. It never installs an endpoint, MCP server, credential, or auxiliary
+  Provider helper.
+- The React Catalog uses the server projection and exact decoders. A revision
+  conflict refreshes the authoritative config while retaining the selected item
+  IDs for retry; the explicit server-version action clears that local selection.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Missing/extra request fields or blank revision | `400 invalid_capability_pack_request` or `expected_config_revision_required`; zero writes |
+| Unknown pack | `404 capability_pack_not_found`; zero writes |
+| Empty, duplicate, unknown, over-bounded, or malformed item IDs | `400 invalid_capability_pack_items`; zero config/audit writes |
+| Stale revision | `409 config_conflict` with current revision; retain browser selection |
+| Any selected ID contains another definition | `409 capability_pack_collision` with bounded IDs; zero config/audit writes |
+| Catalog/session/install payload has unknown fields, duplicate IDs, invalid enum/bounds, or inconsistent availability/reason | Exact browser decoder rejects the complete response |
+| `web_search` role appears on a builtin tool | `400 invalid_config`; only reviewed MCP tools may own that role |
+| Guest or explicit deny-all assignment | Project no available capability |
+
+### 5. Good/Base/Bad Cases
+
+- Good: an unconfigured instance exposes the five default workflows; a stored KV
+  instance remains unchanged until an administrator previews and installs two
+  selected IDs at the current revision.
+- Base: an installed canonical workflow is reported as installed or disabled and
+  remains an ordinary administrator-managed Skill; it is never silently replaced
+  or deleted when the catalog changes.
+- Bad: normalize every stored config through a default-seeding helper, copy
+  canonical instructions into React, silently overwrite a same-ID custom Skill,
+  or treat an explicit empty augmentation list as inheritance.
+
+### 6. Tests Required
+
+- Catalog service tests assert the exact five definitions, immutable clone
+  behavior, stable status classification, setup-only references, and no endpoints
+  or credentials.
+- Registry tests assert custom-Skill compatibility, explicit-turn exclusion,
+  assignment inheritance/deny-all, executable readiness, augmentation projection,
+  and the three-Skill ceiling.
+- Worker tests cover default versus Secret/KV injection, authenticated preview,
+  unknown/duplicate IDs, stale revision, collision zero-write behavior, successful
+  assignment/audit redaction, guest denial, and legacy MCP round-trip. No test may
+  call a live Provider, OAuth issuer, discovery endpoint, or MCP server.
+- Browser API tests accept only exact bounded catalog, install, public capability,
+  and admin config projections and reject duplicate IDs, unknown keys, invalid
+  enums, invalid reason combinations, and secret-like extras.
+- Workspace Playwright uses synthetic data at desktop 1440 and touch 390px to
+  prove source/status disclosure, conflict selection retention, retry install,
+  keyboard-reachable controls, and no horizontal overflow.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const config = normalizeAppConfig(storedValue ?? getDefaultAppConfig(env));
+config.skills[id] = catalogSkill; // overwrites a custom collision
+```
+
+#### Correct
+
+```typescript
+const editable = await loadEditableConfig(env); // no catalog injection
+if (await configRevision(editable.config) !== expectedRevision) return conflict();
+if (selectedIds.some((id) => isDifferentDefinition(editable.config.skills[id]))) {
+  return collision(); // no config or audit write
+}
+const next = validateMergedCatalogInstall(editable.config, selectedIds);
+await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(next));
+```
+
+Defaults and explicit adoption stay separate, collisions fail atomically, and the
+browser never becomes a second source for built-in instructions.
+
 ## Scenario: Typed Admin Member Assignment Workspace
 
 ### 1. Scope / Trigger

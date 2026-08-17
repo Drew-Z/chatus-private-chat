@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import {
   KeyRound,
+  PackageOpen,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -15,10 +16,13 @@ import {
   ApiError,
   deleteAdminMcpSecret,
   discoverAdminMcpTools,
+  fetchAdminCapabilityCatalog,
   fetchAdminConfig,
   fetchAdminMcpSecrets,
   putAdminConfig,
   putAdminMcpSecret,
+  installAdminCapabilityPack,
+  type AdminCapabilityCatalogSnapshot,
   type AdminConfigSnapshot,
   type AdminMcpDiscoveryResponse,
   type AdminMcpSecretsSnapshot,
@@ -50,7 +54,7 @@ import {
 } from "../lib/admin-capabilities";
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
-type CapabilityTab = "skills" | "tools" | "mcp";
+type CapabilityTab = "skills" | "tools" | "mcp" | "catalog";
 type Selection = { tab: CapabilityTab; id: string | null };
 type ConfirmState =
   | { kind: "discard"; selection: Selection }
@@ -90,6 +94,10 @@ export function CapabilityAdminPanel({
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [catalog, setCatalog] = useState<AdminCapabilityCatalogSnapshot | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+  const [catalogSelection, setCatalogSelection] = useState<string[]>([]);
   const [secrets, setSecrets] = useState<AdminMcpSecretsSnapshot | null>(null);
   const [secretValue, setSecretValue] = useState("");
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
@@ -143,6 +151,10 @@ export function CapabilityAdminPanel({
     setSecretValue("");
   }, [activeTab, selectedId, secretRef, snapshot.revision, resetKey]);
 
+  useEffect(() => {
+    if (activeTab === "catalog") void refreshCatalog();
+  }, [activeTab, snapshot.revision, resetKey]);
+
   useEffect(() => () => setSecretValue(""), []);
 
   useEffect(() => {
@@ -189,6 +201,20 @@ export function CapabilityAdminPanel({
     }
   }
 
+  async function refreshCatalog() {
+    if (catalogLoading) return;
+    setCatalogLoading(true);
+    setCatalogError("");
+    try {
+      setCatalog(await fetchAdminCapabilityCatalog());
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) onSessionExpired();
+      else setCatalogError(getErrorMessage(error, "暂时无法读取能力目录。"));
+    } finally {
+      setCatalogLoading(false);
+    }
+  }
+
   function requestSelection(selection: Selection) {
     if (busy || discoveryBusy || sameSelection(selection, { tab: activeTab, id: selectedId })) return;
     if (dirty) {
@@ -205,6 +231,7 @@ export function CapabilityAdminPanel({
     setSkillDraft(normalized.tab === "skills" ? createSelectedSkillDraft(source, normalized.id) : null);
     setToolDraft(normalized.tab === "tools" && normalized.id ? createToolPolicyDraft(source.config.tools[normalized.id]) : null);
     setMcpDraft(normalized.tab === "mcp" ? createSelectedMcpDraft(source, normalized.id) : null);
+    setCatalogSelection([]);
     setDirty(false);
     setConflict(false);
     setPendingDiscovery(null);
@@ -235,6 +262,61 @@ export function CapabilityAdminPanel({
     setDirty(true);
     setConflict(false);
     onNotice(null);
+  }
+
+  function toggleCatalogItem(id: string) {
+    if (busy) return;
+    setCatalogSelection((current) => {
+      const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+      setDirty(next.length > 0);
+      return next;
+    });
+    setConflict(false);
+    onNotice(null);
+  }
+
+  async function installCatalogSelection() {
+    if (!catalogSelection.length || busy || !catalog) return;
+    const pack = catalog.packs.find(({ items }) => catalogSelection.some((id) => items.some((item) => item.id === id)));
+    if (!pack) return;
+    const selectedItems = pack.items.filter((item) => catalogSelection.includes(item.id));
+    if (selectedItems.length !== catalogSelection.length || selectedItems.some((item) => !item.installable)) return;
+    setBusy(true);
+    onNotice(null);
+    try {
+      const result = await installAdminCapabilityPack(pack.id, catalogSelection, snapshot.revision);
+      const next: AdminConfigSnapshot = { config: result.config, source: result.source, revision: result.revision };
+      onSnapshot(next);
+      setCatalogSelection([]);
+      setDirty(false);
+      setConflict(false);
+      onNotice({ kind: "success", text: `已安装 ${result.installed.length} 项能力。` });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onSessionExpired();
+      } else if (error instanceof ApiError && error.code === "config_conflict") {
+        try {
+          onSnapshot(await fetchAdminConfig());
+          setConflict(true);
+          setDirty(true);
+          onNotice({ kind: "warning", text: "配置已更新；目录选择仍保留，请核对状态后重试。" });
+        } catch (refreshError) {
+          onNotice({ kind: "error", text: getErrorMessage(refreshError, "配置冲突后无法刷新服务器版本。") });
+        }
+      } else {
+        onNotice({ kind: "error", text: getErrorMessage(error, "能力目录安装失败。") });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function useServerCatalogVersion() {
+    setCatalogSelection([]);
+    setDirty(false);
+    setConflict(false);
+    onDirtyChange(false);
+    onNotice({ kind: "success", text: "已清除本地目录选择。" });
   }
 
   async function saveSkill(event?: FormEvent) {
@@ -489,21 +571,22 @@ export function CapabilityAdminPanel({
     if (!dirty) requestAnimationFrame(() => document.getElementById(capabilityTabId(nextTab))?.focus());
   }
 
-  const list = activeTab === "skills" ? skills : activeTab === "tools" ? tools : servers;
+  const list = activeTab === "skills" ? skills : activeTab === "tools" ? tools : activeTab === "mcp" ? servers : [];
   const canCreate = activeTab === "skills" || activeTab === "mcp";
   return (
     <section className="admin-pool-panel capability-admin-panel" aria-labelledby="capability-admin-title">
-      <div className="admin-pool-sidebar">
+      <div className={`admin-pool-sidebar ${activeTab === "catalog" ? "catalog-active" : ""}`}>
         <div className="capability-admin-tabs" role="tablist" aria-label="AI 能力类型">
           <button id={capabilityTabId("skills")} type="button" role="tab" aria-label="Skills" aria-controls="capability-admin-tabpanel" aria-selected={activeTab === "skills"} tabIndex={activeTab === "skills" ? 0 : -1} onKeyDown={(event) => handleTabKeyDown(event, "skills")} onClick={() => requestSelection(getInitialSelection(snapshot, "skills"))}><Sparkles size={15} /><span>Skills</span></button>
           <button id={capabilityTabId("tools")} type="button" role="tab" aria-label="工具" aria-controls="capability-admin-tabpanel" aria-selected={activeTab === "tools"} tabIndex={activeTab === "tools" ? 0 : -1} onKeyDown={(event) => handleTabKeyDown(event, "tools")} onClick={() => requestSelection(getInitialSelection(snapshot, "tools"))}><Wrench size={15} /><span>工具</span></button>
           <button id={capabilityTabId("mcp")} type="button" role="tab" aria-label="MCP" aria-controls="capability-admin-tabpanel" aria-selected={activeTab === "mcp"} tabIndex={activeTab === "mcp" ? 0 : -1} onKeyDown={(event) => handleTabKeyDown(event, "mcp")} onClick={() => requestSelection(getInitialSelection(snapshot, "mcp"))}><ServerCog size={15} /><span>MCP</span></button>
+          <button id={capabilityTabId("catalog")} type="button" role="tab" aria-label="能力目录" aria-controls="capability-admin-tabpanel" aria-selected={activeTab === "catalog"} tabIndex={activeTab === "catalog" ? 0 : -1} onKeyDown={(event) => handleTabKeyDown(event, "catalog")} onClick={() => requestSelection(getInitialSelection(snapshot, "catalog"))}><PackageOpen size={15} /><span>目录</span></button>
         </div>
         <div className="admin-pool-sidebar-head">
           <div><p className="eyebrow">AI CAPABILITIES</p><h1 id="capability-admin-title">{tabLabel(activeTab)}</h1></div>
           {canCreate && <button className="icon-button" type="button" onClick={() => requestSelection({ tab: activeTab, id: "__new__" })} disabled={busy} aria-label={`新增${tabLabel(activeTab)}`} title={`新增${tabLabel(activeTab)}`}><Plus size={17} /></button>}
         </div>
-        <div className="admin-pool-list" role="group" aria-label={`${tabLabel(activeTab)}列表`}>
+        {activeTab !== "catalog" && <div className="admin-pool-list" role="group" aria-label={`${tabLabel(activeTab)}列表`}>
           {list.map(([id, item]) => (
             <button id={capabilityOptionId(activeTab, id)} className={`admin-pool-list-item ${id === selectedId ? "active" : ""}`} type="button" key={id} onClick={() => requestSelection({ tab: activeTab, id })} aria-pressed={id === selectedId}>
               <span><strong>{item.label}</strong><small>{id}</small></span>
@@ -511,11 +594,24 @@ export function CapabilityAdminPanel({
             </button>
           ))}
           {!list.length && <p className="admin-pool-empty">暂无配置</p>}
-        </div>
+        </div>}
       </div>
 
       <div id="capability-admin-tabpanel" className="admin-pool-editor" role="tabpanel" aria-labelledby={capabilityTabId(activeTab)}>
-        {activeTab === "skills" ? (
+        {activeTab === "catalog" ? (
+          <CapabilityCatalogView
+            catalog={catalog}
+            loading={catalogLoading}
+            error={catalogError}
+            selected={catalogSelection}
+            busy={busy}
+            conflict={conflict}
+            onToggle={toggleCatalogItem}
+            onInstall={() => void installCatalogSelection()}
+            onRetry={() => void refreshCatalog()}
+            onUseServer={useServerCatalogVersion}
+          />
+        ) : activeTab === "skills" ? (
           <SkillEditor
             draft={skillDraft}
             isNew={selectedId === "__new__"}
@@ -753,7 +849,58 @@ function EmptyCapabilityState({ label }: { label: string }) {
   return <div className="admin-pool-empty-state"><p>暂无{label}</p></div>;
 }
 
+function CapabilityCatalogView({ catalog, loading, error, selected, busy, conflict, onToggle, onInstall, onRetry, onUseServer }: {
+  catalog: AdminCapabilityCatalogSnapshot | null;
+  loading: boolean;
+  error: string;
+  selected: string[];
+  busy: boolean;
+  conflict: boolean;
+  onToggle: (id: string) => void;
+  onInstall: () => void;
+  onRetry: () => void;
+  onUseServer: () => void;
+}) {
+  if (!catalog && loading) return <div className="admin-pool-empty-state" role="status"><p>正在读取能力目录...</p></div>;
+  if (!catalog && error) return <div className="admin-pool-empty-state" role="alert"><p>{error}</p><button className="quiet-button" type="button" onClick={onRetry}>重试</button></div>;
+  if (!catalog) return <EmptyCapabilityState label="目录项" />;
+  const selectedItems = catalog.packs.flatMap((pack) => pack.items).filter((item) => selected.includes(item.id));
+  const canInstall = selectedItems.length === selected.length && selectedItems.length > 0 && selectedItems.every((item) => item.installable);
+  return (
+    <div className="capability-catalog-view">
+      <div className="admin-pool-editor-head">
+        <div><p className="eyebrow">CATALOG V{catalog.version}</p><h2>Chatus 能力目录</h2>{selected.length > 0 && <p className="admin-pool-meta">已选择 {selected.length} 项</p>}</div>
+        <div className="admin-pool-actions">
+          {conflict && <button className="quiet-button icon-text-button" type="button" onClick={onUseServer}><RotateCcw size={15} /><span>使用服务器版本</span></button>}
+          <button className="icon-button" type="button" onClick={onRetry} disabled={busy || loading} aria-label="刷新能力目录" title="刷新能力目录"><RefreshCw size={16} /></button>
+          <button className="primary-button icon-text-button" type="button" onClick={onInstall} disabled={!canInstall || busy}><Save size={15} /><span>{busy ? "安装中..." : "安装所选"}</span></button>
+        </div>
+      </div>
+      {error && <p className="admin-inline-error" role="alert">{error}</p>}
+      <div className="capability-catalog-packs">
+        {catalog.packs.map((pack) => (
+          <section className="capability-catalog-pack" aria-labelledby={`capability-pack-${pack.id}`} key={pack.id}>
+            <div className="capability-catalog-pack-head"><div><h3 id={`capability-pack-${pack.id}`}>{pack.label}</h3><p>{pack.description}</p></div><code>v{pack.version}</code></div>
+            <div className="capability-catalog-items">
+              {pack.items.map((item) => {
+                const checked = selected.includes(item.id);
+                return (
+                  <label className={`capability-catalog-item status-${item.status}`} key={item.id}>
+                    <input type="checkbox" checked={checked} disabled={busy || (!item.installable && !checked)} onChange={() => onToggle(item.id)} />
+                    <span className="capability-catalog-item-copy"><span><strong>{item.label}</strong><code>{item.id}</code></span><small>{item.description}</small><span className="capability-catalog-meta"><em>{capabilityStatusLabel(item.status)}</em><span>{capabilitySourceLabel(item.source)}</span><span>{capabilityActivationLabel(item.activation)}</span><span>{item.disclosure.dataClasses.map(capabilityDataClassLabel).join(" · ")}</span><span>{item.disclosure.externalRequest ? "外部请求" : "仅本地指令"}</span></span></span>
+                  </label>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function getInitialSelection(snapshot: AdminConfigSnapshot, tab: CapabilityTab): Selection {
+  if (tab === "catalog") return { tab, id: null };
   const ids = tab === "skills"
     ? orderedSkillEntries(snapshot.config).map(([id]) => id)
     : tab === "tools"
@@ -763,6 +910,7 @@ function getInitialSelection(snapshot: AdminConfigSnapshot, tab: CapabilityTab):
 }
 
 function normalizeSelection(snapshot: AdminConfigSnapshot, selection: Selection): Selection {
+  if (selection.tab === "catalog") return { tab: "catalog", id: null };
   if (selection.id === "__new__" && selection.tab !== "tools") return selection;
   const registry = selection.tab === "skills" ? snapshot.config.skills : selection.tab === "tools" ? snapshot.config.tools : snapshot.config.mcpServers;
   return selection.id && Object.prototype.hasOwnProperty.call(registry, selection.id)
@@ -785,10 +933,10 @@ function sameSelection(left: Selection, right: Selection): boolean {
 }
 
 function tabLabel(tab: CapabilityTab): string {
-  return tab === "skills" ? "Skills" : tab === "tools" ? "工具" : "MCP Servers";
+  return tab === "skills" ? "Skills" : tab === "tools" ? "工具" : tab === "mcp" ? "MCP Servers" : "能力目录";
 }
 
-const CAPABILITY_TABS: CapabilityTab[] = ["skills", "tools", "mcp"];
+const CAPABILITY_TABS: CapabilityTab[] = ["skills", "tools", "mcp", "catalog"];
 
 function capabilityTabId(tab: CapabilityTab): string {
   return `capability-admin-tab-${tab}`;
@@ -816,4 +964,28 @@ function getConfirmationCopy(state: ConfirmState | null): { title: string; body:
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : error instanceof Error ? error.message : fallback;
+}
+
+function capabilityStatusLabel(status: AdminCapabilityCatalogSnapshot["packs"][number]["items"][number]["status"]): string {
+  if (status === "installed") return "已安装";
+  if (status === "missing") return "可安装";
+  if (status === "disabled") return "已停用";
+  if (status === "conflict") return "ID 冲突";
+  return "需要配置";
+}
+
+function capabilityActivationLabel(activation: AdminCapabilityCatalogSnapshot["packs"][number]["items"][number]["activation"]): string {
+  if (activation === "workflow") return "工作流";
+  if (activation === "explicit_turn") return "每轮显式启用";
+  return "线路增强";
+}
+
+function capabilitySourceLabel(source: AdminCapabilityCatalogSnapshot["packs"][number]["items"][number]["source"]): string {
+  return source === "chatus" ? "Chatus 内置" : source;
+}
+
+function capabilityDataClassLabel(value: "prompt_text" | "search_query" | "image"): string {
+  if (value === "prompt_text") return "对话文本";
+  if (value === "search_query") return "搜索查询";
+  return "图像";
 }

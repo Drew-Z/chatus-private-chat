@@ -1937,6 +1937,192 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
   expect(currentConfig.users.bill).toBeDefined();
 });
 
+test("capability catalog retains a stale-revision selection and installs on retry", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "catalog coverage targets desktop and 390px");
+  let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
+  let revision = "a".repeat(64);
+  let installAttempts = 0;
+  const instructionsDisclosure = {
+    execution: "instructions",
+    externalRequest: false,
+    dataClasses: ["prompt_text"],
+    latency: "none",
+    cost: "none",
+  } as const;
+  const catalog = () => ({
+    version: 1,
+    packs: [{
+      id: "chatus:starter-capabilities",
+      version: 1,
+      label: "Chatus 默认能力",
+      description: "低风险语言工作流，以及需要管理员完成外部配置的可选能力。",
+      items: [
+        {
+          id: "chatus:writing",
+          label: "写作与改写",
+          description: "起草、改写并润色文本。",
+          source: "chatus",
+          activation: "workflow",
+          status: currentConfig.skills["chatus:writing"] ? "installed" : "missing",
+          installable: !currentConfig.skills["chatus:writing"],
+          disclosure: instructionsDisclosure,
+        },
+        ...["summarize", "translate", "code_explanation", "structured_output"].map((name) => ({
+          id: `chatus:${name}`,
+          label: name,
+          description: `${name} workflow`,
+          source: "chatus",
+          activation: "workflow",
+          status: "missing",
+          installable: true,
+          disclosure: instructionsDisclosure,
+        })),
+        {
+          id: "chatus:web_research",
+          label: "联网研究",
+          description: "通过管理员审核的只读 MCP 搜索工具获取当前来源。",
+          source: "chatus",
+          activation: "explicit_turn",
+          status: "requires_setup",
+          installable: false,
+          disclosure: {
+            execution: "reviewed_mcp",
+            externalRequest: true,
+            dataClasses: ["search_query"],
+            latency: "variable",
+            cost: "external_service",
+          },
+        },
+        {
+          id: "chatus:vision_assist",
+          label: "视觉辅助",
+          description: "通过管理员选择的原生视觉线路生成受限图像证据。",
+          source: "chatus",
+          activation: "route_augmentation",
+          status: "requires_setup",
+          installable: false,
+          disclosure: {
+            execution: "auxiliary_provider",
+            externalRequest: true,
+            dataClasses: ["image"],
+            latency: "variable",
+            cost: "provider_request",
+          },
+        },
+      ],
+    }],
+  });
+
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({ members: [], accessRevision: "m".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      await json(adminSetupReady);
+      return;
+    }
+    if (url.pathname === "/api/admin/mcp-secrets" && request.method() === "GET") {
+      await json({ masterKeyReady: true, items: [] });
+      return;
+    }
+    if (url.pathname === "/api/admin/capability-packs" && request.method() === "GET") {
+      await json(catalog());
+      return;
+    }
+    if (url.pathname === "/api/admin/capability-packs/install" && request.method() === "POST") {
+      const payload = request.postDataJSON() as { packId: string; itemIds: string[]; expectedRevision: string };
+      expect(payload).toMatchObject({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing"],
+        expectedRevision: revision,
+      });
+      installAttempts += 1;
+      if (installAttempts === 1) {
+        revision = "b".repeat(64);
+        await json({ error: "config_conflict", message: "合成配置冲突。", currentRevision: revision }, 409);
+        return;
+      }
+      currentConfig = {
+        ...currentConfig,
+        defaults: {
+          ...currentConfig.defaults,
+          allowedSkills: [...(currentConfig.defaults.allowedSkills || []), "chatus:writing"],
+        },
+        skills: {
+          ...currentConfig.skills,
+          "chatus:writing": {
+            enabled: true,
+            label: "写作与改写",
+            description: "起草、改写并润色文本。",
+            instructions: "Write only from supplied information.",
+            toolIds: [],
+            order: 100,
+            activation: "automatic",
+            origin: "chatus",
+          },
+        },
+      };
+      revision = "c".repeat(64);
+      await json({
+        ok: true,
+        config: currentConfig,
+        source: "kv",
+        revision,
+        installed: ["chatus:writing"],
+        skipped: [],
+      });
+      return;
+    }
+    throw new Error(`unexpected catalog fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  await page.getByRole("button", { name: "AI 能力" }).click();
+  await page.getByRole("tab", { name: "能力目录" }).click();
+  await expect(page.getByRole("heading", { name: "Chatus 能力目录" })).toBeVisible();
+  await expect(page.getByText("Chatus 内置", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("联网研究", { exact: true })).toBeVisible();
+  await expect(page.getByText("视觉辅助", { exact: true })).toBeVisible();
+
+  const writing = page.getByRole("checkbox", { name: /写作与改写/ });
+  await writing.check();
+  await page.getByRole("button", { name: "安装所选" }).click();
+  await expect(page.getByText("配置已更新；目录选择仍保留，请核对状态后重试。", { exact: true })).toBeVisible();
+  await expect(writing).toBeChecked();
+  await expect(page.getByRole("button", { name: "使用服务器版本" })).toBeVisible();
+
+  await page.getByRole("button", { name: "安装所选" }).click();
+  await expect(page.getByText("已安装 1 项能力。", { exact: true })).toBeVisible();
+  expect(installAttempts).toBe(2);
+  expect(currentConfig.defaults.allowedSkills).toContain("chatus:writing");
+  expect(currentConfig.skills["chatus:writing"]).toMatchObject({ origin: "chatus", activation: "automatic" });
+
+  const geometry = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>(".capability-admin-panel");
+    if (!panel) throw new Error("missing capability catalog panel");
+    const rect = panel.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      panelFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1,
+    };
+  });
+  expect(geometry).toEqual({ documentFits: true, bodyFits: true, panelFits: true });
+  await attachScreenshot(page, testInfo, "admin-capability-catalog");
+});
+
 test("member OAuth MCP connections stay actionable and contained", async ({ page }, testInfo) => {
   await page.goto("/?view=mcp-connections");
   const dialog = page.getByRole("dialog", { name: "MCP 连接" });

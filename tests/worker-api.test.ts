@@ -16,7 +16,13 @@ import {
   type ConversationResourceRouteV1,
   type PrincipalRouteV1,
 } from "../src/contracts/identity";
-import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse, isAdminLegacySurfaceSnapshot } from "../client/src/lib/api";
+import {
+  isAdminCapabilityCatalogSnapshot,
+  isAdminCapabilityPackInstallResponse,
+  isAdminConfigSnapshot,
+  isAdminLegacyRouteMigrationResponse,
+  isAdminLegacySurfaceSnapshot,
+} from "../client/src/lib/api";
 import {
   LEGACY_SURFACE_MANIFEST,
   legacySurfaceManifestDigest,
@@ -949,6 +955,7 @@ describe("Worker API", () => {
       defaultRoute: PUBLIC_ROUTE_ID,
       allowBringYourOwnKey: false,
       hasUserSystemPrompt: false,
+      availableCapabilities: [],
       skills: [],
       tools: [],
       capabilities: {
@@ -4426,6 +4433,242 @@ describe("Worker API", () => {
     const legacyMember = await login(`legacy-capability-member-${crypto.randomUUID()}`);
     const legacySession = await apiRequest("/api/session", legacyMember.cookie).then((response) => response.json()) as any;
     expect(legacySession.skills.map((skill: any) => skill.id)).toEqual(["first", "later"]);
+  });
+
+  it("seeds catalog workflows only for the truly unconfigured default", async () => {
+    const adminCookie = await adminLogin();
+    const expectedIds = [
+      "chatus:writing",
+      "chatus:summarize",
+      "chatus:translate",
+      "chatus:code_explanation",
+      "chatus:structured_output",
+    ];
+    const unconfigured = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    expect(unconfigured.source).toBe("default");
+    expect(Object.keys(unconfigured.config.skills)).toEqual(expectedIds);
+    expect(unconfigured.config.defaults.allowedSkills).toEqual(expectedIds);
+
+    const storedConfig = {
+      routes: {
+        stored: {
+          label: "Stored",
+          type: "openai-chat",
+          baseUrl: "https://stored.example/v1",
+          model: "stored-model",
+          apiKey: "stored-test-key",
+        },
+      },
+      defaults: { defaultRoute: "stored", allowedRoutes: ["stored"] },
+    };
+    const secretEnv = { ...env, ROUTES_CONFIG: JSON.stringify(storedConfig) } as any;
+    const secretResponse = await worker.fetch(new Request("https://example.test/api/admin/config", {
+      headers: { Cookie: adminCookie },
+    }), secretEnv);
+    const secret = await secretResponse.json() as any;
+    expect(secret.source).toBe("secret");
+    expect(secret.config.skills).toEqual({});
+    expect(secret.config.defaults).not.toHaveProperty("allowedSkills");
+
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(storedConfig));
+    const kv = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    expect(kv.source).toBe("kv");
+    expect(kv.config.skills).toEqual({});
+    expect(kv.config.defaults).not.toHaveProperty("allowedSkills");
+  });
+
+  it("previews and installs catalog workflows with revision, assignment, and audit boundaries", async () => {
+    const deniedLabel = `catalog-denied-${crypto.randomUUID()}`;
+    const visionLabel = `catalog-vision-${crypto.randomUUID()}`;
+    const baseConfig = {
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://catalog.example/v1",
+          model: "catalog-model",
+          apiKey: "catalog-test-key",
+        },
+      },
+      defaults: {
+        defaultRoute: "default",
+        allowedRoutes: ["default"],
+        allowedSkills: ["custom"],
+      },
+      users: {
+        [deniedLabel]: { allowedSkills: [], allowedAugmentations: [] },
+        [visionLabel]: { allowedSkills: [], allowedAugmentations: ["vision_assist"] },
+      },
+      skills: {
+        custom: { enabled: true, label: "Custom", instructions: "Custom instructions.", toolIds: [] },
+      },
+    };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(baseConfig));
+    const adminCookie = await adminLogin();
+    const initial = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+
+    const previewResponse = await apiRequest("/api/admin/capability-packs", adminCookie);
+    const preview = await previewResponse.json() as any;
+    expect(previewResponse.status).toBe(200);
+    expect(isAdminCapabilityCatalogSnapshot(preview)).toBe(true);
+    expect(preview.packs[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "chatus:writing", status: "missing", installable: true }),
+      expect.objectContaining({ id: "chatus:web_research", status: "requires_setup", installable: false }),
+      expect.objectContaining({ id: "chatus:vision_assist", status: "requires_setup", installable: false }),
+    ]));
+
+    const duplicate = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing", "chatus:writing"],
+        expectedRevision: initial.revision,
+      }),
+    });
+    expect(duplicate.status).toBe(400);
+
+    const unknown = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:unknown"],
+        expectedRevision: initial.revision,
+      }),
+    });
+    expect(unknown.status).toBe(400);
+    await expect(unknown.json()).resolves.toMatchObject({ error: "invalid_capability_pack_items" });
+    expect(await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json")).toEqual(baseConfig);
+    expect(await env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).toBeNull();
+
+    const changedConfig: any = structuredClone(baseConfig);
+    changedConfig.defaults.dailyMessageLimit = 21;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(changedConfig));
+    const stale = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing"],
+        expectedRevision: initial.revision,
+      }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "config_conflict" });
+    expect((await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json")).skills).not.toHaveProperty("chatus:writing");
+
+    const latest = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const selected = ["chatus:writing", "chatus:summarize"];
+    const installResponse = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: selected,
+        expectedRevision: latest.revision,
+      }),
+    });
+    const installed = await installResponse.json() as any;
+    expect(installResponse.status, JSON.stringify(installed)).toBe(200);
+    expect(isAdminCapabilityPackInstallResponse(installed, selected)).toBe(true);
+    expect(installed.installed).toEqual(selected);
+    expect(installed.skipped).toEqual([]);
+    expect(installed.config.defaults.allowedSkills).toEqual(["custom", ...selected]);
+    expect(installed.config.skills["chatus:writing"]).toMatchObject({
+      origin: "chatus",
+      activation: "automatic",
+      toolIds: [],
+    });
+
+    const stored = await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json");
+    expect(stored.defaults.allowedSkills).toEqual(["custom", ...selected]);
+    expect(stored.users[deniedLabel].allowedSkills).toEqual([]);
+    expect(stored.users[deniedLabel].allowedAugmentations).toEqual([]);
+    const audit = await env.CHAT_STORE.get<any>(ADMIN_AUDIT_KEY, "json");
+    expect(audit[0]).toMatchObject({ action: "capability-pack.install", target: "chatus:starter-capabilities:2" });
+    expect(JSON.stringify(audit)).not.toContain("Custom instructions");
+    expect(JSON.stringify(audit)).not.toContain("catalog-test-key");
+
+    const denied = await login(deniedLabel);
+    const deniedSession = await apiRequest("/api/session", denied.cookie).then((response) => response.json()) as any;
+    expect(deniedSession.availableCapabilities).toEqual([]);
+    const vision = await login(visionLabel);
+    const visionSession = await apiRequest("/api/session", vision.cookie).then((response) => response.json()) as any;
+    expect(visionSession.availableCapabilities).toEqual([expect.objectContaining({
+      id: "chatus:vision_assist",
+      activation: "route_augmentation",
+      availability: "requires_setup",
+      unavailableReason: "helper_unavailable",
+    })]);
+
+    const invalidActivation = structuredClone(installed.config);
+    invalidActivation.skills.custom.activation = "scheduled";
+    const invalidActivationResponse = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: invalidActivation, expectedRevision: installed.revision }),
+    });
+    expect(invalidActivationResponse.status).toBe(400);
+
+    const invalidBuiltinRole = structuredClone(installed.config);
+    invalidBuiltinRole.tools["builtin:text_stats"].capabilityRole = "web_search";
+    const invalidBuiltinRoleResponse = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: invalidBuiltinRole, expectedRevision: installed.revision }),
+    });
+    expect(invalidBuiltinRoleResponse.status).toBe(400);
+  });
+
+  it("refuses a catalog ID collision without changing configuration or audit", async () => {
+    const rawConfig = {
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://collision.example/v1",
+          model: "collision-model",
+          apiKey: "collision-test-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      skills: {
+        "chatus:writing": {
+          enabled: true,
+          label: "Administrator writing",
+          instructions: "Keep this administrator-owned definition.",
+          toolIds: [],
+        },
+      },
+    };
+    const raw = JSON.stringify(rawConfig);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, raw);
+    const adminCookie = await adminLogin();
+    const snapshot = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const preview = await apiRequest("/api/admin/capability-packs", adminCookie).then((response) => response.json()) as any;
+    expect(preview.packs[0].items).toContainEqual(expect.objectContaining({
+      id: "chatus:writing",
+      status: "conflict",
+      installable: false,
+    }));
+
+    const response = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing"],
+        expectedRevision: snapshot.revision,
+      }),
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "capability_pack_collision",
+      itemIds: ["chatus:writing"],
+    });
+    expect(await env.CHAT_STORE.get(ROUTES_CONFIG_KEY)).toBe(raw);
+    expect(await env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).toBeNull();
   });
 
   it("adds the disabled built-in tool to legacy editable configs without granting it", async () => {

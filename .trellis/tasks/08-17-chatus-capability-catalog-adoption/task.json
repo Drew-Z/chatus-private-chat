@@ -1,0 +1,71 @@
+{
+  "id": "chatus-capability-catalog-adoption",
+  "name": "chatus-capability-catalog-adoption",
+  "title": "Chatus capability catalog and adoption",
+  "description": "Implement the code-owned capability catalog, five default workflow Skills, safe adoption, assignment, projections, and revisioned installation.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": null,
+  "branch": "codex/chatus-default-capability-packs",
+  "base_branch": "codex/chatus-default-capability-packs",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-17-chatus-default-capability-packs",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "React production build and frontend structure checks passed.",
+        "at": "2026-08-17T15:57:25.302681+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "55 test files and 822 tests passed.",
+        "at": "2026-08-17T15:57:25.842290+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright completed with 114 passed and 61 viewport-scoped skips.",
+        "at": "2026-08-17T15:57:26.406418+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-Provider Agent Playwright passed 3 tests.",
+        "at": "2026-08-17T15:57:26.979004+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture TypeScript checks passed.",
+        "at": "2026-08-17T15:57:27.515343+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker and assets packaged successfully without deployment.",
+        "at": "2026-08-17T15:57:28.068742+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-17T15:57:28.624278+00:00"
+      }
+    ]
+  }
+}

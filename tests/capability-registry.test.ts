@@ -124,6 +124,64 @@ describe("capability registry", () => {
     expect(getSelectedSkills(config, ["coding", "writing"], { allowedSkills: [] })).toEqual([]);
   });
 
+  it("keeps explicit-turn Skills out of ordinary selection while disclosing them safely", () => {
+    const explicitConfig: CapabilityRegistryConfig = {
+      ...config,
+      skills: {
+        ...config.skills,
+        research: {
+          enabled: true,
+          label: "Research",
+          description: "Search current sources.",
+          instructions: "Use reviewed search sources.",
+          toolIds: ["mcp:docs:search"],
+          activation: "explicit_turn",
+          origin: "chatus",
+          order: 1,
+        },
+      },
+    };
+    const projection = getPublicCapabilities(explicitConfig, {
+      allowedSkills: ["research"],
+      allowedTools: ["mcp:docs:search"],
+    });
+    expect(projection.skills).toEqual([]);
+    expect(getSelectedSkills(explicitConfig, ["research"])).toEqual([]);
+    expect(projection.capabilities).toEqual([expect.objectContaining({
+      id: "research",
+      activation: "explicit_turn",
+      source: "chatus",
+      availability: "available",
+      disclosure: expect.objectContaining({ execution: "reviewed_mcp", externalRequest: true }),
+    })]);
+  });
+
+  it("preserves omitted and explicit-empty augmentation assignment semantics", () => {
+    expect(getPublicCapabilities(config, {}).capabilities.map(({ id }) => id)).not.toContain("chatus:vision_assist");
+    expect(getPublicCapabilities(config, { allowedAugmentations: [] }).capabilities.map(({ id }) => id))
+      .not.toContain("chatus:vision_assist");
+    expect(getPublicCapabilities(config, { allowedAugmentations: ["vision_assist"] }).capabilities)
+      .toContainEqual(expect.objectContaining({
+        id: "chatus:vision_assist",
+        activation: "route_augmentation",
+        availability: "requires_setup",
+        unavailableReason: "helper_unavailable",
+        disclosure: expect.objectContaining({ execution: "auxiliary_provider", dataClasses: ["image"] }),
+      }));
+  });
+
+  it("marks an assigned Skill unavailable when one of its tools is not executable", () => {
+    const projection = getPublicCapabilities(config, {
+      allowedSkills: ["writing"],
+      allowedTools: ["builtin:text_stats"],
+    });
+    expect(projection.capabilities).toEqual([expect.objectContaining({
+      id: "writing",
+      availability: "unavailable",
+      unavailableReason: "tool_unavailable",
+    })]);
+  });
+
   it("builds provider-safe definitions from the intersection of skill references and assignment", async () => {
     const selected = getSelectedSkills(config, ["writing"]);
     const definitions = await buildCapabilityToolDefinitions(

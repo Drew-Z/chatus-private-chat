@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import {
   Copy,
   ExternalLink,
+  Eye,
   Gauge,
   KeyRound,
   LogOut,
@@ -1179,6 +1180,36 @@ export function AdminWorkspace({
                       </label>
                     ))}
                   {!Object.keys(data.snapshot.config.tools).length && <p className="typed-admin-empty">暂无工具</p>}
+                </div>
+              </CapabilitySection>
+
+              <CapabilitySection
+                id="augmentations"
+                icon={<Eye size={17} />}
+                title="增强能力"
+                canInherit={selectedMember !== DEFAULT_ADMIN_MEMBER}
+                disabled={saving}
+                inherit={selectedMember !== DEFAULT_ADMIN_MEMBER && draft.inheritAugmentations}
+                onInheritChange={(checked) => updateDraft((current) => ({ ...current, inheritAugmentations: checked }))}
+                inheritLabel="继承默认增强能力"
+                count={`${draft.allowedAugmentations.length} 项`}
+              >
+                <div className="typed-admin-option-list">
+                  <label className="typed-admin-option">
+                    <input
+                      type="checkbox"
+                      checked={draft.allowedAugmentations.includes("vision_assist")}
+                      disabled={draft.inheritAugmentations || saving}
+                      onChange={() => updateDraft((current) => ({
+                        ...current,
+                        allowedAugmentations: current.allowedAugmentations.includes("vision_assist") ? [] : ["vision_assist"],
+                      }))}
+                    />
+                    <span>
+                      <strong>视觉辅助</strong>
+                      <small>route augmentation · 需要管理员完成辅助线路配置</small>
+                    </span>
+                  </label>
                 </div>
               </CapabilitySection>
 

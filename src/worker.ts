@@ -39,6 +39,8 @@ import {
   type ProviderTurnProgressV1,
 } from "./contracts/provider-turn-progress";
 import type {
+  AdminCapabilityPackInstallResultV1,
+  CapabilityAugmentation,
   CapabilityAssignment,
   CapabilityToolExecutionResult,
   CapabilityToolRunner,
@@ -158,6 +160,15 @@ import {
   getSelectedSkills,
   normalizeToolConfirmation,
 } from "./services/capability-registry";
+import {
+  DEFAULT_CAPABILITY_PACK_ID,
+  capabilityCatalogSnapshot,
+  catalogWorkflowSkill,
+  defaultWorkflowSkillIds,
+  defaultWorkflowSkillRegistry,
+  isCatalogWorkflowSkillId,
+  sameCatalogWorkflowDefinition,
+} from "./services/capability-catalog";
 import { createProviderLanguageModel, toProviderModelMessages } from "./services/provider-model";
 import {
   createFallbackLanguageModel,
@@ -2865,6 +2876,14 @@ async function handleAdminApi(
     return handleGetAdminConfig(env);
   }
 
+  if (url.pathname === "/api/admin/capability-packs" && request.method === "GET") {
+    return handleGetAdminCapabilityPacks(env);
+  }
+
+  if (url.pathname === "/api/admin/capability-packs/install" && request.method === "POST") {
+    return withAdminConfigMutationLock(env, () => handleInstallAdminCapabilityPack(request, env));
+  }
+
   if (url.pathname === "/api/admin/legacy-routes/migrate" && request.method === "POST") {
     return withAdminConfigMutationLock(env, () => handleMigrateLegacyRoutes(request, env));
   }
@@ -3513,6 +3532,98 @@ async function handleGetAdminConfig(env: Env): Promise<Response> {
   return jsonResponse({ config: sanitizeAdminConfig(config), source, revision: await configRevision(config) });
 }
 
+async function handleGetAdminCapabilityPacks(env: Env): Promise<Response> {
+  const { config } = await loadEditableConfig(env);
+  return jsonResponse(capabilityCatalogSnapshot(config.skills));
+}
+
+async function handleInstallAdminCapabilityPack(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<unknown>(request);
+  if (!isRecord(body) || !hasOnlyRecordKeys(body, ["packId", "itemIds", "expectedRevision"])) {
+    return jsonResponse({ error: "invalid_capability_pack_request", message: "能力目录安装请求无效。" }, 400);
+  }
+  const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision.trim() : "";
+  if (!expectedRevision) {
+    return jsonResponse({ error: "expected_config_revision_required", message: "缺少配置版本，请刷新后重试。" }, 400);
+  }
+  if (body.packId !== DEFAULT_CAPABILITY_PACK_ID) {
+    return jsonResponse({ error: "capability_pack_not_found", message: "能力目录包不存在。" }, 404);
+  }
+  if (!Array.isArray(body.itemIds) || body.itemIds.length < 1 || body.itemIds.length > defaultWorkflowSkillIds().length) {
+    return jsonResponse({ error: "invalid_capability_pack_items", message: "请选择有效的能力目录项。" }, 400);
+  }
+  const requestedIds: string[] = [];
+  for (const item of body.itemIds) {
+    if (typeof item !== "string" || !isCatalogWorkflowSkillId(item) || requestedIds.includes(item)) {
+      return jsonResponse({ error: "invalid_capability_pack_items", message: "能力目录项包含未知项或重复项。" }, 400);
+    }
+    requestedIds.push(item);
+  }
+  const requested = defaultWorkflowSkillIds().filter((id) => requestedIds.includes(id));
+
+  const editable = await loadEditableConfig(env);
+  const currentRevision = await configRevision(editable.config);
+  if (currentRevision !== expectedRevision) {
+    return jsonResponse({
+      error: "config_conflict",
+      message: "配置已在其他窗口更新，请刷新后重试。",
+      currentRevision,
+    }, 409);
+  }
+
+  const conflicts: string[] = [];
+  const installed: string[] = [];
+  const skipped: string[] = [];
+  const skills = { ...(editable.config.skills || {}) };
+  for (const id of requested) {
+    const definition = catalogWorkflowSkill(id)!;
+    const current = skills[id];
+    if (!current) {
+      skills[id] = definition;
+      installed.push(id);
+    } else if (sameCatalogWorkflowDefinition(definition, current)) {
+      skipped.push(id);
+    } else {
+      conflicts.push(id);
+    }
+  }
+  if (conflicts.length) {
+    return jsonResponse({
+      error: "capability_pack_collision",
+      message: "所选能力 ID 已被不同的管理员配置占用；未写入任何更改。",
+      itemIds: conflicts,
+    }, 409);
+  }
+
+  const defaults = { ...(editable.config.defaults || {}) };
+  if (defaults.allowedSkills !== undefined) {
+    defaults.allowedSkills = [
+      ...defaults.allowedSkills,
+      ...requested.filter((id) => !defaults.allowedSkills!.includes(id)),
+    ];
+  }
+  const nextConfig = await applyMcpOAuthConfigRevisions(normalizeAppConfig({
+    ...editable.config,
+    defaults,
+    skills,
+  }));
+  const validation = validateAppConfig(nextConfig);
+  if (!validation.ok) return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
+
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(nextConfig));
+  await reconcileMcpToolDriftOverlay(env, nextConfig);
+  await appendAdminAudit(env, "capability-pack.install", `${DEFAULT_CAPABILITY_PACK_ID}:${installed.length}`);
+  const result: AdminCapabilityPackInstallResultV1 = {
+    ok: true,
+    config: sanitizeAdminConfig(nextConfig),
+    source: "kv",
+    revision: await configRevision(nextConfig),
+    installed,
+    skipped,
+  };
+  return jsonResponse(result);
+}
+
 async function handleGetAdminSetupStatus(env: Env): Promise<Response> {
   const setup = await buildAdminSetupStatus(env);
   return jsonResponse(setup.projection);
@@ -3736,6 +3847,7 @@ async function buildSessionProjection(
     imageInput: imageInputPolicy(env),
     fileInput: fileInputPolicy(env),
     capabilities: policy,
+    availableCapabilities: session.kind === "member" ? capabilities.capabilities : [],
     skills: session.kind === "member" ? capabilities.skills : [],
     tools: session.kind === "member" ? capabilities.tools : [],
     mcpConnections,
@@ -4051,6 +4163,10 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   const rawMcpValidation = validateRawMcpConfiguration(body.config);
   if (!rawMcpValidation.ok) {
     return jsonResponse({ error: "invalid_config", message: rawMcpValidation.message }, 400);
+  }
+  const rawCapabilityValidation = validateRawCapabilityConfiguration(body.config);
+  if (!rawCapabilityValidation.ok) {
+    return jsonResponse({ error: "invalid_config", message: rawCapabilityValidation.message }, 400);
   }
   const editable = await loadEditableConfig(env);
   const normalized = await applyMcpOAuthConfigRevisions(mergeHiddenCredentialShadows(
@@ -9287,6 +9403,7 @@ function hasOnlyRecordKeys(value: Record<string, unknown>, keys: string[]): bool
 }
 
 function getDefaultAppConfig(env: Env): AppConfig {
+  const workflowSkillIds = defaultWorkflowSkillIds();
   return normalizeAppConfig({
     routes: {
       default: {
@@ -9304,7 +9421,9 @@ function getDefaultAppConfig(env: Env): AppConfig {
       allowBringYourOwnKey: false,
       dailyMessageLimit: numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT),
       blockedPrompts: parsePromptList(env.BLOCKED_PROMPTS),
+      allowedSkills: workflowSkillIds,
     },
+    skills: defaultWorkflowSkillRegistry(),
     tools: { "builtin:text_stats": defaultTextStatsTool() },
   });
 }
@@ -9569,6 +9688,49 @@ function validateRawPublicAccessConfiguration(value: unknown): { ok: true } | { 
   return { ok: true };
 }
 
+function validateRawCapabilityConfiguration(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: true };
+  const skills = isRecord(value.skills) ? value.skills : {};
+  for (const [skillId, rawSkill] of Object.entries(skills)) {
+    if (!isRecord(rawSkill)) continue;
+    if ((rawSkill.activation !== undefined && rawSkill.activation !== "automatic" && rawSkill.activation !== "explicit_turn")
+      || (rawSkill.origin !== undefined && rawSkill.origin !== "chatus" && rawSkill.origin !== "administrator")) {
+      return { ok: false, message: `Skill ${skillId} 字段无效` };
+    }
+  }
+
+  if (value.tools !== undefined && !isRecord(value.tools)) {
+    return { ok: false, message: "工具配置必须是对象" };
+  }
+  for (const [toolId, rawTool] of Object.entries(isRecord(value.tools) ? value.tools : {})) {
+    if (!isRecord(rawTool)) continue;
+    if (rawTool.capabilityRole !== undefined && rawTool.capabilityRole !== "web_search") {
+      return { ok: false, message: `工具 ${toolId} 的能力角色无效` };
+    }
+    if (rawTool.capabilityRole === "web_search"
+      && (!isRecord(rawTool.executor) || rawTool.executor.type !== "mcp")) {
+      return { ok: false, message: `工具 ${toolId} 的能力角色仅适用于 MCP 工具` };
+    }
+  }
+
+  const assignments: Array<[string, unknown]> = [["默认用户", value.defaults]];
+  if (isRecord(value.users)) assignments.push(...Object.entries(value.users));
+  for (const [label, rawAssignment] of assignments) {
+    if (!isRecord(rawAssignment) || rawAssignment.allowedAugmentations === undefined) continue;
+    if (!isUniqueCapabilityAugmentationList(rawAssignment.allowedAugmentations)) {
+      return { ok: false, message: `${label} 的增强能力分配无效` };
+    }
+  }
+  return { ok: true };
+}
+
+function isUniqueCapabilityAugmentationList(value: unknown): value is CapabilityAugmentation[] {
+  return Array.isArray(value)
+    && value.length <= 1
+    && value.every((item) => item === "vision_assist")
+    && new Set(value).size === value.length;
+}
+
 function isProviderCapacity(value: unknown): boolean {
   return typeof value === "number"
     && Number.isInteger(value)
@@ -9782,6 +9944,11 @@ function normalizeUserConfig(value: unknown): UserConfig {
   if (Array.isArray(value.allowedTools)) {
     output.allowedTools = normalizeStringIdList(value.allowedTools, MAX_TOOLS, 160);
   }
+  if (Array.isArray(value.allowedAugmentations)) {
+    output.allowedAugmentations = value.allowedAugmentations
+      .filter((item): item is CapabilityAugmentation => item === "vision_assist")
+      .slice(0, 1);
+  }
   if (typeof value.allowBringYourOwnKey === "boolean") {
     output.allowBringYourOwnKey = value.allowBringYourOwnKey;
   }
@@ -9806,6 +9973,7 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
         allowedRoutes: config.publicAccess.routeId ? [config.publicAccess.routeId] : [],
         allowedSkills: [],
         allowedTools: [],
+        allowedAugmentations: [],
         allowBringYourOwnKey: false,
         dailyMessageLimit: config.publicAccess.dailyMessageLimit,
         minuteMessageLimit: config.publicAccess.minuteMessageLimit,
@@ -12018,6 +12186,12 @@ function normalizeSkillRegistry(value: unknown): Record<string, SkillConfig> {
       instructions,
       toolIds: normalizeStringIdList(rawSkill.toolIds, MAX_TOOLS, 160),
       order: order === undefined ? undefined : Math.max(-10_000, Math.min(10_000, Math.trunc(order))),
+      activation: rawSkill.activation === "automatic" || rawSkill.activation === "explicit_turn"
+        ? rawSkill.activation
+        : undefined,
+      origin: rawSkill.origin === "chatus" || rawSkill.origin === "administrator"
+        ? rawSkill.origin
+        : undefined,
     };
   }
   return output;
@@ -12212,6 +12386,7 @@ function normalizeToolRegistry(
       sideEffect,
       reviewRevision,
       reviewRequired,
+      capabilityRole: rawTool.capabilityRole === "web_search" ? "web_search" : undefined,
     };
   }
   return output;
