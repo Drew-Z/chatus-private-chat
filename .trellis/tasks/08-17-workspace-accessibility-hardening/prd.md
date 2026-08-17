@@ -13,11 +13,11 @@ Make the primary member workspace reliably perceivable and operable by keyboard,
 
 ## Acceptance Criteria
 
-- [ ] Focus tokens meet the documented contrast target in both themes.
-- [ ] Audited 29–36px controls have at least a 44px target or a documented WCAG target-size exception.
-- [ ] Streaming does not cause the full transcript to be repeatedly announced.
-- [ ] Send/stop/loading completion is conveyed through a concise status region.
-- [ ] Keyboard and automated accessibility tests cover the affected controls and live-region contract.
+- [x] Focus tokens meet the documented contrast target in both themes.
+- [x] Audited 29–36px controls have at least a 44px target or a documented WCAG target-size exception.
+- [x] Streaming does not cause the full transcript to be repeatedly announced.
+- [x] Send/stop/loading completion is conveyed through a concise status region.
+- [x] Keyboard and automated accessibility tests cover the affected controls and live-region contract.
 
 ## Notes
 

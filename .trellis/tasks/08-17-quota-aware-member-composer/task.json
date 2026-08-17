@@ -15,12 +15,45 @@
   "branch": "codex/chatus-product-optimization",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "94d1b64a5a3c539ac42fc95a865ae9dd5f8b7c7b",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": "08-17-chatus-product-experience-optimization",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npx vitest run tests/client-state.test.ts",
+        "status": "passed",
+        "summary": "Available, exhausted, unknown, and refresh-failure quota state tests passed.",
+        "at": "2026-08-17T09:33:09.037365+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structural contracts passed.",
+        "at": "2026-08-17T09:33:09.605002+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Final integrated suite passed: 56 files and 829 tests.",
+        "at": "2026-08-17T09:33:10.208936+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-17T09:33:10.832280+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-17T09:33:11.417266+00:00"
+      }
+    ]
+  }
 }
