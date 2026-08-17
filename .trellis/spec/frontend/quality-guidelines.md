@@ -40,6 +40,10 @@ Quality is enforced through executable frontend structure checks, Vitest Worker 
 - Bug fixes include a regression test or a structural assertion in `scripts/check-frontend.mjs` when browser DOM behavior is impractical to unit test.
 - Keep the Cloudflare Vitest pool serial (`maxWorkers: 1`) on Windows. Parallel pool workers can fall back to random Miniflare ports, and Node/undici rejects some random port values as forbidden ports after the test assertions have already passed.
 - Browser geometry, focus, overflow, and touch contracts use the Playwright component fixture under `tests/browser/`. Keep that directory excluded from the Cloudflare Vitest pool with `configDefaults.exclude`, and type-check its Node/DOM boundary separately.
+- Keep intermediate responsive assertions data-driven at `781`, `1024`, `1280`, and `1439` pixels in addition to the phone, `780`, desktop, and wide projects. Do not duplicate the complete visual suite for each intermediate width.
+- Run representative member and administrator axe scans in explicit `normal-motion` and `reduced-motion` projects. Intentional axe exclusions are scenario-local, named in the test, and limited to a tracked existing UI/fixture condition; new rules remain fail-closed by default.
+- Accessibility fixtures install a catch-all route before navigation. Only same-origin static fixture assets and explicitly fulfilled synthetic API reads are allowed; `/agent`, chat/model endpoints, external origins, and any unhandled request fail the test through the post-test blocked-request assertion.
+- Cross-engine accessibility coverage uses the bounded `firefox-smoke` project. The runner checks the exact Playwright Firefox executable first: CI installs Chromium and Firefox and must run the project, while a local environment without Firefox prints the stable `SKIP: firefox executable unavailable` reason and still runs both Chromium motion projects.
 - The workspace fixture may import real presentational React components with deterministic synthetic data, but it must not mount Agent hooks, authenticate, call `/api`, open `/agent`, or contact a model. Abort unexpected requests and assert the blocked-request list again in `afterEach` so interactions cannot bypass the guard.
 - When a Workspace fixture asserts a transient pending state, its synthetic async action must wait on a one-shot, test-controlled release signal. The test first observes an explicit start marker and the disabled control, then releases the action and asserts the error or success projection. Do not use a short fixed `setTimeout` to keep pending UI visible; runner scheduling can skip that transient state.
 - Real Agent browser acceptance uses its separate `tests/browser/agent-e2e/` config and a local fake provider. Its runner must generate runtime-only credentials, use isolated Wrangler persistence and Playwright output directories, redact credentials from errors, remove temporary state, and expose only bounded non-sensitive provider counters.
@@ -58,6 +62,7 @@ await expect(imagePicker).toBeFocused();
 npm run check:frontend
 npm test
 npm run test:browser:workspace
+npm run test:browser:accessibility
 npm run test:browser:agent
 npm run typecheck
 npx wrangler deploy --dry-run

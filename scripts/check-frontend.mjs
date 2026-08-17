@@ -101,6 +101,12 @@ const reactAssetFiles = await readdir(path.join(root, "public/react-chat/assets"
 const legacyBuild = await readText(path.join(root, "public/legacy/index.html"));
 const reactSourceHtml = await readText(path.join(root, "client/index.html"));
 const deployWorkflow = await readText(path.join(root, ".github/workflows/deploy.yml"));
+const ciWorkflow = await readText(path.join(root, ".github/workflows/ci.yml"));
+const workspaceBrowserConfig = await readText(path.join(root, "tests/browser/playwright.config.ts"));
+const workspaceBrowserTests = await readText(path.join(root, "tests/browser/workspace-visual.spec.ts"));
+const accessibilityConfig = await readText(path.join(root, "tests/browser/accessibility.config.ts"));
+const accessibilityTests = await readText(path.join(root, "tests/browser/accessibility.spec.ts"));
+const accessibilityRunner = await readText(path.join(root, "scripts/run-browser-accessibility.mjs"));
 const wranglerConfig = await readText(path.join(root, "wrangler.jsonc"));
 assert(reactClient.includes('basePath: session.agent.basePath'), "React client: Agent base path must come from the authenticated session");
 assert(reactClient.includes('name: conversationAgentClientName(conversation.resourceId || session.agent.instance, conversation.id)'), "React client: each conversation must use stable resource identity when available");
@@ -196,6 +202,25 @@ assert(
     && reactMessageView.includes("memo(function MessageView")
     && reactClient.includes("? handleMessageAction"),
   "React transcript: streaming must coalesce follow-scroll work and preserve unchanged message renders",
+);
+assert(
+  [781, 1024, 1280, 1439].every((width) => workspaceBrowserTests.includes(String(width)))
+    && workspaceBrowserConfig.includes('name: "touch-390"')
+    && workspaceBrowserConfig.includes('name: "wide-1920"'),
+  "Workspace browser matrix: intermediate, phone, and wide viewport contracts are required",
+);
+assert(
+  accessibilityConfig.includes('name: "normal-motion"')
+    && accessibilityConfig.includes('name: "reduced-motion"')
+    && accessibilityConfig.includes('name: "firefox-smoke"')
+    && accessibilityConfig.includes('resolve(process.cwd(), "test-results/workspace-accessibility/results.json")')
+    && accessibilityTests.includes("new AxeBuilder({ page })")
+    && accessibilityTests.includes('page.route("**/*"')
+    && accessibilityTests.includes('url.pathname.startsWith("/api/")')
+    && accessibilityRunner.includes("SKIP: firefox executable unavailable")
+    && ciWorkflow.includes("playwright install --with-deps chromium firefox")
+    && ciWorkflow.includes("npm run test:browser:accessibility"),
+  "Workspace accessibility matrix: motion, axe, network guard, and capability-aware Firefox coverage are required",
 );
 assert(reactMain.includes("resolveClientSurface(window.location.pathname)"), "React admin: pathname routing must stay at the composition root");
 assert(reactAdminApp.includes("fetchAdminSession()") && reactAdminApp.includes("adminLogin(token)"), "React admin: authenticated session gate is missing");

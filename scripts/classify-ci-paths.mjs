@@ -10,6 +10,9 @@ const WORKSPACE_PREFIXES = [
 
 const WORKSPACE_FILES = new Set([
   "scripts/check-frontend.mjs",
+  "scripts/run-browser-accessibility.mjs",
+  "tests/browser/accessibility.config.ts",
+  "tests/browser/accessibility.spec.ts",
   "tests/browser/playwright.config.ts",
   "tests/browser/workspace-visual.spec.ts",
 ]);
