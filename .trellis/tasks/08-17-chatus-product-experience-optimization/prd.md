@@ -16,14 +16,14 @@ Resolve the highest-impact findings from the 2026-08-17 product audit across the
 
 ## Acceptance Criteria
 
-- [ ] All ten child tasks satisfy their own acceptance criteria and are linked to this parent.
-- [ ] Member requests have bounded recovery, draft persistence cannot break chat, model availability failures are visible, and quota state refreshes after turns.
-- [ ] Keyboard focus, live-region behavior, touch targets, and intermediate-width layouts meet the documented accessibility and responsive contracts.
-- [ ] Admin model monitoring remains useful under partial failure and its search/trend views represent the monitored data.
-- [ ] Initial bundles and streaming updates avoid the identified avoidable work while lazy chunks remain available under the service-worker contract.
-- [ ] Conversation pinning is available to members through the existing projection/update contract.
-- [ ] Automated coverage includes intermediate widths, normal and reduced motion, an accessibility baseline, and more than one browser engine where supported.
-- [ ] Full project quality gates pass without production deployment or live model traffic.
+- [x] All ten child tasks satisfy their own acceptance criteria and are linked to this parent.
+- [x] Member requests have bounded recovery, draft persistence cannot break chat, model availability failures are visible, and quota state refreshes after turns.
+- [x] Keyboard focus, live-region behavior, touch targets, and intermediate-width layouts meet the documented accessibility and responsive contracts.
+- [x] Admin model monitoring remains useful under partial failure and its search/trend views represent the monitored data.
+- [x] Initial bundles and streaming updates avoid the identified avoidable work while lazy chunks remain available under the service-worker contract.
+- [x] Conversation pinning is available to members through the existing projection/update contract.
+- [x] Automated coverage includes intermediate widths, normal and reduced motion, an accessibility baseline, and more than one browser engine where supported.
+- [x] Full project quality gates pass without production deployment or live model traffic.
 
 ## Notes
 
