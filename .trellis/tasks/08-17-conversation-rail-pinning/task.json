@@ -1,0 +1,71 @@
+{
+  "id": "conversation-rail-pinning",
+  "name": "conversation-rail-pinning",
+  "title": "Conversation rail pinning",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "frontend product experience optimization; no production deployment, live model probes, production observation task, or legacy rollout changes",
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": null,
+  "branch": "codex/chatus-product-optimization",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "bea1de1c32ec8a4cb8e4b137d79bab585e16d6e3",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/93",
+  "subtasks": [],
+  "children": [],
+  "parent": "08-17-chatus-product-experience-optimization",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structural checks passed.",
+        "at": "2026-08-17T03:36:09.105459+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "55 Vitest files and 823 tests passed.",
+        "at": "2026-08-17T03:36:09.670022+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace Playwright passed 120 tests with 70 conditional skips.",
+        "at": "2026-08-17T03:36:10.240277+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-provider Agent Playwright passed 3 tests.",
+        "at": "2026-08-17T03:36:10.802583+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-17T03:36:11.370774+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Wrangler packaging dry-run passed without deployment.",
+        "at": "2026-08-17T03:36:11.980070+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Git whitespace check passed.",
+        "at": "2026-08-17T03:36:12.557106+00:00"
+      }
+    ]
+  }
+}

@@ -6,6 +6,7 @@ import {
   createAgentConversation,
   deleteWorkspaceFile,
   exportUserData,
+  fetchWithTimeout,
   fetchAdminLegacySurfaces,
   fetchAdminLegacySurfaceCensus,
   fetchAdminSetupStatus,
@@ -259,6 +260,66 @@ const legacySurfaceSnapshot = {
   total: 1,
   surfaces: [legacySurfaceProjection],
 };
+
+describe("non-streaming request timeout boundary", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("returns a response and clears its deadline after success", async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok", { status: 200 }));
+
+    await expect(fetchWithTimeout("/api/fast", {}, 100)).resolves.toBeInstanceOf(Response);
+    expect(fetchSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("aborts stalled requests with a timeout-specific error", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    }));
+
+    const pending = fetchWithTimeout("/api/stalled", {}, 25);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "FetchTimeoutError" });
+    await vi.advanceTimersByTimeAsync(25);
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("preserves caller cancellation instead of relabeling it as a timeout", async () => {
+    vi.useFakeTimers();
+    const caller = new AbortController();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    }));
+
+    const pending = fetchWithTimeout("/api/cancelled", { signal: caller.signal }, 100);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    caller.abort();
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("normalizes a shared JSON request deadline as an actionable API timeout", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    }));
+
+    const pending = logout();
+    const rejected = expect(pending).rejects.toMatchObject<ApiError>({
+      name: "ApiError",
+      code: "request_timeout",
+      message: "请求超时，请稍后重试。",
+      status: 0,
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejected;
+  });
+});
 
 describe("admin logout client contract", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -1735,6 +1796,25 @@ describe("React client runtime validation", () => {
       expectedUpdatedAt: 20,
       resourceId: conversation.resourceId,
     });
+
+    const pinned = { ...manual, updatedAt: 22, pinned: true };
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, conversation: pinned }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await expect(updateAgentConversation(manual, { pinned: true })).resolves.toEqual(pinned);
+    expect(JSON.parse(String((fetchSpy.mock.calls[2][1] as RequestInit).body))).toEqual({
+      pinned: true,
+      expectedUpdatedAt: 21,
+      resourceId: conversation.resourceId,
+    });
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: true,
+      conversation: { ...pinned, privateOwner: "must-not-enter-client-state" },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(updateAgentConversation(pinned, { pinned: false }))
+      .rejects.toMatchObject({ code: "invalid_conversation_response", status: 502 });
     fetchSpy.mockRestore();
   });
 

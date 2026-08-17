@@ -1,5 +1,6 @@
 import { ArrowLeft, Download, Eye, LogIn, LogOut, Menu, PanelRightOpen, Pencil, Route } from "lucide-react";
-import type { AgentConversation, MemberModelAvailability, SessionProjection } from "../lib/api";
+import type { AgentConversation, SessionProjection } from "../lib/api";
+import type { ModelAvailabilityViewState } from "../lib/model-availability";
 import { resolveConversationAccessPermissions } from "../lib/state";
 import { ProductBrand } from "./ProductBrand";
 import { ModelAvailabilityBadge } from "./ModelAvailabilityBadge";
@@ -11,8 +12,7 @@ export function WorkspaceHeader({
   conversation,
   routeId,
   connectionState,
-  modelAvailability,
-  modelAvailabilityRefreshing,
+  modelAvailabilityState,
   busy,
   accountBusy,
   logoutPending,
@@ -28,8 +28,7 @@ export function WorkspaceHeader({
   conversation: AgentConversation | null;
   routeId: string;
   connectionState: ConnectionState;
-  modelAvailability?: MemberModelAvailability | null;
-  modelAvailabilityRefreshing?: boolean;
+  modelAvailabilityState?: ModelAvailabilityViewState;
   busy: boolean;
   accountBusy: boolean;
   logoutPending: boolean;
@@ -43,13 +42,23 @@ export function WorkspaceHeader({
 }) {
   const route = session.routes.find((candidate) => candidate.id === routeId);
   const health = routeHealthLabel(route?.healthStatus);
-  const availability = modelAvailability?.routes.find((candidate) => candidate.routeId === routeId);
+  const availability = modelAvailabilityState?.data?.routes.find((candidate) => candidate.routeId === routeId);
   const connection = connectionLabel(connectionState);
   const logoutLabel = logoutPending ? "正在退出登录" : "退出登录";
   const permissions = resolveConversationAccessPermissions(conversation?.accessRole);
   const sharedRole = conversation?.accessRole && conversation.accessRole !== "owner"
     ? conversation.accessRole
     : undefined;
+  const routeStatusLine = (
+    <small>
+      {modelAvailabilityState && (
+        <><span>模型可用性：{availability
+          ? <><ModelAvailabilityBadge route={availability} compact />{modelAvailabilityState.status === "stale" ? " · 旧数据" : ""}</>
+          : availabilityStateLabel(modelAvailabilityState)}</span> · </>
+      )}
+      <span>任务健康：{health}</span>{modelAvailabilityState?.refreshing ? " · 更新中" : ""}
+    </small>
+  );
 
   return (
     <header className="workspace-header">
@@ -93,7 +102,7 @@ export function WorkspaceHeader({
             <Route size={14} aria-hidden="true" />
             <span className="header-route-copy">
               <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
-              <small>{availability ? <><ModelAvailabilityBadge route={availability} compact /> · {health}</> : health}{modelAvailabilityRefreshing ? " · 更新中" : ""}</small>
+              {routeStatusLine}
             </span>
           </div>
         ) : (
@@ -101,7 +110,7 @@ export function WorkspaceHeader({
             <Route size={14} aria-hidden="true" />
             <span className="header-route-copy">
               <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
-              <small>{availability ? <><ModelAvailabilityBadge route={availability} compact /> · {health}</> : health}{modelAvailabilityRefreshing ? " · 更新中" : ""}</small>
+              {routeStatusLine}
             </span>
           </button>
         )}
@@ -127,6 +136,14 @@ export function WorkspaceHeader({
       </div>
     </header>
   );
+}
+
+function availabilityStateLabel(state: ModelAvailabilityViewState): string {
+  if (state.status === "loading") return "读取中";
+  if (state.status === "error") return "读取失败";
+  if (state.status === "empty") return "暂无记录";
+  if (state.status === "stale") return "旧数据";
+  return "暂无此线路记录";
 }
 
 function routeHealthLabel(status: SessionProjection["routes"][number]["healthStatus"]): string {

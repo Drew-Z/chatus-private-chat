@@ -14,12 +14,14 @@
     "acceptance:production": "node scripts/acceptance-production.mjs",
     "census:production": "node scripts/collect-production-legacy-census.mjs",
     "test:browser:agent": "node scripts/run-browser-agent-e2e.mjs",
+    "test:browser:accessibility": "node scripts/run-browser-accessibility.mjs",
     "test:browser:workspace": "playwright test --config tests/browser/playwright.config.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit && tsc -p client/tsconfig.json --noEmit && tsc -p tests/browser/tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
     "@cloudflare/vitest-pool-workers": "^0.18.4",
     "@cloudflare/workers-types": "^5.20260708.1",
     "@playwright/test": "1.62.0",

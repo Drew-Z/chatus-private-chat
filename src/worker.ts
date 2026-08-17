@@ -5740,6 +5740,7 @@ async function handleUpdateAgentConversation(
   const body = await readJson<{
     resourceId?: unknown;
     title?: unknown;
+    pinned?: unknown;
     routeId?: unknown;
     skillMode?: unknown;
     skillIds?: unknown;
@@ -5749,7 +5750,10 @@ async function handleUpdateAgentConversation(
   if (!expectedUpdatedAt) {
     return jsonResponse({ error: "expected_updated_at_required", message: "缺少会话版本，请刷新后重试" }, 400);
   }
-  const settingsMutation = hasOwn(body, "routeId") || hasOwn(body, "skillMode") || hasOwn(body, "skillIds");
+  if (hasOwn(body, "pinned") && typeof body.pinned !== "boolean") {
+    return jsonResponse({ error: "invalid_conversation_pin", message: "会话置顶状态无效" }, 400);
+  }
+  const settingsMutation = hasOwn(body, "pinned") || hasOwn(body, "routeId") || hasOwn(body, "skillMode") || hasOwn(body, "skillIds");
   const access = session.kind === "member"
     ? await resolveConversationAccessForMember(
       env,
@@ -5780,6 +5784,7 @@ async function handleUpdateAgentConversation(
     id,
     expectedUpdatedAt,
     title: typeof body.title === "string" ? body.title : undefined,
+    pinned: typeof body.pinned === "boolean" ? body.pinned : undefined,
     routeId: settings.routeId,
     skillMode: settings.skillMode,
     skillIds: settings.skillIds,

@@ -19,6 +19,114 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Legacy page modules use module-scoped state. Reusable helpers accept explicit values and return data or DOM-safe output.
 - Pass the owning entity explicitly for asynchronous work. Cloud saves and summaries retain the chat/session ID so results do not update whichever chat happens to be active later.
 
+## Role-Specific Loading And Transcript Rendering
+
+- Keep `App.tsx` as the small eager session gate. Load the member `ChatWorkspace` and administrator `AdminApp` through separate `React.lazy` boundaries so one authenticated role does not evaluate the other role's full workspace.
+- Every role boundary uses the shared accessible loading status and the application error boundary. A chunk failure must expose the reload recovery action instead of leaving a blank shell.
+- Content-hashed same-origin scripts and styles under `/react-chat/assets/` are runtime-cacheable after their first successful response. Do not pre-cache every role chunk or cache non-fingerprinted API/navigation responses under this rule.
+- A streaming message keeps the same message object identity supplied by the Agent hook. Pass streaming/action state separately; do not map the full transcript merely to decorate one message.
+- Memoized message rows receive stable handlers that accept the owning `messageId`. Avoid per-row closure recreation in the transcript map, and include every visible action-availability value in the memo comparison.
+
+## Workspace Interaction Accessibility
+
+- Shared focus-ring tokens must be opaque and keep at least 3:1 contrast against adjacent light and dark workspace surfaces. Do not rely on translucent browser blending for the only visible focus indicator.
+- Compact icon controls keep their glyph size but expose a dependable 44px interaction box in the member workspace. When layout cannot provide 44px, document the target-size exception and preserve spacing from adjacent actions.
+- The changing transcript is not a live region. Streaming lifecycle changes use one visually hidden `role="status"`, `aria-live="polite"`, `aria-atomic="true"` element with concise submitted, first-output, streaming, recovering, completed, stopped, and failed text.
+- A visual thinking/progress row is `aria-hidden` when the atomic status already communicates the same state. Never make the entire message list live or repeatedly announce accumulated assistant text.
+- Structural checks guard the focus tokens and live-region ownership; browser fixtures verify keyboard focus, target geometry, reduced-motion behavior, and desktop/touch containment without authenticating or contacting an Agent or model.
+
+## Member Model Availability States
+
+- Model availability is a five-state browser projection: `loading | success | empty | stale | error`. `empty` is a successful response with no route records; `error` is a failed read with no prior result; `stale` retains the last successful result after a refresh failure.
+- The workspace owns the read generation and retry. A newer request is the only one allowed to replace state, and manual retry replays only `GET /api/model-availability`; it never invokes model discovery, validation, completion, or a Provider probe.
+- Header copy labels aggregate `模型可用性` separately from per-route passive `任务健康`. Do not present a route's most recent real-task health as if it were the current aggregate availability response.
+- The model inspector keeps stale rows visible with an explicit old-data warning and timestamp. Initial errors expose a retry command, while a successful empty response explicitly says that it differs from a read failure.
+- Pure transition tests cover all five states. The synthetic Workspace fixture renders loading, success, empty, stale, error, and retry states while aborting unexpected requests.
+
+## Quota-Aware Member Composer
+
+- Derive Composer quota state only from the exact session usage projection. A complete positive-limit projection is `available` or `exhausted`; missing, malformed, or refresh-failed data is `unknown` and must not disable sending.
+- Known exhaustion makes the textarea read-only, disables attachment acquisition and every submit path, and exposes the server-reported used/limit values plus a `刷新额度` command. The form submit handler repeats the same guard so Enter/requestSubmit cannot bypass the disabled send button.
+- Available usage displays `今日剩余 remaining / limit` in the reserved Composer status row. Active turn lifecycle copy takes priority while a turn is running; unknown usage does not display a false zero.
+- The synthetic Workspace fixture covers available, unknown, exhausted, refresh failure with retained exhaustion, and successful recovery without any API or Agent request.
+
+## Intermediate Workspace Layout
+
+- At `1440px` and wider, the workspace may use the persistent rail/chat/inspector grid. From `1024px` through `1439px`, keep the conversation rail and present the inspector as a right overlay. From `781px` through `1023px`, both the rail and inspector are overlays and the chat owns the full grid track.
+- The medium grid uses `var(--rail-width) minmax(520px, 1fr)` and every main/panel track keeps `min-width: 0`; an open inspector must not add a grid column below 1440px.
+- Overlay presentation does not delete the persisted inspector preference. CSS decides whether open state consumes a track, while the React owner keeps the same open/close persistence contract.
+- Inspector overlay focus behavior uses `(max-width: 1439px)` and sidebar drawer behavior uses `(max-width: 1023px)`. These media queries must move with their CSS breakpoints so initial focus, Tab containment, Escape, and focus restoration remain aligned with visual presentation.
+- Inspector overlays render a dismissible scrim below the panel. Browser coverage loops through `781`, `1024`, `1280`, and `1439` pixels with persisted panel state off/on, asserts unchanged main width, composer containment, no page overflow, focus/Escape behavior, and retained screenshots.
+
+## Scenario: Conversation Rail Pinning
+
+### 1. Scope / Trigger
+
+- Trigger: changing the member conversation rail, conversation summary ordering, or the existing `PATCH /api/agent/conversations/:id` metadata mutation to expose pin/unpin.
+
+### 2. Signatures
+
+```typescript
+type AgentConversationPatch = {
+  id: string;
+  expectedUpdatedAt: number;
+  pinned?: boolean;
+  // existing title/route/Skill fields
+};
+
+orderConversationRail<T extends { id: string; pinned: boolean; updatedAt: number }>(items: readonly T[]): T[]
+```
+
+### 3. Contracts
+
+- `pinned` is an optional boolean in the existing client, Worker, and TeamAgent patch contract. The Worker validates it at the request boundary and treats it as a conversation-settings mutation, which is owner-only under the existing ACL matrix; shared editor/viewer requests are denied without changing storage.
+- TeamAgent preserves all omitted fields, updates the conversation version monotonically, and returns the authoritative conversation projection. The client sends `expectedUpdatedAt` and replaces the local item only with the exact decoded response; it does not optimistically invent a pin state.
+- The rail derives a new array with pinned conversations first, then descending `updatedAt`, then original input position for deterministic ties. The server projection and React state array are never sorted in place.
+- Each pin button is a native button with `aria-pressed`, a 44px touch target at the mobile breakpoint, and an accessible label containing the conversation title. Pin/unpin, rename, share, and delete controls for that row are disabled while its pin request is in flight.
+- One in-flight guard is kept per conversation, so repeated pointer, keyboard, or touch activation cannot submit contradictory updates. Failed mutations leave the previous projection visible and expose the existing retryable workspace error/refresh path.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| `pinned` is missing | Preserve the stored value |
+| `pinned` is not boolean | `400 invalid_conversation_pin`; perform no write |
+| Shared editor/viewer sends pin patch | Existing `conversation_action_denied`; perform no write |
+| `expectedUpdatedAt` is stale | Existing `conversation_conflict`; preserve current server state |
+| Pin response is successful | Replace the row with the returned authoritative projection and re-derive order |
+| Pin response fails or is lost | Keep the prior row, expose a retryable error, and never fabricate pin state |
+| Same row is activated twice while pending | At most one request is sent |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a member pins an older conversation, the row moves ahead of unpinned conversations, reload returns `pinned: true`, and keyboard/touch users can announce and reverse the state.
+- Base: two rows have the same timestamp; their source order remains stable while the pinned group still precedes the unpinned group.
+- Bad: let editor/viewer pin an owner-global preference, sort the canonical server array in place, or toggle optimistically twice before the first versioned response returns.
+
+### 6. Tests Required
+
+- Client API tests assert the boolean request body, `expectedUpdatedAt`, authoritative response replacement, and rejection of an injected extra conversation field.
+- TeamAgent/Worker tests cover pin, unpin, reload projection, stale version, malformed boolean, owner ACL success, and editor/viewer denial without any model or Provider request.
+- Pure state tests cover pinned-first ordering, descending recency, deterministic ties, and non-mutation of the input array.
+- Synthetic Workspace browser coverage asserts accessible names/state, pinned ordering, success, failure/retry, pending duplicate prevention, mobile target semantics, and absence of pin controls for shared roles. The fixture must remain unauthenticated and model-free.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+conversation.pinned = !conversation.pinned;
+conversations.sort((left, right) => Number(right.pinned) - Number(left.pinned));
+```
+
+#### Correct
+
+```typescript
+const updated = await updateAgentConversation(current, { pinned: nextPinned });
+setConversations((items) => items.map((item) => item.id === updated.id ? updated : item));
+const visible = orderConversationRail(conversations);
+```
+
 ## Admin Provider Discovery And Logical Model Offerings
 
 - Keep `routeModelInput` as an ordinary manual text input. A native `datalist` is not an acceptable full-list browser because the browser filters options using the current input value.

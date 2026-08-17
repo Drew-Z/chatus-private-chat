@@ -132,14 +132,23 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium firefox
       - run: npm run test:browser:workspace
+      - run: npm run test:browser:accessibility
       - name: Retain Workspace Playwright artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: workspace-playwright-${{ github.sha }}
           path: test-results/workspace-visual
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain Workspace Accessibility artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-accessibility-${{ github.sha }}
+          path: test-results/workspace-accessibility
           if-no-files-found: error
           retention-days: 14
 

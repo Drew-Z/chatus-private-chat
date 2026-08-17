@@ -317,6 +317,93 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   await attachScreenshot(page, testInfo, "workspace");
 });
 
+test("lazy workspace renders an accessible fallback before its chunk resolves", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "lazy boundary coverage needs one desktop pass");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(/LazyWorkspaceFixture\.tsx/, async (route) => {
+    await gate;
+    await route.continue();
+  });
+
+  const navigation = page.goto("/?view=lazy-workspace");
+  await expect(page.getByRole("heading", { name: "正在打开工作区" })).toBeVisible();
+  release();
+  await navigation;
+  await expect(page.getByRole("region", { name: "已加载工作区" })).toHaveText("工作区已加载");
+});
+
+test("transcript follow coalesces streaming motion and preserves manual scroll", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "stream-follow coverage needs one desktop pass");
+  await page.addInitScript(() => {
+    const target = window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] };
+    target.__transcriptScrollBehaviors = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function scrollIntoView(options?: boolean | ScrollIntoViewOptions) {
+      if (typeof options === "object" && options.behavior) target.__transcriptScrollBehaviors.push(options.behavior);
+      return original.call(this, options);
+    };
+  });
+  await page.goto("/?view=transcript-follow&active=1");
+  const transcript = page.getByTestId("transcript-follow-scroll");
+  await expect.poll(() => transcript.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.at(-1))).toBe("auto");
+
+  await transcript.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const followCalls = await page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.length);
+  await page.getByRole("button", { name: "追加流式片段" }).click();
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await transcript.evaluate((element) => element.scrollTop)).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.length)).toBe(followCalls);
+
+  await page.goto("/?view=transcript-follow&active=0");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __transcriptScrollBehaviors: ScrollBehavior[] }).__transcriptScrollBehaviors.at(-1))).toBe("auto");
+});
+
+test("intermediate widths keep persisted panels from shrinking the chat", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "intermediate matrix runs once with explicit viewport sizes");
+
+  for (const width of [781, 1024, 1280, 1439]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    const closed = await intermediateGeometry(page);
+    expect(closed.documentFits).toBe(true);
+    expect(closed.composerFits).toBe(true);
+    expect(closed.mainWidth).toBeGreaterThanOrEqual(width <= 1023 ? width - 1 : width - 253);
+
+    await page.goto("/?inspector=open");
+    const inspector = page.locator(".conversation-inspector");
+    await expect(inspector).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "关闭对话上下文" })).toBeFocused();
+    await expect(page.locator(".inspector-scrim")).toBeVisible();
+    const open = await intermediateGeometry(page);
+    expect(open.documentFits).toBe(true);
+    expect(open.composerFits).toBe(true);
+    expect(Math.abs(open.mainWidth - closed.mainWidth)).toBeLessThanOrEqual(1);
+    await attachScreenshot(page, testInfo, `intermediate-${width}`);
+    await page.keyboard.press("Escape");
+    await expect(inspector).toHaveCount(0);
+
+    if (width <= 1023) {
+      const opener = page.getByRole("button", { name: "打开会话" });
+      await expect(opener).toBeVisible();
+      await opener.click();
+      const sidebar = page.locator(".conversation-sidebar.open");
+      await expect(sidebar).toBeVisible();
+      await expect(sidebar.getByRole("button", { name: "关闭侧栏" })).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".conversation-sidebar.open")).toHaveCount(0);
+      await expect(opener).toBeFocused();
+    } else {
+      await expect(page.getByRole("button", { name: "打开会话" })).toHaveCount(0);
+      await expect(page.locator(".conversation-sidebar")).toBeVisible();
+    }
+  }
+});
+
 test("bounded Provider progress stays neutral and contained", async ({ page }, testInfo) => {
   test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "Provider progress targets desktop and 390px");
 
@@ -733,6 +820,67 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await attachScreenshot(page, testInfo, "guest-workspace");
 });
 
+test("member model availability keeps loading empty error stale and success distinct", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "availability state matrix needs one deterministic browser pass");
+
+  await page.goto("/?inspector=open&availability=loading");
+  await expect(page.locator(".model-availability-notice.loading")).toContainText("正在读取模型可用性");
+  await expect(page.locator(".header-route-button")).toContainText("模型可用性：读取中");
+  await expect(page.locator(".header-route-button")).toContainText("任务健康：");
+
+  await page.goto("/?inspector=open&availability=empty");
+  await expect(page.locator(".model-availability-notice.empty")).toContainText("当前没有可用性记录，这与读取失败不同");
+  await expect(page.locator(".model-availability-list")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重试读取" })).toHaveCount(0);
+
+  await page.goto("/?inspector=open&availability=error");
+  const error = page.locator(".model-availability-notice.error");
+  await expect(error).toContainText("合成可用性读取失败");
+  await error.getByRole("button", { name: "重试读取" }).click();
+  await expect(page.getByTestId("model-availability-retry-count")).toHaveText("1");
+  await expect(page.locator(".model-availability-notice.loading")).toContainText("正在读取模型可用性");
+
+  await page.goto("/?inspector=open&availability=stale");
+  const stale = page.locator(".model-availability-notice.stale");
+  await expect(stale).toContainText("当前显示上次成功结果");
+  await expect(page.locator(".model-availability-list")).toBeVisible();
+  await expect(page.locator(".model-availability-footnote")).toContainText("当前显示旧数据");
+
+  await page.goto("/?inspector=open&availability=success");
+  await expect(page.locator(".model-availability-notice")).toHaveCount(0);
+  await expect(page.locator(".model-availability-list")).toBeVisible();
+  await expect(page.locator(".header-route-button")).toContainText("模型可用性：");
+  await expect(page.locator(".header-route-button")).toContainText("任务健康：");
+});
+
+test("member composer blocks only known exhausted quota and recovers after refresh", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "quota state matrix needs one deterministic browser pass");
+
+  await page.goto("/?quota=available");
+  await expect(page.locator(".composer-status")).toContainText("今日剩余");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+
+  await page.goto("/?quota=unknown");
+  await expect(page.locator(".composer-status")).not.toContainText("额度已用完");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+
+  await page.goto("/?quota=exhausted&quotaRefresh=error");
+  const textarea = page.getByRole("textbox", { name: "消息" });
+  await expect(textarea).toHaveAttribute("readonly", "");
+  await expect(page.locator(".composer-status")).toContainText("今日消息额度已用完");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "刷新额度" }).click();
+  await expect(page.getByTestId("usage-refresh-count")).toHaveText("1");
+  await expect(page.locator(".composer-status")).toContainText("今日消息额度已用完");
+
+  await page.goto("/?quota=exhausted");
+  await page.getByRole("button", { name: "刷新额度" }).click();
+  await expect(page.getByTestId("usage-refresh-count")).toHaveText("1");
+  await expect(page.getByRole("textbox", { name: "消息" })).not.toHaveAttribute("readonly", "");
+  await expect(page.locator(".composer-status")).toContainText("今日剩余");
+  await expect(page.getByRole("button", { name: "发送", exact: true })).toBeEnabled();
+});
+
 test("member Skill mode switches between automatic and exact manual selection", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "查看线路与状态" }).click();
   await expect(page.locator(".model-availability-footnote")).toContainText("更新时间：");
@@ -1002,6 +1150,14 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "模型监控 · 最近 24 小时" })).toBeVisible();
   await expect(page.getByLabel("最近 24 小时模型监控摘要")).toContainText("Provider 请求");
   await expect(page.getByText("仅统计实际 Provider attempt；Fallback 单独计数。", { exact: false })).toBeVisible();
+  await expect(page.getByRole("img", { name: /尝试 42，成功 36，失败 4，进行中 2，完成成功率 90%/ })).toBeVisible();
+  await page.getByLabel("筛选运营数据").fill("Fixture Provider");
+  await page.getByRole("button", { name: "Provider", exact: true }).click();
+  await expect(page.getByText("Provider · Fixture Provider", { exact: true })).toBeVisible();
+  await page.getByLabel("筛选运营数据").fill("monitor-no-match");
+  await expect(page.getByText("没有匹配的模型监控记录", { exact: true })).toBeVisible();
+  await page.getByLabel("筛选运营数据").fill("");
+  await page.getByRole("button", { name: "线路", exact: true }).click();
   await expect(page.getByRole("button", { name: "模型监控线路：下一页" })).toBeVisible();
   await page.getByRole("button", { name: "模型监控线路：下一页" }).click();
   await expect(page.getByText("线路 · 监控线路 21", { exact: true })).toBeVisible();
@@ -1629,6 +1785,75 @@ test("operations initial error is distinct from loading and retryable", async ({
   await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
 });
 
+test("operations isolates section failures and retries only the requested read", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "partial failure coverage needs one desktop browser pass");
+  let financeReads = 0;
+  let monitorReads = 0;
+  await page.route("**/api/admin/**", async (route) => {
+    const url = new URL(route.request().url());
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (url.pathname === "/api/admin/stats") {
+      await json({
+        day: "2026-07-26",
+        days: ["2026-07-26"],
+        totals: { requests: 3, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 },
+        trend: [{ day: "2026-07-26", requests: 3, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 }],
+        routeStats: [], users: [], routes: [], configSource: "kv", accessCodeSource: "managed",
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/audit" || url.pathname === "/api/admin/feedback") {
+      await json({ entries: [] });
+      return;
+    }
+    if (url.pathname === "/api/admin/legacy-surfaces") {
+      await json({
+        version: 1,
+        manifestDigest: "a".repeat(64),
+        generatedAt: 1785032000000,
+        total: 1,
+        surfaces: [{
+          version: 1, surfaceId: "legacy.surface-alpha", revision: 0, manifestVersion: 1,
+          manifestDigest: "a".repeat(64), phase: "discovered", readControl: "enabled", writeControl: "enabled",
+          owner: "unassigned", blockerCodes: ["maximum_phase_reached", "owner_unassigned"], observationStartedAt: 0,
+          observationRequiredUntil: 0, lastTransitionAt: 0, lastDeploymentSha: "",
+          evidence: { required: 0, present: 0, complete: true }, allowedActions: [],
+        }],
+      });
+      return;
+    }
+    if (url.pathname === "/api/admin/provider-finance") {
+      financeReads += 1;
+      await json(financeReads <= 2
+        ? { error: "finance_unavailable", message: "合成 Provider 财务读取失败。" }
+        : { version: 1, generatedAt: 1785032000000, periodStart: 1782440000000, hardBudgetEnforcement: "instance_provider_v1", providers: [] }, financeReads <= 2 ? 503 : 200);
+      return;
+    }
+    if (url.pathname === "/api/admin/model-monitor") {
+      monitorReads += 1;
+      await json({ error: "model_monitor_unavailable", message: "合成模型监控读取失败。", retryable: true }, 503);
+      return;
+    }
+    throw new Error(`unexpected partial operations request: ${route.request().method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=operations-panel");
+  await expect(page.getByLabel("7 日运营摘要")).toContainText("3");
+  await expect(page.getByRole("heading", { name: "7 日请求趋势" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试Provider 财务与预算" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试模型监控" })).toBeVisible();
+  expect({ financeReads, monitorReads }).toEqual({ financeReads: 2, monitorReads: 2 });
+
+  await page.getByRole("button", { name: "重试Provider 财务与预算" }).click();
+  await expect(page.getByRole("button", { name: "重试Provider 财务与预算" })).toHaveCount(0);
+  expect({ financeReads, monitorReads }).toEqual({ financeReads: 3, monitorReads: 2 });
+  await expect(page.getByRole("heading", { name: "Provider 容量" })).toBeVisible();
+
+  await page.getByRole("button", { name: "重试模型监控" }).click();
+  await expect(page.getByRole("button", { name: "重试模型监控" })).toBeVisible();
+  expect(monitorReads).toBe(3);
+});
+
 test("member policy editing and usage reset stay usable on desktop and touch", async ({ page }, testInfo) => {
   test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "member policy coverage targets desktop and 390px");
   let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
@@ -2048,6 +2273,7 @@ test("viewer and editor receive only their bounded conversation controls", async
   await expect(page.locator(".composer")).toHaveCount(0);
   await expect(page.getByText("查看者权限：可以阅读这段对话，但不能发送消息或修改内容。", { exact: true })).toBeVisible();
   await expect(viewerRow.getByRole("button", { name: "重命名", exact: true })).toHaveCount(0);
+  await expect(viewerRow.getByRole("button", { name: /置顶会话|取消置顶/ })).toHaveCount(0);
   await expect(viewerRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
   await expect(viewerRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
@@ -2064,6 +2290,7 @@ test("viewer and editor receive only their bounded conversation controls", async
   await expect(page.locator(".composer")).toBeVisible();
   await expect(page.getByRole("button", { name: "当前会话不支持附件" })).toBeDisabled();
   await expect(editorRow.getByRole("button", { name: "重命名", exact: true })).toBeVisible();
+  await expect(editorRow.getByRole("button", { name: /置顶会话|取消置顶/ })).toHaveCount(0);
   await expect(editorRow.getByRole("button", { name: "删除会话", exact: true })).toHaveCount(0);
   await expect(editorRow.getByRole("button", { name: "管理共享", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "文件", exact: true })).toHaveCount(0);
@@ -2076,6 +2303,42 @@ test("viewer and editor receive only their bounded conversation controls", async
     bodyFits: document.body.scrollWidth <= document.body.clientWidth,
   }));
   expect(containment).toEqual({ documentFits: true, bodyFits: true });
+});
+
+test("conversation rail pin controls preserve order, accessibility state, and duplicate safety", async ({ page }) => {
+  await page.goto("/?pin=rail&drawer=open");
+  const rows = page.locator(".conversation-row");
+  await expect(rows.nth(0)).toContainText("第二个会话");
+  const longRow = rows.filter({ hasText: "整理一个很长很长的项目复盘标题" });
+  const pinButton = longRow.locator("button.conversation-pin");
+  const pinAccessibleButton = longRow.getByRole("button", { name: /置顶会话：整理一个很长很长的项目复盘标题/ });
+  await expect(pinButton).toHaveAttribute("aria-pressed", "false");
+  await pinAccessibleButton.click();
+  await expect(pinButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".conversation-row").first()).toContainText("整理一个很长很长的项目复盘标题");
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "1");
+
+  await page.goto("/?pin=fail&drawer=open");
+  const failedRow = page.locator(".conversation-row").filter({ hasText: "整理一个很长很长的项目复盘标题" });
+  const failedButton = failedRow.locator("button.conversation-pin");
+  await failedButton.click();
+  await expect(failedButton).toBeDisabled();
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "1");
+  await page.evaluate(() => window.dispatchEvent(new Event("chatus:fixture:pin-release")));
+  await expect(page.getByRole("alert")).toContainText("会话置顶保存失败");
+  await expect(failedButton).toBeEnabled();
+  await failedButton.click();
+  await page.evaluate(() => window.dispatchEvent(new Event("chatus:fixture:pin-release")));
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "2");
+
+  await page.goto("/?pin=pending&drawer=open");
+  const pendingRow = page.locator(".conversation-row").filter({ hasText: "整理一个很长很长的项目复盘标题" });
+  const pendingButton = pendingRow.locator("button.conversation-pin");
+  await pendingButton.click();
+  await expect(pendingButton).toBeDisabled();
+  await expect(page.getByTestId("pin-fixture-state")).toHaveAttribute("data-attempts", "1");
+  await page.evaluate(() => window.dispatchEvent(new Event("chatus:fixture:pin-release")));
+  await expect(pendingButton).toHaveAttribute("aria-pressed", "true");
 });
 
 test("mobile drawer and delete confirmation preserve focus", async ({ page }, testInfo) => {
@@ -2104,6 +2367,26 @@ test("mobile drawer and delete confirmation preserve focus", async ({ page }, te
 async function releaseLegacySurfaceTransition(page: Page): Promise<void> {
   await page.evaluate(() => {
     window.dispatchEvent(new Event("chatus:fixture:legacy-surface-transition-release"));
+  });
+}
+
+async function intermediateGeometry(page: Page): Promise<{
+  mainWidth: number;
+  documentFits: boolean;
+  composerFits: boolean;
+}> {
+  return page.evaluate(() => {
+    const main = document.querySelector<HTMLElement>(".workspace-main");
+    const composer = document.querySelector<HTMLElement>(".composer-box");
+    if (!main || !composer) throw new Error("missing intermediate workspace geometry");
+    const mainRect = main.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    return {
+      mainWidth: mainRect.width,
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth
+        && document.body.scrollWidth <= document.body.clientWidth,
+      composerFits: composerRect.left >= 0 && composerRect.right <= window.innerWidth,
+    };
   });
 }
 

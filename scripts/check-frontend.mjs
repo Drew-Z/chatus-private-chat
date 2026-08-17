@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -77,6 +77,10 @@ const reactWorkspaceHeader = await readText(path.join(root, "client/src/componen
 const reactMemberLogoutNotice = await readText(path.join(root, "client/src/components/MemberLogoutNotice.tsx"));
 const reactMcpConnections = await readText(path.join(root, "client/src/components/McpConnectionsDialog.tsx"));
 const reactMcpOAuth = await readText(path.join(root, "client/src/lib/mcp-oauth.ts"));
+const reactDevicePreferences = await readText(path.join(root, "client/src/lib/device-preferences.ts"));
+const reactTranscriptFollow = await readText(path.join(root, "client/src/lib/transcript-follow.ts"));
+const reactModelAvailabilityState = await readText(path.join(root, "client/src/lib/model-availability.ts"));
+const reactState = await readText(path.join(root, "client/src/lib/state.ts"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
 const reactAdminWorkspace = await readText(path.join(root, "client/src/components/AdminWorkspace.tsx"));
 const reactAdminSetup = await readText(path.join(root, "client/src/components/AdminSetupGuide.tsx"));
@@ -93,9 +97,16 @@ const reactApi = await readText(path.join(root, "client/src/lib/api.ts"));
 const reactApp = await readText(path.join(root, "client/src/App.tsx"));
 const reactMain = await readText(path.join(root, "client/src/main.tsx"));
 const reactBuild = await readText(path.join(root, "public/react-chat/index.html"));
+const reactAssetFiles = await readdir(path.join(root, "public/react-chat/assets"));
 const legacyBuild = await readText(path.join(root, "public/legacy/index.html"));
 const reactSourceHtml = await readText(path.join(root, "client/index.html"));
 const deployWorkflow = await readText(path.join(root, ".github/workflows/deploy.yml"));
+const ciWorkflow = await readText(path.join(root, ".github/workflows/ci.yml"));
+const workspaceBrowserConfig = await readText(path.join(root, "tests/browser/playwright.config.ts"));
+const workspaceBrowserTests = await readText(path.join(root, "tests/browser/workspace-visual.spec.ts"));
+const accessibilityConfig = await readText(path.join(root, "tests/browser/accessibility.config.ts"));
+const accessibilityTests = await readText(path.join(root, "tests/browser/accessibility.spec.ts"));
+const accessibilityRunner = await readText(path.join(root, "scripts/run-browser-accessibility.mjs"));
 const wranglerConfig = await readText(path.join(root, "wrangler.jsonc"));
 assert(reactClient.includes('basePath: session.agent.basePath'), "React client: Agent base path must come from the authenticated session");
 assert(reactClient.includes('name: conversationAgentClientName(conversation.resourceId || session.agent.instance, conversation.id)'), "React client: each conversation must use stable resource identity when available");
@@ -111,7 +122,7 @@ assert(reactClient.includes("addToolApprovalResponse"), "React client: tool appr
 const memberLogoutHandler = reactClient.match(/const handleLogout = async \(\) => \{[\s\S]*?\n  \};/)?.[0] || "";
 assert(memberLogoutHandler.includes("if (busy || accountOperationBusy || logoutInFlight.current) return;"), "React client: member logout must remain single-flight and must not abandon an active Agent or account operation");
 assert(memberLogoutHandler.includes('setLogoutState({ status: "pending" })') && memberLogoutHandler.includes('status: "error"'), "React client: member logout needs explicit pending and retryable error states");
-assert(memberLogoutHandler.indexOf("await onLogout();") >= 0 && memberLogoutHandler.indexOf("await onLogout();") < memberLogoutHandler.indexOf("clearUserDrafts(session.user);"), "React client: member drafts must clear only after authoritative logout success");
+assert(memberLogoutHandler.indexOf("await onLogout();") >= 0 && memberLogoutHandler.indexOf("await onLogout();") < memberLogoutHandler.indexOf("clearUserDrafts(session.user, draftStorageWriter);"), "React client: member drafts must clear only after authoritative logout success");
 assert(reactWorkspaceHeader.includes("logoutPending: boolean") && reactWorkspaceHeader.includes('const logoutLabel = logoutPending ? "正在退出登录" : "退出登录"'), "React client: logout control needs an explicit pending projection and accessible label");
 assert(reactWorkspaceHeader.includes("disabled={logoutPending || busy || accountBusy}") && reactWorkspaceHeader.includes("aria-label={logoutLabel}"), "React client: logout control must disable and announce its pending state");
 assert(reactClient.includes("<MemberLogoutNotice") && reactMemberLogoutNotice.includes('role="alert"') && reactMemberLogoutNotice.includes("重试退出"), "React client: failed member logout needs a dedicated accessible retry action");
@@ -122,9 +133,11 @@ assert(reactMcpConnections.includes("dialog.showModal()") && reactMcpConnections
 assert(reactClient.includes("await chat.sendMessage(text ? { text, files: fileParts } : { files: fileParts })"), "React client: text and attachment-only send failures must be observed");
 assert(reactClient.includes("resolvePendingDraftAction("), "React client: SDK resolve-with-error status must resolve pending drafts explicitly");
 assert(reactClient.includes("const value = input || pendingSubmission?.text || \"\""), "React client: submitted text must remain device-persisted until the request settles");
+assert(!reactClient.includes("localStorage") && !reactApp.includes("localStorage"), "React client: components must use the best-effort device storage boundary");
+assert(reactDevicePreferences.includes("createDebouncedDeviceWriter") && reactClient.includes("draftStorageWriter.schedule(key, value || null)"), "React client: member draft writes must stay debounced and flushable");
 assert(reactClient.includes("draftGeneration.current === submittedDraftGeneration") && reactClient.includes("setAttachments(submittedAttachments)"), "React client: rejected sends must restore the complete submitted draft only when no newer draft exists");
 assert(reactClient.includes("retryFailedTurn") && reactClient.includes('onBranch(conversation, "resend"'), "React client: failed turns need an in-place retry branch action");
-assert(reactClient.includes("followTranscriptRef") && reactClient.includes("onScroll={trackTranscriptScroll}"), "React client: streaming scroll must respect manual transcript scrolling");
+assert(reactClient.includes("useTranscriptFollow({") && reactClient.includes("onScroll={trackTranscriptScroll}") && reactTranscriptFollow.includes("isTranscriptNearBottom"), "React client: streaming scroll must respect manual transcript scrolling");
 assert(reactInspector.includes("session.tools.map") && reactInspector.includes("selectedToolIds"), "React inspector: assigned tools and current Skill activation must remain visible");
 assert(reactInspector.includes('tool.source === "mcp"'), "React inspector: MCP tools must remain distinguishable without exposing server details");
 assert(reactMemberSettings.includes("onRevokeAllSessions") && reactMemberSettings.includes("onDeleteUserData") && reactMemberSettings.includes("onExportUserData"), "React settings: account data actions are missing");
@@ -141,8 +154,15 @@ assert(reactMessageView.includes("editOpenerRef") && reactMessageView.includes("
 assert(reactMessageView.includes('className="message-sources"') && reactMessageView.includes('aria-label="消息来源"'), "React messages: sources need a compact labelled group");
 assert(reactClient.includes("<WorkspaceHeader") && !reactClient.includes('className="chat-toolbar"'), "React workspace: title, route, health, and connection must share one compact header");
 assert(reactWorkspaceHeader.includes("route.model") && reactWorkspaceHeader.includes("routeHealthLabel") && reactWorkspaceHeader.includes("connectionState"), "React workspace header: logical model, passive health, and connection state are missing");
+assert(reactWorkspaceHeader.includes("模型可用性：") && reactWorkspaceHeader.includes("任务健康："), "React workspace header: model availability and real-task health must stay separately labelled");
+assert(["loading", "success", "empty", "stale", "error"].every((status) => reactModelAvailabilityState.includes(`\"${status}\"`)), "React model availability: explicit loading, success, empty, stale, and error states are required");
+assert(reactInspector.includes("onRetryModelAvailability") && reactInspector.includes("当前显示上次成功结果") && reactInspector.includes("这与读取失败不同"), "React model availability: retry, stale-data, and empty-state recovery UI is missing");
 assert(reactClient.includes("<MessageComposer") && reactComposer.includes("resizeComposerTextarea") && reactComposer.includes('rows={1}'), "React composer: bounded textarea auto-growth is missing");
-assert(reactComposer.includes('statusText || "\\u00a0"') && reactComposer.includes("aria-hidden={!statusText}"), "React composer: status space must remain reserved while idle");
+assert(reactComposer.includes('visibleStatusText || "\\u00a0"') && reactComposer.includes("aria-hidden={!visibleStatusText}"), "React composer: status space must remain reserved while idle");
+assert(["unknown", "available", "exhausted"].every((status) => reactState.includes(`\"${status}\"`)) && reactState.includes("resolveComposerQuota"), "React composer: quota state must distinguish unknown, available, and exhausted projections");
+assert(reactApp.includes("refreshSessionUsage") && reactApp.includes("usage: next.usage"), "React app: session ownership must refresh server-reported member usage without replacing chat state");
+assert(reactClient.includes("const handleConversationChanged = useCallback") && reactClient.includes("void refreshSessionUsage().catch(() => undefined);"), "React workspace: every terminal turn must trigger a secondary usage refresh");
+assert(reactComposer.includes("quotaExhausted") && reactComposer.includes("if (!busy && !sendDisabled) onSubmit();") && reactComposer.includes("刷新额度"), "React composer: exhausted quota must explain and guard every submit path while remaining retryable");
 assert(reactComposer.includes("<Paperclip") && reactComposer.includes("onPaste={addClipboardImages}") && reactComposer.includes("onDrop={handleDrop}"), "React composer: picker, paste, and drop acquisition must share the attachment workflow");
 assert(reactComposer.includes("attachment-strip") && reactComposer.includes("onRemoveAttachment") && reactComposer.includes("onRetryAttachment"), "React composer: attachment previews need remove and retry actions");
 assert(reactClient.includes("toAttachmentFileParts(attachments)") && reactClient.includes("releaseAttachmentPreviews"), "React client: attachment messages and preview cleanup are missing");
@@ -151,11 +171,57 @@ for (const token of ["--workspace-header-height", "--rail-width", "--transcript-
 }
 assert(reactStyles.includes("width: min(100%, var(--transcript-max-width))"), "React styles: transcript width must consume the shared readable-width token");
 assert(reactStyles.includes("position: sticky") && reactStyles.includes("env(safe-area-inset-bottom)"), "React styles: composer must remain pinned with mobile safe-area padding");
+assert(reactStyles.includes("@media (max-width: 1439px)") && reactStyles.includes("@media (max-width: 1023px)") && reactStyles.includes("minmax(520px, 1fr)"), "React styles: intermediate workspace bands must protect a practical chat column");
+assert(reactStyles.includes(".inspector-scrim") && reactClient.includes('className="inspector-scrim"'), "React workspace: overlay inspector needs a dismissible scrim without consuming a grid track");
+assert(reactInspector.includes('matchMedia("(max-width: 1439px)")') && reactSidebar.includes('matchMedia("(max-width: 1023px)")'), "React workspace: overlay focus traps must follow the intermediate inspector and sidebar breakpoints");
 assert(/@media \(max-width: 780px\)[\s\S]*?\.message-actions \.icon-button \{ width: var\(--touch-target\)/.test(reactStyles), "React styles: touch message actions must use the shared 44px target");
 assert(!reactStyles.includes(".message-actions .icon-button { opacity: 0") && !reactStyles.includes(".message-actions { pointer-events: none"), "React styles: message actions must not depend on hover for discovery");
 assert(reactStyles.includes(".message.user .markdown-content h1") && reactStyles.includes(".message.user .markdown-content code"), "React styles: user-bubble Markdown needs role-specific contrast");
+assert(!reactClient.includes('className="message-list" aria-live='), "React client: the changing transcript must not be one giant live region");
+assert(reactClient.includes('className="sr-only" role="status" aria-live="polite" aria-atomic="true"'), "React client: streaming needs one atomic status announcement");
+assert(reactStyles.includes("--focus-ring: #3451d1") && reactStyles.includes("--focus-ring: #aebcff"), "React styles: light and dark focus rings need opaque high-contrast tokens");
 assert(reactApp.includes("status: \"authenticated\""), "React client: authenticated session gate is missing");
 assert(reactApp.includes('surface === "admin"'), "React admin: typed route gate is missing");
+assert(
+  reactApp.includes('lazy(() => import("./components/ChatWorkspace")')
+    && reactApp.includes('lazy(() => import("./components/AdminApp")')
+    && reactApp.includes("<Suspense fallback={<WorkspaceLoadFallback />}")
+    && !reactApp.includes('import { ChatWorkspace }')
+    && !reactApp.includes('import { AdminApp }'),
+  "React app: member and admin workspaces must stay behind role-specific lazy boundaries",
+);
+assert(
+  reactAssetFiles.some((file) => /^ChatWorkspace-[A-Za-z0-9_-]{8,}\.js$/u.test(file))
+    && reactAssetFiles.some((file) => /^AdminApp-[A-Za-z0-9_-]{8,}\.js$/u.test(file)),
+  "React build: role workspaces must emit separate fingerprinted chunks",
+);
+assert(
+  reactClient.includes("useTranscriptFollow({")
+    && reactTranscriptFollow.includes("createFrameScheduler")
+    && reactTranscriptFollow.includes('behavior: activeRef.current || reducedMotion ? "auto" : "smooth"')
+    && reactMessageView.includes("memo(function MessageView")
+    && reactClient.includes("? handleMessageAction"),
+  "React transcript: streaming must coalesce follow-scroll work and preserve unchanged message renders",
+);
+assert(
+  [781, 1024, 1280, 1439].every((width) => workspaceBrowserTests.includes(String(width)))
+    && workspaceBrowserConfig.includes('name: "touch-390"')
+    && workspaceBrowserConfig.includes('name: "wide-1920"'),
+  "Workspace browser matrix: intermediate, phone, and wide viewport contracts are required",
+);
+assert(
+  accessibilityConfig.includes('name: "normal-motion"')
+    && accessibilityConfig.includes('name: "reduced-motion"')
+    && accessibilityConfig.includes('name: "firefox-smoke"')
+    && accessibilityConfig.includes('resolve(process.cwd(), "test-results/workspace-accessibility/results.json")')
+    && accessibilityTests.includes("new AxeBuilder({ page })")
+    && accessibilityTests.includes('page.route("**/*"')
+    && accessibilityTests.includes('url.pathname.startsWith("/api/")')
+    && accessibilityRunner.includes("SKIP: firefox executable unavailable")
+    && ciWorkflow.includes("playwright install --with-deps chromium firefox")
+    && ciWorkflow.includes("npm run test:browser:accessibility"),
+  "Workspace accessibility matrix: motion, axe, network guard, and capability-aware Firefox coverage are required",
+);
 assert(reactMain.includes("resolveClientSurface(window.location.pathname)"), "React admin: pathname routing must stay at the composition root");
 assert(reactAdminApp.includes("fetchAdminSession()") && reactAdminApp.includes("adminLogin(token)"), "React admin: authenticated session gate is missing");
 assert(reactAdminApp.includes("finally {\n      setSubmitting(false);"), "React admin: login submit state must recover after rejected requests");
@@ -193,7 +259,15 @@ assert(reactLogicalModelAdmin.includes("createLogicalModelDraft") && reactLogica
 assert(reactLogicalModelAdmin.includes("hasLogicalModelIdConflict") && reactLogicalModelAdmin.includes("图片能力") && reactLogicalModelAdmin.includes("工具能力"), "React admin: logical-model offering edits need collision guards and capability overrides");
 assert(reactReliabilityAdmin.includes("fetchAdminReliability()") && reactReliabilityAdmin.includes("真实任务被动记录") && !reactReliabilityAdmin.includes("discoverAdminProviderModels"), "React admin: reliability must remain passive and model-call free");
 assert(reactReliabilityAdmin.includes("averageFirstVisibleLatencyMs") && reactReliabilityAdmin.includes("lastStreamShape") && reactReliabilityAdmin.includes("progressiveSamples"), "React admin: truthful first-output and stream-shape evidence is missing");
-assert(reactOperationsAdmin.includes("fetchAdminOperations()") && reactOperationsAdmin.includes("不含消息内容") && !reactOperationsAdmin.includes("chatId}</") && !reactOperationsAdmin.includes("messageId}</"), "React admin: operations must expose only aggregate and metadata views");
+assert(
+  reactOperationsAdmin.includes("fetchAdminOperationsStats")
+    && reactOperationsAdmin.includes("fetchAdminOperationsFinance")
+    && reactOperationsAdmin.includes("fetchAdminModelMonitor")
+    && reactOperationsAdmin.includes("不含消息内容")
+    && !reactOperationsAdmin.includes("chatId}</")
+    && !reactOperationsAdmin.includes("messageId}</"),
+  "React admin: operations must expose only aggregate and metadata views",
+);
 assert(reactOperationsAdmin.includes("operations-user-table-wrap") && reactStyles.includes(".operations-user-table-wrap { max-width: 100%; overflow-x: auto; }"), "React admin: operations member usage needs local table overflow");
 assert(reactOperationsAdmin.includes("OPERATIONS_PAGE_SIZE = 20") && reactOperationsAdmin.includes("paginateOperations") && reactOperationsAdmin.includes("当前显示") && reactOperationsAdmin.includes("重试读取运营数据"), "React admin: operations lists need reachable 20-item pagination with explicit counts and retry state");
 assert(reactCapabilityAdmin.includes("putAdminConfig(config, snapshot.revision)") && reactCapabilityAdmin.includes('error.code === "config_conflict"') && reactCapabilityAdmin.includes("使用服务器版本"), "React admin: capability drafts need revisioned saves and explicit conflict recovery");

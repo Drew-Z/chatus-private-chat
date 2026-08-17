@@ -6,7 +6,12 @@ import {
   advanceAdminLegacySurface,
   createAdminProviderBudgetPolicy,
   createAdminProviderPriceCatalog,
-  fetchAdminOperations,
+  fetchAdminModelMonitor,
+  fetchAdminOperationsAudit,
+  fetchAdminOperationsFeedback,
+  fetchAdminOperationsFinance,
+  fetchAdminOperationsStats,
+  fetchAdminLegacySurfaces,
   importAdminProviderReconciliation,
   reconcileAdminProviderBudgetReservation,
   rollbackAdminLegacySurface,
@@ -19,11 +24,13 @@ import {
   type AdminLegacySurfaceProjection,
   type AdminLegacySurfaceRollbackInput,
   type AdminOperationsSnapshot,
+  type AdminOperationsStats,
   type AdminProviderBudgetOperatorAction,
   type AdminProviderBudgetPolicyInput,
   type AdminProviderBudgetReservation,
   type AdminProviderFinanceAttempt,
   type AdminProviderFinanceProvider,
+  type AdminProviderFinanceSnapshot,
   type AdminProviderPriceCatalog,
   type AdminProviderReconciliationInput,
   type ModelMonitorSnapshot,
@@ -39,9 +46,109 @@ type AdminOperationsPanelProps = {
   refreshKey?: number;
 };
 
+type OperationsSectionKey = "stats" | "audit" | "feedback" | "finance" | "legacySurfaces" | "modelMonitor";
+type OperationsSectionState<T> = {
+  status: "loading" | "ready" | "error";
+  data?: T;
+  message?: string;
+};
+type OperationsSectionStates = {
+  stats: OperationsSectionState<AdminOperationsStats>;
+  audit: OperationsSectionState<AdminAuditEntry[]>;
+  feedback: OperationsSectionState<AdminFeedbackEntry[]>;
+  finance: OperationsSectionState<AdminProviderFinanceSnapshot>;
+  legacySurfaces: OperationsSectionState<AdminOperationsSnapshot["legacySurfaces"]>;
+  modelMonitor: OperationsSectionState<ModelMonitorSnapshot>;
+};
+
+const sectionKeys: OperationsSectionKey[] = ["stats", "audit", "feedback", "finance", "legacySurfaces", "modelMonitor"];
+const sectionLoaders = {
+  stats: fetchAdminOperationsStats,
+  audit: fetchAdminOperationsAudit,
+  feedback: fetchAdminOperationsFeedback,
+  finance: fetchAdminOperationsFinance,
+  legacySurfaces: fetchAdminLegacySurfaces,
+  modelMonitor: fetchAdminModelMonitor,
+} satisfies Record<OperationsSectionKey, () => Promise<unknown>>;
+
+function createLoadingSections(): OperationsSectionStates {
+  return {
+    stats: { status: "loading" },
+    audit: { status: "loading" },
+    feedback: { status: "loading" },
+    finance: { status: "loading" },
+    legacySurfaces: { status: "loading" },
+    modelMonitor: { status: "loading" },
+  };
+}
+
+function loadingSections(current: OperationsSectionStates): OperationsSectionStates {
+  return {
+    stats: { status: "loading", data: current.stats.data },
+    audit: { status: "loading", data: current.audit.data },
+    feedback: { status: "loading", data: current.feedback.data },
+    finance: { status: "loading", data: current.finance.data },
+    legacySurfaces: { status: "loading", data: current.legacySurfaces.data },
+    modelMonitor: { status: "loading", data: current.modelMonitor.data },
+  };
+}
+
+function createSectionGenerations(): Record<OperationsSectionKey, number> {
+  return { stats: 0, audit: 0, feedback: 0, finance: 0, legacySurfaces: 0, modelMonitor: 0 };
+}
+
+function hasSectionData(sections: OperationsSectionStates): boolean {
+  return sectionKeys.some((key) => sections[key].data !== undefined);
+}
+
+function emptyOperationsSnapshot(): AdminOperationsSnapshot {
+  return {
+    stats: {
+      day: "",
+      days: [],
+      totals: { requests: 0, errors: 0, fallbacks: 0, rateLimited: 0, errorRate: 0 },
+      trend: [],
+      routeStats: [],
+      users: [],
+      routes: [],
+      configSource: "default",
+      accessCodeSource: "managed",
+    },
+    audit: [],
+    feedback: [],
+    finance: {
+      version: 1,
+      generatedAt: 0,
+      periodStart: 0,
+      hardBudgetEnforcement: "instance_provider_v1",
+      providers: [],
+    },
+    legacySurfaces: {
+      version: 1,
+      manifestDigest: "0".repeat(64),
+      generatedAt: 0,
+      total: 0,
+      surfaces: [],
+    },
+  };
+}
+
+function snapshotFromSections(sections: OperationsSectionStates): AdminOperationsSnapshot {
+  const empty = emptyOperationsSnapshot();
+  const modelMonitor = sections.modelMonitor.data;
+  return {
+    stats: sections.stats.data ?? empty.stats,
+    audit: sections.audit.data ?? empty.audit,
+    feedback: sections.feedback.data ?? empty.feedback,
+    finance: sections.finance.data ?? empty.finance,
+    legacySurfaces: sections.legacySurfaces.data ?? empty.legacySurfaces,
+    ...(modelMonitor ? { modelMonitor } : {}),
+  };
+}
+
 type OperationsViewState =
   | { status: "loading" }
-  | { status: "ready"; snapshot: AdminOperationsSnapshot; refreshing: boolean }
+  | { status: "ready"; snapshot: AdminOperationsSnapshot; sections: OperationsSectionStates; refreshing: boolean }
   | { status: "error"; message: string };
 
 type OperationsList = "legacySurfaces" | "routes" | "feedback" | "audit" | "users" | "providers" | "catalogs" | "financeAttempts" | "reconciliations" | "budgetPolicies" | "budgetBalances" | "budgetReservations";
@@ -88,7 +195,8 @@ export const OPERATIONS_PAGE_SIZE = 20;
 export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange, refreshKey = 0 }: AdminOperationsPanelProps) {
   const [viewState, setViewState] = useState<OperationsViewState>({ status: "loading" });
   const [filter, setFilter] = useState("");
-  const refreshGeneration = useRef(0);
+  const sectionsRef = useRef<OperationsSectionStates>(createLoadingSections());
+  const sectionGenerations = useRef<Record<OperationsSectionKey, number>>(createSectionGenerations());
   const loading = viewState.status === "loading" || (viewState.status === "ready" && viewState.refreshing);
 
   useEffect(() => {
@@ -97,30 +205,67 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
   }, [refreshKey]);
 
   async function refresh(): Promise<boolean> {
-    const generation = refreshGeneration.current + 1;
-    refreshGeneration.current = generation;
-    setViewState((current) => current.status === "ready"
-      ? { ...current, refreshing: true }
+    const previous = sectionsRef.current;
+    const pending = loadingSections(previous);
+    sectionsRef.current = pending;
+    setViewState(hasSectionData(previous)
+      ? { status: "ready", snapshot: snapshotFromSections(pending), sections: pending, refreshing: true }
       : { status: "loading" });
+    for (const key of sectionKeys) sectionGenerations.current[key] += 1;
+    const results = await Promise.all(sectionKeys.map((key) => loadSection(key)));
+    const hasData = results.some(Boolean) || hasSectionData(previous);
+    if (!hasData) {
+      const message = "暂时无法读取运营数据。请重试。";
+      setViewState({ status: "error", message });
+      onNotice({ kind: "error", text: message });
+      return false;
+    }
+    const sections = sectionsRef.current;
+    setViewState({ status: "ready", snapshot: snapshotFromSections(sections), sections, refreshing: false });
+    onNotice(null);
+    return results.some(Boolean);
+  }
+
+  async function loadSection(key: OperationsSectionKey): Promise<boolean> {
+    const generation = sectionGenerations.current[key];
+    const loader = sectionLoaders[key];
     try {
-      const snapshot = await fetchAdminOperations();
-      if (generation !== refreshGeneration.current) return false;
-      setViewState({ status: "ready", snapshot, refreshing: false });
-      onNotice(null);
+      const data = await loader();
+      if (generation !== sectionGenerations.current[key]) return false;
+      const sections = { ...sectionsRef.current, [key]: { status: "ready", data } } as OperationsSectionStates;
+      sectionsRef.current = sections;
+      setViewState((current) => {
+        if (current.status !== "ready") return current;
+        return { ...current, sections, snapshot: snapshotFromSections(sections) };
+      });
       return true;
     } catch (error) {
-      if (generation !== refreshGeneration.current) return false;
+      if (generation !== sectionGenerations.current[key]) return false;
       if (error instanceof ApiError && error.status === 401) {
         onSessionExpired();
         return false;
       }
-      const message = error instanceof Error ? error.message : "暂时无法读取运营数据。";
-      setViewState((current) => current.status === "ready"
-        ? { ...current, refreshing: false }
-        : { status: "error", message });
-      onNotice({ kind: "error", text: message });
+      const message = error instanceof Error ? error.message : "暂时无法读取该运营区域。";
+      const prior = sectionsRef.current[key];
+      const sections = { ...sectionsRef.current, [key]: { status: "error", data: prior.data, message } } as OperationsSectionStates;
+      sectionsRef.current = sections;
+      setViewState((current) => {
+        if (current.status !== "ready") return current;
+        return { ...current, sections, snapshot: snapshotFromSections(sections) };
+      });
       return false;
     }
+  }
+
+  async function retrySection(key: OperationsSectionKey) {
+    sectionGenerations.current[key] += 1;
+    const sections = { ...sectionsRef.current, [key]: { ...sectionsRef.current[key], status: "loading" } } as OperationsSectionStates;
+    sectionsRef.current = sections;
+    setViewState((current) => current.status === "ready"
+      ? { ...current, refreshing: true, sections }
+      : current);
+    await loadSection(key);
+    setViewState((current) => current.status === "ready" ? { ...current, refreshing: false } : current);
   }
 
   async function runFinanceMutation(action: () => Promise<unknown>, successText: string) {
@@ -171,6 +316,8 @@ export function AdminOperationsPanel({ onSessionExpired, onNotice, onDirtyChange
       ) : (
         <AdminOperationsContent
           snapshot={viewState.snapshot}
+          sectionStates={viewState.sections}
+          onRetrySection={(key) => void retrySection(key)}
           filter={filter}
           financeActions={{
             createPrice: (input) => runFinanceMutation(
@@ -213,11 +360,15 @@ export function AdminOperationsContent({
   filter = "",
   financeActions,
   legacySurfaceActions,
+  sectionStates,
+  onRetrySection,
 }: {
   snapshot: AdminOperationsSnapshot;
   filter?: string;
   financeActions?: FinanceActions;
   legacySurfaceActions?: LegacySurfaceActions;
+  sectionStates?: OperationsSectionStates;
+  onRetrySection?: (key: OperationsSectionKey) => void;
 }) {
   const query = filter.trim().toLocaleLowerCase();
   const [pages, setPages] = useState<OperationsPages>({
@@ -360,17 +511,20 @@ export function AdminOperationsContent({
     setLegacySurfaceValidationError("");
   }
 
+  const statsAvailable = sectionStates?.stats.data !== undefined || !sectionStates;
+  const financeAvailable = sectionStates?.finance.data !== undefined || !sectionStates;
+  const legacyAvailable = sectionStates?.legacySurfaces.data !== undefined || !sectionStates;
   const summary: Array<{ label: string; value: string | number }> = [
-    { label: "7 日请求", value: snapshot.stats.totals.requests },
-    { label: "错误", value: snapshot.stats.totals.errors },
-    { label: "错误率", value: `${snapshot.stats.totals.errorRate}%` },
-    { label: "Fallback", value: snapshot.stats.totals.fallbacks },
-    { label: "限流", value: snapshot.stats.totals.rateLimited },
-    { label: "Provider 调用", value: snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.calls, 0) },
-    { label: "Usage 未知", value: snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.unknownUsageAttempts, 0) },
-    { label: "预算待结算", value: snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.pendingSettlementCount, 0), 0) },
-    { label: "预算待复核", value: snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.reviewRequiredCount, 0), 0) },
-    { label: "治理面", value: snapshot.legacySurfaces.total },
+    { label: "7 日请求", value: statsAvailable ? snapshot.stats.totals.requests : "不可用" },
+    { label: "错误", value: statsAvailable ? snapshot.stats.totals.errors : "不可用" },
+    { label: "错误率", value: statsAvailable ? `${snapshot.stats.totals.errorRate}%` : "不可用" },
+    { label: "Fallback", value: statsAvailable ? snapshot.stats.totals.fallbacks : "不可用" },
+    { label: "限流", value: statsAvailable ? snapshot.stats.totals.rateLimited : "不可用" },
+    { label: "Provider 调用", value: financeAvailable ? snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.calls, 0) : "不可用" },
+    { label: "Usage 未知", value: financeAvailable ? snapshot.finance.providers.reduce((total, provider) => total + provider.capacity.unknownUsageAttempts, 0) : "不可用" },
+    { label: "预算待结算", value: financeAvailable ? snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.pendingSettlementCount, 0), 0) : "不可用" },
+    { label: "预算待复核", value: financeAvailable ? snapshot.finance.providers.reduce((total, provider) => total + provider.budgetBalances.reduce((sum, balance) => sum + balance.reviewRequiredCount, 0), 0) : "不可用" },
+    { label: "治理面", value: legacyAvailable ? snapshot.legacySurfaces.total : "不可用" },
   ];
 
   return (
@@ -379,13 +533,25 @@ export function AdminOperationsContent({
         {summary.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
       </dl>
 
+      {sectionStates && (
+        <OperationsSourceFailures sections={sectionStates} onRetry={onRetrySection} />
+      )}
+
       <OperationsSection
         icon={<Activity size={17} />}
         title="模型监控 · 最近 24 小时"
         meta={snapshot.modelMonitor ? `生成于 ${formatMonitorTime(snapshot.modelMonitor.generatedAt)} · 滚动窗口` : "暂无监控快照"}
       >
-        {snapshot.modelMonitor ? (
-          <ModelMonitorSection snapshot={snapshot.modelMonitor} />
+        {sectionStates?.modelMonitor.status === "loading" && !snapshot.modelMonitor ? (
+          <p className="typed-admin-empty" role="status">正在读取模型监控...</p>
+        ) : sectionStates?.modelMonitor.status === "error" ? (
+          <OperationsSectionFailure
+            label="模型监控"
+            message={sectionStates.modelMonitor.message ?? "模型监控暂时不可用。"}
+            onRetry={onRetrySection ? () => onRetrySection("modelMonitor") : undefined}
+          />
+        ) : snapshot.modelMonitor ? (
+          <ModelMonitorSection snapshot={snapshot.modelMonitor} query={query} />
         ) : (
           <p className="typed-admin-empty">模型监控暂时不可用；不影响现有运营统计和消息发送。</p>
         )}
@@ -712,13 +878,15 @@ export function AdminOperationsContent({
   );
 }
 
-function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
+function ModelMonitorSection({ snapshot, query }: { snapshot: ModelMonitorSnapshot; query: string }) {
   const [groupKind, setGroupKind] = useState<ModelMonitorGroupKind>("routes");
   const [groupPageNumber, setGroupPageNumber] = useState(1);
   const maxAttempts = Math.max(1, ...snapshot.trend.map((item) => item.attempts));
   const total = snapshot.totals;
-  const groups = groupKind === "routes" ? snapshot.routes : groupKind === "providers" ? snapshot.providers : snapshot.models;
+  const groups = useMemo(() => filterModelMonitorGroups(snapshot, groupKind, query), [groupKind, query, snapshot]);
   const groupPage = paginateOperations(groups, groupPageNumber);
+
+  useEffect(() => setGroupPageNumber(1), [query]);
 
   function selectGroupKind(nextKind: ModelMonitorGroupKind) {
     setGroupKind(nextKind);
@@ -743,8 +911,12 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
             {snapshot.trend.map((item) => (
               <div className="model-monitor-trend-row" key={item.bucketStart}>
                 <span>{new Date(item.bucketStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                <progress max={maxAttempts} value={item.attempts} aria-label={`${formatMonitorTime(item.bucketStart)} 请求 ${item.attempts}`} />
-                <small>{item.attempts} · 成 {item.succeeded} · 败 {item.failures} · F {item.fallbacks}</small>
+                <div className="model-monitor-outcome-bars" role="img" aria-label={modelMonitorTrendSummary(item)}>
+                  <progress className="success" max={maxAttempts} value={item.succeeded} aria-hidden="true" />
+                  <progress className="failure" max={maxAttempts} value={item.failures} aria-hidden="true" />
+                  <progress className="in-flight" max={maxAttempts} value={item.inFlight} aria-hidden="true" />
+                </div>
+                <small>{item.attempts} 次 · 成 {item.succeeded} · 败 {item.failures} · 进行中 {item.inFlight} · {formatMonitorSuccessRate(item.succeeded, item.failures)}</small>
               </div>
             ))}
           </div>
@@ -764,7 +936,7 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
           </div>
           <div className="model-monitor-groups">
             {groupPage.items.map((group) => <MonitorGroupRow key={`${groupKind}:${group.id}`} prefix={groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"} group={group} />)}
-            {!groupPage.total && <p className="typed-admin-empty">当前分组暂无记录</p>}
+            {!groupPage.total && <p className="typed-admin-empty">{query ? "没有匹配的模型监控记录" : "当前分组暂无记录"}</p>}
           </div>
           <PaginationControls label={`模型监控${groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"}`} page={groupPage} onPageChange={setGroupPageNumber} />
         </div>
@@ -778,6 +950,21 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
 }
 
 type ModelMonitorGroupKind = "routes" | "providers" | "models";
+
+export function filterModelMonitorGroups(snapshot: ModelMonitorSnapshot, groupKind: ModelMonitorGroupKind, query: string) {
+  const normalized = query.trim().toLocaleLowerCase();
+  const groups = groupKind === "routes" ? snapshot.routes : groupKind === "providers" ? snapshot.providers : snapshot.models;
+  return groups.filter((group) => matchesQuery(normalized, group.id, group.label, group.model));
+}
+
+export function modelMonitorTrendSummary(item: ModelMonitorSnapshot["trend"][number]): string {
+  return `${formatMonitorTime(item.bucketStart)}：尝试 ${item.attempts}，成功 ${item.succeeded}，失败 ${item.failures}，进行中 ${item.inFlight}，${formatMonitorSuccessRate(item.succeeded, item.failures)}，Fallback ${item.fallbacks}`;
+}
+
+function formatMonitorSuccessRate(succeeded: number, failures: number): string {
+  const completed = succeeded + failures;
+  return completed ? `完成成功率 ${Math.round((succeeded / completed) * 1000) / 10}%` : "暂无已完成结果";
+}
 
 function MonitorGroupRow({ prefix, group }: { prefix: string; group: ModelMonitorSnapshot["routes"][number] }) {
   return (
@@ -1536,6 +1723,57 @@ function PaginationControls<T>({ label, page, onPageChange }: { label: string; p
 
 function OperationsSection({ icon, title, meta, children }: { icon: ReactNode; title: string; meta: string; children: ReactNode }) {
   return <section className="admin-operations-section"><header><span aria-hidden="true">{icon}</span><h2>{title}</h2><small>{meta}</small></header>{children}</section>;
+}
+
+function OperationsSourceFailures({
+  sections,
+  onRetry,
+}: {
+  sections: OperationsSectionStates;
+  onRetry?: (key: OperationsSectionKey) => void;
+}) {
+  const labels: Record<Exclude<OperationsSectionKey, "modelMonitor">, string> = {
+    stats: "7 日统计与成员用量",
+    audit: "管理审计",
+    feedback: "成员反馈",
+    finance: "Provider 财务与预算",
+    legacySurfaces: "旧功能面治理",
+  };
+  const failed = (Object.keys(labels) as Array<keyof typeof labels>).filter((key) => sections[key].status === "error");
+  if (!failed.length) return null;
+  return (
+    <div className="admin-operations-source-failures" aria-label="运营数据局部读取状态">
+      {failed.map((key) => (
+        <OperationsSectionFailure
+          key={key}
+          label={labels[key]}
+          message={sections[key].message ?? "该区域暂时不可用。"}
+          onRetry={onRetry ? () => onRetry(key) : undefined}
+          stale={sections[key].data !== undefined}
+        />
+      ))}
+    </div>
+  );
+}
+
+function OperationsSectionFailure({
+  label,
+  message,
+  onRetry,
+  stale = false,
+}: {
+  label: string;
+  message: string;
+  onRetry?: () => void;
+  stale?: boolean;
+}) {
+  return (
+    <div className="admin-operations-section-failure" role="alert">
+      <span><strong>{label}读取失败</strong><small>{stale ? "保留上次成功数据。" : "其他健康区域仍可使用。"}</small></span>
+      <p>{message}</p>
+      {onRetry && <button className="quiet-button icon-text-button" type="button" onClick={onRetry}><RefreshCw size={15} /><span>重试{label}</span></button>}
+    </div>
+  );
 }
 
 function pageCountMeta<T>(page: OperationsPage<T>): string {

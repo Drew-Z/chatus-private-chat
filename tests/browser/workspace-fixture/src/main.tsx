@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
@@ -12,6 +12,8 @@ import { AgentErrorBanner } from "../../../../client/src/components/AgentErrorBa
 import { ConfirmDialog } from "../../../../client/src/components/ConfirmDialog";
 import { McpConnectionsDialog, type McpConnectionNotice } from "../../../../client/src/components/McpConnectionsDialog";
 import { MemberLogoutNotice } from "../../../../client/src/components/MemberLogoutNotice";
+import { WorkspaceLoadFallback } from "../../../../client/src/App";
+import { useTranscriptFollow } from "../../../../client/src/lib/transcript-follow";
 import { ReliabilityTable } from "../../../../client/src/components/ReliabilityAdminPanel";
 import { WorkspaceHeader, type ConnectionState } from "../../../../client/src/components/WorkspaceHeader";
 import {
@@ -26,6 +28,13 @@ import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
 import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
 import type { ThemePreference } from "../../../../client/src/lib/device-preferences";
 import {
+  beginModelAvailabilityRefresh,
+  completeModelAvailabilityRefresh,
+  createModelAvailabilityViewState,
+  failModelAvailabilityRefresh,
+  type ModelAvailabilityViewState,
+} from "../../../../client/src/lib/model-availability";
+import {
   addDraftAttachmentFiles,
   readDraftAttachment,
   releaseAttachmentPreviews,
@@ -34,6 +43,8 @@ import {
 import { DEFAULT_FILE_INPUT_POLICY } from "../../../../src/contracts/file";
 import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../../../../src/contracts/agent";
 import "../../../../client/src/styles.css";
+
+const LazyWorkspaceFixture = lazy(() => import("./LazyWorkspaceFixture"));
 
 const now = Date.now();
 const initialConversations: AgentConversation[] = [
@@ -772,10 +783,38 @@ function fixtureAttachments(mode: string | null): DraftAttachment[] {
   }];
 }
 
+function TranscriptFollowFixture({ active }: { active: boolean }) {
+  const [rows, setRows] = useState(() => Array.from({ length: 40 }, (_, index) => `消息 ${index + 1}`));
+  const { messageListRef, endRef, trackTranscriptScroll } = useTranscriptFollow({
+    conversationId: "transcript-follow-fixture",
+    followKey: rows,
+    active,
+  });
+  return (
+    <main data-visual-fixture="true">
+      <button type="button" onClick={() => setRows((current) => [...current, `流式片段 ${current.length + 1}`])}>追加流式片段</button>
+      <div
+        ref={messageListRef}
+        data-testid="transcript-follow-scroll"
+        onScroll={trackTranscriptScroll}
+        style={{ width: 320, height: 180, overflowY: "auto" }}
+      >
+        {rows.map((row) => <p key={row} style={{ minHeight: 28, margin: 0 }}>{row}</p>)}
+        <div ref={endRef} />
+      </div>
+    </main>
+  );
+}
+
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
   const fixtureAccessRole = readFixtureAccessRole(params.get("acl"));
-  const startingConversations = fixtureAccessRole ? aclConversations : initialConversations;
+  const pinBehavior = params.get("pin");
+  const startingConversations = fixtureAccessRole
+    ? aclConversations
+    : pinBehavior
+      ? initialConversations.map((conversation, index) => index === 1 ? { ...conversation, pinned: true } : conversation)
+      : initialConversations;
   const initialActiveId = fixtureAccessRole
     ? `acl-${fixtureAccessRole}`
     : params.get("branch") === "present"
@@ -804,6 +843,12 @@ function WorkspaceFixture() {
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const [logoutState, setLogoutState] = useState(() => readLogoutFixtureState(params.get("logout")));
+  const [modelAvailabilityState, setModelAvailabilityState] = useState(() => readModelAvailabilityFixtureState(params.get("availability")));
+  const [modelAvailabilityRetryCount, setModelAvailabilityRetryCount] = useState(0);
+  const [composerUsage, setComposerUsage] = useState(() => readComposerUsageFixture(params.get("quota")));
+  const [usageRefreshCount, setUsageRefreshCount] = useState(0);
+  const [pinAttempts, setPinAttempts] = useState(0);
+  const [pinNotice, setPinNotice] = useState("");
   const [operationsFilter, setOperationsFilter] = useState("");
   const [operationsFixtureSnapshot, setOperationsFixtureSnapshot] = useState(operationsSnapshot);
   const [legacySurfaceFixtureDirty, setLegacySurfaceFixtureDirty] = useState(false);
@@ -859,7 +904,24 @@ function WorkspaceFixture() {
     : null;
   const parentMissing = Boolean(activeConversation?.parentChatId && !parentConversation);
 
-  const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
+  const handleMessageAction = async (_messageId: string, _action: MessageAction, _editedText?: string) => undefined;
+
+  const handlePinChange = async (conversation: AgentConversation, pinned: boolean) => {
+    setPinAttempts((count) => count + 1);
+    setPinNotice("");
+    if (pinBehavior === "pending" || pinBehavior === "fail") {
+      await new Promise<void>((resolve) => {
+        window.addEventListener("chatus:fixture:pin-release", () => resolve(), { once: true });
+      });
+    }
+    if (pinBehavior === "fail") {
+      setPinNotice("会话置顶保存失败，请重试。");
+      throw new Error("fixture_pin_failed");
+    }
+    setConversations((current) => current.map((item) => item.id === conversation.id
+      ? { ...item, pinned, updatedAt: Date.now() }
+      : item));
+  };
 
   const addAttachments = (files: File[]) => {
     const currentIds = new Set(attachments.map((attachment) => attachment.id));
@@ -881,6 +943,14 @@ function WorkspaceFixture() {
       });
     }
   };
+
+  if (params.get("view") === "lazy-workspace") {
+    return <Suspense fallback={<WorkspaceLoadFallback />}><LazyWorkspaceFixture /></Suspense>;
+  }
+
+  if (params.get("view") === "transcript-follow") {
+    return <TranscriptFollowFixture active={params.get("active") === "1"} />;
+  }
 
   if (params.get("view") === "reliability") {
     return (
@@ -1085,6 +1155,7 @@ function WorkspaceFixture() {
           onCreate={async () => undefined}
           onRename={async (conversation, title) => setConversations((current) => current.map((item) => item.id === conversation.id ? { ...item, title } : item))}
           onDelete={async (conversation) => setConversations((current) => current.filter((item) => item.id !== conversation.id))}
+          onPinChange={handlePinChange}
           onAccessChanged={(conversation, accessRevision) => setConversations((current) => current.map((item) => (
             item.id === conversation.id ? { ...item, accessRevision } : item
           )))}
@@ -1108,8 +1179,7 @@ function WorkspaceFixture() {
             conversation={activeConversation}
             routeId={routeId}
             connectionState={connectionState}
-            modelAvailability={memberModelAvailability}
-            modelAvailabilityRefreshing={false}
+            modelAvailabilityState={session.access === "member" ? modelAvailabilityState : undefined}
             busy={turnBusy}
             accountBusy={logoutPending}
             logoutPending={logoutPending}
@@ -1124,6 +1194,7 @@ function WorkspaceFixture() {
             onLogout={async () => setLogoutState("pending")}
           />
           <section className="chat-panel" aria-label="对话">
+            {pinNotice && <div className="workspace-error" role="alert"><span>{pinNotice}</span></div>}
             {logoutState === "error" && (
               <MemberLogoutNotice
                 message="合成成员会话撤销失败，请重试。当前工作区和草稿保持不变。"
@@ -1183,20 +1254,27 @@ function WorkspaceFixture() {
                 online={online}
                 routeAvailable={routeAvailable}
                 agentReady
+                usage={session.access === "member" ? composerUsage : null}
+                usageRefreshing={false}
+                onRefreshUsage={() => {
+                  setUsageRefreshCount((current) => current + 1);
+                  if (params.get("quotaRefresh") !== "error") setComposerUsage(memberSession.usage);
+                }}
                 placeholder="输入消息"
                 statusText={turnBusy ? "Agent 正在继续处理" : ""}
               /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
             </div>
+            {pinBehavior && <output data-testid="pin-fixture-state" data-attempts={pinAttempts} data-pinned={String(conversations.find((item) => item.id === "visual-second")?.pinned === true)} />}
           </section>
         </div>
+        {inspectorOpen && <button className="inspector-scrim" type="button" onClick={() => setInspectorOpen(false)} aria-label="关闭上下文遮罩" />}
         <ConversationInspector
           open={inspectorOpen}
           section={inspectorSection}
           session={session}
           conversation={activeConversation}
           routeId={routeId}
-          modelAvailability={memberModelAvailability}
-          modelAvailabilityRefreshing={false}
+          modelAvailabilityState={session.access === "member" ? modelAvailabilityState : undefined}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState="idle"
@@ -1208,9 +1286,15 @@ function WorkspaceFixture() {
           onRouteChange={() => undefined}
           onSkillModeChange={(nextSkillMode) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillMode: nextSkillMode } : conversation))}
           onSkillChange={(nextSkillIds) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillIds: nextSkillIds } : conversation))}
+          onRetryModelAvailability={() => {
+            setModelAvailabilityRetryCount((current) => current + 1);
+            setModelAvailabilityState(beginModelAvailabilityRefresh);
+          }}
           onRetrySave={() => undefined}
         />
       </div>
+      <output data-testid="model-availability-retry-count" hidden>{modelAvailabilityRetryCount}</output>
+      <output data-testid="usage-refresh-count" hidden>{usageRefreshCount}</output>
       <MemberSettingsCenter
         open={memberSettingsOpen}
         nestedOpen={false}
@@ -1281,6 +1365,27 @@ function readTurnPhase(value: string | null): TurnPhase | null {
 function readLogoutFixtureState(value: string | null): "idle" | "pending" | "error" {
   if (value === "pending" || value === "error") return value;
   return "idle";
+}
+
+function readModelAvailabilityFixtureState(value: string | null): ModelAvailabilityViewState {
+  if (value === "loading") return createModelAvailabilityViewState();
+  if (value === "empty") {
+    return completeModelAvailabilityRefresh({ ...memberModelAvailability, routes: [] });
+  }
+  if (value === "error") {
+    return failModelAvailabilityRefresh(createModelAvailabilityViewState(), "合成可用性读取失败。");
+  }
+  const ready = completeModelAvailabilityRefresh(memberModelAvailability);
+  if (value === "stale") return failModelAvailabilityRefresh(ready, "合成刷新失败。");
+  return ready;
+}
+
+function readComposerUsageFixture(value: string | null): SessionProjection["usage"] | null {
+  if (value === "unknown") return null;
+  if (value === "exhausted") {
+    return { used: memberSession.usage.limit, limit: memberSession.usage.limit, remaining: 0 };
+  }
+  return memberSession.usage;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><WorkspaceFixture /></StrictMode>);

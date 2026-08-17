@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterModelMonitorGroups,
+  modelMonitorTrendSummary,
   OPERATIONS_PAGE_SIZE,
   paginateOperations,
   prepareLegacySurfaceTransition,
   type LegacySurfaceTransitionDraft,
 } from "../client/src/components/AdminOperationsPanel";
+import type { ModelMonitorSnapshot } from "../client/src/lib/api";
 
 describe("admin operations pagination", () => {
   const entries = Array.from({ length: 21 }, (_, index) => `entry-${index + 1}`);
@@ -35,6 +38,44 @@ describe("admin operations pagination", () => {
       displayed: 0,
       total: 0,
     });
+  });
+});
+
+describe("admin model monitor presentation", () => {
+  const monitor: ModelMonitorSnapshot = {
+    version: 1,
+    window: "24h",
+    generatedAt: Date.parse("2026-07-26T12:00:00Z"),
+    periodStart: Date.parse("2026-07-25T12:00:00Z"),
+    periodEnd: Date.parse("2026-07-26T12:00:00Z"),
+    totals: { attempts: 6, succeeded: 4, failures: 1, inFlight: 1, completed: 5, successRate: 0.8, fallbacks: 1, averageLatencyMs: 400 },
+    trend: [{
+      bucketStart: Date.parse("2026-07-26T11:00:00Z"),
+      bucketEnd: Date.parse("2026-07-26T12:00:00Z"),
+      attempts: 6,
+      succeeded: 4,
+      failures: 1,
+      inFlight: 1,
+      fallbacks: 1,
+    }],
+    routes: [{ id: "reasoning", label: "高质量推理", model: "reasoning-v2", attempts: 6, succeeded: 4, failures: 1, inFlight: 1, completed: 5, successRate: 0.8, fallbacks: 1, averageLatencyMs: 400 }],
+    providers: [{ id: "provider-alpha", label: "Provider Alpha", model: "reasoning-v2", attempts: 6, succeeded: 4, failures: 1, inFlight: 1, completed: 5, successRate: 0.8, fallbacks: 1, averageLatencyMs: 400 }],
+    models: [{ id: "reasoning-v2", label: "Reasoning V2", attempts: 6, succeeded: 4, failures: 1, inFlight: 1, completed: 5, successRate: 0.8, fallbacks: 1, averageLatencyMs: 400 }],
+    runKinds: [{ runKind: "main_answer", attempts: 6, succeeded: 4, failures: 1, inFlight: 1, completed: 5, successRate: 0.8, fallbacks: 1, averageLatencyMs: 400 }],
+    failureClasses: [{ errorClass: "upstream_timeout", count: 1 }],
+  };
+
+  it("filters every monitor grouping by identifiers, labels, and models", () => {
+    expect(filterModelMonitorGroups(monitor, "routes", "高质量")).toHaveLength(1);
+    expect(filterModelMonitorGroups(monitor, "routes", "REASONING-V2")).toHaveLength(1);
+    expect(filterModelMonitorGroups(monitor, "providers", "provider alpha")).toHaveLength(1);
+    expect(filterModelMonitorGroups(monitor, "models", "reasoning-v2")).toHaveLength(1);
+    expect(filterModelMonitorGroups(monitor, "routes", "no-match")).toEqual([]);
+  });
+
+  it("announces attempts and terminal versus in-flight outcomes", () => {
+    expect(modelMonitorTrendSummary(monitor.trend[0])).toContain("尝试 6，成功 4，失败 1，进行中 1，完成成功率 80%");
+    expect(modelMonitorTrendSummary({ ...monitor.trend[0], attempts: 1, succeeded: 0, failures: 0, inFlight: 1 })).toContain("暂无已完成结果");
   });
 });
 

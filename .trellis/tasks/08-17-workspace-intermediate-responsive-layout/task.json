@@ -1,0 +1,59 @@
+{
+  "id": "workspace-intermediate-responsive-layout",
+  "name": "workspace-intermediate-responsive-layout",
+  "title": "Workspace intermediate responsive layout",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "frontend product experience optimization; no production deployment, live model probes, production observation task, or legacy rollout changes",
+  "package": null,
+  "priority": "P1",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": null,
+  "branch": "codex/chatus-product-optimization",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "a0c5cf1ae9df186e9ae2934fe68f0151b1b5c545",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/93",
+  "subtasks": [],
+  "children": [],
+  "parent": "08-17-chatus-product-experience-optimization",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "781, 1024, 1280, and 1439 pixel panel and containment coverage passed.",
+        "at": "2026-08-17T09:33:12.627266+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structural contracts passed.",
+        "at": "2026-08-17T09:33:13.219504+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Final integrated suite passed: 56 files and 829 tests.",
+        "at": "2026-08-17T09:33:13.811196+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-17T09:33:14.390424+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-17T09:33:14.962108+00:00"
+      }
+    ]
+  }
+}

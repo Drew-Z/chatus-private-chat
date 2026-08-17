@@ -1,0 +1,71 @@
+{
+  "id": "frontend-runtime-and-bundle-performance",
+  "name": "frontend-runtime-and-bundle-performance",
+  "title": "Frontend runtime and bundle performance",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "frontend product experience optimization; no production deployment, live model probes, production observation task, or legacy rollout changes",
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": null,
+  "branch": "codex/chatus-product-optimization",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "765bae76190732d77fd76acbe3d7cf9cf7121c06",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/93",
+  "subtasks": [],
+  "children": [],
+  "parent": "08-17-chatus-product-experience-optimization",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structural contracts passed; eager entry 296.26 KB with separate AdminApp and ChatWorkspace chunks.",
+        "at": "2026-08-17T07:36:15.611947+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "56 files and 829 tests passed.",
+        "at": "2026-08-17T07:36:16.154727+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "123 passed and 82 capability or viewport conditions skipped across the configured five-project matrix.",
+        "at": "2026-08-17T07:36:16.725959+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 local fake-provider Agent browser tests passed; no external Provider traffic.",
+        "at": "2026-08-17T07:36:17.281565+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-17T07:36:17.857987+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Cloudflare Worker and asset packaging dry-run passed without deployment.",
+        "at": "2026-08-17T07:36:18.482302+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-17T07:36:19.043156+00:00"
+      }
+    ]
+  }
+}

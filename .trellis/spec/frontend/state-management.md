@@ -33,6 +33,7 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - User account actions share an `accountBusy` lock with the workspace header, sidebar controls, memory entry, and composer. Session revocation clears user-scoped drafts and returns to login without deleting server data; user-data deletion clears chats, Agent memory, usage, feedback, and sessions while retaining access/configuration.
 - User-data export is an authenticated, secret-free JSON v1 attachment. It contains the member label, root-Agent memory, conversation metadata, text parts, and file names/types only; credentials, provider/admin configuration, message metadata, raw tool payloads, and file URLs never enter the export. The Worker reads conversations sequentially, caps the attachment at 5 MB and each conversation at 512 KB, and marks omitted content with top-level `truncated` and per-conversation `messagesTruncated` flags. The client validates this exact envelope before creating a download and reports truncation instead of presenting it as a complete archive.
 - The mobile sidebar drawer is removed from hit testing and accessibility flow while closed. Opening it moves focus to the close control after the opening click/visibility transition settles, but only while focus remains on the opener; it traps Tab, closes on Escape, and restores focus only on an actual close or unmount. Account dialogs retain their own native modal focus lifecycle.
+- Responsive panel state and panel presentation are separate. A persisted inspector may remain logically open while medium CSS presents it as an overlay; do not clear the device preference simply because the current viewport cannot afford a third grid column.
 - A rejected `sendMessage()` restores the submitted draft only when the user has not already entered newer text.
 - Typed provider and logical-model editors own ephemeral local drafts. Their parent owns only the dirty flag and revisioned snapshot; leaving those views discards the unmounted pool draft after an explicit confirmation and resets the shared dirty flag. Member capability drafts remain parent-owned and may survive a view switch.
 - A provider-pool configuration conflict replaces the authoritative snapshot but does not silently replace the local entity draft. The editor remains dirty until a successful save or an explicit server-version reset.
@@ -44,6 +45,8 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - Transcript auto-scroll is conditional on a near-bottom check; a reader who scrolls upward is not pulled back to the newest chunk.
 - Member theme preference is a device-local value keyed by the signed-in member label. The only accepted values are `follow-system`, `light`, and `dark`; malformed, unavailable, or missing storage falls back to `follow-system`. Applying a theme must not add a server preference field or cross-device synchronization.
 - Conversation-scoped route/model, Skills, tools, files, and sharing state belongs to the active conversation inspector; member-global appearance, memory, MCP, account/data, and session/device actions belong to the member settings center. Moving a control between these surfaces must reuse the existing API/dialog owner and preserve its revision, permission, pending, retry, and confirmation behavior.
+- `ChatApp` owns the authenticated session usage projection. A secondary refresh replaces only `session.usage` for the same member; a failed or unauthenticated refresh leaves the last known session and transcript untouched.
+- Member usage refresh is deduplicated and triggered after every busy-to-terminal turn transition and when the workspace regains focus. The turn result never awaits it, and a later successful refresh automatically clears a stale exhausted Composer state.
 
 ## Server State
 
@@ -69,3 +72,72 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - Persisting unsaved memory/config edits without a revision, then overwriting a newer editor.
 - Reusing local data across users because a storage key lacks the user prefix.
 - Mutating history destructively instead of creating branches for edit, regenerate, or resend flows.
+
+## Scenario: Best-Effort Device Draft Persistence
+
+### 1. Scope / Trigger
+
+- Trigger: reading, writing, clearing, or enumerating member-scoped browser persistence, especially conversation drafts and active-chat identity.
+
+### 2. Signatures
+
+```typescript
+getDeviceStorage(): DeviceStorage | null
+readDeviceString(storage, key, maxLength?): string | null
+createDebouncedDeviceWriter(storage, delayMs?): {
+  schedule(key, value): void;
+  flush(): boolean;
+  cancel(): void;
+  removeNow(key): boolean;
+  removeByPrefix(prefix): number;
+}
+```
+
+### 3. Contracts
+
+- React components do not access `localStorage` directly; all access goes through `client/src/lib/device-preferences.ts`.
+- Storage is optional. Getter access, reads, writes, removes, key enumeration, quota failures, and policy blocks never crash or block chat.
+- Conversation drafts remain member- and conversation-scoped and are written through one 250ms debounced queue, not synchronously per keystroke.
+- The shared queue survives conversation switches, flushes on `pagehide`, and is canceled on workspace unmount.
+- Conversation deletion and member/session cleanup remove matching pending queue entries before removing stored values so delayed work cannot recreate deleted drafts.
+- Persisted strings are runtime-checked and may be bounded before entering component state. An active-chat ID is still accepted only when it matches a current server conversation.
+- Storage helpers never log keys' values or draft content.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Storage getter throws or is unavailable | Return `null`; continue with in-memory UI state |
+| `getItem` returns a non-string or oversized draft | Ignore it and use the safe empty/default state |
+| Rapid keystrokes update one draft | Persist only the latest value after the debounce window |
+| Page hides with a pending draft | Flush the latest queued value best-effort |
+| Conversation/member is deleted while a write is pending | Cancel matching pending entries, then remove stored values |
+| Any set/remove/enumeration operation throws | Return failure metadata only; do not throw or print content |
+
+### 5. Good / Base / Bad Cases
+
+- Good: private-mode storage throws, but the member can still type and send normally.
+- Base: typing pauses for 250ms and the latest draft is saved once.
+- Bad: a component calls `localStorage.setItem` on every `onChange`, or an unmount flush recreates a draft after logout/deletion.
+
+### 6. Tests Required
+
+- Pure helper tests cover malformed reads, successful writes/removes, prefix cleanup, throwing storage, debounce coalescing, explicit flush, and pending-key cancellation.
+- The frontend structure check rejects direct component `localStorage` access and requires the debounced writer path.
+- Browser coverage verifies draft restoration across conversation switches without authenticating or contacting a model.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+useEffect(() => localStorage.setItem(key, input), [input, key]);
+```
+
+#### Correct
+
+```typescript
+useEffect(() => {
+  draftStorageWriter.schedule(key, input || null);
+}, [draftStorageWriter, input, key]);
+```

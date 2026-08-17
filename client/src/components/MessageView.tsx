@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { memo, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -24,22 +24,24 @@ import { MarkdownContent } from "./MarkdownContent";
 
 type ApprovalHandler = (input: { id: string; approved: boolean }) => void;
 export type MessageAction = AgentConversationBranchAction;
-type MessageActionHandler = (action: MessageAction, editedText?: string) => void | Promise<void>;
-type FeedbackHandler = (rating: "up" | "down") => void | Promise<void>;
+type MessageActionHandler = (messageId: string, action: MessageAction, editedText?: string) => void | Promise<void>;
+type FeedbackHandler = (messageId: string, rating: "up" | "down") => void | Promise<void>;
 
-export function MessageView({
-  message,
-  onApprove,
-  onAction,
-  onFeedback,
-  availability,
-}: {
+type MessageViewProps = {
   message: UIMessage;
   onApprove: ApprovalHandler;
   onAction?: MessageActionHandler;
   onFeedback?: FeedbackHandler;
   availability: MessageActionAvailability;
-}) {
+};
+
+export const MessageView = memo(function MessageView({
+  message,
+  onApprove,
+  onAction,
+  onFeedback,
+  availability,
+}: MessageViewProps) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
@@ -66,7 +68,7 @@ export function MessageView({
     if (!onAction || availability[action] !== "enabled" || actionBusy) return;
     setActionBusy(true);
     try {
-      await onAction(action, value);
+      await onAction(message.id, action, value);
       setEditing(false);
       restoreEditFocus();
     } catch {
@@ -80,7 +82,7 @@ export function MessageView({
     if (!onFeedback || availability.feedback !== "enabled" || actionBusy || feedbackBusy) return;
     setFeedbackBusy(true);
     try {
-      await onFeedback(rating);
+      await onFeedback(message.id, rating);
       setFeedback(rating);
     } finally {
       setFeedbackBusy(false);
@@ -228,6 +230,17 @@ export function MessageView({
       )}
     </article>
   );
+}, areMessageViewPropsEqual);
+
+function areMessageViewPropsEqual(previous: MessageViewProps, next: MessageViewProps): boolean {
+  if (
+    previous.message !== next.message
+    || previous.onApprove !== next.onApprove
+    || previous.onAction !== next.onAction
+    || previous.onFeedback !== next.onFeedback
+  ) return false;
+  return (Object.keys(previous.availability) as Array<keyof MessageActionAvailability>)
+    .every((key) => previous.availability[key] === next.availability[key]);
 }
 
 function skillSelectionSourceLabel(source: "model" | "last_success" | "admin_default"): string {

@@ -1,0 +1,94 @@
+{
+  "id": "chatus-product-experience-optimization",
+  "name": "chatus-product-experience-optimization",
+  "title": "Chatus product experience optimization",
+  "description": "Umbrella task for audited member workspace, accessibility, responsive, monitoring, performance, recovery, testing, and information architecture improvements.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "frontend product experience optimization; no production deployment, live model probes, production observation task, or legacy rollout changes",
+  "package": null,
+  "priority": "P1",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": null,
+  "branch": "codex/chatus-product-optimization",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "6be541836e789f5c19afc74ffafebc625e1046a3",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/93",
+  "subtasks": [],
+  "children": [
+    "08-17-member-request-timeout-recovery",
+    "08-17-member-draft-storage-resilience",
+    "08-17-workspace-accessibility-hardening",
+    "08-17-member-model-availability-ux",
+    "08-17-quota-aware-member-composer",
+    "08-17-workspace-intermediate-responsive-layout",
+    "08-17-admin-model-monitor-ux-resilience",
+    "08-17-frontend-runtime-and-bundle-performance",
+    "08-17-frontend-accessibility-test-matrix",
+    "08-17-conversation-rail-pinning"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and all static product-experience contracts passed.",
+        "at": "2026-08-17T09:36:15.225467+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "Final integrated suite passed: 56 files and 829 tests.",
+        "at": "2026-08-17T09:36:15.798014+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "Workspace matrix passed: 123 tests, with 82 deterministic project capability skips.",
+        "at": "2026-08-17T09:36:16.355236+00:00"
+      },
+      {
+        "command": "npm run test:browser:accessibility",
+        "status": "passed",
+        "summary": "Member and authenticated admin axe baselines passed in normal and reduced motion; Firefox capability handling was deterministic.",
+        "at": "2026-08-17T09:36:16.933337+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "Local fake-provider Agent acceptance passed 3 of 3 without external Provider traffic.",
+        "at": "2026-08-17T09:36:17.504287+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, client, and browser TypeScript checks passed.",
+        "at": "2026-08-17T09:36:18.105851+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Packaging dry-run passed; no production deployment occurred.",
+        "at": "2026-08-17T09:36:18.690423+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors.",
+        "at": "2026-08-17T09:36:19.278744+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository and Trellis consistency passed.",
+        "at": "2026-08-17T09:36:19.849888+00:00"
+      }
+    ]
+  }
+}

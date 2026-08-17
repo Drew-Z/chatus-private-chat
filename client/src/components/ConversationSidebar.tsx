@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Files, MessageSquarePlus, Pencil, Search, Settings, Share2, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Check, Files, MessageSquarePlus, Pencil, Pin, PinOff, Search, Settings, Share2, SlidersHorizontal, Trash2, X } from "lucide-react";
 import type { AgentConversation, SessionProjection } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
-import { resolveConversationAccessPermissions } from "../lib/state";
+import { orderConversationRail, resolveConversationAccessPermissions } from "../lib/state";
 import { ConversationShareDialog } from "./ConversationShareDialog";
 import { ProductBrand } from "./ProductBrand";
 
@@ -22,6 +22,7 @@ export function ConversationSidebar({
   onCreate,
   onRename,
   onDelete,
+  onPinChange,
   onAccessChanged,
   onOpenMemberSettings = () => undefined,
 }: {
@@ -38,6 +39,7 @@ export function ConversationSidebar({
   onCreate: () => Promise<void>;
   onRename: (conversation: AgentConversation, title: string) => Promise<void>;
   onDelete: (conversation: AgentConversation) => Promise<void>;
+  onPinChange: (conversation: AgentConversation, pinned: boolean) => Promise<void>;
   onAccessChanged: (conversation: AgentConversation, accessRevision: number) => void;
   onOpenMemberSettings?: () => void;
   /** @deprecated Contextual settings now render in ConversationInspector. */
@@ -65,24 +67,27 @@ export function ConversationSidebar({
   const [editingId, setEditingId] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const [pendingId, setPendingId] = useState("");
+  const [pinPendingIds, setPinPendingIds] = useState<Set<string>>(() => new Set());
   const [conversationToDelete, setConversationToDelete] = useState<AgentConversation | null>(null);
   const [conversationToShare, setConversationToShare] = useState<AgentConversation | null>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const previousSidebarFocusRef = useRef<HTMLElement | null>(null);
   const sidebarWasOpenRef = useRef(false);
   const onCloseRef = useRef(onClose);
+  const pinInFlightRef = useRef(new Set<string>());
   onCloseRef.current = onClose;
   const visible = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
+    const ordered = orderConversationRail(conversations);
     return normalized
-      ? conversations.filter((conversation) => conversation.title.toLocaleLowerCase().includes(normalized))
-      : conversations;
+      ? ordered.filter((conversation) => conversation.title.toLocaleLowerCase().includes(normalized))
+      : ordered;
   }, [conversations, query]);
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
   const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
 
   useEffect(() => {
-    if (!open || !window.matchMedia("(max-width: 780px)").matches) {
+    if (!open || !window.matchMedia("(max-width: 1023px)").matches) {
       if (sidebarWasOpenRef.current) {
         sidebarWasOpenRef.current = false;
         const previousFocus = previousSidebarFocusRef.current;
@@ -163,6 +168,24 @@ export function ConversationSidebar({
     }
   };
 
+  const togglePin = async (conversation: AgentConversation) => {
+    if (pinInFlightRef.current.has(conversation.id)) return;
+    pinInFlightRef.current.add(conversation.id);
+    setPinPendingIds((current) => new Set(current).add(conversation.id));
+    try {
+      await onPinChange(conversation, !conversation.pinned);
+    } catch {
+      // The workspace owns the visible error and keeps server truth authoritative.
+    } finally {
+      pinInFlightRef.current.delete(conversation.id);
+      setPinPendingIds((current) => {
+        const next = new Set(current);
+        next.delete(conversation.id);
+        return next;
+      });
+    }
+  };
+
 
   return (
     <aside ref={sidebarRef} className={`conversation-sidebar ${open ? "open" : ""}`} aria-label="会话导航">
@@ -202,9 +225,20 @@ export function ConversationSidebar({
                     <span>{formatConversationDate(conversation.updatedAt)} · {conversation.messageCount} 条消息{conversation.accessRole && conversation.accessRole !== "owner" ? ` · ${conversation.accessRole === "editor" ? "编辑者" : "查看者"}` : ""}</span>
                   </button>
                   <div className="conversation-actions">
-                    {permissions.canRename && <button className="icon-button" type="button" disabled={busy || pendingId === conversation.id} onClick={() => { setEditingId(conversation.id); setTitleDraft(conversation.title); }} title="重命名" aria-label="重命名"><Pencil size={14} /></button>}
-                    {permissions.canManageShares && conversation.resourceId && <button className="icon-button" type="button" disabled={busy || pendingId === conversation.id} onClick={() => setConversationToShare(conversation)} title="管理共享" aria-label="管理共享"><Share2 size={14} /></button>}
-                    {permissions.canDelete && <button className="icon-button danger" type="button" disabled={busy || pendingId === conversation.id} onClick={() => setConversationToDelete(conversation)} title="删除会话" aria-label="删除会话"><Trash2 size={14} /></button>}
+                    {permissions.canManageSettings && <button
+                      className="icon-button conversation-pin"
+                      type="button"
+                      aria-pressed={conversation.pinned}
+                      disabled={busy || pendingId === conversation.id || pinPendingIds.has(conversation.id)}
+                      onClick={() => void togglePin(conversation)}
+                      title={`${conversation.pinned ? "取消置顶" : "置顶会话"}：${conversation.title}`}
+                      aria-label={`${conversation.pinned ? "取消置顶" : "置顶会话"}：${conversation.title}`}
+                    >
+                      {conversation.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                    </button>}
+                    {permissions.canRename && <button className="icon-button" type="button" disabled={busy || pendingId === conversation.id || pinPendingIds.has(conversation.id)} onClick={() => { setEditingId(conversation.id); setTitleDraft(conversation.title); }} title="重命名" aria-label="重命名"><Pencil size={14} /></button>}
+                    {permissions.canManageShares && conversation.resourceId && <button className="icon-button" type="button" disabled={busy || pendingId === conversation.id || pinPendingIds.has(conversation.id)} onClick={() => setConversationToShare(conversation)} title="管理共享" aria-label="管理共享"><Share2 size={14} /></button>}
+                    {permissions.canDelete && <button className="icon-button danger" type="button" disabled={busy || pendingId === conversation.id || pinPendingIds.has(conversation.id)} onClick={() => setConversationToDelete(conversation)} title="删除会话" aria-label="删除会话"><Trash2 size={14} /></button>}
                   </div>
                 </>
               )}

@@ -2,8 +2,51 @@ export function restoreRejectedDraft(currentInput: string, submittedDraft: strin
   return currentInput || submittedDraft;
 }
 
+export type ComposerQuotaState =
+  | { status: "unknown" }
+  | { status: "available"; used: number; limit: number; remaining: number }
+  | { status: "exhausted"; used: number; limit: number; remaining: 0 };
+
+export function resolveComposerQuota(
+  usage: { used: number; limit: number; remaining: number } | null | undefined,
+): ComposerQuotaState {
+  if (!usage
+    || !Number.isSafeInteger(usage.used)
+    || !Number.isSafeInteger(usage.limit)
+    || !Number.isSafeInteger(usage.remaining)
+    || usage.used < 0
+    || usage.limit <= 0
+    || usage.remaining < 0
+    || usage.remaining > usage.limit) {
+    return { status: "unknown" };
+  }
+  if (usage.remaining === 0) {
+    return { status: "exhausted", used: usage.used, limit: usage.limit, remaining: 0 };
+  }
+  return { status: "available", ...usage };
+}
+
 export function conversationAgentClientName(rootInstance: string, chatId: string): string {
   return JSON.stringify([rootInstance, chatId]);
+}
+
+export function orderConversationRail<T extends {
+  id: string;
+  pinned: boolean;
+  updatedAt: number;
+}>(conversations: readonly T[]): T[] {
+  return conversations
+    .map((conversation, index) => ({ conversation, index }))
+    .sort((left, right) => {
+      if (left.conversation.pinned !== right.conversation.pinned) {
+        return left.conversation.pinned ? -1 : 1;
+      }
+      if (left.conversation.updatedAt !== right.conversation.updatedAt) {
+        return right.conversation.updatedAt - left.conversation.updatedAt;
+      }
+      return left.index - right.index;
+    })
+    .map(({ conversation }) => conversation);
 }
 
 export type ConversationAccessPermissions = {

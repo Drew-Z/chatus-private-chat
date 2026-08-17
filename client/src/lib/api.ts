@@ -959,12 +959,66 @@ export class ApiError extends Error {
   }
 }
 
+export const DEFAULT_API_TIMEOUT_MS = 30_000;
+
+class FetchTimeoutError extends Error {
+  constructor() {
+    super("request_timeout");
+    this.name = "FetchTimeoutError";
+  }
+}
+
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_API_TIMEOUT_MS,
+): Promise<Response> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new RangeError("timeoutMs must be a non-negative finite number");
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+  let forwardAbort: (() => void) | undefined;
+  const callerSignal = init.signal;
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      controller.abort(callerSignal.reason);
+    } else {
+      forwardAbort = () => controller.abort(callerSignal.reason);
+      callerSignal.addEventListener("abort", forwardAbort, { once: true });
+    }
+  }
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new FetchTimeoutError();
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    if (forwardAbort && callerSignal) callerSignal.removeEventListener("abort", forwardAbort);
+  }
+}
+
+function apiErrorFromFetchFailure(error: unknown, fallback: string): ApiError {
+  if (error instanceof FetchTimeoutError) {
+    return new ApiError("request_timeout", "请求超时，请稍后重试。", 0);
+  }
+  return new ApiError("network_unavailable", fallback, 0);
+}
+
 export async function fetchAdminSession(): Promise<boolean> {
   let response: Response;
   try {
-    response = await fetch("/api/admin/session", { credentials: "include", cache: "no-store" });
-  } catch {
-    throw new ApiError("network_unavailable", "暂时无法连接管理服务。", 0);
+    response = await fetchWithTimeout("/api/admin/session", { credentials: "include", cache: "no-store" });
+  } catch (error) {
+    throw apiErrorFromFetchFailure(error, "暂时无法连接管理服务。");
   }
   if (response.status === 401) return false;
   const data = await readResponseData(response);
@@ -977,7 +1031,7 @@ export async function fetchAdminSession(): Promise<boolean> {
 
 export async function adminLogin(token: string): Promise<{ ok: true } | { ok: false; message: string }> {
   try {
-    const response = await fetch("/api/admin/login", {
+    const response = await fetchWithTimeout("/api/admin/login", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
@@ -985,8 +1039,8 @@ export async function adminLogin(token: string): Promise<{ ok: true } | { ok: fa
     });
     if (response.ok) return { ok: true };
     return { ok: false, message: getAdminLoginErrorMessage(await readResponseData(response)) };
-  } catch {
-    return { ok: false, message: "暂时无法连接管理服务，请稍后重试。" };
+  } catch (error) {
+    return { ok: false, message: apiErrorFromFetchFailure(error, "暂时无法连接管理服务，请稍后重试。").message };
   }
 }
 
@@ -1207,28 +1261,36 @@ export async function fetchModelAvailability(): Promise<MemberModelAvailability>
   return data;
 }
 
-export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
-  const [stats, audit, feedback, finance, legacySurfaces, modelMonitor] = await Promise.all([
-    requestJson("/api/admin/stats"),
-    requestJson("/api/admin/audit"),
-    requestJson("/api/admin/feedback"),
-    requestJson("/api/admin/provider-finance?limit=100"),
-    fetchAdminLegacySurfaces(),
-    fetchAdminModelMonitor().catch(() => undefined),
-  ]);
-  if (!isAdminOperationsStats(stats)) {
+export async function fetchAdminOperationsStats(): Promise<AdminOperationsStats> {
+  const data = await requestJson("/api/admin/stats");
+  if (!isAdminOperationsStats(data)) {
     throw new ApiError("invalid_admin_stats_response", "运营统计格式无效。", 502);
   }
-  if (!isAdminAuditSnapshot(audit)) {
+  return data;
+}
+
+export async function fetchAdminOperationsAudit(): Promise<AdminAuditEntry[]> {
+  const data = await requestJson("/api/admin/audit");
+  if (!isAdminAuditSnapshot(data)) {
     throw new ApiError("invalid_admin_audit_response", "管理审计格式无效。", 502);
   }
-  if (!isAdminFeedbackSnapshot(feedback)) {
+  return data.entries;
+}
+
+export async function fetchAdminOperationsFeedback(): Promise<AdminFeedbackEntry[]> {
+  const data = await requestJson("/api/admin/feedback");
+  if (!isAdminFeedbackSnapshot(data)) {
     throw new ApiError("invalid_admin_feedback_response", "成员反馈格式无效。", 502);
   }
-  if (!isAdminProviderFinanceSnapshot(finance)) {
+  return data.entries;
+}
+
+export async function fetchAdminOperationsFinance(): Promise<AdminProviderFinanceSnapshot> {
+  const data = await requestJson("/api/admin/provider-finance?limit=100");
+  if (!isAdminProviderFinanceSnapshot(data)) {
     throw new ApiError("invalid_admin_provider_finance_response", "服务商成本数据格式无效。", 502);
   }
-  return { stats, audit: audit.entries, feedback: feedback.entries, finance, legacySurfaces, ...(modelMonitor ? { modelMonitor } : {}) };
+  return data;
 }
 
 export async function fetchAdminLegacySurfaces(
@@ -1465,9 +1527,9 @@ export async function deleteUserData(): Promise<UserDataMutationResponse> {
 export async function exportUserData(): Promise<{ blob: Blob; truncated: boolean }> {
   let response: Response;
   try {
-    response = await fetch("/api/user-data/export", { credentials: "include", cache: "no-store" });
-  } catch {
-    throw new ApiError("network_unavailable", "网络不可用，请检查连接后重试。", 0);
+    response = await fetchWithTimeout("/api/user-data/export", { credentials: "include", cache: "no-store" });
+  } catch (error) {
+    throw apiErrorFromFetchFailure(error, "网络不可用，请检查连接后重试。");
   }
   if (!response.ok) throw apiErrorFromResponse(response, await readResponseData(response), "数据导出失败，请稍后重试。");
   const contentType = response.headers.get("Content-Type")?.split(";", 1)[0].trim();
@@ -1496,9 +1558,9 @@ export async function exportUserData(): Promise<{ blob: Blob; truncated: boolean
 export async function fetchSession(): Promise<SessionProjection | null> {
   let response: Response;
   try {
-    response = await fetch("/api/session", { credentials: "include", cache: "no-store" });
-  } catch {
-    throw new ApiError("network_unavailable", "暂时无法连接服务器。", 0);
+    response = await fetchWithTimeout("/api/session", { credentials: "include", cache: "no-store" });
+  } catch (error) {
+    throw apiErrorFromFetchFailure(error, "暂时无法连接服务器。");
   }
   if (response.status === 401) return null;
   const data = await readResponseData(response);
@@ -1510,13 +1572,13 @@ export async function fetchSession(): Promise<SessionProjection | null> {
 export async function createGuestSession(): Promise<SessionProjection | null> {
   let response: Response;
   try {
-    response = await fetch("/api/guest-session", {
+    response = await fetchWithTimeout("/api/guest-session", {
       method: "POST",
       credentials: "include",
       headers: { "X-Chatus-Client": "web" },
     });
-  } catch {
-    throw new ApiError("network_unavailable", "暂时无法连接服务器。", 0);
+  } catch (error) {
+    throw apiErrorFromFetchFailure(error, "暂时无法连接服务器。");
   }
   const data = await readResponseData(response);
   if (response.status === 404 && isRecord(data) && data.error === "public_access_disabled") return null;
@@ -1527,7 +1589,7 @@ export async function createGuestSession(): Promise<SessionProjection | null> {
 
 export async function login(accessCode: string): Promise<{ ok: true } | { ok: false; message: string }> {
   try {
-    const response = await fetch("/api/login", {
+    const response = await fetchWithTimeout("/api/login", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", "X-Chatus-Client": "web" },
@@ -1536,8 +1598,8 @@ export async function login(accessCode: string): Promise<{ ok: true } | { ok: fa
     if (response.ok) return { ok: true };
     const data = await readResponseData(response);
     return { ok: false, message: getLoginErrorMessage(data) };
-  } catch {
-    return { ok: false, message: "暂时无法连接服务器，请稍后重试。" };
+  } catch (error) {
+    return { ok: false, message: apiErrorFromFetchFailure(error, "暂时无法连接服务器，请稍后重试。").message };
   }
 }
 
@@ -1573,7 +1635,7 @@ export async function createAgentConversation(input: {
 
 export async function updateAgentConversation(
   conversation: AgentConversation,
-  patch: { title?: string; routeId?: string; skillMode?: ConversationSkillMode; skillIds?: string[] },
+  patch: { title?: string; pinned?: boolean; routeId?: string; skillMode?: ConversationSkillMode; skillIds?: string[] },
 ): Promise<AgentConversation> {
   const data = await requestJson(`/api/agent/conversations/${encodeURIComponent(conversation.id)}`, {
     method: "PATCH",
@@ -3954,9 +4016,9 @@ async function requestJson(path: string, init: RequestInit = {}): Promise<unknow
   headers.set("X-Chatus-Client", "web");
   let response: Response;
   try {
-    response = await fetch(path, { ...init, credentials: "include", headers, cache: "no-store" });
-  } catch {
-    throw new ApiError("network_unavailable", "网络不可用，请检查连接后重试。", 0);
+    response = await fetchWithTimeout(path, { ...init, credentials: "include", headers, cache: "no-store" });
+  } catch (error) {
+    throw apiErrorFromFetchFailure(error, "网络不可用，请检查连接后重试。");
   }
   const data = await readResponseData(response);
   if (!response.ok) throw apiErrorFromResponse(response, data, "请求暂时失败，请稍后重试。");
@@ -3966,15 +4028,15 @@ async function requestJson(path: string, init: RequestInit = {}): Promise<unknow
 async function requestFormJson(path: string, form: FormData): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await fetchWithTimeout(path, {
       method: "POST",
       body: form,
       credentials: "include",
       headers: { "X-Chatus-Client": "web" },
       cache: "no-store",
     });
-  } catch {
-    throw new ApiError("network_unavailable", "网络不可用，请检查连接后重试。", 0);
+  } catch (error) {
+    throw apiErrorFromFetchFailure(error, "网络不可用，请检查连接后重试。");
   }
   const data = await readResponseData(response);
   if (!response.ok) throw apiErrorFromResponse(response, data, "文件操作失败，请稍后重试。");

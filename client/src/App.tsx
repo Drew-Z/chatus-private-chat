@@ -1,19 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useState, type ReactNode } from "react";
 import { LoginView } from "./components/LoginView";
 import { MemberLoginDialog } from "./components/MemberLoginDialog";
-import { ChatWorkspace } from "./components/ChatWorkspace";
-import { AdminApp } from "./components/AdminApp";
 import { PageState } from "./components/PageState";
 import { createGuestSession, fetchSession, login, logout, type SessionProjection } from "./lib/api";
 import type { ClientSurface } from "./lib/routing";
 import { consumeMcpOAuthCallback, type McpOAuthCallbackResult } from "./lib/mcp-oauth";
 import {
   readThemePreference,
+  removeDeviceValuesByPrefix,
   resolveTheme,
   writeThemePreference,
   getDeviceStorage,
   type ThemePreference,
 } from "./lib/device-preferences";
+
+const ChatWorkspace = lazy(() => import("./components/ChatWorkspace").then((module) => ({ default: module.ChatWorkspace })));
+const AdminApp = lazy(() => import("./components/AdminApp").then((module) => ({ default: module.AdminApp })));
 
 type AppState =
   | { status: "loading" }
@@ -22,8 +24,32 @@ type AppState =
   | { status: "authenticated"; session: SessionProjection };
 
 export function App({ surface = "chat" }: { surface?: ClientSurface }) {
-  if (surface === "admin") return <AdminApp />;
-  return <ChatApp />;
+  return (
+    <WorkspaceLoadBoundary key={surface}>
+      <Suspense fallback={<WorkspaceLoadFallback />}>
+        {surface === "admin" ? <AdminApp /> : <ChatApp />}
+      </Suspense>
+    </WorkspaceLoadBoundary>
+  );
+}
+
+export function WorkspaceLoadFallback() {
+  return <PageState title="正在打开工作区" detail="正在加载当前工作区。" />;
+}
+
+class WorkspaceLoadBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: true } {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <PageState title="工作区加载失败" detail="请检查网络连接后重试。" onRetry={() => window.location.reload()} />;
+    }
+    return this.props.children;
+  }
 }
 
 function ChatApp() {
@@ -40,6 +66,14 @@ function ChatApp() {
     } catch (error) {
       setState({ status: "error", message: error instanceof Error ? error.message : "暂时无法连接服务器。" });
     }
+  }, []);
+
+  const refreshSessionUsage = useCallback(async (): Promise<void> => {
+    const next = await fetchSession();
+    if (!next || next.access !== "member") throw new Error("成员用量暂时无法刷新。");
+    setState((current) => current.status === "authenticated" && current.session.user === next.user
+      ? { ...current, session: { ...current.session, usage: next.usage } }
+      : current);
   }, []);
 
   useEffect(() => {
@@ -87,6 +121,7 @@ function ChatApp() {
         onMemberLogin={() => setMemberLoginOpen(true)}
         themePreference={themePreference}
         onThemePreferenceChange={setThemePreference}
+        onSessionUsageRefresh={refreshSessionUsage}
         onLogout={async () => {
           await logout();
           setState({ status: "loading" });
@@ -146,8 +181,5 @@ function useDeviceTheme(user: string): {
 
 function clearSessionStorage(user: string): void {
   const prefix = `chatus:react:${user}:`;
-  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-    const key = localStorage.key(index);
-    if (key?.startsWith(prefix)) localStorage.removeItem(key);
-  }
+  removeDeviceValuesByPrefix(getDeviceStorage(), prefix);
 }
