@@ -27,8 +27,8 @@
   --danger-soft: #faecee;
   --warning: #94621b;
   --warning-soft: #fff4d9;
-  --focus: #4d6bfe;
-  --focus-ring: rgba(77, 107, 254, .28);
+  --focus: #3451d1;
+  --focus-ring: #3451d1;
   --shadow-panel: 0 18px 48px rgba(21, 23, 26, .08);
   --shadow-dialog: 0 24px 70px rgba(21, 23, 26, .18);
   --workspace-header-height: 60px;
@@ -68,8 +68,8 @@
   --danger-soft: #43262d;
   --warning: #e1b767;
   --warning-soft: #42351d;
-  --focus: #8ea2ff;
-  --focus-ring: rgba(142, 162, 255, .45);
+  --focus: #aebcff;
+  --focus-ring: #aebcff;
   --shadow-panel: 0 18px 48px rgba(0, 0, 0, .24);
   --shadow-dialog: 0 24px 70px rgba(0, 0, 0, .48);
 }
@@ -98,8 +98,8 @@
     --danger-soft: #43262d;
     --warning: #e1b767;
     --warning-soft: #42351d;
-    --focus: #8ea2ff;
-    --focus-ring: rgba(142, 162, 255, .45);
+    --focus: #aebcff;
+    --focus-ring: #aebcff;
   }
 }
 
@@ -1352,3 +1352,36 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* Member workspace controls keep a full touch target while their icons stay compact. */
+.workspace-shell .icon-button,
+.workspace-shell .attachment-icon {
+  width: var(--touch-target);
+  height: var(--touch-target);
+  min-width: var(--touch-target);
+  flex-basis: var(--touch-target);
+}
+.workspace-shell .quiet-button,
+.workspace-shell .primary-button,
+.workspace-shell .danger-button,
+.workspace-shell .inspector-trigger,
+.workspace-shell .header-actions .icon-text-button,
+.workspace-shell .composer-tool,
+.workspace-shell .composer-action,
+.workspace-shell .skill-mode-control button,
+.workspace-shell .approval-actions button,
+.workspace-shell .error-actions .icon-text-button,
+.workspace-shell .sidebar-footer-actions button,
+.workspace-shell .settings-close-button {
+  min-height: var(--touch-target);
+}
+.workspace-shell .inspector-trigger,
+.workspace-shell .header-actions .icon-text-button,
+.workspace-shell .composer-tool,
+.workspace-shell .composer-action {
+  height: var(--touch-target);
+}
+.workspace-shell .share-grant-row { grid-template-columns: minmax(0, 1fr) 112px var(--touch-target); }
+.workspace-shell .file-rename { grid-template-columns: minmax(0, 1fr) var(--touch-target) var(--touch-target); }
+.workspace-shell .attachment-preview { grid-template-columns: 44px minmax(0, 1fr) var(--touch-target) var(--touch-target); }
+.workspace-shell .code-block pre { padding-top: 56px; }

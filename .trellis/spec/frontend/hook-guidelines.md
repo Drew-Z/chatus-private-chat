@@ -35,3 +35,59 @@ The default client uses React hooks plus the Cloudflare Agents SDK hooks. Legacy
 - Fire-and-forgetting a `sendMessage()` promise and clearing the only draft copy before rejection is observed.
 - Allowing logout, chat switching, or destructive actions while a resumable Agent run is still active.
 - Adding periodic or lifecycle behavior without cleanup, deduplication, or a visibility/focus check.
+
+## Scenario: Bounded Non-Streaming Browser Requests
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing a browser request in `client/src/lib/api.ts` that expects an ordinary finite HTTP response.
+
+### 2. Signatures
+
+```typescript
+fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs?: number): Promise<Response>
+```
+
+### 3. Contracts
+
+- The default deadline is `DEFAULT_API_TIMEOUT_MS` (30 seconds).
+- The helper composes its internal deadline with `init.signal`; caller cancellation remains caller cancellation.
+- Timers and caller-signal listeners are removed on every success or failure path.
+- Shared JSON/form boundaries translate only the helper's deadline into `ApiError { code: "request_timeout", status: 0 }`.
+- Streaming Agent/chat transports keep their own cancellation and timeout rules and do not use this helper.
+- The client never automatically retries a mutating request.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Response settles before the deadline | Return it and clear timer/listener state |
+| Internal deadline wins | Abort fetch and expose `request_timeout` at the API boundary |
+| Caller signal aborts first | Preserve the caller abort; do not relabel it as timeout |
+| Fetch rejects independently | Preserve existing `network_unavailable` normalization |
+| Timeout is negative or non-finite | Reject the helper call as invalid configuration |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a stalled logout request aborts and leaves an actionable retry state.
+- Base: a normal read completes and has no live timer afterward.
+- Bad: apply a fixed deadline to a streaming response or automatically replay a timed-out mutation.
+
+### 6. Tests Required
+
+- Use fake timers and an abort-aware fetch double for success, deadline, caller abort, cleanup, and API-error normalization.
+- Keep stream tests separate and assert the finite-request helper is not introduced into the Agent transport.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const response = await fetch(path, init); // may wait forever
+```
+
+#### Correct
+
+```typescript
+const response = await fetchWithTimeout(path, init);
+```

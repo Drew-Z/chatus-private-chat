@@ -77,6 +77,7 @@ const reactWorkspaceHeader = await readText(path.join(root, "client/src/componen
 const reactMemberLogoutNotice = await readText(path.join(root, "client/src/components/MemberLogoutNotice.tsx"));
 const reactMcpConnections = await readText(path.join(root, "client/src/components/McpConnectionsDialog.tsx"));
 const reactMcpOAuth = await readText(path.join(root, "client/src/lib/mcp-oauth.ts"));
+const reactDevicePreferences = await readText(path.join(root, "client/src/lib/device-preferences.ts"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
 const reactAdminWorkspace = await readText(path.join(root, "client/src/components/AdminWorkspace.tsx"));
 const reactAdminSetup = await readText(path.join(root, "client/src/components/AdminSetupGuide.tsx"));
@@ -111,7 +112,7 @@ assert(reactClient.includes("addToolApprovalResponse"), "React client: tool appr
 const memberLogoutHandler = reactClient.match(/const handleLogout = async \(\) => \{[\s\S]*?\n  \};/)?.[0] || "";
 assert(memberLogoutHandler.includes("if (busy || accountOperationBusy || logoutInFlight.current) return;"), "React client: member logout must remain single-flight and must not abandon an active Agent or account operation");
 assert(memberLogoutHandler.includes('setLogoutState({ status: "pending" })') && memberLogoutHandler.includes('status: "error"'), "React client: member logout needs explicit pending and retryable error states");
-assert(memberLogoutHandler.indexOf("await onLogout();") >= 0 && memberLogoutHandler.indexOf("await onLogout();") < memberLogoutHandler.indexOf("clearUserDrafts(session.user);"), "React client: member drafts must clear only after authoritative logout success");
+assert(memberLogoutHandler.indexOf("await onLogout();") >= 0 && memberLogoutHandler.indexOf("await onLogout();") < memberLogoutHandler.indexOf("clearUserDrafts(session.user, draftStorageWriter);"), "React client: member drafts must clear only after authoritative logout success");
 assert(reactWorkspaceHeader.includes("logoutPending: boolean") && reactWorkspaceHeader.includes('const logoutLabel = logoutPending ? "正在退出登录" : "退出登录"'), "React client: logout control needs an explicit pending projection and accessible label");
 assert(reactWorkspaceHeader.includes("disabled={logoutPending || busy || accountBusy}") && reactWorkspaceHeader.includes("aria-label={logoutLabel}"), "React client: logout control must disable and announce its pending state");
 assert(reactClient.includes("<MemberLogoutNotice") && reactMemberLogoutNotice.includes('role="alert"') && reactMemberLogoutNotice.includes("重试退出"), "React client: failed member logout needs a dedicated accessible retry action");
@@ -122,6 +123,8 @@ assert(reactMcpConnections.includes("dialog.showModal()") && reactMcpConnections
 assert(reactClient.includes("await chat.sendMessage(text ? { text, files: fileParts } : { files: fileParts })"), "React client: text and attachment-only send failures must be observed");
 assert(reactClient.includes("resolvePendingDraftAction("), "React client: SDK resolve-with-error status must resolve pending drafts explicitly");
 assert(reactClient.includes("const value = input || pendingSubmission?.text || \"\""), "React client: submitted text must remain device-persisted until the request settles");
+assert(!reactClient.includes("localStorage") && !reactApp.includes("localStorage"), "React client: components must use the best-effort device storage boundary");
+assert(reactDevicePreferences.includes("createDebouncedDeviceWriter") && reactClient.includes("draftStorageWriter.schedule(key, value || null)"), "React client: member draft writes must stay debounced and flushable");
 assert(reactClient.includes("draftGeneration.current === submittedDraftGeneration") && reactClient.includes("setAttachments(submittedAttachments)"), "React client: rejected sends must restore the complete submitted draft only when no newer draft exists");
 assert(reactClient.includes("retryFailedTurn") && reactClient.includes('onBranch(conversation, "resend"'), "React client: failed turns need an in-place retry branch action");
 assert(reactClient.includes("followTranscriptRef") && reactClient.includes("onScroll={trackTranscriptScroll}"), "React client: streaming scroll must respect manual transcript scrolling");
@@ -154,6 +157,9 @@ assert(reactStyles.includes("position: sticky") && reactStyles.includes("env(saf
 assert(/@media \(max-width: 780px\)[\s\S]*?\.message-actions \.icon-button \{ width: var\(--touch-target\)/.test(reactStyles), "React styles: touch message actions must use the shared 44px target");
 assert(!reactStyles.includes(".message-actions .icon-button { opacity: 0") && !reactStyles.includes(".message-actions { pointer-events: none"), "React styles: message actions must not depend on hover for discovery");
 assert(reactStyles.includes(".message.user .markdown-content h1") && reactStyles.includes(".message.user .markdown-content code"), "React styles: user-bubble Markdown needs role-specific contrast");
+assert(!reactClient.includes('className="message-list" aria-live='), "React client: the changing transcript must not be one giant live region");
+assert(reactClient.includes('className="sr-only" role="status" aria-live="polite" aria-atomic="true"'), "React client: streaming needs one atomic status announcement");
+assert(reactStyles.includes("--focus-ring: #3451d1") && reactStyles.includes("--focus-ring: #aebcff"), "React styles: light and dark focus rings need opaque high-contrast tokens");
 assert(reactApp.includes("status: \"authenticated\""), "React client: authenticated session gate is missing");
 assert(reactApp.includes('surface === "admin"'), "React admin: typed route gate is missing");
 assert(reactMain.includes("resolveClientSurface(window.location.pathname)"), "React admin: pathname routing must stay at the composition root");

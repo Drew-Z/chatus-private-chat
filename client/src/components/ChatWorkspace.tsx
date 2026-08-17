@@ -68,9 +68,14 @@ import {
   selectNewestProviderTurnProgress,
 } from "../lib/provider-turn-progress";
 import {
+  createDebouncedDeviceWriter,
   readDeviceBoolean,
+  readDeviceString,
+  writeDeviceString,
   writeDeviceBoolean,
   getDeviceStorage,
+  type DebouncedDeviceWriter,
+  type DeviceStorage,
   type ThemePreference,
 } from "../lib/device-preferences";
 
@@ -96,6 +101,8 @@ export function ChatWorkspace({
   onThemePreferenceChange: (preference: ThemePreference) => boolean;
   onLogout: () => Promise<void>;
 }) {
+  const [deviceStorage] = useState(getDeviceStorage);
+  const [draftStorageWriter] = useState(() => createDebouncedDeviceWriter(deviceStorage));
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [activeId, setActiveId] = useState("");
   const [routeId, setRouteId] = useState(session.defaultRoute);
@@ -110,7 +117,7 @@ export function ChatWorkspace({
   const [sidebarView, setSidebarView] = useState<"history" | "files" | "settings">("history");
   const [inspectorOpen, setInspectorOpen] = useState(() => (
     window.matchMedia("(min-width: 781px)").matches
-      && readDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open")
+      && readDeviceBoolean(deviceStorage, session.user, "conversation-inspector-open")
   ));
   const [inspectorSection, setInspectorSection] = useState<InspectorSection>("model");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -136,6 +143,15 @@ export function ChatWorkspace({
   const logoutPending = logoutState.status === "pending";
   const accountActionBusy = accountBusy || logoutPending;
   const accountOperationBusy = accountActionBusy || Boolean(mcpBusyServerId);
+
+  useEffect(() => {
+    const flushDrafts = () => draftStorageWriter.flush();
+    window.addEventListener("pagehide", flushDrafts);
+    return () => {
+      window.removeEventListener("pagehide", flushDrafts);
+      draftStorageWriter.cancel();
+    };
+  }, [draftStorageWriter]);
 
   const refreshModelAvailability = useCallback(async (force = false): Promise<void> => {
     if (session.access !== "member") return;
@@ -242,11 +258,11 @@ export function ChatWorkspace({
     conversationSnapshots.current = new Map(next.map((conversation) => [conversation.id, conversation]));
     setConversations(next);
     setActiveId((current) => {
-      const candidate = preferredId || current || localStorage.getItem(activeConversationKey(session.user)) || "";
+      const candidate = preferredId || current || readDeviceString(deviceStorage, activeConversationKey(session.user), 256) || "";
       return next.some((conversation) => conversation.id === candidate) ? candidate : next[0]?.id || "";
     });
     return next;
-  }, [session.user]);
+  }, [deviceStorage, session.user]);
 
   const createConversation = useCallback(async () => {
     setWorkspaceError("");
@@ -286,8 +302,8 @@ export function ChatWorkspace({
       : session.defaultRoute);
     setSkillMode(session.access === "guest" ? "manual" : activeConversation.skillMode);
     setSkillIds(activeConversation.skillIds.filter((id) => allowedSkills.has(id)).slice(0, 3));
-    localStorage.setItem(activeConversationKey(session.user), activeConversation.id);
-  }, [activeConversation, session.access, session.defaultRoute, session.routes, session.skills, session.user]);
+    writeDeviceString(deviceStorage, activeConversationKey(session.user), activeConversation.id);
+  }, [activeConversation, deviceStorage, session.access, session.defaultRoute, session.routes, session.skills, session.user]);
 
   useEffect(() => {
     if (sidebarView === "files" && !activePermissions.canUseWorkspace) setSidebarView("history");
@@ -391,7 +407,7 @@ export function ChatWorkspace({
         if (remaining[0]) setActiveId(remaining[0].id);
         else await createConversation();
       }
-      localStorage.removeItem(conversationDraftKey(session.user, conversation.id));
+      draftStorageWriter.removeNow(conversationDraftKey(session.user, conversation.id));
     } catch (error) {
       setWorkspaceError(errorMessage(error, "删除失败，请刷新后重试。"));
       if (!(await recoverConversationAccess(error, conversation.id)) && error instanceof ApiError && error.code === "conversation_conflict") {
@@ -447,7 +463,7 @@ export function ChatWorkspace({
       setLogoutState({ status: "error", message: errorMessage(error, "退出登录失败，请重试。") });
       return;
     }
-    clearUserDrafts(session.user);
+    clearUserDrafts(session.user, draftStorageWriter);
   };
 
   const openInspector = (section: InspectorSection) => {
@@ -479,7 +495,7 @@ export function ChatWorkspace({
     setAccountBusy(true);
     try {
       await revokeAllSessions();
-      clearUserDrafts(session.user);
+      clearUserDrafts(session.user, draftStorageWriter);
       await onLogout();
     } finally {
       setAccountBusy(false);
@@ -491,7 +507,7 @@ export function ChatWorkspace({
     setAccountBusy(true);
     try {
       await deleteUserData();
-      clearUserDrafts(session.user);
+      clearUserDrafts(session.user, draftStorageWriter);
       await onLogout();
     } finally {
       setAccountBusy(false);
@@ -597,6 +613,8 @@ export function ChatWorkspace({
               <ConversationChat
                 key={`${activeConversation.resourceId || activeConversation.id}:${activeConversation.accessRevision || 0}`}
                 session={session}
+                deviceStorage={deviceStorage}
+                draftStorageWriter={draftStorageWriter}
                 conversation={activeConversation}
                 routeId={routeId}
                 skillMode={skillMode}
@@ -679,6 +697,8 @@ export function ChatWorkspace({
 
 function ConversationChat({
   session,
+  deviceStorage,
+  draftStorageWriter,
   conversation,
   routeId,
   skillMode,
@@ -691,6 +711,8 @@ function ConversationChat({
   onBranch,
 }: {
   session: SessionProjection;
+  deviceStorage: DeviceStorage | null;
+  draftStorageWriter: DebouncedDeviceWriter;
   conversation: AgentConversation;
   routeId: string;
   skillMode: ConversationSkillMode;
@@ -708,7 +730,9 @@ function ConversationChat({
   ) => Promise<void>;
 }) {
   const online = useOnlineStatus();
-  const [input, setInput] = useState(() => localStorage.getItem(conversationDraftKey(session.user, conversation.id)) || "");
+  const [input, setInput] = useState(() => (
+    readDeviceString(deviceStorage, conversationDraftKey(session.user, conversation.id), 100_000) || ""
+  ));
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
   const [pendingSubmission, setPendingSubmission] = useState<{
     text: string;
@@ -797,6 +821,19 @@ function ConversationChat({
     accessRole: conversation.accessRole,
   }).retry;
   const errorPresentation = chat.error ? resolveAgentError(chat.error.message, online) : null;
+  const transcriptAnnouncement = waitingFirstOutput
+    ? turnPhase === "submitted" ? "正在准备响应" : "正在等待首字输出"
+    : turnPhase === "streaming"
+      ? "正在生成响应"
+      : turnPhase === "recovering"
+        ? "正在恢复中断的任务"
+        : wasBusy.current && turnPhase === "completed"
+          ? "响应完成"
+          : wasBusy.current && turnPhase === "stopped"
+            ? "已停止响应"
+            : wasBusy.current && turnPhase === "failed"
+              ? "响应失败，可重试"
+              : "";
 
   useEffect(() => {
     if (chat.error && isConversationAccessRefreshError(chat.error.message)) {
@@ -846,9 +883,8 @@ function ConversationChat({
   useEffect(() => {
     const key = conversationDraftKey(session.user, conversation.id);
     const value = input || pendingSubmission?.text || "";
-    if (value) localStorage.setItem(key, value);
-    else localStorage.removeItem(key);
-  }, [conversation.id, input, pendingSubmission, session.user]);
+    draftStorageWriter.schedule(key, value || null);
+  }, [conversation.id, draftStorageWriter, input, pendingSubmission, session.user]);
 
   useEffect(() => {
     if (!pendingSubmission) return;
@@ -1064,7 +1100,8 @@ function ConversationChat({
       {!online && <div className="offline-banner" role="status"><WifiOff size={16} /><span>当前离线。已保留草稿，恢复网络后可以继续发送。</span></div>}
       {!routeAvailable && <div className="configuration-banner" role="status">当前没有可用模型线路，请联系管理员完成配置。</div>}
       {messageActionError && <div className="workspace-error" role="alert"><span>{messageActionError}</span><button className="icon-button" type="button" onClick={() => setMessageActionError("")} title="关闭提示" aria-label="关闭提示">×</button></div>}
-      <div ref={messageListRef} className="message-list" aria-live="polite" onScroll={trackTranscriptScroll}>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{transcriptAnnouncement}</div>
+      <div ref={messageListRef} className="message-list" onScroll={trackTranscriptScroll}>
         <div className="message-column">
           {chat.messages.length === 0 && (
             <div className="empty-state">
@@ -1104,7 +1141,7 @@ function ConversationChat({
             );
           })}
           {waitingFirstOutput && (
-            <div className="thinking-row" role="status" aria-live="polite">
+            <div className="thinking-row" aria-hidden="true">
               <span className="thinking-indicator" aria-hidden="true" />
               <span>{providerProgress
                 ? providerTurnProgressText(providerProgress, progressNow)
@@ -1186,12 +1223,9 @@ function conversationDraftKey(user: string, chatId: string): string {
   return `chatus:react:${user}:draft:${chatId}`;
 }
 
-function clearUserDrafts(user: string): void {
+function clearUserDrafts(user: string, writer: DebouncedDeviceWriter): void {
   const prefix = `chatus:react:${user}:draft:`;
-  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-    const key = localStorage.key(index);
-    if (key?.startsWith(prefix)) localStorage.removeItem(key);
-  }
+  writer.removeByPrefix(prefix);
 }
 
 function errorMessage(error: unknown, fallback: string): string {

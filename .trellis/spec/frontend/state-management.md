@@ -69,3 +69,72 @@ State is managed with React local state, refs, browser storage, legacy module-sc
 - Persisting unsaved memory/config edits without a revision, then overwriting a newer editor.
 - Reusing local data across users because a storage key lacks the user prefix.
 - Mutating history destructively instead of creating branches for edit, regenerate, or resend flows.
+
+## Scenario: Best-Effort Device Draft Persistence
+
+### 1. Scope / Trigger
+
+- Trigger: reading, writing, clearing, or enumerating member-scoped browser persistence, especially conversation drafts and active-chat identity.
+
+### 2. Signatures
+
+```typescript
+getDeviceStorage(): DeviceStorage | null
+readDeviceString(storage, key, maxLength?): string | null
+createDebouncedDeviceWriter(storage, delayMs?): {
+  schedule(key, value): void;
+  flush(): boolean;
+  cancel(): void;
+  removeNow(key): boolean;
+  removeByPrefix(prefix): number;
+}
+```
+
+### 3. Contracts
+
+- React components do not access `localStorage` directly; all access goes through `client/src/lib/device-preferences.ts`.
+- Storage is optional. Getter access, reads, writes, removes, key enumeration, quota failures, and policy blocks never crash or block chat.
+- Conversation drafts remain member- and conversation-scoped and are written through one 250ms debounced queue, not synchronously per keystroke.
+- The shared queue survives conversation switches, flushes on `pagehide`, and is canceled on workspace unmount.
+- Conversation deletion and member/session cleanup remove matching pending queue entries before removing stored values so delayed work cannot recreate deleted drafts.
+- Persisted strings are runtime-checked and may be bounded before entering component state. An active-chat ID is still accepted only when it matches a current server conversation.
+- Storage helpers never log keys' values or draft content.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Storage getter throws or is unavailable | Return `null`; continue with in-memory UI state |
+| `getItem` returns a non-string or oversized draft | Ignore it and use the safe empty/default state |
+| Rapid keystrokes update one draft | Persist only the latest value after the debounce window |
+| Page hides with a pending draft | Flush the latest queued value best-effort |
+| Conversation/member is deleted while a write is pending | Cancel matching pending entries, then remove stored values |
+| Any set/remove/enumeration operation throws | Return failure metadata only; do not throw or print content |
+
+### 5. Good / Base / Bad Cases
+
+- Good: private-mode storage throws, but the member can still type and send normally.
+- Base: typing pauses for 250ms and the latest draft is saved once.
+- Bad: a component calls `localStorage.setItem` on every `onChange`, or an unmount flush recreates a draft after logout/deletion.
+
+### 6. Tests Required
+
+- Pure helper tests cover malformed reads, successful writes/removes, prefix cleanup, throwing storage, debounce coalescing, explicit flush, and pending-key cancellation.
+- The frontend structure check rejects direct component `localStorage` access and requires the debounced writer path.
+- Browser coverage verifies draft restoration across conversation switches without authenticating or contacting a model.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+useEffect(() => localStorage.setItem(key, input), [input, key]);
+```
+
+#### Correct
+
+```typescript
+useEffect(() => {
+  draftStorageWriter.schedule(key, input || null);
+}, [draftStorageWriter, input, key]);
+```

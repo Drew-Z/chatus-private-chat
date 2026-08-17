@@ -19,6 +19,14 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - Legacy page modules use module-scoped state. Reusable helpers accept explicit values and return data or DOM-safe output.
 - Pass the owning entity explicitly for asynchronous work. Cloud saves and summaries retain the chat/session ID so results do not update whichever chat happens to be active later.
 
+## Workspace Interaction Accessibility
+
+- Shared focus-ring tokens must be opaque and keep at least 3:1 contrast against adjacent light and dark workspace surfaces. Do not rely on translucent browser blending for the only visible focus indicator.
+- Compact icon controls keep their glyph size but expose a dependable 44px interaction box in the member workspace. When layout cannot provide 44px, document the target-size exception and preserve spacing from adjacent actions.
+- The changing transcript is not a live region. Streaming lifecycle changes use one visually hidden `role="status"`, `aria-live="polite"`, `aria-atomic="true"` element with concise submitted, first-output, streaming, recovering, completed, stopped, and failed text.
+- A visual thinking/progress row is `aria-hidden` when the atomic status already communicates the same state. Never make the entire message list live or repeatedly announce accumulated assistant text.
+- Structural checks guard the focus tokens and live-region ownership; browser fixtures verify keyboard focus, target geometry, reduced-motion behavior, and desktop/touch containment without authenticating or contacting an Agent or model.
+
 ## Admin Provider Discovery And Logical Model Offerings
 
 - Keep `routeModelInput` as an ordinary manual text input. A native `datalist` is not an acceptable full-list browser because the browser filters options using the current input value.

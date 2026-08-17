@@ -9,6 +9,7 @@ import type { ClientSurface } from "./lib/routing";
 import { consumeMcpOAuthCallback, type McpOAuthCallbackResult } from "./lib/mcp-oauth";
 import {
   readThemePreference,
+  removeDeviceValuesByPrefix,
   resolveTheme,
   writeThemePreference,
   getDeviceStorage,
@@ -146,8 +147,5 @@ function useDeviceTheme(user: string): {
 
 function clearSessionStorage(user: string): void {
   const prefix = `chatus:react:${user}:`;
-  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-    const key = localStorage.key(index);
-    if (key?.startsWith(prefix)) localStorage.removeItem(key);
-  }
+  removeDeviceValuesByPrefix(getDeviceStorage(), prefix);
 }
