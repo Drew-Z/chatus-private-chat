@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "49ef064162400c545695c377057e5d97ac6dd3e8",
-  "pr_url": null,
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/93",
   "subtasks": [],
   "children": [],
   "parent": "08-17-chatus-product-experience-optimization",

@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "6be541836e789f5c19afc74ffafebc625e1046a3",
-  "pr_url": null,
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/93",
   "subtasks": [],
   "children": [
     "08-17-member-request-timeout-recovery",
