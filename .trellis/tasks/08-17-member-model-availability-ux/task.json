@@ -3,7 +3,7 @@
   "name": "member-model-availability-ux",
   "title": "Member model availability UX",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": "frontend product experience optimization; no production deployment, live model probes, production observation task, or legacy rollout changes",
   "package": null,

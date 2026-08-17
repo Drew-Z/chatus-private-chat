@@ -733,6 +733,39 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await attachScreenshot(page, testInfo, "guest-workspace");
 });
 
+test("member model availability keeps loading empty error stale and success distinct", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "availability state matrix needs one deterministic browser pass");
+
+  await page.goto("/?inspector=open&availability=loading");
+  await expect(page.locator(".model-availability-notice.loading")).toContainText("正在读取模型可用性");
+  await expect(page.locator(".header-route-button")).toContainText("模型可用性：读取中");
+  await expect(page.locator(".header-route-button")).toContainText("任务健康：");
+
+  await page.goto("/?inspector=open&availability=empty");
+  await expect(page.locator(".model-availability-notice.empty")).toContainText("当前没有可用性记录，这与读取失败不同");
+  await expect(page.locator(".model-availability-list")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重试读取" })).toHaveCount(0);
+
+  await page.goto("/?inspector=open&availability=error");
+  const error = page.locator(".model-availability-notice.error");
+  await expect(error).toContainText("合成可用性读取失败");
+  await error.getByRole("button", { name: "重试读取" }).click();
+  await expect(page.getByTestId("model-availability-retry-count")).toHaveText("1");
+  await expect(page.locator(".model-availability-notice.loading")).toContainText("正在读取模型可用性");
+
+  await page.goto("/?inspector=open&availability=stale");
+  const stale = page.locator(".model-availability-notice.stale");
+  await expect(stale).toContainText("当前显示上次成功结果");
+  await expect(page.locator(".model-availability-list")).toBeVisible();
+  await expect(page.locator(".model-availability-footnote")).toContainText("当前显示旧数据");
+
+  await page.goto("/?inspector=open&availability=success");
+  await expect(page.locator(".model-availability-notice")).toHaveCount(0);
+  await expect(page.locator(".model-availability-list")).toBeVisible();
+  await expect(page.locator(".header-route-button")).toContainText("模型可用性：");
+  await expect(page.locator(".header-route-button")).toContainText("任务健康：");
+});
+
 test("member Skill mode switches between automatic and exact manual selection", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "查看线路与状态" }).click();
   await expect(page.locator(".model-availability-footnote")).toContainText("更新时间：");

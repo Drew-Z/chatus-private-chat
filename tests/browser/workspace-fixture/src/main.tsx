@@ -26,6 +26,13 @@ import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
 import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
 import type { ThemePreference } from "../../../../client/src/lib/device-preferences";
 import {
+  beginModelAvailabilityRefresh,
+  completeModelAvailabilityRefresh,
+  createModelAvailabilityViewState,
+  failModelAvailabilityRefresh,
+  type ModelAvailabilityViewState,
+} from "../../../../client/src/lib/model-availability";
+import {
   addDraftAttachmentFiles,
   readDraftAttachment,
   releaseAttachmentPreviews,
@@ -804,6 +811,8 @@ function WorkspaceFixture() {
   const [attachments, setAttachments] = useState(() => fixtureAttachments(params.get("attachments")));
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const [logoutState, setLogoutState] = useState(() => readLogoutFixtureState(params.get("logout")));
+  const [modelAvailabilityState, setModelAvailabilityState] = useState(() => readModelAvailabilityFixtureState(params.get("availability")));
+  const [modelAvailabilityRetryCount, setModelAvailabilityRetryCount] = useState(0);
   const [operationsFilter, setOperationsFilter] = useState("");
   const [operationsFixtureSnapshot, setOperationsFixtureSnapshot] = useState(operationsSnapshot);
   const [legacySurfaceFixtureDirty, setLegacySurfaceFixtureDirty] = useState(false);
@@ -1108,8 +1117,7 @@ function WorkspaceFixture() {
             conversation={activeConversation}
             routeId={routeId}
             connectionState={connectionState}
-            modelAvailability={memberModelAvailability}
-            modelAvailabilityRefreshing={false}
+            modelAvailabilityState={session.access === "member" ? modelAvailabilityState : undefined}
             busy={turnBusy}
             accountBusy={logoutPending}
             logoutPending={logoutPending}
@@ -1195,8 +1203,7 @@ function WorkspaceFixture() {
           session={session}
           conversation={activeConversation}
           routeId={routeId}
-          modelAvailability={memberModelAvailability}
-          modelAvailabilityRefreshing={false}
+          modelAvailabilityState={session.access === "member" ? modelAvailabilityState : undefined}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState="idle"
@@ -1208,9 +1215,14 @@ function WorkspaceFixture() {
           onRouteChange={() => undefined}
           onSkillModeChange={(nextSkillMode) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillMode: nextSkillMode } : conversation))}
           onSkillChange={(nextSkillIds) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillIds: nextSkillIds } : conversation))}
+          onRetryModelAvailability={() => {
+            setModelAvailabilityRetryCount((current) => current + 1);
+            setModelAvailabilityState(beginModelAvailabilityRefresh);
+          }}
           onRetrySave={() => undefined}
         />
       </div>
+      <output data-testid="model-availability-retry-count" hidden>{modelAvailabilityRetryCount}</output>
       <MemberSettingsCenter
         open={memberSettingsOpen}
         nestedOpen={false}
@@ -1281,6 +1293,19 @@ function readTurnPhase(value: string | null): TurnPhase | null {
 function readLogoutFixtureState(value: string | null): "idle" | "pending" | "error" {
   if (value === "pending" || value === "error") return value;
   return "idle";
+}
+
+function readModelAvailabilityFixtureState(value: string | null): ModelAvailabilityViewState {
+  if (value === "loading") return createModelAvailabilityViewState();
+  if (value === "empty") {
+    return completeModelAvailabilityRefresh({ ...memberModelAvailability, routes: [] });
+  }
+  if (value === "error") {
+    return failModelAvailabilityRefresh(createModelAvailabilityViewState(), "合成可用性读取失败。");
+  }
+  const ready = completeModelAvailabilityRefresh(memberModelAvailability);
+  if (value === "stale") return failModelAvailabilityRefresh(ready, "合成刷新失败。");
+  return ready;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><WorkspaceFixture /></StrictMode>);

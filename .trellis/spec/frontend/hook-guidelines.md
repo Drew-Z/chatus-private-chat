@@ -20,6 +20,7 @@ The default client uses React hooks plus the Cloudflare Agents SDK hooks. Legacy
 - Non-streaming requests use `fetchWithTimeout`; streaming `/api/chat` remains user-cancellable through its AbortController and does not use a fixed timeout.
 - Surface rate-limit type and retry timing to the UI instead of collapsing daily and minute limits into one error.
 - Preserve optimistic-concurrency fields such as `expectedRevision` and `expectedUpdatedAt` on writes and deletes.
+- Advisory availability reads still expose failures. Keep the last successful projection on refresh failure, mark it stale, and offer a manual read retry; never turn that retry into an active Provider or model probe.
 
 ## Naming Conventions
 

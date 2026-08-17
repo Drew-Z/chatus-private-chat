@@ -13,11 +13,11 @@ Give members an honest, actionable view of model availability without hiding rea
 
 ## Acceptance Criteria
 
-- [ ] Availability read failures are visible and retryable rather than swallowed.
-- [ ] The header no longer presents route health as if it were current aggregate model availability.
-- [ ] A failed refresh can show the prior value with stale/error context.
-- [ ] Empty configured availability is distinguishable from a network failure.
-- [ ] Tests cover loading, empty, error, stale, success, and retry states with mocked endpoints only.
+- [x] Availability read failures are visible and retryable rather than swallowed.
+- [x] The header no longer presents route health as if it were current aggregate model availability.
+- [x] A failed refresh can show the prior value with stale/error context.
+- [x] Empty configured availability is distinguishable from a network failure.
+- [x] Tests cover loading, empty, error, stale, success, and retry states with mocked endpoints only.
 
 ## Notes
 

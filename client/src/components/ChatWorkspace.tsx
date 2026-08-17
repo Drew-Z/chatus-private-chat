@@ -20,7 +20,6 @@ import {
   updateAgentConversation,
   type AgentConversationBranchAction,
   type AgentConversation,
-  type MemberModelAvailability,
   type SessionProjection,
 } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
@@ -62,6 +61,12 @@ import { AgentErrorBanner } from "./AgentErrorBanner";
 import type { UIMessage } from "ai";
 import type { McpOAuthCallbackResult } from "../lib/mcp-oauth";
 import type { ProviderTurnProgressV1 } from "../../../src/contracts/provider-turn-progress";
+import {
+  beginModelAvailabilityRefresh,
+  completeModelAvailabilityRefresh,
+  createModelAvailabilityViewState,
+  failModelAvailabilityRefresh,
+} from "../lib/model-availability";
 import {
   decodeProviderTurnProgressMessage,
   providerTurnProgressText,
@@ -128,8 +133,7 @@ export function ChatWorkspace({
   const [mcpBusyServerId, setMcpBusyServerId] = useState("");
   const [mcpConnectionNotice, setMcpConnectionNotice] = useState<McpConnectionNotice | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
-  const [modelAvailability, setModelAvailability] = useState<MemberModelAvailability | null>(null);
-  const [modelAvailabilityRefreshing, setModelAvailabilityRefreshing] = useState(false);
+  const [modelAvailabilityState, setModelAvailabilityState] = useState(createModelAvailabilityViewState);
   const bootstrapped = useRef(false);
   const logoutInFlight = useRef(false);
   const mcpRefresh = useRef<Promise<void> | null>(null);
@@ -159,14 +163,19 @@ export function ChatWorkspace({
     if (!force && now - modelAvailabilityRefreshAt.current < 60_000) return;
     modelAvailabilityRefreshAt.current = now;
     const generation = ++modelAvailabilityGeneration.current;
-    setModelAvailabilityRefreshing(true);
+    setModelAvailabilityState(beginModelAvailabilityRefresh);
     try {
       const next = await fetchModelAvailability();
-      if (generation === modelAvailabilityGeneration.current) setModelAvailability(next);
-    } catch {
-      // Availability is advisory. Keep the last projection and never block chat.
-    } finally {
-      if (generation === modelAvailabilityGeneration.current) setModelAvailabilityRefreshing(false);
+      if (generation === modelAvailabilityGeneration.current) {
+        setModelAvailabilityState(completeModelAvailabilityRefresh(next));
+      }
+    } catch (error) {
+      if (generation === modelAvailabilityGeneration.current) {
+        setModelAvailabilityState((current) => failModelAvailabilityRefresh(
+          current,
+          errorMessage(error, "模型可用性暂时无法读取。"),
+        ));
+      }
     }
   }, [session.access]);
 
@@ -584,8 +593,7 @@ export function ChatWorkspace({
             conversation={activeConversation}
             routeId={routeId}
             connectionState={connectionState}
-            modelAvailability={modelAvailability}
-            modelAvailabilityRefreshing={modelAvailabilityRefreshing}
+            modelAvailabilityState={session.access === "member" ? modelAvailabilityState : undefined}
             busy={busy}
             accountBusy={accountOperationBusy}
             logoutPending={logoutPending}
@@ -640,8 +648,7 @@ export function ChatWorkspace({
           session={session}
           conversation={activeConversation}
           routeId={routeId}
-          modelAvailability={modelAvailability}
-          modelAvailabilityRefreshing={modelAvailabilityRefreshing}
+          modelAvailabilityState={session.access === "member" ? modelAvailabilityState : undefined}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState={settingsSave.conversationId === activeConversation?.id ? settingsSave.state : "idle"}
@@ -656,6 +663,7 @@ export function ChatWorkspace({
           onRouteChange={(nextRouteId) => { setRouteId(nextRouteId); void persistSettings({ routeId: nextRouteId }); }}
           onSkillModeChange={(nextSkillMode) => { setSkillMode(nextSkillMode); void persistSettings({ skillMode: nextSkillMode }); }}
           onSkillChange={(nextSkillIds) => { setSkillIds(nextSkillIds); void persistSettings({ skillIds: nextSkillIds }); }}
+          onRetryModelAvailability={() => { void refreshModelAvailability(true); }}
           onRetrySave={() => { void persistSettings({ routeId, skillMode, skillIds }); }}
         />
       </div>

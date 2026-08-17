@@ -27,6 +27,14 @@ Examples in `public/app.js` include the session list, model picker, settings dia
 - A visual thinking/progress row is `aria-hidden` when the atomic status already communicates the same state. Never make the entire message list live or repeatedly announce accumulated assistant text.
 - Structural checks guard the focus tokens and live-region ownership; browser fixtures verify keyboard focus, target geometry, reduced-motion behavior, and desktop/touch containment without authenticating or contacting an Agent or model.
 
+## Member Model Availability States
+
+- Model availability is a five-state browser projection: `loading | success | empty | stale | error`. `empty` is a successful response with no route records; `error` is a failed read with no prior result; `stale` retains the last successful result after a refresh failure.
+- The workspace owns the read generation and retry. A newer request is the only one allowed to replace state, and manual retry replays only `GET /api/model-availability`; it never invokes model discovery, validation, completion, or a Provider probe.
+- Header copy labels aggregate `模型可用性` separately from per-route passive `任务健康`. Do not present a route's most recent real-task health as if it were the current aggregate availability response.
+- The model inspector keeps stale rows visible with an explicit old-data warning and timestamp. Initial errors expose a retry command, while a successful empty response explicitly says that it differs from a read failure.
+- Pure transition tests cover all five states. The synthetic Workspace fixture renders loading, success, empty, stale, error, and retry states while aborting unexpected requests.
+
 ## Admin Provider Discovery And Logical Model Offerings
 
 - Keep `routeModelInput` as an ordinary manual text input. A native `datalist` is not an acceptable full-list browser because the browser filters options using the current input value.

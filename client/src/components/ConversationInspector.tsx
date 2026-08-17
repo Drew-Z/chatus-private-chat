@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Files, Plug, Route, Share2, Sparkles, Wrench, X } from "lucide-react";
+import { Files, Plug, RefreshCw, Route, Share2, Sparkles, Wrench, X } from "lucide-react";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
-import type { AgentConversation, MemberModelAvailability, SessionProjection } from "../lib/api";
+import type { AgentConversation, SessionProjection } from "../lib/api";
+import type { ModelAvailabilityViewState } from "../lib/model-availability";
 import { resolveConversationAccessPermissions } from "../lib/state";
 import { ConversationShareDialog } from "./ConversationShareDialog";
 import { ModelAvailabilityBadge, availabilitySpeedLabel, availabilityStatusDescription } from "./ModelAvailabilityBadge";
@@ -16,8 +17,7 @@ export function ConversationInspector({
   session,
   conversation,
   routeId,
-  modelAvailability,
-  modelAvailabilityRefreshing,
+  modelAvailabilityState,
   skillMode,
   skillIds,
   saveState,
@@ -29,6 +29,7 @@ export function ConversationInspector({
   onRouteChange,
   onSkillModeChange,
   onSkillChange,
+  onRetryModelAvailability,
   onRetrySave,
 }: {
   open: boolean;
@@ -36,8 +37,7 @@ export function ConversationInspector({
   session: SessionProjection;
   conversation: AgentConversation | null;
   routeId: string;
-  modelAvailability?: MemberModelAvailability | null;
-  modelAvailabilityRefreshing?: boolean;
+  modelAvailabilityState?: ModelAvailabilityViewState;
   skillMode: ConversationSkillMode;
   skillIds: string[];
   saveState: ConversationSettingsSaveState;
@@ -49,6 +49,7 @@ export function ConversationInspector({
   onRouteChange: (routeId: string) => void;
   onSkillModeChange: (skillMode: ConversationSkillMode) => void;
   onSkillChange: (skillIds: string[]) => void;
+  onRetryModelAvailability: () => void;
   onRetrySave: () => void;
 }) {
   const panelRef = useRef<HTMLElement>(null);
@@ -61,7 +62,7 @@ export function ConversationInspector({
   shareOpenRef.current = shareOpen;
   const permissions = resolveConversationAccessPermissions(conversation?.accessRole);
   const routeSupportsTools = session.routes.find((route) => route.id === routeId)?.supportsTools === true;
-  const availabilityRoute = modelAvailability?.routes.find((route) => route.routeId === routeId);
+  const availabilityRoute = modelAvailabilityState?.data?.routes.find((route) => route.routeId === routeId);
   const selectedToolIds = useMemo(
     () => new Set(routeSupportsTools
       ? session.skills.filter((skill) => skillIds.includes(skill.id)).flatMap((skill) => skill.toolIds)
@@ -156,16 +157,25 @@ export function ConversationInspector({
                   : session.routes.map((route) => <option value={route.id} key={route.id}>{route.label} · {route.model}</option>)}
               </select>
             )}
-            <small>{session.routes.length === 0
+            <small className="model-availability-summary">模型可用性：{session.routes.length === 0
               ? "请联系管理员配置模型线路"
               : availabilityRoute
                 ? `${availabilityStatusDescription(availabilityRoute.status)}${availabilityRoute.speed !== "unknown" ? ` · ${availabilitySpeedLabel(availabilityRoute.speed)}` : ""}`
-                : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}{modelAvailabilityRefreshing ? " · 正在更新可用性" : ""}</small>
+                : modelAvailabilityState
+                  ? availabilityStateDescription(modelAvailabilityState)
+                  : "仅成员可查看"}</small>
+            {session.routes.length > 0 && <small className="route-health-summary">任务健康：{routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}</small>}
+            {modelAvailabilityState && (
+              <ModelAvailabilityStateNotice
+                state={modelAvailabilityState}
+                onRetry={onRetryModelAvailability}
+              />
+            )}
             {availabilityRoute?.fallbackRecentlyUsed && <small className="model-availability-fallback">最近请求已自动切换备用线路。</small>}
-            {modelAvailability && session.routes.length > 0 && (
+            {modelAvailabilityState?.data && modelAvailabilityState.data.routes.length > 0 && session.routes.length > 0 && (
               <div className="model-availability-list" aria-label="模型可用性">
                 {session.routes.map((route) => {
-                  const status = modelAvailability.routes.find((candidate) => candidate.routeId === route.id);
+                  const status = modelAvailabilityState.data?.routes.find((candidate) => candidate.routeId === route.id);
                   return (
                     <div className="model-availability-row" key={route.id}>
                       <span><strong>{route.label}</strong><small>{route.model}</small></span>
@@ -173,7 +183,7 @@ export function ConversationInspector({
                     </div>
                   );
                 })}
-                <small className="model-availability-footnote">状态基于最近 Chatus 流量，仅作选择参考，不保证下一次请求。更新时间：{formatAvailabilityTime(modelAvailability.generatedAt)}{modelAvailabilityRefreshing ? " · 正在更新" : ""}</small>
+                <small className="model-availability-footnote">状态基于最近 Chatus 流量，仅作选择参考，不保证下一次请求。更新时间：{formatAvailabilityTime(modelAvailabilityState.data.generatedAt)}{modelAvailabilityState.refreshing ? " · 正在更新" : ""}{modelAvailabilityState.status === "stale" ? " · 当前显示旧数据" : ""}</small>
               </div>
             )}
             <SaveState state={saveState} onRetry={onRetrySave} />
@@ -247,6 +257,46 @@ export function ConversationInspector({
       )}
     </aside>
   );
+}
+
+function ModelAvailabilityStateNotice({
+  state,
+  onRetry,
+}: {
+  state: ModelAvailabilityViewState;
+  onRetry: () => void;
+}) {
+  if (state.status === "success" && !state.refreshing) return null;
+  const message = state.status === "loading"
+    ? "正在读取模型可用性。"
+    : state.status === "error"
+      ? state.error
+      : state.status === "stale"
+        ? `刷新失败，当前显示上次成功结果。${state.error}`
+        : state.status === "empty"
+          ? "当前没有可用性记录，这与读取失败不同。"
+          : "正在更新模型可用性。";
+  return (
+    <div
+      className={`model-availability-notice ${state.status}`}
+      role={state.status === "error" ? "alert" : "status"}
+    >
+      <span>{message}{state.refreshing && state.status !== "loading" ? " 正在重试。" : ""}</span>
+      {(state.status === "error" || state.status === "stale") && (
+        <button className="quiet-button icon-text-button" type="button" onClick={onRetry} disabled={state.refreshing}>
+          <RefreshCw size={14} aria-hidden="true" /><span>{state.refreshing ? "重试中" : "重试读取"}</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+function availabilityStateDescription(state: ModelAvailabilityViewState): string {
+  if (state.status === "loading") return "正在读取";
+  if (state.status === "error") return "读取失败，可重试";
+  if (state.status === "empty") return "当前没有可用性记录";
+  if (state.status === "stale") return "当前显示上次成功结果";
+  return "当前线路暂无单独记录";
 }
 
 function SaveState({ state, onRetry }: { state: ConversationSettingsSaveState; onRetry: () => void }) {

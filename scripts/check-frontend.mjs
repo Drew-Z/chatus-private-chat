@@ -78,6 +78,7 @@ const reactMemberLogoutNotice = await readText(path.join(root, "client/src/compo
 const reactMcpConnections = await readText(path.join(root, "client/src/components/McpConnectionsDialog.tsx"));
 const reactMcpOAuth = await readText(path.join(root, "client/src/lib/mcp-oauth.ts"));
 const reactDevicePreferences = await readText(path.join(root, "client/src/lib/device-preferences.ts"));
+const reactModelAvailabilityState = await readText(path.join(root, "client/src/lib/model-availability.ts"));
 const reactAdminApp = await readText(path.join(root, "client/src/components/AdminApp.tsx"));
 const reactAdminWorkspace = await readText(path.join(root, "client/src/components/AdminWorkspace.tsx"));
 const reactAdminSetup = await readText(path.join(root, "client/src/components/AdminSetupGuide.tsx"));
@@ -144,6 +145,9 @@ assert(reactMessageView.includes("editOpenerRef") && reactMessageView.includes("
 assert(reactMessageView.includes('className="message-sources"') && reactMessageView.includes('aria-label="消息来源"'), "React messages: sources need a compact labelled group");
 assert(reactClient.includes("<WorkspaceHeader") && !reactClient.includes('className="chat-toolbar"'), "React workspace: title, route, health, and connection must share one compact header");
 assert(reactWorkspaceHeader.includes("route.model") && reactWorkspaceHeader.includes("routeHealthLabel") && reactWorkspaceHeader.includes("connectionState"), "React workspace header: logical model, passive health, and connection state are missing");
+assert(reactWorkspaceHeader.includes("模型可用性：") && reactWorkspaceHeader.includes("任务健康："), "React workspace header: model availability and real-task health must stay separately labelled");
+assert(["loading", "success", "empty", "stale", "error"].every((status) => reactModelAvailabilityState.includes(`\"${status}\"`)), "React model availability: explicit loading, success, empty, stale, and error states are required");
+assert(reactInspector.includes("onRetryModelAvailability") && reactInspector.includes("当前显示上次成功结果") && reactInspector.includes("这与读取失败不同"), "React model availability: retry, stale-data, and empty-state recovery UI is missing");
 assert(reactClient.includes("<MessageComposer") && reactComposer.includes("resizeComposerTextarea") && reactComposer.includes('rows={1}'), "React composer: bounded textarea auto-growth is missing");
 assert(reactComposer.includes('statusText || "\\u00a0"') && reactComposer.includes("aria-hidden={!statusText}"), "React composer: status space must remain reserved while idle");
 assert(reactComposer.includes("<Paperclip") && reactComposer.includes("onPaste={addClipboardImages}") && reactComposer.includes("onDrop={handleDrop}"), "React composer: picker, paste, and drop acquisition must share the attachment workflow");
