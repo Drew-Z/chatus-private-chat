@@ -939,8 +939,49 @@ describe("instance capture contracts", () => {
       "chatus_conversations",
       "cf_ai_chat_agent_messages",
       "cf_agents_schedules",
+      "chatus_vision_evidence",
     ]));
     expect(teamEnvelope.storage.map(({ key }) => key)).toContain("chatus:agent-identity:v1");
+    const conversationName = `capture-vision-${crypto.randomUUID()}`;
+    const conversation = await getAgentByName(env.TEAM_AGENT, conversationName, {
+      props: {
+        ...props,
+        scope: "conversation" as const,
+        chatId: `capture-vision-chat-${crypto.randomUUID()}`,
+        rootInstance: name,
+      },
+    }) as DurableObjectStub<TeamAgent>;
+    const evidence = {
+      version: 1 as const,
+      description: "A synthetic capture image.",
+      ocrText: ["capture evidence"],
+      limitations: [],
+    };
+    await conversation.importLegacyMessages([{
+      id: "capture-vision-source",
+      role: "user",
+      parts: [
+        { type: "text", text: "inspect this image" },
+        { type: "file", mediaType: "image/png", filename: "capture.png", url: "data:image/png;base64,QQ==" },
+      ],
+    }]);
+    await conversation.importVisionEvidence([{
+      sourceMessageId: "capture-vision-source",
+      evidence,
+    }]);
+    const conversationSnapshot = await conversation.captureInstanceState("epoch-team-agent-vision");
+    const conversationEnvelope = JSON.parse(new TextDecoder().decode(conversationSnapshot.bytes)) as {
+      schemaVersion: string;
+      tables: Array<{ name: string; rows: Array<Record<string, unknown>> }>;
+    };
+    expect(conversationEnvelope.schemaVersion).toBe("team-agent-v9");
+    expect(conversationEnvelope.tables.find(({ name: table }) => table === "chatus_vision_evidence")?.rows)
+      .toEqual([expect.objectContaining({
+        source_message_id: "capture-vision-source",
+        evidence_json: JSON.stringify(evidence),
+      })]);
+    const exportedConversation = await conversation.exportMessages();
+    expect(JSON.stringify(exportedConversation)).not.toContain(evidence.description);
     const providerName = `capture-provider-schema-${crypto.randomUUID()}`;
     const provider = env.PROVIDER_COORDINATOR.getByName(providerName) as DurableObjectStub<ProviderCoordinator>;
     await expect(provider.captureInstanceState("epoch-provider-schema"))

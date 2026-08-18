@@ -17,6 +17,7 @@ export type ProviderAttemptRunKind =
   | "memory_suggestion"
   | "conversation_summary"
   | "model_discovery"
+  | "auxiliary_vision"
   | "tool_continuation"
   | "legacy_capability";
 
@@ -134,6 +135,7 @@ const RUN_KIND_VALUES = new Set<ProviderAttemptRunKind>([
   "memory_suggestion",
   "conversation_summary",
   "model_discovery",
+  "auxiliary_vision",
   "tool_continuation",
   "legacy_capability",
 ]);

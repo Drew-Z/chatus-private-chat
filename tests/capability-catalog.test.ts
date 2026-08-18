@@ -70,4 +70,13 @@ describe("capability catalog", () => {
     expect(sameCatalogWorkflowDefinition(canonical[WORKFLOW_IDS[1]], disabled)).toBe(true);
     expect(sameCatalogWorkflowDefinition(canonical[WORKFLOW_IDS[2]], conflict)).toBe(false);
   });
+
+  it("projects the administrator-derived vision helper state", () => {
+    const ready = capabilityCatalogSnapshot({}, "installed");
+    const disabled = capabilityCatalogSnapshot({}, "disabled");
+    const visionStatus = (snapshot: ReturnType<typeof capabilityCatalogSnapshot>) => snapshot.packs[0].items
+      .find((item) => item.id === "chatus:vision_assist")?.status;
+    expect(visionStatus(ready)).toBe("installed");
+    expect(visionStatus(disabled)).toBe("disabled");
+  });
 });

@@ -155,3 +155,69 @@ const result = await raceWithAbort(
 
 One absolute run boundary covers planning and every candidate while the child
 preserves the established per-candidate first-visible policy.
+
+## Scenario: Auxiliary Vision Provider Runs
+
+### 1. Scope / Trigger
+
+Use this contract when one admitted image turn needs a helper Provider before an unsupported text-model request or inside a forced trusted tool turn.
+
+### 2. Signatures
+
+```text
+tool route: auxiliary_vision -> tool_continuation
+pre-answer route: auxiliary_vision -> main_answer
+```
+
+```typescript
+createRun("auxiliary_vision");
+runMainAnswer({ evidence, admission, deadline }): Promise<UIMessageStream>;
+```
+
+### 3. Contracts
+
+- The helper uses the same ordered logical route plan, credential resolver, Provider capacity lease, absolute deadline, usage/cost collector, cancellation signal, and required ledger admission as a main attempt.
+- The helper receives only canonical in-scope image parts and returns normalized private evidence. The unsupported text model receives formatted evidence rather than image bytes.
+- A submitted user message owns one admission across helper, main answer, fallback, and tool continuation. Helper attempts add ledger evidence but never add message quota.
+- The helper run has its own `auxiliary_vision` run kind under the turn; a tool continuation is a distinct run. Late helper success is observed and discarded after timeout/cancellation.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Required helper ledger start fails | Block all Provider I/O; do not select a fallback |
+| Helper capacity/budget/credential denied | Terminal public error; release admission/lease |
+| Helper times out before evidence | `upstream_timeout`; no unsupported main call |
+| Parent cancellation | `AbortError`/`request_cancelled`; no fallback |
+| Helper succeeds before deadline | Continue exactly once to main answer or tool continuation |
+
+### 5. Good / Base / Bad Cases
+
+- Good: helper failure settles its attempt and lease before the unsupported main route is considered.
+- Base: native image routes use the direct Provider path and do not create an auxiliary run.
+- Bad: allocate a fresh full-turn deadline per helper/fallback or let a helper ledger error fall through to another Provider.
+
+### 6. Tests Required
+
+- With fake Providers, assert exact run IDs/kinds, one admission, shared deadlines, usage/cost, cancellation, timeout, late-result cleanup, and no unsupported main I/O.
+- Assert forced tool refusal and malformed evidence fail before visible output and never reopen fallback after commitment.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const helper = await provider.doGenerate({ imageParts });
+return provider.doGenerate({ imageParts, helper });
+```
+
+#### Correct
+
+```typescript
+const helperAttempt = await run.start({ runKind: "auxiliary_vision" });
+const evidence = await inspectImages(canonicalImageParts, helperAttempt.signal);
+await helperAttempt.succeed();
+return runMainAnswer({ evidence: formatVisionEvidenceForModel(evidence), admission });
+```
+
+Every physical call is admitted and settled before the next stage, and unsupported models never see raw images.

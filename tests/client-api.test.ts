@@ -126,6 +126,7 @@ const validSession = {
     type: "openai-chat",
     supportsImages: true,
     supportsTools: true,
+    imageMode: "native",
     healthStatus: "unknown",
   }],
   defaultRoute: "primary",
@@ -987,6 +988,22 @@ describe("React client runtime validation", () => {
         tools: {
           "builtin:text_stats": { ...validAdminConfig.tools["builtin:text_stats"], capabilityRole: "web_search" },
         },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        visionAssist: { enabled: true, routeId: "primary", maxOutputChars: 6_000 },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(true);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        visionAssist: { enabled: true, routeId: "primary", maxOutputChars: 12_001 },
       },
       source: "kv",
       revision: "a",

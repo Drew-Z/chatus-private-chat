@@ -26,6 +26,10 @@ import type {
   PublicCapabilityV1,
   SkillActivation,
 } from "../../../src/contracts/capability";
+import type {
+  PublicImageMode,
+  VisionAssistConfig,
+} from "../../../src/contracts/vision-assist";
 import { normalizeAgentRequestId } from "../../../src/contracts/agent-error";
 import type {
   MemberModelAvailabilityV1,
@@ -68,6 +72,7 @@ export type RouteProjection = {
   model: string;
   type: string;
   supportsImages: boolean;
+  imageMode: PublicImageMode;
   supportsTools: boolean;
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   healthOutcome?: string;
@@ -745,6 +750,7 @@ export type AdminConfig = {
   skills: Record<string, AdminSkillConfig>;
   tools: Record<string, AdminToolConfig>;
   mcpServers: Record<string, AdminMcpServerConfig>;
+  visionAssist?: VisionAssistConfig;
   [key: string]: unknown;
 };
 
@@ -2499,7 +2505,7 @@ function isNullableNonNegativeInteger(value: unknown): value is number | null {
 }
 
 function isModelMonitorRunKindValue(value: unknown): value is ModelMonitorRunKindV1["runKind"] {
-  return typeof value === "string" && ["main_answer", "automatic_skill", "memory_suggestion", "conversation_summary", "model_discovery", "tool_continuation", "legacy_capability"].includes(value);
+  return typeof value === "string" && ["main_answer", "automatic_skill", "memory_suggestion", "conversation_summary", "model_discovery", "auxiliary_vision", "tool_continuation", "legacy_capability"].includes(value);
 }
 
 function isModelMonitorFailureClassValue(value: unknown): value is ModelMonitorFailureClassV1["errorClass"] {
@@ -3043,6 +3049,7 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
   const skills = value.skills;
   const tools = value.tools;
   const mcpServers = value.mcpServers;
+  const visionAssist = value.visionAssist;
   if (!isRegistry(routes, isAdminRouteConfig) || Object.keys(routes).length === 0) return false;
   const routeIds = new Set(Object.keys(routes));
   if (!Object.values(routes).some((route) => route.enabled !== false)) return false;
@@ -3050,6 +3057,7 @@ export function isAdminConfig(value: unknown): value is AdminConfig {
   if (!isRegistry(users, isAdminUserConfig) || !isAdminUserConfig(defaults) || !isAdminPublicAccessConfig(publicAccess)) return false;
   if (!isRegistry(skills, isAdminSkillConfig) || !isRegistry(tools, isAdminToolConfig)) return false;
   if (!isRegistry(mcpServers, isAdminMcpServerConfig)) return false;
+  if (visionAssist !== undefined && !isVisionAssistConfig(visionAssist)) return false;
   const skillRegistryIds = Object.keys(skills);
   const toolRegistryIds = Object.keys(tools);
   const mcpServerIds = Object.keys(mcpServers);
@@ -3389,9 +3397,28 @@ function isRouteProjection(value: unknown): value is RouteProjection {
     && isNonEmptyString(value.model)
     && isNonEmptyString(value.type)
     && typeof value.supportsImages === "boolean"
+    && (
+      value.imageMode === "native"
+      || value.imageMode === "assisted_tool"
+      || value.imageMode === "assisted_preanswer"
+      || value.imageMode === "none"
+    )
     && typeof value.supportsTools === "boolean"
     && (value.healthStatus === undefined || value.healthStatus === "healthy" || value.healthStatus === "unhealthy" || value.healthStatus === "unknown")
     && (value.healthOutcome === undefined || typeof value.healthOutcome === "string");
+}
+
+function isVisionAssistConfig(value: unknown): value is VisionAssistConfig {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["enabled", "routeId", "maxOutputChars"])
+    && (value.enabled === undefined || typeof value.enabled === "boolean")
+    && typeof value.routeId === "string"
+    && value.routeId.length <= 160
+    && (value.enabled !== true || value.routeId.trim().length > 0)
+    && (
+      value.maxOutputChars === undefined
+      || isBoundedInteger(value.maxOutputChars, 512, 12_000)
+    );
 }
 
 function isImageInputPolicy(value: unknown): value is ImageInputPolicy {

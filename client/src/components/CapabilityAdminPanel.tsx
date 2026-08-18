@@ -52,6 +52,11 @@ import {
   type SkillDraft,
   type ToolPolicyDraft,
 } from "../lib/admin-capabilities";
+import {
+  DEFAULT_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  MAX_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  MIN_VISION_ASSIST_MAX_OUTPUT_CHARS,
+} from "../../../src/contracts/vision-assist";
 
 type Notice = { kind: "success" | "warning" | "error"; text: string };
 type CapabilityTab = "skills" | "tools" | "mcp" | "catalog";
@@ -65,6 +70,7 @@ type ConfirmState =
 type PendingConfirmationFocus =
   | { kind: "selection"; selection: Selection }
   | { kind: "opener"; opener: HTMLElement | null; fallbackId?: string };
+type VisionAssistDraft = { enabled: boolean; routeId: string; maxOutputChars: number };
 
 type CapabilityAdminPanelProps = {
   snapshot: AdminConfigSnapshot;
@@ -98,6 +104,7 @@ export function CapabilityAdminPanel({
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState("");
   const [catalogSelection, setCatalogSelection] = useState<string[]>([]);
+  const [visionAssistDraft, setVisionAssistDraft] = useState<VisionAssistDraft>(() => createVisionAssistDraft(snapshot));
   const [secrets, setSecrets] = useState<AdminMcpSecretsSnapshot | null>(null);
   const [secretValue, setSecretValue] = useState("");
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
@@ -134,6 +141,7 @@ export function CapabilityAdminPanel({
       && savedSecretRef === secretRef
       && secretRef,
   );
+  const visionAssistDirty = isVisionAssistDraftDirty(snapshot, visionAssistDraft);
 
   useEffect(() => {
     if (!memberLabels.includes(oauthMemberLabel)) setOauthMemberLabel(memberLabels[0] || "");
@@ -231,6 +239,7 @@ export function CapabilityAdminPanel({
     setSkillDraft(normalized.tab === "skills" ? createSelectedSkillDraft(source, normalized.id) : null);
     setToolDraft(normalized.tab === "tools" && normalized.id ? createToolPolicyDraft(source.config.tools[normalized.id]) : null);
     setMcpDraft(normalized.tab === "mcp" ? createSelectedMcpDraft(source, normalized.id) : null);
+    setVisionAssistDraft(createVisionAssistDraft(source));
     setCatalogSelection([]);
     setDirty(false);
     setConflict(false);
@@ -268,7 +277,7 @@ export function CapabilityAdminPanel({
     if (busy) return;
     setCatalogSelection((current) => {
       const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
-      setDirty(next.length > 0);
+      setDirty(next.length > 0 || visionAssistDirty);
       return next;
     });
     setConflict(false);
@@ -276,7 +285,7 @@ export function CapabilityAdminPanel({
   }
 
   async function installCatalogSelection() {
-    if (!catalogSelection.length || busy || !catalog) return;
+    if (!catalogSelection.length || busy || !catalog || visionAssistDirty) return;
     const pack = catalog.packs.find(({ items }) => catalogSelection.some((id) => items.some((item) => item.id === id)));
     if (!pack) return;
     const selectedItems = pack.items.filter((item) => catalogSelection.includes(item.id));
@@ -313,10 +322,60 @@ export function CapabilityAdminPanel({
 
   function useServerCatalogVersion() {
     setCatalogSelection([]);
+    setVisionAssistDraft(createVisionAssistDraft(snapshot));
     setDirty(false);
     setConflict(false);
     onDirtyChange(false);
-    onNotice({ kind: "success", text: "已清除本地目录选择。" });
+    onNotice({ kind: "success", text: "已切换到服务器目录与视觉辅助配置。" });
+  }
+
+  function updateVisionAssist(update: (draft: VisionAssistDraft) => VisionAssistDraft) {
+    if (busy) return;
+    setVisionAssistDraft((current) => {
+      const next = update(current);
+      setDirty(catalogSelection.length > 0 || isVisionAssistDraftDirty(snapshot, next));
+      return next;
+    });
+    setConflict(false);
+    onNotice(null);
+  }
+
+  async function saveVisionAssist() {
+    if (!visionAssistDirty || catalogSelection.length > 0 || busy) return;
+    if (visionAssistDraft.enabled && !visionAssistDraft.routeId) {
+      onNotice({ kind: "error", text: "启用视觉辅助前请选择逻辑模型。" });
+      return;
+    }
+    if (!Number.isInteger(visionAssistDraft.maxOutputChars)
+      || visionAssistDraft.maxOutputChars < MIN_VISION_ASSIST_MAX_OUTPUT_CHARS
+      || visionAssistDraft.maxOutputChars > MAX_VISION_ASSIST_MAX_OUTPUT_CHARS) {
+      onNotice({
+        kind: "error",
+        text: `证据字符上限必须是 ${MIN_VISION_ASSIST_MAX_OUTPUT_CHARS} 至 ${MAX_VISION_ASSIST_MAX_OUTPUT_CHARS} 的整数。`,
+      });
+      return;
+    }
+    setBusy(true);
+    onNotice(null);
+    try {
+      const next = await putAdminConfig({
+        ...snapshot.config,
+        visionAssist: {
+          enabled: visionAssistDraft.enabled,
+          routeId: visionAssistDraft.routeId,
+          maxOutputChars: visionAssistDraft.maxOutputChars,
+        },
+      }, snapshot.revision);
+      onSnapshot(next);
+      setVisionAssistDraft(createVisionAssistDraft(next));
+      setDirty(false);
+      setConflict(false);
+      onNotice({ kind: "success", text: "视觉辅助配置已保存。" });
+    } catch (error) {
+      await handleConfigError(error);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function saveSkill(event?: FormEvent) {
@@ -606,7 +665,12 @@ export function CapabilityAdminPanel({
             selected={catalogSelection}
             busy={busy}
             conflict={conflict}
+            routes={snapshot.config.routes}
+            visionDraft={visionAssistDraft}
+            visionDirty={visionAssistDirty}
             onToggle={toggleCatalogItem}
+            onVisionUpdate={updateVisionAssist}
+            onVisionSave={() => void saveVisionAssist()}
             onInstall={() => void installCatalogSelection()}
             onRetry={() => void refreshCatalog()}
             onUseServer={useServerCatalogVersion}
@@ -849,14 +913,22 @@ function EmptyCapabilityState({ label }: { label: string }) {
   return <div className="admin-pool-empty-state"><p>暂无{label}</p></div>;
 }
 
-function CapabilityCatalogView({ catalog, loading, error, selected, busy, conflict, onToggle, onInstall, onRetry, onUseServer }: {
+function CapabilityCatalogView({
+  catalog, loading, error, selected, busy, conflict, routes, visionDraft, visionDirty,
+  onToggle, onVisionUpdate, onVisionSave, onInstall, onRetry, onUseServer,
+}: {
   catalog: AdminCapabilityCatalogSnapshot | null;
   loading: boolean;
   error: string;
   selected: string[];
   busy: boolean;
   conflict: boolean;
+  routes: AdminConfigSnapshot["config"]["routes"];
+  visionDraft: VisionAssistDraft;
+  visionDirty: boolean;
   onToggle: (id: string) => void;
+  onVisionUpdate: (update: (draft: VisionAssistDraft) => VisionAssistDraft) => void;
+  onVisionSave: () => void;
   onInstall: () => void;
   onRetry: () => void;
   onUseServer: () => void;
@@ -865,7 +937,10 @@ function CapabilityCatalogView({ catalog, loading, error, selected, busy, confli
   if (!catalog && error) return <div className="admin-pool-empty-state" role="alert"><p>{error}</p><button className="quiet-button" type="button" onClick={onRetry}>重试</button></div>;
   if (!catalog) return <EmptyCapabilityState label="目录项" />;
   const selectedItems = catalog.packs.flatMap((pack) => pack.items).filter((item) => selected.includes(item.id));
-  const canInstall = selectedItems.length === selected.length && selectedItems.length > 0 && selectedItems.every((item) => item.installable);
+  const canInstall = !visionDirty && selectedItems.length === selected.length && selectedItems.length > 0
+    && selectedItems.every((item) => item.installable);
+  const visionItem = catalog.packs.flatMap((pack) => pack.items)
+    .find((item) => item.id === "chatus:vision_assist");
   return (
     <div className="capability-catalog-view">
       <div className="admin-pool-editor-head">
@@ -877,6 +952,51 @@ function CapabilityCatalogView({ catalog, loading, error, selected, busy, confli
         </div>
       </div>
       {error && <p className="admin-inline-error" role="alert">{error}</p>}
+      <section className="capability-vision-setup" aria-labelledby="capability-vision-setup-title">
+        <div className="capability-vision-setup-head">
+          <div>
+            <p className="eyebrow">ROUTE AUGMENTATION</p>
+            <h3 id="capability-vision-setup-title">视觉辅助设置</h3>
+            <p>为不支持图片的文本模型选择一条使用实例凭据的原生图片逻辑模型。保存只更新配置，不会发起模型探测。</p>
+          </div>
+          <span className={`capability-vision-readiness status-${visionItem?.status || "requires_setup"}`} role="status">
+            服务器状态：{visionItem ? capabilityStatusLabel(visionItem.status) : "需要配置"}
+          </span>
+        </div>
+        <div className="admin-form-grid two capability-vision-fields">
+          <label className="admin-form-span">
+            <span>辅助视觉逻辑模型</span>
+            <select value={visionDraft.routeId} disabled={busy} onChange={(event) => onVisionUpdate((current) => ({ ...current, routeId: event.target.value }))}>
+              <option value="">选择逻辑模型</option>
+              {Object.entries(routes).map(([id, route]) => (
+                <option key={id} value={id}>{route.label} · {id}{route.enabled === false ? "（已停用）" : ""}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>证据字符上限</span>
+            <input
+              type="number"
+              min={MIN_VISION_ASSIST_MAX_OUTPUT_CHARS}
+              max={MAX_VISION_ASSIST_MAX_OUTPUT_CHARS}
+              step={1}
+              value={visionDraft.maxOutputChars}
+              disabled={busy}
+              onChange={(event) => onVisionUpdate((current) => ({ ...current, maxOutputChars: Number(event.target.value) }))}
+            />
+          </label>
+          <label className="admin-checkbox-row">
+            <input type="checkbox" checked={visionDraft.enabled} disabled={busy} onChange={(event) => onVisionUpdate((current) => ({ ...current, enabled: event.target.checked }))} />
+            <span>启用视觉辅助</span>
+          </label>
+        </div>
+        <footer className="capability-vision-actions">
+          <span>{visionDirty ? "有未保存修改" : selected.length ? "请先安装或清除目录选择" : "配置已与服务器同步"}</span>
+          <button className="primary-button icon-text-button" type="button" onClick={onVisionSave} disabled={!visionDirty || selected.length > 0 || busy}>
+            <Save size={15} /><span>{busy ? "保存中..." : "保存视觉辅助"}</span>
+          </button>
+        </footer>
+      </section>
       <div className="capability-catalog-packs">
         {catalog.packs.map((pack) => (
           <section className="capability-catalog-pack" aria-labelledby={`capability-pack-${pack.id}`} key={pack.id}>
@@ -926,6 +1046,21 @@ function createSelectedSkillDraft(snapshot: AdminConfigSnapshot, id: string | nu
 function createSelectedMcpDraft(snapshot: AdminConfigSnapshot, id: string | null): McpServerDraft | null {
   if (!id) return null;
   return createMcpServerDraft(id === "__new__" ? undefined : snapshot.config.mcpServers[id], id === "__new__" ? "" : id);
+}
+
+function createVisionAssistDraft(snapshot: AdminConfigSnapshot): VisionAssistDraft {
+  return {
+    enabled: snapshot.config.visionAssist?.enabled === true,
+    routeId: snapshot.config.visionAssist?.routeId || "",
+    maxOutputChars: snapshot.config.visionAssist?.maxOutputChars ?? DEFAULT_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  };
+}
+
+function isVisionAssistDraftDirty(snapshot: AdminConfigSnapshot, draft: VisionAssistDraft): boolean {
+  const saved = createVisionAssistDraft(snapshot);
+  return saved.enabled !== draft.enabled
+    || saved.routeId !== draft.routeId
+    || saved.maxOutputChars !== draft.maxOutputChars;
 }
 
 function sameSelection(left: Selection, right: Selection): boolean {

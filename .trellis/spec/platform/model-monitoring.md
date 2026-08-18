@@ -22,6 +22,11 @@ The admin endpoint requires the existing admin session. The member endpoint requ
 - One actual upstream request is one Provider attempt. `started` is in flight; `succeeded` is success; `failed`, `cancelled`, and `timed_out` are terminal failures. `successRate = succeeded / (succeeded + failures)` and is `null` with no completed attempts.
 - Fallback attempts count independently and increment `fallbacks` when `fallback_index > 0`. Average latency includes only terminal rows with `ended_at >= started_at`; missing or invalid durations remain unknown.
 - The admin projection may include bounded logical-route, configured Provider, actual-model, run-kind, hourly, and normalized failure-class aggregates. It must not include prompts, completions, raw errors, request headers, credentials, attempt IDs, turn IDs, idempotency keys, or operation fences.
+- Run kind is closed and includes `auxiliary_vision`. Each physical helper
+  request participates in totals, hourly buckets, fallback counts, latency, and
+  the run-kind breakdown exactly once. `VisionEvidenceV1`, raw images, helper
+  output, and source message IDs never enter aggregate rows or either public
+  projection.
 - The member projection contains only already-allowed logical route ID/label/model plus `healthy | degraded | unavailable | unknown`, confidence, coarse first-visible speed, freshness evidence, and a fallback-used hint. It must not include Provider identity, exact counts/rates, or raw failure classes.
 - Member status is advisory: one recent failure is `degraded`; three latest terminal failures within 15 minutes with no later success are `unavailable`; later success recovers the route. Existing permission, configuration, credential, candidate, and send checks remain authoritative.
 - Member availability refreshes on bootstrap, model inspector opening, and request settlement with a 60-second client guard. A read failure retains the last projection and must not block the composer. Admin monitoring is best-effort in Operations and must not remove the existing seven-day or finance projections.
@@ -36,18 +41,25 @@ The admin endpoint requires the existing admin session. The member endpoint requ
 | Member route is not in `getRouteAccess()` | Omit it; never trust a browser-supplied route list |
 | No recent route evidence | `unknown` with stale confidence and unknown speed |
 | Only in-flight evidence | Keep it out of the success denominator and do not claim success |
+| Auxiliary helper attempt is present | Count its bounded attempt fields under `auxiliary_vision`; discard no attempt and expose no private evidence |
 | Decoder sees unknown fields, negative/fractional counts, duplicate IDs, impossible rates, invalid buckets, or Provider/secret/content fields | Reject the complete response before rendering |
 | Monitoring fetch fails or evidence is stale | Preserve chat/send behavior and show stale/unknown guidance rather than changing routing |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: the Worker fans out to configured ledger shards, merges complete aggregate rows, reconciles every breakdown to totals, and returns exact null/unknown values where evidence is incomplete.
+- Good: helper fallback attempts reconcile into the same totals and an
+  `auxiliary_vision` run-kind row while the private evidence table and response
+  payload remain unreachable from monitoring.
 - Base: a member sees a compact status beside model selection, can still choose a degraded/unavailable route, and receives a safe fallback hint without seeing the physical Provider.
 - Bad: derive totals from a 25-row recent-attempt list, sum per-Provider user turns as if they were attempts, return a partial denominator, expose a Provider ID to a member, or disable sending because passive telemetry says unavailable.
 
 ## 6. Tests Required
 
 - Contract tests cover no data, in-flight-only, success, failure, cancellation, timeout, fallback, mixed status, null latency, three-failure anti-flap, and recovery semantics.
+- Contract tests include `auxiliary_vision` success/fallback/failure rows and
+  assert exact total/run-kind reconciliation with zero evidence, image, or
+  source-message fields.
 - Ledger tests assert aggregate totals are independent of `listRecent` limits and contain no content or secret fields.
 - Worker tests assert admin/member authorization, bounded query errors, exact reconciliation, shard-failure fail-closed behavior, allowed-route projection, privacy redaction, and advisory send behavior.
 - Browser API tests reject unknown keys, invalid counts/rates/buckets, duplicate IDs, and Provider/credential/content leakage.

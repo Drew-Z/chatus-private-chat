@@ -29,6 +29,8 @@ const AGENT_ERROR_MESSAGES = {
   empty_messages: "消息不能为空，请补充内容后重试。",
   blocked_prompt: "该请求不符合当前使用策略，请改为一个真实任务。",
   image_not_supported: "当前模型不支持图片，请移除图片或切换模型。",
+  vision_assist_unavailable: "视觉辅助暂时不可用，请重试、移除图片或切换到原生图片模型。",
+  vision_assist_invalid_response: "视觉辅助返回了无法使用的结果，请重试、移除图片或切换到原生图片模型。",
   invalid_image_type: "图片格式不受支持。",
   invalid_image_data: "图片数据无效。",
   image_too_large: "单张图片超过大小限制。",
@@ -131,6 +133,8 @@ export function projectAgentStreamError(error: unknown): AgentErrorCode {
   if (chain.some((item) => item.code === "conversation_acl_unavailable")) return "conversation_acl_unavailable";
   if (chain.some((item) => item.code === "provider_budget_exceeded")) return "provider_budget_exceeded";
   if (chain.some((item) => item.code === "provider_budget_policy_unknown")) return "provider_budget_policy_unknown";
+  if (chain.some((item) => item.code === "vision_assist_unavailable")) return "vision_assist_unavailable";
+  if (chain.some((item) => item.code === "vision_assist_invalid_response")) return "vision_assist_invalid_response";
   if (hasName(chain, "ProviderAttemptLedgerError")) return "provider_budget_unavailable";
   if (hasName(chain, "ProviderBusyError")) return "provider_busy";
   if (

@@ -777,7 +777,9 @@ function ConversationChat({
   const interactionBlocked = busy || blocked;
   const selectedRoute = session.routes.find((route) => route.id === routeId);
   const routeAvailable = sharedConversation || Boolean(selectedRoute);
-  const imagesSupported = permissions.canUseWorkspace && session.capabilities.imageInput && selectedRoute?.supportsImages === true;
+  const imagesSupported = permissions.canUseWorkspace
+    && session.capabilities.imageInput
+    && Boolean(selectedRoute && selectedRoute.imageMode !== "none");
   const filesSupported = permissions.canUseWorkspace && session.capabilities.fileInput;
   const connectionState: ConnectionState = agent.connectionError ? "error" : agent.identified ? "ready" : "connecting";
   const latestMessageId = chat.messages.at(-1)?.id;

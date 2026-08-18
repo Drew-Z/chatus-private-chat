@@ -757,3 +757,74 @@ tools[id] = { ...tool, reviewRequired };
 const projected = await getAdminConfigThroughWorker();
 expect(isAdminConfigSnapshot(projected)).toBe(true);
 ```
+
+## Scenario: Vision Assist Assignment And Administrator Readiness
+
+### 1. Scope / Trigger
+
+Use this contract when an administrator installs, enables, disables, or repairs the optional `vision_assist` augmentation.
+
+### 2. Signatures
+
+```typescript
+type VisionAssistConfig = {
+  enabled?: boolean;
+  routeId: string;
+  maxOutputChars?: number;
+};
+
+type CapabilityAugmentation = "vision_assist";
+```
+
+```text
+PUT /api/admin/config
+  <- { config, expectedRevision }
+  -> { ok: true, config, source: "kv", revision }
+```
+
+### 3. Contracts
+
+- `allowedAugmentations` preserves omission as inheritance and `[]` as explicit deny-all. Guests always receive no augmentation.
+- A helper is executable only when the assignment includes `vision_assist`, the admin config is enabled, its route is selected, credentials are ready, and the selected route has a native-image offering. The helper route itself cannot be assisted.
+- The admin Catalog/Setup projection derives `installed`, `disabled`, or `requires_setup` from the real local readiness helper without sending a model request. It never projects credentials or Provider payloads.
+- Vision config saves are revisioned and atomic with unrelated admin config. On `409 config_conflict`, the authoritative snapshot refreshes while the local vision draft remains editable for retry.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Missing/invalid route or output bound | `400 invalid_config`; zero writes |
+| Assigned augmentation with helper not ready | `requires_setup`; image mode is `none` |
+| Explicit empty augmentation assignment | No helper and no assisted mode |
+| Stale revision | `409 config_conflict`; preserve the local draft |
+| Guest projection | Omit augmentation and helper controls |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an administrator chooses a native-image helper route, enables the augmentation, saves at the current revision, and sees installed readiness without a probe request.
+- Base: a stored assignment remains visible as setup-required until credentials or a valid native offering are configured.
+- Bad: enable helper mode merely because a route exists, silently overwrite a concurrent draft, or expose the helper credential reference to the browser.
+
+### 6. Tests Required
+
+- Test inheritance/deny-all assignment, readiness state transitions, route validation, exact config decoding, conflict draft retention, retry success, guest denial, and no model calls.
+- Exercise desktop and touch-admin layouts with keyboard-reachable controls and no horizontal overflow.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const ready = Boolean(config.visionAssist?.routeId);
+return { enabled: ready, imageMode: ready ? "native" : "none" };
+```
+
+#### Correct
+
+```typescript
+const ready = assignmentAllowsVision && helperConfig.enabled
+  && hasManagedCredential && nativeImageOfferingAvailable;
+return { imageMode: route.supportsImages ? "native" : ready ? "assisted_preanswer" : "none" };
+```
+
+Readiness is derived from executable server state and never changes the route's native capability truth.

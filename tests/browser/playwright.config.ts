@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
+import { workspaceFixtureBaseURL } from "./workspace-fixture/config";
 
-const baseURL = "http://127.0.0.1:4178";
+const baseURL = workspaceFixtureBaseURL;
 
 export default defineConfig({
   testDir: ".",

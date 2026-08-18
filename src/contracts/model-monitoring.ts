@@ -14,6 +14,7 @@ export type ModelMonitoringRunKind =
   | "memory_suggestion"
   | "conversation_summary"
   | "model_discovery"
+  | "auxiliary_vision"
   | "tool_continuation"
   | "legacy_capability";
 export type ModelMonitoringAttemptStatus = "started" | "succeeded" | "failed" | "cancelled" | "timed_out";

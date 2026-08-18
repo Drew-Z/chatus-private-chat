@@ -117,6 +117,13 @@ import {
   workspaceExtractedObjectKey,
 } from "../contracts/workspace-file";
 import type { Session } from "../contracts/session";
+import {
+  IMAGE_INSPECT_TOOL_NAME,
+  MAX_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  decodeVisionEvidenceV1,
+  type VisionEvidenceRecordV1,
+  type VisionEvidenceV1,
+} from "../contracts/vision-assist";
 import { createProviderTurnId } from "../contracts/provider-attempt";
 import {
   decodeStableTeamAgentIdentity,
@@ -146,7 +153,7 @@ const MAX_EXPORT_MESSAGE_TEXT_CHARS = 20_000;
 const MAX_EXPORT_MESSAGE_PARTS = 32;
 const MAX_CONVERSATION_TITLE_CHARS = 80;
 const MAX_SELECTED_SKILLS = 3;
-export const TEAM_AGENT_SCHEMA_VERSION = 8;
+export const TEAM_AGENT_SCHEMA_VERSION = 9;
 const DEFAULT_CONVERSATION_TITLE = "新对话";
 const AGENT_IDENTITY_STORAGE_KEY = "chatus:agent-identity:v1";
 const STABLE_AGENT_IDENTITY_STORAGE_KEY = "chatus:stable-agent-identity:v1";
@@ -198,6 +205,13 @@ type ConversationRow = {
   skill_ids: string;
   message_count: number;
   deleted_at: number;
+};
+
+type VisionEvidenceRow = {
+  source_message_id: string;
+  evidence_json: string;
+  created_at: number;
+  updated_at: number;
 };
 
 type PendingConversationActivity = {
@@ -916,6 +930,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
 
   async captureInstanceState(captureEpoch: string) {
     if (!isCaptureEpoch(captureEpoch)) throw new Error("capture_epoch_invalid");
+    this.revalidateVisionEvidence();
     const schemaVersion = await this.getCaptureSchemaVersion();
     return captureDurableObjectState(
       this.ctx.storage,
@@ -1224,6 +1239,17 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           ON chatus_conversation_access_turns(state, updated_at)
         `;
         this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (8, ${Date.now()})`;
+      }
+      if (version < 9) {
+        this.sql`
+          CREATE TABLE IF NOT EXISTS chatus_vision_evidence (
+            source_message_id TEXT PRIMARY KEY,
+            evidence_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `;
+        this.sql`INSERT INTO _sql_schema_migrations(id, applied_at) VALUES (9, ${Date.now()})`;
       }
     });
   }
@@ -3029,12 +3055,24 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     const destination = await getAgentByName(this.env.TEAM_AGENT, destinationInstance, { props });
     const identity = await destination.ensureIdentity(props);
     if (!identity.ok) return { ok: false, error: "branch_request_conflict" };
+    const sourceEvidence = this.getVisionEvidence();
+    const visionEvidence = snapshot.messages.flatMap((message): VisionEvidenceRecordV1[] => {
+      const hasImage = message.role === "user"
+        && message.parts.some((part) => part.type === "file" && isImageFilePart(part));
+      if (!hasImage) return [];
+      const evidence = sourceEvidence.get(message.id)
+        || (input.action === "edit" && message.id === input.replacementMessageId
+          ? sourceEvidence.get(input.sourceMessageId)
+          : undefined);
+      return evidence ? [{ sourceMessageId: message.id, evidence }] : [];
+    });
     const started = await destination.startConversationBranch({
       requestId,
       fingerprint,
       messages: snapshot.messages,
       launch: snapshot.launch,
       body: normalizeBranchBody(input.body),
+      visionEvidence,
       ...(snapshot.anchorMessageId ? { anchorMessageId: snapshot.anchorMessageId } : {}),
     });
     if (!started.ok) return { ok: false, error: started.error };
@@ -3136,6 +3174,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     if (!sameUiMessageList(this.messages, messages)) {
       if (this.messages.length) return { ok: false, error: "branch_copy_conflict" };
       await this.persistMessages(messages);
+    }
+    if (normalized.visionEvidence?.length) {
+      await this.importVisionEvidence(normalized.visionEvidence);
     }
     const instanceFence = normalized.launch === "none"
       ? undefined
@@ -3417,6 +3458,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         waitUntil: (promise) => this.ctx.waitUntil(promise),
         turnId: providerTurnId,
         operation: instanceFence.operation,
+        visionSources: this.buildVisionSources(this.messages),
+        persistVisionEvidence: (sourceMessageIds, evidence) => {
+          this.persistVisionEvidence(sourceMessageIds, evidence);
+        },
       });
     } catch (error) {
       removeRequestAbort();
@@ -3503,6 +3548,9 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
             },
           }
         : {}),
+      ...(prepared.visionInspect
+        ? { vision: { inspect: prepared.visionInspect } }
+        : {}),
     });
     let messages: ModelMessage[] = prepared.messages;
     if (options?.continuation && Object.keys(tools).length) {
@@ -3535,6 +3583,14 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         maxRetries: 0,
         allowSystemInMessages: true,
         abortSignal: turnAbortController.signal,
+        prepareStep: prepared.forceImageInspect
+          ? ({ stepNumber }) => stepNumber === 0
+            ? {
+                toolChoice: { type: "tool", toolName: IMAGE_INSPECT_TOOL_NAME },
+                activeTools: [IMAGE_INSPECT_TOOL_NAME],
+              }
+            : undefined
+          : undefined,
         onFinish: async (event) => {
           await finalize();
           await onFinish(event);
@@ -4035,6 +4091,108 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     `[0];
   }
 
+  private revalidateVisionEvidence(): void {
+    const validSourceIds = new Set(this.messages.flatMap((message) => (
+      message.role === "user" && message.parts.some((part) => part.type === "file" && isImageFilePart(part))
+        ? [message.id]
+        : []
+    )));
+    const rows = this.sql<VisionEvidenceRow>`
+      SELECT source_message_id, evidence_json, created_at, updated_at
+      FROM chatus_vision_evidence
+    `;
+    for (const row of rows) {
+      let evidence: VisionEvidenceV1 | undefined;
+      try {
+        evidence = decodeVisionEvidenceV1(
+          JSON.parse(row.evidence_json),
+          MAX_VISION_ASSIST_MAX_OUTPUT_CHARS,
+        );
+      } catch {
+        evidence = undefined;
+      }
+      if (!evidence || !validSourceIds.has(row.source_message_id)) {
+        this.sql`DELETE FROM chatus_vision_evidence WHERE source_message_id = ${row.source_message_id}`;
+      }
+    }
+  }
+
+  private getVisionEvidence(): Map<string, VisionEvidenceV1> {
+    this.revalidateVisionEvidence();
+    const output = new Map<string, VisionEvidenceV1>();
+    for (const row of this.sql<VisionEvidenceRow>`
+      SELECT source_message_id, evidence_json, created_at, updated_at
+      FROM chatus_vision_evidence
+      ORDER BY source_message_id
+    `) {
+      try {
+        const evidence = decodeVisionEvidenceV1(
+          JSON.parse(row.evidence_json),
+          MAX_VISION_ASSIST_MAX_OUTPUT_CHARS,
+        );
+        if (evidence) output.set(row.source_message_id, evidence);
+      } catch {
+        // Revalidation removes malformed rows before this read.
+      }
+    }
+    return output;
+  }
+
+  private buildVisionSources(messages: UIMessage[]): Array<{
+    sourceMessageId: string;
+    images: string[];
+    evidence?: VisionEvidenceV1;
+  }> {
+    const evidence = this.getVisionEvidence();
+    return messages.slice(-40).flatMap((message) => {
+      if (message.role !== "user") return [];
+      const images = message.parts.flatMap((part) => {
+        if (part.type !== "file" || !isImageFilePart(part)) return [];
+        const parsed = parseDataImage(part.url, part.mediaType);
+        return parsed.ok ? [`data:${parsed.image.mediaType};base64,${parsed.image.data}`] : [];
+      });
+      return images.length
+        ? [{
+            sourceMessageId: message.id,
+            images,
+            ...(evidence.has(message.id) ? { evidence: evidence.get(message.id) } : {}),
+          }]
+        : [];
+    });
+  }
+
+  private persistVisionEvidence(sourceMessageIds: string[], evidenceValue: VisionEvidenceV1): void {
+    const evidence = decodeVisionEvidenceV1(evidenceValue, MAX_VISION_ASSIST_MAX_OUTPUT_CHARS);
+    if (!evidence) throw new Error("vision_evidence_invalid");
+    const validSourceIds = new Set(this.messages.flatMap((message) => (
+      message.role === "user" && message.parts.some((part) => part.type === "file" && isImageFilePart(part))
+        ? [message.id]
+        : []
+    )));
+    const now = Date.now();
+    for (const sourceMessageId of [...new Set(sourceMessageIds)]) {
+      if (!validSourceIds.has(sourceMessageId)) throw new Error("vision_evidence_source_invalid");
+      this.sql`
+        INSERT INTO chatus_vision_evidence(source_message_id, evidence_json, created_at, updated_at)
+        VALUES (${sourceMessageId}, ${JSON.stringify(evidence)}, ${now}, ${now})
+        ON CONFLICT(source_message_id) DO UPDATE SET
+          evidence_json = excluded.evidence_json,
+          updated_at = excluded.updated_at
+      `;
+    }
+  }
+
+  async importVisionEvidence(records: VisionEvidenceRecordV1[]): Promise<void> {
+    this.requireConversationScope();
+    for (const record of records.slice(0, 40)) {
+      if (!record || typeof record.sourceMessageId !== "string") continue;
+      const evidence = decodeVisionEvidenceV1(record.evidence, MAX_VISION_ASSIST_MAX_OUTPUT_CHARS);
+      if (!evidence) continue;
+      this.persistVisionEvidence([record.sourceMessageId], evidence);
+    }
+    this.revalidateVisionEvidence();
+  }
+
   private clearPersistedChatState(): void {
     // AIChat persistMessages([]) reconciles with the current transcript, so deletion must use the SDK tables directly.
     this.resetTurnState();
@@ -4046,6 +4204,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
     this.sql`DELETE FROM cf_ai_chat_agent_tool_runs`;
     this.sql`DELETE FROM capability_tool_trust`;
     this.sql`DELETE FROM chatus_conversation_branch_launches`;
+    this.sql`DELETE FROM chatus_vision_evidence`;
     this.sql`DELETE FROM chatus_provider_turn_state`;
     this.sql`DELETE FROM chatus_conversation_access_turns`;
     this.sql`DELETE FROM chatus_conversation_access_state`;
@@ -4381,6 +4540,7 @@ function normalizeConversationBranchStartInput(
   const last = input.messages[input.messages.length - 1];
   if (launch === "respond" && (!anchorMessageId || last.id !== anchorMessageId || last.role !== "user")) return null;
   if (launch === "continue" && (!anchorMessageId || last.id !== anchorMessageId || last.role !== "assistant")) return null;
+  const visionEvidence = normalizeBranchVisionEvidence(input.visionEvidence, input.messages);
   return {
     requestId,
     fingerprint,
@@ -4388,7 +4548,26 @@ function normalizeConversationBranchStartInput(
     launch,
     body: normalizeBranchBody(input.body),
     ...(anchorMessageId ? { anchorMessageId } : {}),
+    ...(visionEvidence.length ? { visionEvidence } : {}),
   };
+}
+
+function normalizeBranchVisionEvidence(value: unknown, messages: UIMessage[]): VisionEvidenceRecordV1[] {
+  if (!Array.isArray(value)) return [];
+  const validSourceIds = new Set(messages.flatMap((message) => (
+    message.role === "user" && message.parts.some((part) => part.type === "file" && isImageFilePart(part))
+      ? [message.id]
+      : []
+  )));
+  const seen = new Set<string>();
+  return value.slice(0, 40).flatMap((item) => {
+    if (!isRecord(item) || typeof item.sourceMessageId !== "string") return [];
+    const sourceMessageId = normalizeBranchMessageId(item.sourceMessageId);
+    const evidence = decodeVisionEvidenceV1(item.evidence, MAX_VISION_ASSIST_MAX_OUTPUT_CHARS);
+    if (!sourceMessageId || !validSourceIds.has(sourceMessageId) || !evidence || seen.has(sourceMessageId)) return [];
+    seen.add(sourceMessageId);
+    return [{ sourceMessageId, evidence }];
+  });
 }
 
 function normalizeBranchRequestId(value: unknown): string {
@@ -4564,6 +4743,7 @@ function toLegacyMessages(messages: UIMessage[]): ChatMessage[] {
     }
     if (!parts.length) continue;
     output.push({
+      id: message.id,
       role,
       content: parts.length === 1 && parts[0]?.type === "text" ? parts[0].text : parts,
     });

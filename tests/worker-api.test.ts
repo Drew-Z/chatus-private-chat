@@ -768,6 +768,18 @@ async function getPersistedAgentMessages(agent: DurableObjectStub<TeamAgent>): P
   });
 }
 
+async function getVisionEvidenceRows(agent: DurableObjectStub<TeamAgent>): Promise<Array<{
+  source_message_id: string;
+  evidence_json: string;
+}>> {
+  return runInDurableObject(agent, async (_instance, state) => state.storage.sql.exec<{
+    source_message_id: string;
+    evidence_json: string;
+  }>(
+    "SELECT source_message_id, evidence_json FROM chatus_vision_evidence ORDER BY source_message_id",
+  ).toArray());
+}
+
 async function seedProviderAttempt(providerId: string) {
   const runtime = createProviderAttemptRuntime({
     ledger: env.PROVIDER_ATTEMPT_LEDGER,
@@ -3932,6 +3944,37 @@ describe("Worker API", () => {
       sourceMessages[2],
     ];
     await sourceAgent.importLegacyMessages(sourceMessages);
+    const retainedEvidence = {
+      version: 1 as const,
+      description: "A synthetic branch image.",
+      ocrText: ["branch evidence"],
+      limitations: ["Synthetic test evidence."],
+    };
+    await sourceAgent.importVisionEvidence([{
+      sourceMessageId: "branch-user-1",
+      evidence: retainedEvidence,
+    }]);
+    await runInDurableObject(sourceAgent, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO chatus_vision_evidence(source_message_id, evidence_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        "orphan-evidence",
+        JSON.stringify(retainedEvidence),
+        1,
+        1,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO chatus_vision_evidence(source_message_id, evidence_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        "malformed-evidence",
+        JSON.stringify({ version: 1, description: "malformed" }),
+        1,
+        2,
+      );
+    });
+    await sourceAgent.captureInstanceState(`epoch-vision-revalidate-${crypto.randomUUID()}`);
+    await expect(getVisionEvidenceRows(sourceAgent)).resolves.toEqual([{
+      source_message_id: "branch-user-1",
+      evidence_json: JSON.stringify(retainedEvidence),
+    }]);
     const root = await getRootAgent(label);
     await root.recordConversationActivity({ id: sourceId, messageCount: sourceMessages.length });
     const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId)!;
@@ -3988,6 +4031,10 @@ describe("Worker API", () => {
       filename: "branch.png",
       url: "data:image/png;base64,QQ==",
     });
+    await expect(getVisionEvidenceRows(destinationAgent)).resolves.toEqual([{
+      source_message_id: "branch-user-1",
+      evidence_json: JSON.stringify(retainedEvidence),
+    }]);
     await expect(sourceAgent.exportMessages()).resolves.toMatchObject({
       messages: exportedSourceMessages,
       truncated: false,
@@ -4047,6 +4094,17 @@ describe("Worker API", () => {
         },
       });
       expect(payload.conversation.title).not.toContain("分支 ·");
+      const actionAgent = await getConversationAgent(label, payload.conversation.id);
+      const actionMessages = await getPersistedAgentMessages(actionAgent);
+      const actionEvidence = await getVisionEvidenceRows(actionAgent);
+      const imageMessageId = actionMessages.find((message) => message.role === "user"
+        && message.parts.some((part) => part.type === "file" && part.mediaType?.startsWith("image/")))?.id;
+      expect(actionEvidence).toEqual(imageMessageId ? [{
+        source_message_id: imageMessageId,
+        evidence_json: JSON.stringify(retainedEvidence),
+      }] : []);
+      if (titleCase.action === "edit") expect(imageMessageId).not.toBe("branch-user-1");
+      else expect(imageMessageId).toBe("branch-user-1");
     }
     const expectedConversationCount = 2 + titleCases.length;
     expect(await root.listConversations()).toHaveLength(expectedConversationCount);
@@ -4091,6 +4149,15 @@ describe("Worker API", () => {
       ],
     }];
     await conversationAgent.importLegacyMessages(seededMessages);
+    await conversationAgent.importVisionEvidence([{
+      sourceMessageId: "cleanup-user",
+      evidence: {
+        version: 1,
+        description: "Evidence to remove with the conversation.",
+        ocrText: [],
+        limitations: [],
+      },
+    }]);
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(1);
     const root = await getRootAgent(label);
     const deleted = await root.deleteConversation(chatId, created.conversation.updatedAt);
@@ -4116,6 +4183,7 @@ describe("Worker API", () => {
     await expect(root.listPendingConversationCleanups()).resolves.toEqual([]);
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(0);
     await expect(getPersistedAgentMessages(conversationAgent)).resolves.toEqual([]);
+    await expect(getVisionEvidenceRows(conversationAgent)).resolves.toEqual([]);
     await expect(root.inspectCleanupReliability()).resolves.toMatchObject({ scheduledAt: 0 });
 
     const staleReconnect = await apiRequest(`/agent?chatId=${encodeURIComponent(chatId)}`, cookie);
@@ -4516,6 +4584,25 @@ describe("Worker API", () => {
       expect.objectContaining({ id: "chatus:web_research", status: "requires_setup", installable: false }),
       expect.objectContaining({ id: "chatus:vision_assist", status: "requires_setup", installable: false }),
     ]));
+    const readyConfig: any = structuredClone(baseConfig);
+    readyConfig.routes.default.supportsImages = true;
+    readyConfig.visionAssist = { enabled: true, routeId: "default", maxOutputChars: 6_000 };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(readyConfig));
+    const readyPreview = await apiRequest("/api/admin/capability-packs", adminCookie).then((response) => response.json()) as any;
+    expect(readyPreview.packs[0].items).toContainEqual(expect.objectContaining({
+      id: "chatus:vision_assist",
+      status: "installed",
+      installable: false,
+    }));
+    readyConfig.visionAssist.enabled = false;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(readyConfig));
+    const disabledPreview = await apiRequest("/api/admin/capability-packs", adminCookie).then((response) => response.json()) as any;
+    expect(disabledPreview.packs[0].items).toContainEqual(expect.objectContaining({
+      id: "chatus:vision_assist",
+      status: "disabled",
+      installable: false,
+    }));
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(baseConfig));
 
     const duplicate = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
       method: "POST",

@@ -61,6 +61,7 @@ export function ConversationInspector({
   shareOpenRef.current = shareOpen;
   const permissions = resolveConversationAccessPermissions(conversation?.accessRole);
   const routeSupportsTools = session.routes.find((route) => route.id === routeId)?.supportsTools === true;
+  const selectedImageMode = session.routes.find((route) => route.id === routeId)?.imageMode || "none";
   const availabilityRoute = modelAvailability?.routes.find((route) => route.routeId === routeId);
   const selectedToolIds = useMemo(
     () => new Set(routeSupportsTools
@@ -162,6 +163,7 @@ export function ConversationInspector({
                 ? `${availabilityStatusDescription(availabilityRoute.status)}${availabilityRoute.speed !== "unknown" ? ` · ${availabilitySpeedLabel(availabilityRoute.speed)}` : ""}`
                 : routeStatusText(session.routes.find((route) => route.id === routeId)?.healthStatus)}{modelAvailabilityRefreshing ? " · 正在更新可用性" : ""}</small>
             {availabilityRoute?.fallbackRecentlyUsed && <small className="model-availability-fallback">最近请求已自动切换备用线路。</small>}
+            <small className="model-image-mode">图像理解：{imageModeLabel(selectedImageMode)}</small>
             {modelAvailability && session.routes.length > 0 && (
               <div className="model-availability-list" aria-label="模型可用性">
                 {session.routes.map((route) => {
@@ -275,6 +277,13 @@ function routeStatusText(status: SessionProjection["routes"][number]["healthStat
   if (status === "healthy") return "最近真实任务运行正常";
   if (status === "unhealthy") return "最近真实任务出现异常，可切换其他线路";
   return "尚无近期真实任务记录";
+}
+
+function imageModeLabel(mode: SessionProjection["routes"][number]["imageMode"]): string {
+  if (mode === "native") return "模型原生支持";
+  if (mode === "assisted_tool") return "由受信视觉工具辅助";
+  if (mode === "assisted_preanswer") return "回答前由视觉线路辅助";
+  return "当前线路不可用";
 }
 
 function formatAvailabilityTime(timestamp: number): string {

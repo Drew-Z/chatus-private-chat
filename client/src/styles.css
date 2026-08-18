@@ -354,6 +354,18 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .capability-editor-form { min-width: 0; display: grid; gap: 20px; padding: 0 30px 30px; }
 .capability-editor-form > .admin-pool-editor-head { margin-inline: -30px; }
 .capability-catalog-view { min-width: 0; }
+.capability-vision-setup { min-width: 0; margin: 24px 30px 0; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfb; }
+.capability-vision-setup-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.capability-vision-setup-head .eyebrow { margin: 0 0 5px; }
+.capability-vision-setup-head h3 { margin: 0; font-size: 16px; }
+.capability-vision-setup-head p:not(.eyebrow) { max-width: 720px; margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.capability-vision-readiness { flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: 5px; padding: 5px 8px; color: var(--muted); background: var(--surface-muted); font-size: 10px; font-weight: 800; }
+.capability-vision-readiness.status-installed { border-color: #afd7c1; color: #16653e; background: #eef8f2; }
+.capability-vision-readiness.status-requires_setup { border-color: #e3c98d; color: #725517; background: #fff8e8; }
+.capability-vision-readiness.status-disabled { color: #5c6661; background: #f1f3f2; }
+.capability-vision-fields { margin-top: 18px; }
+.capability-vision-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.capability-vision-actions > span { color: var(--muted); font-size: 11px; }
 .capability-catalog-packs { padding: 0 30px 30px; }
 .capability-catalog-pack { padding: 24px 0; border-bottom: 1px solid var(--line); }
 .capability-catalog-pack:last-child { border-bottom: 0; }
@@ -1210,6 +1222,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .capability-admin-tabs { padding-top: 8px; }
   .capability-editor-form { gap: 17px; padding: 0 16px 24px; }
   .capability-editor-form > .admin-pool-editor-head { margin-inline: -16px; }
+  .capability-vision-setup { margin: 20px 16px 0; padding: 16px; }
+  .capability-vision-setup-head, .capability-vision-actions { align-items: stretch; flex-direction: column; }
+  .capability-vision-readiness { align-self: flex-start; }
   .capability-catalog-packs { padding: 0 16px 24px; }
   .capability-catalog-pack { padding: 20px 0; }
   .capability-discovery-pending { align-items: stretch; flex-direction: column; }

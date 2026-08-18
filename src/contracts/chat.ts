@@ -20,6 +20,7 @@ export type ToolEventSummary = {
 };
 
 export type ChatMessage = {
+  id?: string;
   role: ChatRole;
   content: string | ChatPart[];
   routeId?: string;

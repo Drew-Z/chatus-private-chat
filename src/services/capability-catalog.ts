@@ -133,6 +133,7 @@ export function isCatalogWorkflowSkillId(id: string): boolean {
 
 export function capabilityCatalogSnapshot(
   skills: Record<string, SkillConfig> | undefined,
+  visionAssistStatus: Extract<AdminCapabilityPackItemStatus, "installed" | "disabled" | "requires_setup"> = "requires_setup",
 ): AdminCapabilityCatalogSnapshotV1 {
   const workflowItems = WORKFLOW_DEFINITIONS.map(({ id, skill }) => ({
     id,
@@ -175,7 +176,7 @@ export function capabilityCatalogSnapshot(
           description: "通过管理员选择的原生视觉线路为文本模型生成受限图像证据。",
           source: "chatus",
           activation: "route_augmentation",
-          status: "requires_setup",
+          status: visionAssistStatus,
           installable: false,
           disclosure: {
             execution: "auxiliary_provider",

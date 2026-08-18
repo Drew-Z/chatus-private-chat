@@ -94,6 +94,19 @@ import type {
   ResolvedProviderRoute,
   RouteConfig,
 } from "./contracts/provider";
+import {
+  IMAGE_INSPECT_TOOL_NAME,
+  MAX_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  MIN_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  decodeVisionEvidenceV1,
+  formatVisionEvidenceForModel,
+  normalizeVisionAssistMaxOutputChars,
+  parseVisionEvidenceV1,
+  visionEvidencePrompt,
+  type PublicImageMode,
+  type VisionAssistConfig,
+  type VisionEvidenceV1,
+} from "./contracts/vision-assist";
 import { createProviderTurnId } from "./contracts/provider-attempt";
 import {
   MODEL_MONITORING_WINDOW_MS,
@@ -371,6 +384,7 @@ type AppConfig = {
   skills?: Record<string, SkillConfig>;
   tools?: Record<string, ToolConfig>;
   mcpServers?: Record<string, McpServerConfig>;
+  visionAssist?: VisionAssistConfig;
 };
 
 type McpToolDriftEntry = {
@@ -410,6 +424,7 @@ type PublicRoute = {
   allowUserKey: boolean;
   requiresUserKey: boolean;
   supportsImages: boolean;
+  imageMode: PublicImageMode;
   supportsTools: boolean;
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   healthCheckedAt?: string;
@@ -3534,7 +3549,12 @@ async function handleGetAdminConfig(env: Env): Promise<Response> {
 
 async function handleGetAdminCapabilityPacks(env: Env): Promise<Response> {
   const { config } = await loadEditableConfig(env);
-  return jsonResponse(capabilityCatalogSnapshot(config.skills));
+  const visionAssistStatus = await isVisionAssistReady(config, env)
+    ? "installed" as const
+    : config.visionAssist?.enabled === false && Boolean(config.visionAssist.routeId)
+      ? "disabled" as const
+      : "requires_setup" as const;
+  return jsonResponse(capabilityCatalogSnapshot(config.skills, visionAssistStatus));
 }
 
 async function handleInstallAdminCapabilityPack(request: Request, env: Env): Promise<Response> {
@@ -4167,6 +4187,10 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   const rawCapabilityValidation = validateRawCapabilityConfiguration(body.config);
   if (!rawCapabilityValidation.ok) {
     return jsonResponse({ error: "invalid_config", message: rawCapabilityValidation.message }, 400);
+  }
+  const rawVisionAssistValidation = validateRawVisionAssistConfiguration(body.config);
+  if (!rawVisionAssistValidation.ok) {
+    return jsonResponse({ error: "invalid_config", message: rawVisionAssistValidation.message }, 400);
   }
   const editable = await loadEditableConfig(env);
   const normalized = await applyMcpOAuthConfigRevisions(mergeHiddenCredentialShadows(
@@ -8545,6 +8569,14 @@ export type TeamAgentTurnInput = {
   waitUntil?: (promise: Promise<unknown>) => void;
   turnId: string;
   operation: InstanceOperationStateV1;
+  visionSources?: TeamAgentVisionSource[];
+  persistVisionEvidence?: (sourceMessageIds: string[], evidence: VisionEvidenceV1) => void | Promise<void>;
+};
+
+export type TeamAgentVisionSource = {
+  sourceMessageId: string;
+  images: string[];
+  evidence?: VisionEvidenceV1;
 };
 
 export type PreparedTeamAgentTurn =
@@ -8565,8 +8597,164 @@ export type PreparedTeamAgentTurn =
       skillSnapshotIds?: string[];
       recordStreamFailure: () => Promise<void>;
       releaseTurn: () => Promise<void>;
+      visionInspect?: (signal?: AbortSignal) => Promise<VisionEvidenceV1>;
+      forceImageInspect: boolean;
     }
   | { ok: false; error: string; message: string; status: number; routeId?: string };
+
+class VisionAssistError extends Error {
+  readonly code: "vision_assist_unavailable" | "vision_assist_invalid_response";
+
+  constructor(code: "vision_assist_unavailable" | "vision_assist_invalid_response") {
+    super(code);
+    this.name = "VisionAssistError";
+    this.code = code;
+  }
+}
+
+async function runVisionAssist(
+  env: Env,
+  config: AppConfig,
+  sources: TeamAgentVisionSource[],
+  signal: AbortSignal | undefined,
+  providerAttempts: ProviderAttemptRuntime,
+): Promise<VisionEvidenceV1> {
+  const helper = config.visionAssist;
+  if (!helper?.enabled || !helper.routeId || !sources.length) {
+    throw new VisionAssistError("vision_assist_unavailable");
+  }
+  const maxOutputChars = normalizeVisionAssistMaxOutputChars(helper.maxOutputChars);
+  const prepared = await providerPlanRuntime(env, config).preparePlan({
+    routeIds: [helper.routeId],
+    accessRoutes: [{ id: helper.routeId, allowUserKey: false, requiresUserKey: false }],
+    userApiKey: "",
+    accepts: (candidate) => candidate.supportsImages && !candidate.requiresUserKey,
+  });
+  if (!prepared.candidates.length || prepared.userKeyRequiredRouteId) {
+    throw new VisionAssistError("vision_assist_unavailable");
+  }
+  const candidates: FallbackModelCandidate[] = prepared.candidates.map((route) => {
+    const baseModel = createProviderLanguageModel(route, route.credential.apiKey);
+    const model: LanguageModelV3 = {
+      ...baseModel,
+      async doGenerate(options) {
+        const result = await baseModel.doGenerate(options);
+        const text = result.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("");
+        if (!parseVisionEvidenceV1(text, maxOutputChars)) {
+          const error = new VisionAssistError("vision_assist_invalid_response");
+          error.name = "ProviderProtocolError";
+          throw error;
+        }
+        return result;
+      },
+    };
+    return {
+      routeId: route.routeId,
+      providerId: route.providerId,
+      model,
+      modelName: route.model,
+      credentialClass: route.credential.source === "missing" ? undefined : route.credential.source,
+      usedUserKey: route.credential.usedUserKey,
+      acquireLease: (waitMs, leaseSignal) => acquireProviderLease(env, route, waitMs, leaseSignal),
+      settings: {
+        temperature: 0,
+        maxOutputTokens: Math.max(256, Math.min(4_096, Math.ceil(maxOutputChars / 3))),
+      },
+    };
+  });
+  const imageParts = sources.flatMap((source) => source.images.map((url) => ({
+    type: "image" as const,
+    image: url,
+  })));
+  const model = createFallbackLanguageModel(candidates, {}, {
+    createRun: () => providerAttempts.createRun("auxiliary_vision"),
+  });
+  const result = await generateText({
+    model,
+    messages: [
+      { role: "system", content: visionEvidencePrompt(maxOutputChars) },
+      { role: "user", content: imageParts },
+    ],
+    temperature: 0,
+    maxOutputTokens: Math.max(256, Math.min(4_096, Math.ceil(maxOutputChars / 3))),
+    maxRetries: 0,
+    allowSystemInMessages: true,
+    abortSignal: signal,
+  });
+  const evidence = parseVisionEvidenceV1(result.text, maxOutputChars);
+  if (!evidence) throw new VisionAssistError("vision_assist_invalid_response");
+  return evidence;
+}
+
+function normalizeVisionSources(
+  sources: TeamAgentVisionSource[] | undefined,
+  maxOutputChars: number,
+): TeamAgentVisionSource[] {
+  if (!Array.isArray(sources)) return [];
+  return sources.flatMap((source) => {
+    if (
+      !source
+      || typeof source.sourceMessageId !== "string"
+      || !source.sourceMessageId.trim()
+      || !Array.isArray(source.images)
+      || !source.images.length
+      || source.images.length > 16
+    ) return [];
+    const images = source.images.flatMap((url) => {
+      if (typeof url !== "string") return [];
+      const parsed = parseDataImage(url);
+      return parsed.ok ? ["data:" + parsed.image.mediaType + ";base64," + parsed.image.data] : [];
+    });
+    if (!images.length) return [];
+    const evidence = source.evidence
+      ? decodeVisionEvidenceV1(source.evidence, maxOutputChars)
+      : undefined;
+    return [{ sourceMessageId: source.sourceMessageId.trim().slice(0, 160), images, ...(evidence ? { evidence } : {}) }];
+  });
+}
+
+function visionSourcesForMessages(
+  messages: ChatMessage[],
+  sources: TeamAgentVisionSource[],
+): { sources: TeamAgentVisionSource[]; missing: TeamAgentVisionSource[] } {
+  const byId = new Map(sources.map((source) => [source.sourceMessageId, source]));
+  const used = new Set<string>();
+  for (const message of messages) {
+    const hasImage = Array.isArray(message.content)
+      && message.content.some((part) => part.type === "image_url");
+    if (!hasImage) continue;
+    const source = message.id ? byId.get(message.id) : undefined;
+    if (source) used.add(source.sourceMessageId);
+  }
+  const selected = sources.filter((source) => used.has(source.sourceMessageId));
+  return { sources: selected, missing: selected.filter((source) => !source.evidence) };
+}
+
+function applyAssistedVisionEvidence(
+  messages: ChatMessage[],
+  sources: TeamAgentVisionSource[],
+  forceTool: boolean,
+): ChatMessage[] {
+  const byId = new Map(sources.map((source) => [source.sourceMessageId, source]));
+  return messages.map((message) => {
+    if (!Array.isArray(message.content) || !message.content.some((part) => part.type === "image_url")) return message;
+    const source = message.id ? byId.get(message.id) : undefined;
+    const textParts = message.content.filter((part): part is Extract<ChatPart, { type: "text" }> => part.type === "text");
+    const text = textParts.map((part) => part.text).join("");
+    const suffix = source?.evidence
+      ? formatVisionEvidenceForModel(source.evidence)
+      : forceTool
+        ? "[图片已绑定到受信 image_inspect 工具，必须先调用该工具。]"
+        : "[图片证据暂时不可用。]";
+    return {
+      ...message,
+      content: text + (text ? "\n\n" : "") + suffix,
+    };
+  });
+}
 
 export async function prepareTeamAgentTurn(
   env: Env,
@@ -8627,7 +8815,7 @@ export async function prepareTeamAgentTurn(
   let memoryToolEnabled = input.disableTools !== true
     && session.kind === "member"
     && selectedPublicRoute?.supportsTools === true;
-  if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
+  if (messagesContainImages(normalized) && selectedPublicRoute?.imageMode === "none") {
     return {
       ok: false,
       error: "image_not_supported",
@@ -8721,25 +8909,110 @@ export async function prepareTeamAgentTurn(
     if (resolved.metadata.source === "model") skillSnapshotIds = resolved.skillIds;
   }
   if (input.abortSignal?.aborted) return cancelTurn();
+  const selectedImageMode = selectedPublicRoute?.imageMode || "none";
+  const hasConversationImages = messagesContainImages(normalized);
+  const normalizedVisionSources = normalizeVisionSources(
+    input.visionSources,
+    normalizeVisionAssistMaxOutputChars(config.visionAssist?.maxOutputChars),
+  );
+  let visionScope = visionSourcesForMessages(normalized, normalizedVisionSources);
+  if (
+    hasConversationImages
+    && selectedImageMode !== "native"
+    && (selectedImageMode === "none" || !visionScope.sources.length)
+  ) {
+    if (admission?.ok) await admission.release();
+    return {
+      ok: false,
+      error: selectedImageMode === "none" ? "image_not_supported" : "vision_assist_unavailable",
+      message: agentErrorMessage(selectedImageMode === "none" ? "image_not_supported" : "vision_assist_unavailable"),
+      status: selectedImageMode === "none" ? 400 : 503,
+      routeId: selectedPublicRoute?.id,
+    };
+  }
+  if (selectedImageMode === "assisted_preanswer" && visionScope.missing.length) {
+    const visionAdmission = await admitOnce();
+    if (!visionAdmission.ok) return rejectAdmission(visionAdmission);
+    if (input.abortSignal?.aborted) return cancelTurn();
+    try {
+      const evidence = await runVisionAssist(
+        env,
+        config,
+        visionScope.missing,
+        input.abortSignal,
+        providerAttempts,
+      );
+      if (input.abortSignal?.aborted) return cancelTurn();
+      await input.persistVisionEvidence?.(
+        visionScope.missing.map((source) => source.sourceMessageId),
+        evidence,
+      );
+      const missingIds = new Set(visionScope.missing.map((source) => source.sourceMessageId));
+      visionScope = {
+        sources: visionScope.sources.map((source) => (
+          missingIds.has(source.sourceMessageId) ? { ...source, evidence } : source
+        )),
+        missing: [],
+      };
+    } catch (error) {
+      if (admission?.ok) await admission.release().catch(() => undefined);
+      const projected = projectAgentStreamError(error);
+      const status = providerBudgetErrorHttpStatus(projected)
+        || (projected === "provider_busy" || projected === "upstream_rate_limited" ? 429
+          : projected === "request_cancelled" ? 499
+            : projected === "upstream_timeout" ? 504
+              : projected === "vision_assist_unavailable" ? 503 : 502);
+      return {
+        ok: false,
+        error: projected,
+        message: agentErrorMessage(projected),
+        status,
+        routeId: selectedPublicRoute?.id,
+      };
+    }
+  }
+  const forceImageInspect = selectedImageMode === "assisted_tool" && visionScope.missing.length > 0;
+  let visionInspectPromise: Promise<VisionEvidenceV1> | undefined;
+  const visionInspect = forceImageInspect
+    ? (signal?: AbortSignal) => {
+        visionInspectPromise ||= (async () => {
+          const evidence = await runVisionAssist(env, config, visionScope.missing, signal, providerAttempts);
+          if (signal?.aborted) {
+            throw signal.reason instanceof Error
+              ? signal.reason
+              : new DOMException("The operation was aborted", "AbortError");
+          }
+          await input.persistVisionEvidence?.(
+            visionScope.missing.map((source) => source.sourceMessageId),
+            evidence,
+          );
+          return evidence;
+        })();
+        return visionInspectPromise;
+      }
+    : undefined;
   const selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
+  const providerMessages = selectedImageMode === "native"
+    ? normalized
+    : applyAssistedVisionEvidence(normalized, visionScope.sources, forceImageInspect);
   const messages = await buildMessagesWithSystem(
     env,
     session,
-    normalized,
+    providerMessages,
     input.sessionSummary || "",
     access.user,
     selectedSkills,
     input.longTermMemory,
     input.workspaceContext,
   );
-  const systemMessageCount = Math.max(0, messages.length - normalized.length);
+  const systemMessageCount = Math.max(0, messages.length - providerMessages.length);
   const systemMessages = toProviderModelMessages(messages.slice(0, systemMessageCount));
   const toolDefinitions = input.disableTools !== true && selectedPublicRoute?.supportsTools
     ? await buildCapabilityToolDefinitions(config, access.user, selectedSkills, secretFingerprint)
     : [];
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
   const userApiKey = input.userApiKey?.trim() || "";
-  const hasImages = messagesContainImages(normalized);
+  const hasImages = selectedImageMode === "native" && messagesContainImages(normalized);
   const initialRunDeadline = createProviderFirstVisibleDeadline(input.abortSignal, {
     timeoutMs: PROVIDER_TURN_RUN_DEADLINE_MS,
   });
@@ -8944,6 +9217,8 @@ export async function prepareTeamAgentTurn(
     skillSelection,
     skillSnapshotIds,
     recordStreamFailure,
+    visionInspect,
+    forceImageInspect,
     releaseTurn: async () => {
       initialRunDeadline.dispose();
       await turnAdmission.release();
@@ -9467,6 +9742,21 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     }
   }
 
+  if (config.visionAssist?.enabled === true) {
+    const helperRoute = config.routes[config.visionAssist.routeId];
+    if (!helperRoute || helperRoute.enabled === false) {
+      return { ok: false, message: "视觉辅助必须选择一条已启用的逻辑模型" };
+    }
+    const helperCandidates = resolveProviderRouteCandidates(
+      config.visionAssist.routeId,
+      helperRoute,
+      config.providers,
+    );
+    if (!helperCandidates.some((candidate) => candidate.supportsImages && !candidate.requiresUserKey)) {
+      return { ok: false, message: "视觉辅助线路至少需要一个使用实例凭据的原生图片服务提供商" };
+    }
+  }
+
   const users = Object.entries(config.users || {});
   for (const [label, user] of users) {
     if (!isValidMemberLabel(label)) {
@@ -9724,6 +10014,36 @@ function validateRawCapabilityConfiguration(value: unknown): { ok: true } | { ok
   return { ok: true };
 }
 
+function validateRawVisionAssistConfiguration(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isRecord(value) || value.visionAssist === undefined) return { ok: true };
+  if (!isRecord(value.visionAssist)) return { ok: false, message: "视觉辅助配置必须是对象" };
+  const input = value.visionAssist;
+  if (!hasOnlyRecordKeys(input, ["enabled", "routeId", "maxOutputChars"])) {
+    return { ok: false, message: "视觉辅助配置包含未知字段" };
+  }
+  if (input.enabled !== undefined && typeof input.enabled !== "boolean") {
+    return { ok: false, message: "视觉辅助开关无效" };
+  }
+  if (typeof input.routeId !== "string" || (input.enabled === true && !input.routeId.trim())) {
+    return { ok: false, message: "视觉辅助必须选择逻辑模型" };
+  }
+  if (
+    input.maxOutputChars !== undefined
+    && (
+      typeof input.maxOutputChars !== "number"
+      || !Number.isInteger(input.maxOutputChars)
+      || input.maxOutputChars < MIN_VISION_ASSIST_MAX_OUTPUT_CHARS
+      || input.maxOutputChars > MAX_VISION_ASSIST_MAX_OUTPUT_CHARS
+    )
+  ) {
+    return {
+      ok: false,
+      message: `视觉证据字符上限必须是 ${MIN_VISION_ASSIST_MAX_OUTPUT_CHARS} 至 ${MAX_VISION_ASSIST_MAX_OUTPUT_CHARS} 的整数`,
+    };
+  }
+  return { ok: true };
+}
+
 function isUniqueCapabilityAugmentationList(value: unknown): value is CapabilityAugmentation[] {
   return Array.isArray(value)
     && value.length <= 1
@@ -9815,6 +10135,19 @@ function normalizeAppConfig(value: unknown): AppConfig {
     skills,
     tools,
     mcpServers,
+    visionAssist: normalizeVisionAssistConfig(input.visionAssist),
+  };
+}
+
+function normalizeVisionAssistConfig(value: unknown): VisionAssistConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const routeId = typeof value.routeId === "string" ? value.routeId.trim().slice(0, 160) : "";
+  const enabled = value.enabled === true;
+  if (!routeId && !enabled) return undefined;
+  return {
+    enabled,
+    routeId,
+    maxOutputChars: normalizeVisionAssistMaxOutputChars(value.maxOutputChars),
   };
 }
 
@@ -9982,6 +10315,9 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
   const allowedIds = guest
     ? (config.publicAccess.routeId ? [config.publicAccess.routeId] : [])
     : user.allowedRoutes?.length ? user.allowedRoutes : Object.keys(config.routes);
+  const visionHelperReady = !guest
+    && user.allowedAugmentations?.includes("vision_assist") === true
+    && await isVisionAssistReady(config, env);
   const routes = (await Promise.all(
     allowedIds.map(async (id): Promise<PublicRoute | null> => {
       const route = config.routes[id];
@@ -10004,6 +10340,13 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
       const allowUserKey = Boolean(!guest && user.allowBringYourOwnKey && route.allowUserKey !== false);
       if (!hasServerKey && !allowUserKey) return null;
       const representative = candidates[0];
+      const supportsImages = candidates.some((candidate) => candidate.supportsImages);
+      const supportsTools = !guest && candidates.some((candidate) => candidate.supportsTools);
+      const imageMode: PublicImageMode = supportsImages
+        ? "native"
+        : visionHelperReady
+          ? (supportsTools ? "assisted_tool" : "assisted_preanswer")
+          : "none";
 
       return {
         id,
@@ -10012,8 +10355,9 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
         model: route.label,
         allowUserKey,
         requiresUserKey: Boolean(!hasServerKey),
-        supportsImages: candidates.some((candidate) => candidate.supportsImages),
-        supportsTools: !guest && candidates.some((candidate) => candidate.supportsTools),
+        supportsImages,
+        imageMode,
+        supportsTools,
       };
     }),
   )).filter((route): route is PublicRoute => Boolean(route));
@@ -10024,6 +10368,24 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
       : routes[0]?.id || "";
 
   return { routes, defaultRoute, user, ...(guest ? { publicAccess: config.publicAccess } : {}) };
+}
+
+async function isVisionAssistReady(config: AppConfig, env: Env): Promise<boolean> {
+  const helper = config.visionAssist;
+  if (!helper?.enabled || !helper.routeId) return false;
+  const route = config.routes[helper.routeId];
+  if (!route || route.enabled === false) return false;
+  const prepared = await providerPlanRuntime(env, config).preparePlan({
+    routeIds: [helper.routeId],
+    accessRoutes: [{ id: helper.routeId, allowUserKey: false, requiresUserKey: false }],
+    userApiKey: "",
+    accepts: (candidate) => candidate.supportsImages && !candidate.requiresUserKey,
+  });
+  return prepared.candidates.some((candidate) => (
+    candidate.supportsImages
+    && !candidate.credential.usedUserKey
+    && candidate.credential.source !== "missing"
+  ));
 }
 
 function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
@@ -11715,7 +12077,7 @@ function sessionCapabilities(session: Session, access: RouteAccess): SessionCapa
     return { imageInput: true, fileInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
   }
   return {
-    imageInput: access.routes.some((route) => route.supportsImages),
+    imageInput: access.routes.some((route) => route.imageMode !== "none"),
     fileInput: false,
     memory: false,
     messageActions: false,
@@ -11864,7 +12226,11 @@ export function normalizeMessages(
 
     if (typeof item.content === "string") {
       const content = item.content.slice(0, maxTextChars);
-      if (content.trim()) messages.push({ role, content });
+      if (content.trim()) messages.push({
+        role,
+        content,
+        ...(typeof item.id === "string" && item.id.trim() ? { id: item.id.trim().slice(0, 160) } : {}),
+      });
       continue;
     }
 
@@ -11925,7 +12291,11 @@ export function normalizeMessages(
         image_url: { url: `data:${parsed.image.mediaType};base64,${parsed.image.data}` },
       });
     }
-    if (parts.length) messages.push({ role, content: parts });
+    if (parts.length) messages.push({
+      role,
+      content: parts,
+      ...(typeof item.id === "string" && item.id.trim() ? { id: item.id.trim().slice(0, 160) } : {}),
+    });
   }
 
   return { ok: true, messages };

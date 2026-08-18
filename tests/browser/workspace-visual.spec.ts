@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route, type TestInfo } from "@playwright/test";
 import type { AdminConfig } from "../../client/src/lib/api";
+import { workspaceFixtureBaseURL } from "./workspace-fixture/config";
 
 const blockedRequests = new WeakMap<Page, string[]>();
 
@@ -142,7 +143,7 @@ test.beforeEach(async ({ page }) => {
   shareFixtureStates.set(page, shareState);
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
-    if (url.origin === "http://127.0.0.1:4178" && /^\/api\/agent\/conversations\/[^/]+\/shares(?:\/revoke)?$/.test(url.pathname)) {
+    if (url.origin === workspaceFixtureBaseURL && /^\/api\/agent\/conversations\/[^/]+\/shares(?:\/revoke)?$/.test(url.pathname)) {
       const fixtureParams = new URL(page.url()).searchParams;
       const response = () => ({
         version: 1 as const,
@@ -210,7 +211,7 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mutationResponse) });
       return;
     }
-    const allowed = url.origin === "http://127.0.0.1:4178"
+    const allowed = url.origin === workspaceFixtureBaseURL
       && !url.pathname.startsWith("/api/")
       && !url.pathname.startsWith("/agent");
     if (allowed) await route.continue();
@@ -220,7 +221,7 @@ test.beforeEach(async ({ page }) => {
     }
   });
   await page.goto("/");
-  await expect(page.locator("[data-visual-fixture=true]")).toBeVisible();
+  await expect(page.locator("[data-visual-fixture=true]")).toBeVisible({ timeout: 15_000 });
 });
 
 test.afterEach(async ({ page }) => {
@@ -1942,6 +1943,7 @@ test("capability catalog retains a stale-revision selection and installs on retr
   let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
   let revision = "a".repeat(64);
   let installAttempts = 0;
+  let visionSaveAttempts = 0;
   const instructionsDisclosure = {
     execution: "instructions",
     externalRequest: false,
@@ -1999,7 +2001,7 @@ test("capability catalog retains a stale-revision selection and installs on retr
           description: "通过管理员选择的原生视觉线路生成受限图像证据。",
           source: "chatus",
           activation: "route_augmentation",
-          status: "requires_setup",
+          status: currentConfig.visionAssist?.enabled ? "installed" : currentConfig.visionAssist ? "disabled" : "requires_setup",
           installable: false,
           disclosure: {
             execution: "auxiliary_provider",
@@ -2031,6 +2033,20 @@ test("capability catalog retains a stale-revision selection and installs on retr
     }
     if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
       await json(adminSetupReady);
+      return;
+    }
+    if (url.pathname === "/api/admin/config" && request.method() === "PUT") {
+      const payload = request.postDataJSON() as { config: AdminConfig; expectedRevision: string };
+      expect(payload.expectedRevision).toBe(revision);
+      visionSaveAttempts += 1;
+      if (visionSaveAttempts === 1) {
+        revision = "b".repeat(64);
+        await json({ error: "config_conflict", message: "合成配置冲突。", currentRevision: revision }, 409);
+        return;
+      }
+      currentConfig = payload.config;
+      revision = "c".repeat(64);
+      await json({ config: currentConfig, source: "kv", revision });
       return;
     }
     if (url.pathname === "/api/admin/mcp-secrets" && request.method() === "GET") {
@@ -2095,6 +2111,18 @@ test("capability catalog retains a stale-revision selection and installs on retr
   await expect(page.getByText("Chatus 内置", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("联网研究", { exact: true })).toBeVisible();
   await expect(page.getByText("视觉辅助", { exact: true })).toBeVisible();
+
+  const visionToggle = page.getByRole("checkbox", { name: "启用视觉辅助" });
+  await page.getByLabel("辅助视觉逻辑模型").selectOption("primary");
+  await visionToggle.check();
+  await page.getByLabel("证据字符上限").fill("7000");
+  await page.getByRole("button", { name: "保存视觉辅助" }).click();
+  await expect(page.getByText("配置已被其他窗口更新；当前能力草稿仍保留。", { exact: true })).toBeVisible();
+  await expect(visionToggle).toBeChecked();
+  await page.getByRole("button", { name: "保存视觉辅助" }).click();
+  await expect(page.getByText("视觉辅助配置已保存。", { exact: true })).toBeVisible();
+  expect(visionSaveAttempts).toBe(2);
+  expect(currentConfig.visionAssist).toEqual({ enabled: true, routeId: "primary", maxOutputChars: 7000 });
 
   const writing = page.getByRole("checkbox", { name: /写作与改写/ });
   await writing.check();

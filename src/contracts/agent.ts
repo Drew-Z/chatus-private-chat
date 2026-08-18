@@ -9,6 +9,7 @@ import {
   type ConversationAccessSnapshotV1,
 } from "./identity";
 import type { WorkspaceConversationFileRef } from "./workspace-file";
+import type { VisionEvidenceRecordV1 } from "./vision-assist";
 
 export const MAX_AGENT_CONVERSATIONS = 50;
 export const AGENT_MEMORY_PROPOSAL_TOOL_NAME = "chatus_update_memory";
@@ -374,6 +375,7 @@ export type AgentConversationBranchStartInput = {
   launch: AgentConversationBranchLaunch;
   body: Record<string, unknown>;
   anchorMessageId?: string;
+  visionEvidence?: VisionEvidenceRecordV1[];
 };
 
 export type AgentConversationBranchStartResult =
