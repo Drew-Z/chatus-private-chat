@@ -13,7 +13,7 @@ This task begins after product design, implementation, and pre-production valida
 - The pull request contains both the approved Chatus member UX/settings work and the separately approved model-monitoring/member-availability implementation, including the Worker/API and Provider-attempt ledger scope.
 - Production deployment is manually dispatched from `main` through `.github/workflows/deploy.yml`; local production Wrangler deployment is prohibited.
 - Production member acceptance is manually dispatched from `main` through `.github/workflows/production-acceptance.yml`.
-- The exact merge SHA is now running in production; the 24-hour passive observation window is in progress and is not complete yet.
+- The exact merge SHA remains running in production; the 24-hour passive observation window completed and its final evidence passed.
 
 ## Requirements
 
@@ -37,9 +37,9 @@ This task begins after product design, implementation, and pre-production valida
 - [x] AC3: `Deploy to Cloudflare` succeeds for the exact merge SHA, including validation, Worker deployment, and production smoke steps.
 - [x] AC4: Production `/release.json` and `/react-chat/` release metadata both equal the merge SHA and the member workspace returns an expected successful response.
 - [x] AC5: `Production member acceptance` succeeds for the same SHA.
-- [ ] AC6: A 24-hour passive observation records monitoring freshness and reconciled attempt/success/failure evidence without exposing prohibited data or running synthetic health probes.
-- [ ] AC7: No release-critical regression remains open at the end of observation; otherwise rollback evidence and the resulting live SHA are recorded.
-- [ ] AC8: No legacy rollout task, gate, workflow state, or evidence is changed or advanced by this task.
+- [x] AC6: A 24-hour passive observation records monitoring freshness and reconciled attempt/success/failure evidence without exposing prohibited data or running synthetic health probes.
+- [x] AC7: No release-critical regression remains open at the end of observation; otherwise rollback evidence and the resulting live SHA are recorded.
+- [x] AC8: No legacy rollout task, gate, workflow state, or evidence is changed or advanced by this task.
 
 ## Release Evidence
 
@@ -49,7 +49,9 @@ This task begins after product design, implementation, and pre-production valida
 - Production metadata: `/release.json` and `/react-chat/` `chatus-release` both returned `fd6a2690ac3bf5026fde3ee736f35e32d14f940d`; `/react-chat/` returned HTTP 200.
 - Acceptance: `Production member acceptance` run `31956295236` passed its deployed-revision guard and temporary-member acceptance for the same SHA.
 - Observation start: `2026-08-16T15:37:12Z`, after the deployment Workflow completed its production smoke verification. The release metadata was generated at `2026-08-16T15:36:42.875Z`; observation is passive and remains open until `2026-08-17T15:37:12Z`.
-- Observation collector: draft PR #91 adds `.github/workflows/production-model-observation.yml` and `scripts/collect-production-model-observation.mjs`; it is main-only, serialized, exact-SHA fenced, aggregate-only, and does not call `/api/chat` or Wrangler.
+- Observation implementation: PR #91 merged at `2026-08-16T23:16:06Z` as merge SHA `10972f44b46e059de2ad2067084b5e0222829ae5`; it adds `.github/workflows/production-model-observation.yml` and `scripts/collect-production-model-observation.mjs` with main-only, serialized, exact-SHA fenced, aggregate-only behavior and no `/api/chat` or Wrangler call. PR #92 merged at `2026-08-16T23:30:09Z` as `08ba6b7a1f87799b5cff73b80ea20af499ebf583` and records the executable observation contract in the platform spec.
+- Observation result: Workflow `32118283425` succeeded at `2026-08-18T08:50:38Z` for deployed SHA `fd6a2690ac3bf5026fde3ee736f35e32d14f940d`. The retained artifact `production-model-observation-fd6a2690ac3bf5026fde3ee736f35e32d14f940d/observation.json` is 746 bytes and contains exact 24-hour reconciliation with `attempts=0`, `completed=0`, `failures=0`, `inFlight=0`, `successRate=null`, `fallbacks=0`, and `averageLatencyMs=null`; all route/provider/model/run-kind/failure-class group counts are zero. This is the legitimate no-data state, not a synthetic health result. Member availability acceptance, admin logout, and the final SHA fence also passed in the same Workflow.
+- Final release state: no release-critical regression or rollback was required; production metadata still reports `fd6a2690ac3bf5026fde3ee736f35e32d14f940d`, and no legacy rollout task, gate, workflow state, or evidence was changed.
 
 ## Out Of Scope
 
