@@ -205,3 +205,36 @@ Implemented and verified the revisioned Chatus capability catalog, five instruct
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Explicit web research capability
+
+**Date**: 2026-08-18
+**Task**: Explicit web research capability
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Implemented member-initiated per-turn web research through a reviewed read-only MCP binding, normalized citations, recoverable UI state, strict metadata persistence, and complete local quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1584599` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-08-18
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~207 | Active |
+| `journal-1.md` | ~240 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-08-18 | Explicit web research capability | `1584599` | `codex/chatus-default-capability-packs` |
 | 6 | 2026-08-18 | Capability catalog and adoption | `b42d180` | `codex/chatus-default-capability-packs` |
 | 5 | 2026-08-16 | Complete Chatus UX design sync | `bd823f9`, `73a94ea`, `6a751d9` | `codex/chatus-ux-settings-redesign-ui` |
 | 4 | 2026-08-16 | Configure Figma MCP Bridge | `5b43050` | `codex/chatus-ux-settings-redesign-ui` |
