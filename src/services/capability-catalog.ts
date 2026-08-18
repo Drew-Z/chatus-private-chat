@@ -134,6 +134,7 @@ export function isCatalogWorkflowSkillId(id: string): boolean {
 export function capabilityCatalogSnapshot(
   skills: Record<string, SkillConfig> | undefined,
   visionAssistStatus: Extract<AdminCapabilityPackItemStatus, "installed" | "disabled" | "requires_setup"> = "requires_setup",
+  webResearchStatus: Extract<AdminCapabilityPackItemStatus, "installed" | "disabled" | "requires_setup"> = "requires_setup",
 ): AdminCapabilityCatalogSnapshotV1 {
   const workflowItems = WORKFLOW_DEFINITIONS.map(({ id, skill }) => ({
     id,
@@ -160,7 +161,7 @@ export function capabilityCatalogSnapshot(
           description: "通过管理员审核的只读 MCP 搜索工具获取当前来源。",
           source: "chatus",
           activation: "explicit_turn",
-          status: "requires_setup",
+          status: webResearchStatus,
           installable: false,
           disclosure: {
             execution: "reviewed_mcp",

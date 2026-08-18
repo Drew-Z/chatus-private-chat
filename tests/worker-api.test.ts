@@ -2841,6 +2841,27 @@ describe("Worker API", () => {
         metadata: { finishReason: "stop", providerTrace: "sensitive-metadata-marker" },
         parts: [{ type: "text", text: "complete response" }],
       },
+      {
+        id: "user-web-research",
+        role: "user",
+        metadata: {
+          capabilityIds: ["chatus:web_research"],
+          privateQueryMarker: "must-not-persist",
+        },
+        parts: [{ type: "text", text: "Find current release notes" }],
+      },
+      {
+        id: "assistant-web-research",
+        role: "assistant",
+        metadata: {
+          webResearch: {
+            version: 1,
+            sources: [{ url: "https://example.com/release", title: "Release notes", snippet: "Current facts" }],
+          },
+          providerTrace: "sensitive-metadata-marker",
+        },
+        parts: [{ type: "text", text: "The current release is documented." }],
+      },
     ] as UIMessage[]);
 
     const persisted = await getPersistedAgentMessages(conversation);
@@ -2848,8 +2869,18 @@ describe("Worker API", () => {
       finishReason: "length",
     });
     expect(persisted.find((message) => message.id === "assistant-stop")).not.toHaveProperty("metadata");
+    expect(persisted.find((message) => message.id === "user-web-research")?.metadata).toEqual({
+      capabilityIds: ["chatus:web_research"],
+    });
+    expect(persisted.find((message) => message.id === "assistant-web-research")?.metadata).toEqual({
+      webResearch: {
+        version: 1,
+        sources: [{ url: "https://example.com/release", title: "Release notes", snippet: "Current facts" }],
+      },
+    });
     expect(JSON.stringify(persisted)).not.toContain("sensitive-metadata-marker");
     expect(JSON.stringify(persisted)).not.toContain("credentialReference");
+    expect(JSON.stringify(persisted)).not.toContain("privateQueryMarker");
   });
 
   it("defaults new member conversations to automatic while preserving exact manual Skills", async () => {

@@ -30,6 +30,10 @@ import type {
   PublicImageMode,
   VisionAssistConfig,
 } from "../../../src/contracts/vision-assist";
+import {
+  decodeWebResearchEvidenceV1,
+  type WebResearchEvidenceV1,
+} from "../../../src/contracts/web-research";
 import { normalizeAgentRequestId } from "../../../src/contracts/agent-error";
 import type {
   MemberModelAvailabilityV1,
@@ -3406,6 +3410,11 @@ function isRouteProjection(value: unknown): value is RouteProjection {
     && typeof value.supportsTools === "boolean"
     && (value.healthStatus === undefined || value.healthStatus === "healthy" || value.healthStatus === "unhealthy" || value.healthStatus === "unknown")
     && (value.healthOutcome === undefined || typeof value.healthOutcome === "string");
+}
+
+export function getAgentWebResearchMetadata(value: unknown): WebResearchEvidenceV1 | undefined {
+  if (!isRecord(value) || value.webResearch === undefined) return undefined;
+  return decodeWebResearchEvidenceV1(value.webResearch);
 }
 
 function isVisionAssistConfig(value: unknown): value is VisionAssistConfig {

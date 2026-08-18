@@ -828,3 +828,129 @@ return { imageMode: route.supportsImages ? "native" : ready ? "assisted_preanswe
 ```
 
 Readiness is derived from executable server state and never changes the route's native capability truth.
+
+## Scenario: Explicit Per-turn Web Research
+
+### 1. Scope / Trigger
+
+Use this contract when a member explicitly enables `chatus:web_research` for one
+turn, when an administrator binds the capability to an MCP tool, or when the
+client renders the resulting public citations.
+
+### 2. Signatures
+
+```typescript
+type WebResearchRequest = {
+  capabilityIds?: ["chatus:web_research"];
+  webResearchQuery?: string;
+};
+
+type WebResearchEvidenceV1 = {
+  version: 1;
+  sources: Array<{ url: string; title: string; snippet: string }>;
+};
+
+prepareTeamAgentTurn(input: TeamAgentTurnInput): Promise<PreparedTeamAgentTurn>;
+executeWebResearch(
+  execution: McpRuntimeExecution,
+  binding: WebResearchBinding,
+  query: unknown,
+  signal?: AbortSignal,
+): Promise<WebResearchEvidenceV1>;
+```
+
+The reviewed MCP input schema is exactly one required bounded `query` string;
+there is no browser-controlled URL or secret field.
+
+### 3. Contracts
+
+- `chatus:web_research` is explicit-turn only. It is absent from ordinary tools,
+  automatic Skill candidates, and persisted regular Skill definitions. It may be
+  projected only when exactly one assigned MCP tool owns the `web_search` role.
+- The bound tool must be enabled, MCP-backed, `sideEffect: "read"`,
+  `reviewRequired: false`, fingerprint-complete, attached to an enabled MCP
+  server, and use the exact one-query schema. A tool can never be both a regular
+  Skill dependency and the explicit web-research binding.
+- A member turn spends the existing shared three-Skill budget. Manual selection
+  leaves one slot for research; automatic selection is capped at two ordinary
+  Skills. A full manual selection fails before MCP I/O. Admission is created once
+  and reused by research and the main answer.
+- The MCP call occurs before main Provider construction for both tool-capable and
+  text-only routes. The latest user text is the disclosed query; no hidden query
+  model is introduced. Continuations do not start a new search.
+- MCP output is accepted only as exact JSON text `{ version: 1, sources }`.
+  Results are bounded, normalized to at most ten public HTTPS URLs, canonicalized,
+  deduplicated in server order, and inserted into a numbered Provider system
+  block. Raw MCP bodies, credentials, endpoints, and model-generated Markdown
+  citations never cross the Agent/UI boundary.
+- The normalized evidence is the only persisted assistant `webResearch` metadata.
+  The user activation metadata contains only the capability ID, allowing resend
+  and branch recovery without restoring arbitrary request fields. React links use
+  the shared URL sanitizer and show the exact same normalized titles/snippets.
+- Execution owns a timeout/cancellation race and always closes the MCP execution.
+  Denial, review drift, disconnected OAuth, timeout, cancellation, malformed or
+  empty results return stable recoverable errors and never continue with a false
+  fresh-search claim.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Guest, continuation, disabled tools, unknown capability ID, or no reviewed binding | `web_research_not_available`; zero MCP calls |
+| Three manual Skills already selected | `web_research_slot_limit`; reject before MCP I/O |
+| Tool is unassigned, write-capable, drifted, incomplete, or duplicated | Deny with stable availability/review error; no `tools/call` |
+| OAuth/static connection is not ready | `web_research_connection_required`; no main Provider request |
+| Blank or overlong disclosed query | `web_research_query_invalid`; close without external I/O |
+| MCP exceeds the bounded deadline | `web_research_timeout`; close and do not claim fresh evidence |
+| Parent cancellation | `request_cancelled`; close, release admission, and do not fall back |
+| Non-text, malformed, oversized, empty, duplicate-only, or unsafe URL result | `web_research_invalid_response` or `web_research_no_sources`; raw body is discarded |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a member enables research, one reviewed read-only MCP call returns ten
+  sanitized sources, both route types receive the same numbered evidence, and the
+  assistant history renders the exact safe links.
+- Base: a failed search leaves the draft and activation recoverable for retry;
+  no response says it used current web results.
+- Bad: expose the MCP tool in ordinary tool lists, let the model choose the URL,
+  charge quota once for research and again for the answer, or render raw source
+  URLs/snippets without the shared sanitizer.
+
+### 6. Tests Required
+
+- Contract tests reject extra query fields, unsafe/private/credential URLs,
+  malformed/non-text/empty/oversized/duplicate results, and assert canonical URL
+  order plus ten-source/size limits.
+- Binding tests cover assignment, exact schema, review dimensions, side effects,
+  disabled servers, duplicate bindings, and exclusion from ordinary Skill/tool
+  projections.
+- Runtime tests use fake MCP/OAuth executions to assert exact query disclosure,
+  timeout/cancellation races, mandatory `close()`, stable error classes, and zero
+  live network/model calls.
+- Worker/Agent tests cover both supports-tools modes, shared Skill-slot rejection,
+  one admission for research plus answer, exact numbered evidence in Provider
+  messages, and allow-listed user/assistant metadata persistence for resend/branch
+  recovery.
+- Client tests assert strict evidence decoding, accessible source rendering, and
+  no overflow or unsafe links at desktop and 390px touch widths.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const url = body.url;
+return provider.complete(`Search ${url} and cite the Markdown links it returns`);
+```
+
+#### Correct
+
+```typescript
+const binding = resolveWebResearchBinding(config, access.user);
+const evidence = await executeWebResearch(runtime.createExecution(), binding.binding,
+  latestUserText, abortSignal);
+const messages = [{ role: "system", content: formatWebResearchEvidenceForModel(evidence) }, ...baseMessages];
+```
+
+The administrator-reviewed MCP contract owns network access, the shared decoder
+owns public evidence, and the Provider sees only bounded numbered sources.

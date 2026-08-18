@@ -24,6 +24,7 @@ import {
   type SessionProjection,
 } from "../lib/api";
 import type { ConversationSkillMode } from "../../../src/contracts/agent";
+import { WEB_RESEARCH_CAPABILITY_ID } from "../../../src/contracts/web-research";
 import { isConversationAccessRefreshError, resolveAgentError } from "../lib/agent-errors";
 import {
   conversationAgentClientName,
@@ -714,6 +715,7 @@ function ConversationChat({
     text: string;
     attachments: DraftAttachment[];
     draftGeneration: number;
+    webResearchEnabled: boolean;
   } | null>(null);
   const [settledSubmission, setSettledSubmission] = useState(0);
   const [providerProgress, setProviderProgress] = useState<ProviderTurnProgressV1 | null>(null);
@@ -723,6 +725,7 @@ function ConversationChat({
   const [stopRequested, setStopRequested] = useState(false);
   const [lastSubmittedText, setLastSubmittedText] = useState("");
   const [lastSubmittedAttachments, setLastSubmittedAttachments] = useState<DraftAttachment[]>([]);
+  const [webResearchEnabled, setWebResearchEnabled] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const followTranscriptRef = useRef(true);
@@ -731,12 +734,25 @@ function ConversationChat({
   const draftGeneration = useRef(0);
   const attachmentsRef = useRef(attachments);
   const pendingSubmissionRef = useRef(pendingSubmission);
+  const requestBodyRef = useRef<{
+    routeId: string;
+    skillMode: ConversationSkillMode;
+    skillIds: string[];
+    chatId: string;
+    resourceId?: string;
+    capabilityIds?: [typeof WEB_RESEARCH_CAPABILITY_ID];
+  }>({ routeId, skillMode, skillIds, chatId: conversation.id });
   const lastSubmittedAttachmentsRef = useRef(lastSubmittedAttachments);
   const localTurnStartedAtRef = useRef(0);
   attachmentsRef.current = attachments;
   pendingSubmissionRef.current = pendingSubmission;
   lastSubmittedAttachmentsRef.current = lastSubmittedAttachments;
   const permissions = resolveConversationAccessPermissions(conversation.accessRole);
+  const webResearchCapability = session.availableCapabilities.find((capability) => capability.id === WEB_RESEARCH_CAPABILITY_ID);
+  const webResearchAvailable = webResearchCapability?.availability === "available";
+  const webResearchDisabledReason = webResearchCapability && !webResearchAvailable
+    ? capabilityUnavailableLabel(webResearchCapability.unavailableReason)
+    : undefined;
   const sharedConversation = Boolean(conversation.accessRole && conversation.accessRole !== "owner");
   const agent = useAgent({
     agent: "TeamAgent",
@@ -749,18 +765,20 @@ function ConversationChat({
     queryDeps: [conversation.id, conversation.resourceId],
     defaultCallTimeout: 30_000,
   });
+  requestBodyRef.current = {
+    routeId,
+    skillMode,
+    skillIds,
+    chatId: conversation.id,
+    ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
+    ...(webResearchEnabled ? { capabilityIds: [WEB_RESEARCH_CAPABILITY_ID] } : {}),
+  };
   const chat = useAgentChat({
     agent,
     credentials: "include",
     resume: true,
     cancelOnClientAbort: false,
-    body: () => ({
-      routeId,
-      skillMode,
-      skillIds,
-      chatId: conversation.id,
-      ...(conversation.resourceId ? { resourceId: conversation.resourceId } : {}),
-    }),
+    body: useCallback(() => ({ ...requestBodyRef.current }), []),
   });
   const turnPhase = resolveTurnPhase({
     status: chat.status,
@@ -865,6 +883,7 @@ function ConversationChat({
         setAttachments(pendingSubmission.attachments);
         setLastSubmittedText(pendingSubmission.text);
         setLastSubmittedAttachments(pendingSubmission.attachments);
+        setWebResearchEnabled(pendingSubmission.webResearchEnabled);
       } else {
         releaseAttachmentPreviews(pendingSubmission.attachments);
         setLastSubmittedText("");
@@ -877,6 +896,7 @@ function ConversationChat({
       releaseAttachmentPreviews(pendingSubmission.attachments);
       setLastSubmittedText("");
       setLastSubmittedAttachments([]);
+      setWebResearchEnabled(false);
       setPendingSubmission(null);
     }
   }, [chat.error, chat.status, pendingSubmission, settledSubmission]);
@@ -979,21 +999,36 @@ function ConversationChat({
       text: submittedDraft,
       attachments: submittedAttachments,
       draftGeneration: submittedDraftGeneration,
+      webResearchEnabled,
     });
     setInput("");
     setAttachments([]);
     try {
-      await chat.sendMessage(text ? { text, files: fileParts } : { files: fileParts });
+      await chat.sendMessage(
+        text
+          ? {
+              text,
+              files: fileParts,
+              ...(webResearchEnabled ? { metadata: { capabilityIds: [WEB_RESEARCH_CAPABILITY_ID] } } : {}),
+            }
+          : {
+              files: fileParts,
+              ...(webResearchEnabled ? { metadata: { capabilityIds: [WEB_RESEARCH_CAPABILITY_ID] } } : {}),
+            },
+      );
+      setWebResearchEnabled(false);
     } catch {
       if (draftGeneration.current === submittedDraftGeneration) {
         setLastSubmittedText(submittedDraft);
         setLastSubmittedAttachments(submittedAttachments);
         setInput(submittedDraft);
         setAttachments(submittedAttachments);
+        setWebResearchEnabled(webResearchEnabled);
       } else {
         releaseAttachmentPreviews(submittedAttachments);
         setLastSubmittedText("");
         setLastSubmittedAttachments([]);
+        setWebResearchEnabled(false);
       }
       setPendingSubmission(null);
     } finally {
@@ -1154,6 +1189,12 @@ function ConversationChat({
           : turnPhase === "tool-running"
             ? hasPendingToolApprovalAfterLatestUser(chat.messages) ? "等待工具确认" : "Agent 正在调用工具"
             : chat.isServerStreaming ? "Agent 正在继续处理" : ""}
+        webResearchAvailable={webResearchAvailable}
+        webResearchEnabled={webResearchEnabled}
+        webResearchDisabledReason={webResearchDisabledReason}
+        onToggleWebResearch={() => {
+          if (webResearchAvailable && !interactionBlocked) setWebResearchEnabled((current) => !current);
+        }}
       /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
     </div>
   );
@@ -1178,6 +1219,14 @@ function isTruncatedMessage(message: UIMessage): boolean {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
   const value = metadata as Record<string, unknown>;
   return value.truncated === true || value.finishReason === "length" || value.finish_reason === "length";
+}
+
+function capabilityUnavailableLabel(reason?: string): string {
+  if (reason === "connection_required") return "请先连接联网研究服务";
+  if (reason === "review_required") return "联网研究工具待管理员审核";
+  if (reason === "tool_unavailable") return "联网研究工具暂不可用";
+  if (reason === "not_assigned") return "管理员未分配联网研究";
+  return "联网研究当前不可用";
 }
 
 function activeConversationKey(user: string): string {

@@ -6,6 +6,7 @@ import {
   GitBranch,
   Link,
   FileText,
+  Globe2,
   Pencil,
   Play,
   RotateCw,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react";
 import { isToolUIPart, type UIMessage } from "ai";
 import { AGENT_MEMORY_PROPOSAL_TOOL_NAME } from "../../../src/contracts/agent";
-import { getAgentSkillSelectionMetadata, type AgentConversationBranchAction } from "../lib/api";
+import { getAgentSkillSelectionMetadata, getAgentWebResearchMetadata, type AgentConversationBranchAction } from "../lib/api";
 import { copyText, sanitizeMarkdownUrl } from "../lib/markdown";
 import type { MessageActionAvailability, MessageActionState } from "../lib/state";
 import { MarkdownContent } from "./MarkdownContent";
@@ -54,6 +55,9 @@ export function MessageView({
   const sourceParts = message.parts.filter((part) => part.type === "source-url" || part.type === "source-document");
   const skillSelection = message.role === "assistant"
     ? getAgentSkillSelectionMetadata(message.metadata)
+    : undefined;
+  const webResearch = message.role === "assistant"
+    ? getAgentWebResearchMetadata(message.metadata)
     : undefined;
 
   const copy = async () => {
@@ -163,6 +167,28 @@ export function MessageView({
               : <span>未启用 Skill</span>}
           </div>
           {skillSelection.reason && <small>{skillSelectionReasonLabel(skillSelection.reason)}</small>}
+        </section>
+      )}
+      {webResearch && (
+        <section className="message-web-research" aria-label="联网研究来源">
+          <div className="message-web-research-head">
+            <Globe2 size={14} aria-hidden="true" />
+            <strong>联网研究</strong>
+            <span>{webResearch.sources.length} 个来源</span>
+          </div>
+          <ol className="message-web-research-list">
+            {webResearch.sources.map((source, index) => {
+              const href = sanitizeMarkdownUrl(source.url);
+              return (
+                <li key={`${message.id}-research-${index}`}>
+                  {href
+                    ? <a href={href} target="_blank" rel="noreferrer" title={source.title}>{index + 1}. {source.title}</a>
+                    : <span>{index + 1}. {source.title}</span>}
+                  {source.snippet && <small>{source.snippet}</small>}
+                </li>
+              );
+            })}
+          </ol>
         </section>
       )}
       {sourceParts.length > 0 && (

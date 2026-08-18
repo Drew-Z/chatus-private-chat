@@ -237,6 +237,21 @@ const messages: UIMessage[] = [
         reason: "timeout",
         skills: [{ id: "project", label: "项目协作" }],
       },
+      webResearch: {
+        version: 1,
+        sources: [
+          {
+            url: "https://example.com/release?a=1&b=2",
+            title: "当前版本发布说明",
+            snippet: "这是一段只包含合成公开信息的来源摘要。",
+          },
+          {
+            url: "https://docs.example.com/a/very/long/research/source/path/that/must/remain/inside/the/message",
+            title: "一条很长的合成联网研究来源标题，用于验证窄屏换行和链接容器边界",
+            snippet: "第二条合成摘要用于验证来源列表在触控视口中不会扩大页面宽度。",
+          },
+        ],
+      },
     },
     parts: [
       {
@@ -1203,6 +1218,10 @@ function WorkspaceFixture() {
                 agentReady
                 placeholder="输入消息"
                 statusText={turnBusy ? "Agent 正在继续处理" : ""}
+                webResearchAvailable={false}
+                webResearchEnabled={false}
+                webResearchDisabledReason="联网研究工具未配置"
+                onToggleWebResearch={() => undefined}
               /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
             </div>
           </section>

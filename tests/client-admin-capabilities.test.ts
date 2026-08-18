@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AdminConfig, AdminMcpDiscoveryResponse } from "../client/src/lib/api";
+import { WEB_RESEARCH_INPUT_SCHEMA } from "../src/contracts/web-research";
 import {
   applyMcpServerDraft,
   applySkillDraft,
@@ -75,13 +76,17 @@ describe("typed capability administration helpers", () => {
 
   it("updates tool policy without replacing schema or executor", () => {
     const config = createConfig();
-    config.tools["mcp:docs:search"] = { ...config.tools["mcp:docs:search"], capabilityRole: "web_search" };
+    config.tools["mcp:docs:search"] = {
+      ...config.tools["mcp:docs:search"],
+      inputSchema: WEB_RESEARCH_INPUT_SCHEMA,
+      capabilityRole: "web_search",
+    };
     const original = config.tools["mcp:docs:search"];
-    const draft = { ...createToolPolicyDraft(original), enabled: false, label: "Docs search" };
+    const draft = { ...createToolPolicyDraft(original), label: "Docs search" };
     expect(validateToolPolicyDraft(original, draft)).toEqual({ ok: true });
     const next = applyToolPolicyDraft(config, "mcp:docs:search", draft);
     expect(next.tools["mcp:docs:search"]).toMatchObject({
-      enabled: false,
+      enabled: true,
       label: "Docs search",
       executor: original.executor,
       inputSchema: original.inputSchema,

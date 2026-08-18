@@ -107,6 +107,13 @@ import {
   type VisionAssistConfig,
   type VisionEvidenceV1,
 } from "./contracts/vision-assist";
+import {
+  WEB_RESEARCH_CAPABILITY_ID,
+  formatWebResearchEvidenceForModel,
+  isExactWebResearchInputSchema,
+  isReviewedWebResearchTool,
+  type WebResearchEvidenceV1,
+} from "./contracts/web-research";
 import { createProviderTurnId } from "./contracts/provider-attempt";
 import {
   MODEL_MONITORING_WINDOW_MS,
@@ -227,6 +234,11 @@ import {
   type McpDiscoveryResult,
   type McpRuntimeExecution,
 } from "./services/mcp-runtime";
+import {
+  WebResearchRuntimeError,
+  executeWebResearch,
+  resolveWebResearchBinding,
+} from "./services/web-research";
 import {
   buildMcpOAuthAuthorizationUrl,
   createMcpOAuthPkce,
@@ -3554,7 +3566,14 @@ async function handleGetAdminCapabilityPacks(env: Env): Promise<Response> {
     : config.visionAssist?.enabled === false && Boolean(config.visionAssist.routeId)
       ? "disabled" as const
       : "requires_setup" as const;
-  return jsonResponse(capabilityCatalogSnapshot(config.skills, visionAssistStatus));
+  const webResearchTools = Object.values(config.tools || {}).filter((tool) => tool.capabilityRole === "web_search");
+  const webResearchStatus = webResearchTools.length === 1 && isReviewedWebResearchTool(webResearchTools[0])
+    && config.mcpServers?.[webResearchTools[0].executor.serverId]?.enabled === true
+    ? "installed" as const
+    : webResearchTools.length === 1 && webResearchTools[0].enabled === false
+      ? "disabled" as const
+      : "requires_setup" as const;
+  return jsonResponse(capabilityCatalogSnapshot(config.skills, visionAssistStatus, webResearchStatus));
 }
 
 async function handleInstallAdminCapabilityPack(request: Request, env: Env): Promise<Response> {
@@ -3854,6 +3873,18 @@ async function buildSessionProjection(
       ? listMcpOAuthConnections(env, session)
       : Promise.resolve([]),
   ]);
+  const webResearchBinding = resolveWebResearchBinding(config, access.user);
+  const availableCapabilities = capabilities.capabilities.map((capability) => {
+    if (capability.id !== WEB_RESEARCH_CAPABILITY_ID || !webResearchBinding.ok) return capability;
+    if (webResearchBinding.binding.server.auth.type !== "oauth2") return capability;
+    const connection = mcpConnections.find(({ serverId }) => serverId === webResearchBinding.binding.tool.executor.serverId);
+    if (connection?.connected) return capability;
+    return {
+      ...capability,
+      availability: "requires_setup" as const,
+      unavailableReason: connection?.reviewRequired ? "review_required" as const : "connection_required" as const,
+    };
+  });
   return {
     authenticated: true,
     access: session.kind,
@@ -3867,7 +3898,7 @@ async function buildSessionProjection(
     imageInput: imageInputPolicy(env),
     fileInput: fileInputPolicy(env),
     capabilities: policy,
-    availableCapabilities: session.kind === "member" ? capabilities.capabilities : [],
+    availableCapabilities: session.kind === "member" ? availableCapabilities : [],
     skills: session.kind === "member" ? capabilities.skills : [],
     tools: session.kind === "member" ? capabilities.tools : [],
     mcpConnections,
@@ -8558,6 +8589,8 @@ export type TeamAgentTurnInput = {
   routeId?: string;
   skillMode?: ConversationSkillMode;
   skillIds?: string[];
+  capabilityIds?: string[];
+  webResearchQuery?: string;
   userApiKey?: string;
   sessionSummary?: string;
   temperature?: number;
@@ -8599,6 +8632,7 @@ export type PreparedTeamAgentTurn =
       releaseTurn: () => Promise<void>;
       visionInspect?: (signal?: AbortSignal) => Promise<VisionEvidenceV1>;
       forceImageInspect: boolean;
+      webResearch?: WebResearchEvidenceV1;
     }
   | { ok: false; error: string; message: string; status: number; routeId?: string };
 
@@ -8815,6 +8849,28 @@ export async function prepareTeamAgentTurn(
   let memoryToolEnabled = input.disableTools !== true
     && session.kind === "member"
     && selectedPublicRoute?.supportsTools === true;
+  const requestedCapabilityIds = input.capabilityIds === undefined || input.capabilityIds.length === 0
+    ? []
+    : input.capabilityIds.length === 1 && input.capabilityIds[0] === WEB_RESEARCH_CAPABILITY_ID
+      ? [WEB_RESEARCH_CAPABILITY_ID]
+      : null;
+  if (!requestedCapabilityIds) {
+    return {
+      ok: false,
+      error: "web_research_not_available",
+      message: agentErrorMessage("web_research_not_available"),
+      status: 403,
+    };
+  }
+  const webResearchRequested = requestedCapabilityIds.includes(WEB_RESEARCH_CAPABILITY_ID);
+  if (webResearchRequested && (session.kind !== "member" || input.disableTools === true || input.continuation === true)) {
+    return {
+      ok: false,
+      error: "web_research_not_available",
+      message: agentErrorMessage("web_research_not_available"),
+      status: 403,
+    };
+  }
   if (messagesContainImages(normalized) && selectedPublicRoute?.imageMode === "none") {
     return {
       ok: false,
@@ -8864,6 +8920,18 @@ export async function prepareTeamAgentTurn(
   let skillSelection: AgentSkillSelectionMetadata | undefined;
   let skillSnapshotIds: string[] | undefined;
   let selectedSkillIds = input.skillIds || [];
+  if (
+    webResearchRequested
+    && input.skillMode !== "automatic"
+    && getSelectedSkills(config, selectedSkillIds, access.user).length >= MAX_SELECTED_SKILLS
+  ) {
+    return {
+      ok: false,
+      error: "web_research_slot_limit",
+      message: agentErrorMessage("web_research_slot_limit"),
+      status: 409,
+    };
+  }
   if (session.kind === "member" && input.skillMode === "automatic" && selectedPublicRoute) {
     const availableSkills = getPublicCapabilities(config, access.user).skills;
     if (availableSkills.length) {
@@ -8880,6 +8948,7 @@ export async function prepareTeamAgentTurn(
         userApiKey: input.userApiKey?.trim() || "",
         latestUserText: latestPrompt?.text || "",
         availableSkills,
+        maxSkills: webResearchRequested ? MAX_SELECTED_SKILLS - 1 : MAX_SELECTED_SKILLS,
         signal: input.abortSignal,
         providerAttempts,
       });
@@ -8903,10 +8972,60 @@ export async function prepareTeamAgentTurn(
       access.user,
       selectorAttempt,
       input.skillIds,
+      webResearchRequested ? MAX_SELECTED_SKILLS - 1 : MAX_SELECTED_SKILLS,
     );
     selectedSkillIds = resolved.skillIds;
     skillSelection = resolved.metadata;
     if (resolved.metadata.source === "model") skillSnapshotIds = resolved.skillIds;
+  }
+  if (input.abortSignal?.aborted) return cancelTurn();
+  let selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
+  let webResearch: WebResearchEvidenceV1 | undefined;
+  if (webResearchRequested) {
+    const researchAdmission = await admitOnce();
+    if (!researchAdmission.ok) return rejectAdmission(researchAdmission);
+    if (input.abortSignal?.aborted) return cancelTurn();
+
+    config = await loadAppConfig(env);
+    access = await getRouteAccess(config, session, env);
+    selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
+      || access.routes.find((route) => route.id === access.defaultRoute);
+    memoryToolEnabled = input.disableTools !== true && selectedPublicRoute?.supportsTools === true;
+    selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
+    if (!selectedPublicRoute || selectedSkills.length >= MAX_SELECTED_SKILLS) {
+      if (admission?.ok) await admission.release();
+      const error = selectedSkills.length >= MAX_SELECTED_SKILLS
+        ? "web_research_slot_limit" as const
+        : "web_research_not_available" as const;
+      return { ok: false, error, message: agentErrorMessage(error), status: error === "web_research_slot_limit" ? 409 : 403 };
+    }
+    const binding = resolveWebResearchBinding(config, access.user);
+    if (!binding.ok) {
+      if (admission?.ok) await admission.release();
+      const error = binding.reason === "review_required"
+        ? "web_research_review_required" as const
+        : binding.reason === "connection_required"
+          ? "web_research_connection_required" as const
+          : "web_research_not_available" as const;
+      return { ok: false, error, message: agentErrorMessage(error), status: error === "web_research_not_available" ? 403 : 409 };
+    }
+    try {
+      webResearch = await executeWebResearch(
+        mcpRuntime(env, session).createExecution(),
+        binding.binding,
+        input.webResearchQuery,
+        input.abortSignal,
+      );
+    } catch (error) {
+      if (admission?.ok) await admission.release().catch(() => undefined);
+      const code = error instanceof WebResearchRuntimeError ? error.code : "web_research_not_available";
+      const status = code === "request_cancelled" ? 499
+        : code === "web_research_timeout" ? 504
+          : code === "web_research_connection_required" || code === "web_research_review_required" ? 409
+            : code === "web_research_query_invalid" ? 400
+              : code === "web_research_not_available" ? 503 : 502;
+      return { ok: false, error: code, message: agentErrorMessage(code), status };
+    }
   }
   if (input.abortSignal?.aborted) return cancelTurn();
   const selectedImageMode = selectedPublicRoute?.imageMode || "none";
@@ -8991,11 +9110,10 @@ export async function prepareTeamAgentTurn(
         return visionInspectPromise;
       }
     : undefined;
-  const selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
   const providerMessages = selectedImageMode === "native"
     ? normalized
     : applyAssistedVisionEvidence(normalized, visionScope.sources, forceImageInspect);
-  const messages = await buildMessagesWithSystem(
+  const baseMessages = await buildMessagesWithSystem(
     env,
     session,
     providerMessages,
@@ -9005,6 +9123,14 @@ export async function prepareTeamAgentTurn(
     input.longTermMemory,
     input.workspaceContext,
   );
+  const baseSystemMessageCount = Math.max(0, baseMessages.length - providerMessages.length);
+  const messages = webResearch
+    ? [
+        ...baseMessages.slice(0, baseSystemMessageCount),
+        { role: "system" as const, content: formatWebResearchEvidenceForModel(webResearch) },
+        ...baseMessages.slice(baseSystemMessageCount),
+      ]
+    : baseMessages;
   const systemMessageCount = Math.max(0, messages.length - providerMessages.length);
   const systemMessages = toProviderModelMessages(messages.slice(0, systemMessageCount));
   const toolDefinitions = input.disableTools !== true && selectedPublicRoute?.supportsTools
@@ -9219,6 +9345,7 @@ export async function prepareTeamAgentTurn(
     recordStreamFailure,
     visionInspect,
     forceImageInspect,
+    webResearch,
     releaseTurn: async () => {
       initialRunDeadline.dispose();
       await turnAdmission.release();
@@ -9240,6 +9367,7 @@ async function runAutomaticSkillSelector(
     userApiKey: string;
     latestUserText: string;
     availableSkills: ReturnType<typeof getPublicCapabilities>["skills"];
+    maxSkills: number;
     signal?: AbortSignal;
     providerAttempts: ProviderAttemptRuntime;
   },
@@ -9305,6 +9433,7 @@ async function runAutomaticSkillSelectorAttempt(
     routeId: string;
     userApiKey: string;
     latestUserText: string;
+    maxSkills: number;
     providerAttempts: ProviderAttemptRuntime;
   },
   availableSkills: ReturnType<typeof getPublicCapabilities>["skills"],
@@ -9332,7 +9461,7 @@ async function runAutomaticSkillSelectorAttempt(
     {
       role: "system",
       content:
-        "Select one to three relevant Skills for the current user message. "
+        `Select one to ${args.maxSkills} relevant Skills for the current user message. `
         + "Return only strict JSON with exactly this shape: {\"skillIds\":[\"id\"]}. "
         + "Use only IDs from the candidate list. Do not call tools or add prose.",
     },
@@ -9381,7 +9510,7 @@ async function runAutomaticSkillSelectorAttempt(
         signal,
       });
       signal.throwIfAborted();
-      const parsed = parseAutomaticSkillSelection(text, args.config, args.access.user);
+      const parsed = parseAutomaticSkillSelection(text, args.config, args.access.user, args.maxSkills);
       if (parsed.skillIds?.length) {
         const settledHandle = attemptHandle;
         await settledHandle.succeed();
@@ -9450,6 +9579,7 @@ function parseAutomaticSkillSelection(
   text: string,
   config: AppConfig,
   user: UserConfig,
+  maxSkills = MAX_SELECTED_SKILLS,
 ): AutomaticSkillSelectorAttempt {
   if (!text.trim()) return { reason: "empty_response" };
   let value: unknown;
@@ -9465,7 +9595,7 @@ function parseAutomaticSkillSelection(
     || value.skillIds.some((id) => typeof id !== "string")
   ) return { reason: "invalid_response" };
   const requested = normalizeSelectedSkillIds(value.skillIds);
-  const selected = getSelectedSkills(config, requested, user).map(({ id }) => id);
+  const selected = getSelectedSkills(config, requested, user).slice(0, maxSkills).map(({ id }) => id);
   return selected.length ? { skillIds: selected } : { reason: "no_valid_skills" };
 }
 
@@ -9474,8 +9604,9 @@ function resolveAutomaticSkillSelection(
   user: UserConfig,
   attempt: AutomaticSkillSelectorAttempt,
   previousSkillIds: unknown,
+  maxSkills = MAX_SELECTED_SKILLS,
 ): { skillIds: string[]; metadata: AgentSkillSelectionMetadata } {
-  const modelSelection = getSelectedSkills(config, attempt.skillIds, user);
+  const modelSelection = getSelectedSkills(config, attempt.skillIds, user).slice(0, maxSkills);
   if (modelSelection.length) {
     return {
       skillIds: modelSelection.map(({ id }) => id),
@@ -9487,14 +9618,14 @@ function resolveAutomaticSkillSelection(
     };
   }
   const reason = attempt.skillIds?.length ? "no_valid_skills" : attempt.reason || "provider_error";
-  const previous = getSelectedSkills(config, previousSkillIds, user);
+  const previous = getSelectedSkills(config, previousSkillIds, user).slice(0, maxSkills);
   const selected = previous.length
     ? previous
     : getSelectedSkills(
         config,
-        getPublicCapabilities(config, user).skills.slice(0, MAX_SELECTED_SKILLS).map(({ id }) => id),
+        getPublicCapabilities(config, user).skills.slice(0, maxSkills).map(({ id }) => id),
         user,
-      );
+      ).slice(0, maxSkills);
   const source = previous.length ? "last_success" as const : "admin_default" as const;
   return {
     skillIds: selected.map(({ id }) => id),
@@ -9794,6 +9925,9 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   if (missingDefaultSkill) return { ok: false, message: `默认用户配置允许了不存在的 Skill ${missingDefaultSkill}` };
 
   for (const [skillId, skill] of Object.entries(config.skills || {})) {
+    if (skillId === WEB_RESEARCH_CAPABILITY_ID) {
+      return { ok: false, message: `${WEB_RESEARCH_CAPABILITY_ID} 是代码所有的显式能力，不能保存为普通 Skill` };
+    }
     const missingTool = skill.toolIds?.find((toolId) => !config.tools?.[toolId]);
     if (missingTool) return { ok: false, message: `Skill ${skillId} 引用了不存在的工具 ${missingTool}` };
   }
@@ -9814,9 +9948,25 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     }
   }
 
+  const webResearchTools = Object.entries(config.tools || {}).filter(([, tool]) => tool.capabilityRole === "web_search");
+  if (webResearchTools.length > 1) {
+    return { ok: false, message: "联网研究只能绑定一个已审核的 MCP 工具" };
+  }
   for (const [toolId, tool] of Object.entries(config.tools || {})) {
     if (tool.executor.type === "mcp" && !config.mcpServers?.[tool.executor.serverId]) {
       return { ok: false, message: `工具 ${toolId} 引用了不存在的 MCP 服务 ${tool.executor.serverId}` };
+    }
+    if (tool.capabilityRole === "web_search") {
+      if (!isReviewedWebResearchTool(tool)) {
+        return { ok: false, message: `联网研究工具 ${toolId} 必须启用、只读、完成审查并使用精确 query Schema` };
+      }
+      if (config.mcpServers?.[tool.executor.serverId]?.enabled !== true) {
+        return { ok: false, message: `联网研究工具 ${toolId} 的 MCP 服务必须启用` };
+      }
+      const referencingSkill = Object.entries(config.skills || {}).find(([, skill]) => skill.toolIds?.includes(toolId));
+      if (referencingSkill) {
+        return { ok: false, message: `联网研究工具 ${toolId} 不能由普通或自动 Skill ${referencingSkill[0]} 调用` };
+      }
     }
   }
 
@@ -9983,6 +10133,9 @@ function validateRawCapabilityConfiguration(value: unknown): { ok: true } | { ok
   const skills = isRecord(value.skills) ? value.skills : {};
   for (const [skillId, rawSkill] of Object.entries(skills)) {
     if (!isRecord(rawSkill)) continue;
+    if (skillId === WEB_RESEARCH_CAPABILITY_ID) {
+      return { ok: false, message: `${WEB_RESEARCH_CAPABILITY_ID} 不能保存为普通 Skill` };
+    }
     if ((rawSkill.activation !== undefined && rawSkill.activation !== "automatic" && rawSkill.activation !== "explicit_turn")
       || (rawSkill.origin !== undefined && rawSkill.origin !== "chatus" && rawSkill.origin !== "administrator")) {
       return { ok: false, message: `Skill ${skillId} 字段无效` };
@@ -9992,7 +10145,9 @@ function validateRawCapabilityConfiguration(value: unknown): { ok: true } | { ok
   if (value.tools !== undefined && !isRecord(value.tools)) {
     return { ok: false, message: "工具配置必须是对象" };
   }
-  for (const [toolId, rawTool] of Object.entries(isRecord(value.tools) ? value.tools : {})) {
+  const tools = isRecord(value.tools) ? value.tools : {};
+  const webResearchToolIds: string[] = [];
+  for (const [toolId, rawTool] of Object.entries(tools)) {
     if (!isRecord(rawTool)) continue;
     if (rawTool.capabilityRole !== undefined && rawTool.capabilityRole !== "web_search") {
       return { ok: false, message: `工具 ${toolId} 的能力角色无效` };
@@ -10001,6 +10156,36 @@ function validateRawCapabilityConfiguration(value: unknown): { ok: true } | { ok
       && (!isRecord(rawTool.executor) || rawTool.executor.type !== "mcp")) {
       return { ok: false, message: `工具 ${toolId} 的能力角色仅适用于 MCP 工具` };
     }
+    if (rawTool.capabilityRole === "web_search") {
+      webResearchToolIds.push(toolId);
+      if (
+        rawTool.enabled !== true
+        || rawTool.sideEffect !== "read"
+        || rawTool.reviewRequired !== false
+        || typeof rawTool.schemaFingerprint !== "string"
+        || !isSecretFingerprint(rawTool.schemaFingerprint)
+        || typeof rawTool.securityFingerprint !== "string"
+        || !isSecretFingerprint(rawTool.securityFingerprint)
+        || typeof rawTool.reviewRevision !== "string"
+        || !isSecretFingerprint(rawTool.reviewRevision)
+        || !isExactWebResearchInputSchema(rawTool.inputSchema)
+      ) {
+        return { ok: false, message: `联网研究工具 ${toolId} 必须启用、只读、完成审查并使用精确 query Schema` };
+      }
+      const serverId = isRecord(rawTool.executor) && typeof rawTool.executor.serverId === "string"
+        ? rawTool.executor.serverId
+        : "";
+      const rawServer = isRecord(value.mcpServers) ? value.mcpServers[serverId] : undefined;
+      if (!isRecord(rawServer) || rawServer.enabled !== true) {
+        return { ok: false, message: `联网研究工具 ${toolId} 的 MCP 服务必须启用` };
+      }
+    }
+  }
+  if (webResearchToolIds.length > 1) return { ok: false, message: "联网研究只能绑定一个 MCP 工具" };
+  for (const [skillId, rawSkill] of Object.entries(skills)) {
+    if (!isRecord(rawSkill) || !Array.isArray(rawSkill.toolIds)) continue;
+    const webToolId = rawSkill.toolIds.find((toolId) => typeof toolId === "string" && webResearchToolIds.includes(toolId));
+    if (webToolId) return { ok: false, message: `联网研究工具 ${webToolId} 不能由 Skill ${skillId} 调用` };
   }
 
   const assignments: Array<[string, unknown]> = [["默认用户", value.defaults]];

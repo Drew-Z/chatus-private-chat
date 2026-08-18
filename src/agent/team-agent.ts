@@ -124,6 +124,10 @@ import {
   type VisionEvidenceRecordV1,
   type VisionEvidenceV1,
 } from "../contracts/vision-assist";
+import {
+  WEB_RESEARCH_CAPABILITY_ID,
+  decodeWebResearchEvidenceV1,
+} from "../contracts/web-research";
 import { createProviderTurnId } from "../contracts/provider-attempt";
 import {
   decodeStableTeamAgentIdentity,
@@ -3431,6 +3435,12 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
       return fail("instance_maintenance", 503, "prepare");
     }
     const providerTurnId = this.resolveProviderTurnId(options?.continuation === true);
+    const metadataCapabilityIds = latestUserCapabilityIds(this.messages);
+    const requestedCapabilityIds = options?.continuation === true
+      ? []
+      : body.capabilityIds === undefined
+        ? metadataCapabilityIds
+        : normalizeRequestedCapabilityBody(body.capabilityIds);
     let prepared: Awaited<ReturnType<typeof prepareTeamAgentTurn>>;
     try {
       prepared = await prepareTeamAgentTurn(this.env, session, {
@@ -3439,6 +3449,10 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
         routeId: conversationSettings.routeId || boundedString(body.routeId, 80),
         skillMode: conversationSettings.skillMode,
         skillIds: conversationSettings.skillIds,
+        capabilityIds: requestedCapabilityIds,
+        webResearchQuery: requestedCapabilityIds.includes(WEB_RESEARCH_CAPABILITY_ID)
+          ? latestUserResearchQuery(this.messages)
+          : undefined,
         userApiKey: sharedEditorAccess ? undefined : boundedString(body.userApiKey, 8_192),
         sessionSummary: sharedEditorAccess ? undefined : boundedString(body.sessionSummary, 1_200),
         temperature: sharedEditorAccess ? undefined : finiteNumber(body.temperature),
@@ -3609,6 +3623,7 @@ export class TeamAgent extends AIChatAgent<Env, TeamAgentState, TeamAgentProps> 
           ? {
               ...(part.finishReason === "length" ? { finishReason: "length" as const } : {}),
               ...(prepared.skillSelection ? { skillSelection: prepared.skillSelection } : {}),
+              ...(prepared.webResearch ? { webResearch: prepared.webResearch } : {}),
             }
           : undefined,
         headers: {
@@ -4627,12 +4642,54 @@ function normalizeBranchBody(value: unknown): Record<string, unknown> {
   };
 }
 
+function normalizeRequestedCapabilityBody(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 4 || value.some((item) => typeof item !== "string")) {
+    return ["__invalid_capability_request__"];
+  }
+  return value.map((item) => item.trim().slice(0, 80));
+}
+
+function latestUserCapabilityIds(messages: UIMessage[]): string[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    const metadata = normalizeAgentMessageMetadata(message.metadata);
+    return metadata?.capabilityIds ? [...metadata.capabilityIds] : [];
+  }
+  return [];
+}
+
+function latestUserResearchQuery(messages: UIMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    return message.parts
+      .filter((part): part is Extract<UIMessage["parts"][number], { type: "text" }> => part.type === "text")
+      .map((part) => part.text)
+      .filter((text) => !/^<attached_file\s[^>]*>[\s\S]*<\/attached_file>$/u.test(text.trim()))
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
 function normalizeAgentMessageMetadata(value: unknown): AgentMessageMetadata | undefined {
   if (!isRecord(value)) return undefined;
   const finishReason = value.finishReason === "length" ? "length" as const : undefined;
   const skillSelection = normalizeAgentSkillSelectionMetadata(value.skillSelection);
-  return finishReason || skillSelection
-    ? { ...(finishReason ? { finishReason } : {}), ...(skillSelection ? { skillSelection } : {}) }
+  const capabilityIds = Array.isArray(value.capabilityIds)
+    && value.capabilityIds.length === 1
+    && value.capabilityIds[0] === WEB_RESEARCH_CAPABILITY_ID
+    ? [WEB_RESEARCH_CAPABILITY_ID] as [typeof WEB_RESEARCH_CAPABILITY_ID]
+    : undefined;
+  const webResearch = decodeWebResearchEvidenceV1(value.webResearch);
+  return finishReason || skillSelection || capabilityIds || webResearch
+    ? {
+        ...(finishReason ? { finishReason } : {}),
+        ...(skillSelection ? { skillSelection } : {}),
+        ...(capabilityIds ? { capabilityIds } : {}),
+        ...(webResearch ? { webResearch } : {}),
+      }
     : undefined;
 }
 

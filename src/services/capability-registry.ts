@@ -10,6 +10,8 @@ import type {
   ToolConfig,
   ToolConfirmation,
 } from "../contracts/capability";
+import { WEB_RESEARCH_CAPABILITY_ID } from "../contracts/web-research";
+import { resolveWebResearchBinding } from "./web-research";
 
 const MAX_SELECTED_SKILLS = 3;
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
@@ -26,6 +28,7 @@ export function getPublicCapabilities(
     .filter(([id, tool]) => (
       tool.enabled === true
       && allowedToolIds.has(id)
+      && tool.capabilityRole !== "web_search"
       && isToolExecutorAvailable(tool, config)
     ))
     .map(([id, tool]): PublicTool => ({
@@ -55,7 +58,11 @@ export function getPublicCapabilities(
     }));
 
   const capabilities = Object.entries(config.skills || {})
-    .filter(([id, skill]) => skill.enabled === true && (!allowedSkillIds || allowedSkillIds.has(id)))
+    .filter(([id, skill]) => (
+      id !== WEB_RESEARCH_CAPABILITY_ID
+      && skill.enabled === true
+      && (!allowedSkillIds || allowedSkillIds.has(id))
+    ))
     .sort(([leftId, left], [rightId, right]) => (
       (left.order || 0) - (right.order || 0) || compareStableText(leftId, rightId)
     ))
@@ -75,6 +82,31 @@ export function getPublicCapabilities(
         ...(executable ? {} : { unavailableReason: "tool_unavailable" as const }),
       };
     });
+
+  const assignedWebResearchTool = Object.entries(config.tools || {}).find(([id, tool]) => (
+    tool.capabilityRole === "web_search" && allowedToolIds.has(id)
+  ));
+  if (assignedWebResearchTool) {
+    const binding = resolveWebResearchBinding(config, assignment);
+    capabilities.push({
+      id: WEB_RESEARCH_CAPABILITY_ID,
+      label: "联网研究",
+      description: "通过管理员审核的只读 MCP 搜索工具获取当前来源。",
+      source: "chatus",
+      activation: "explicit_turn",
+      availability: binding.ok
+        ? "available"
+        : binding.reason === "review_required" ? "requires_setup" : "unavailable",
+      ...(!binding.ok ? { unavailableReason: binding.reason } : {}),
+      disclosure: {
+        execution: "reviewed_mcp",
+        externalRequest: true,
+        dataClasses: ["search_query"],
+        latency: "variable",
+        cost: "external_service",
+      },
+    });
+  }
 
   if (assignment.allowedAugmentations?.includes("vision_assist")) {
     capabilities.push({
@@ -131,7 +163,13 @@ export async function buildCapabilityToolDefinitions(
 
   for (const toolId of referenced) {
     const tool = config.tools?.[toolId];
-    if (!tool || tool.enabled !== true || !allowed.has(toolId) || !isToolExecutorAvailable(tool, config)) {
+    if (
+      !tool
+      || tool.enabled !== true
+      || tool.capabilityRole === "web_search"
+      || !allowed.has(toolId)
+      || !isToolExecutorAvailable(tool, config)
+    ) {
       continue;
     }
     definitions.push({

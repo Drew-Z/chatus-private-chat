@@ -257,6 +257,10 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
     const skillMessage = skillSelection?.closest<HTMLElement>(".message");
     const skillSelectionRect = skillSelection?.getBoundingClientRect();
     const skillMessageRect = skillMessage?.getBoundingClientRect();
+    const webResearch = document.querySelector<HTMLElement>(".message-web-research");
+    const webResearchMessage = webResearch?.closest<HTMLElement>(".message");
+    const webResearchRect = webResearch?.getBoundingClientRect();
+    const webResearchMessageRect = webResearchMessage?.getBoundingClientRect();
     return {
       documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       bodyFits: document.body.scrollWidth <= document.body.clientWidth,
@@ -279,6 +283,13 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
         && skillSelectionRect.left >= skillMessageRect.left - 1
         && skillSelectionRect.right <= skillMessageRect.right + 1
       ),
+      webResearchScrollFits: Boolean(webResearch && webResearch.scrollWidth <= webResearch.clientWidth),
+      webResearchInsideMessage: Boolean(
+        webResearchRect
+        && webResearchMessageRect
+        && webResearchRect.left >= webResearchMessageRect.left - 1
+        && webResearchRect.right <= webResearchMessageRect.right + 1
+      ),
     };
   });
 
@@ -297,7 +308,14 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   expect(geometry.transcriptScrollFits).toBe(true);
   expect(geometry.skillSelectionScrollFits).toBe(true);
   expect(geometry.skillSelectionInsideMessage).toBe(true);
+  expect(geometry.webResearchScrollFits).toBe(true);
+  expect(geometry.webResearchInsideMessage).toBe(true);
   expect(geometry.codeScrollsLocally).toBe(true);
+
+  const webResearch = page.getByRole("region", { name: "联网研究来源" });
+  await expect(webResearch).toContainText("2 个来源");
+  await expect(webResearch.getByRole("link", { name: "1. 当前版本发布说明" }))
+    .toHaveAttribute("href", "https://example.com/release?a=1&b=2");
 
   if (viewport!.width <= 520) {
     expect(geometry.headerTitle.width).toBeGreaterThanOrEqual(64);

@@ -394,7 +394,7 @@ export function CapabilityAdminPanel({
   async function saveTool(event?: FormEvent) {
     event?.preventDefault();
     if (!selectedId || !savedTool || !toolDraft || !dirty || busy) return;
-    const validation = validateToolPolicyDraft(savedTool, toolDraft);
+    const validation = validateToolPolicyDraft(savedTool, toolDraft, snapshot.config, selectedId);
     if (!validation.ok) return onNotice({ kind: "error", text: validation.message });
     await saveConfig(
       applyToolPolicyDraft(snapshot.config, selectedId, toolDraft),
@@ -797,6 +797,7 @@ function ToolEditor({ id, tool, draft, dirty, busy, conflict, onUpdate, onSave, 
         <label><span>显示名称</span><input value={draft.label} maxLength={80} onChange={(event) => onUpdate((current) => ({ ...current, label: event.target.value }))} /></label>
         <label><span>确认策略</span><select value={draft.confirmation} onChange={(event) => onUpdate((current) => ({ ...current, confirmation: event.target.value as ToolPolicyDraft["confirmation"] }))}>{options.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
         <label className="admin-checkbox-row"><input type="checkbox" checked={draft.enabled} onChange={(event) => onUpdate((current) => ({ ...current, enabled: event.target.checked }))} /><span>启用工具</span></label>
+        {tool.executor.type === "mcp" && <label><span>显式能力角色</span><select value={draft.capabilityRole} onChange={(event) => onUpdate((current) => ({ ...current, capabilityRole: event.target.value as ToolPolicyDraft["capabilityRole"] }))}><option value="">普通 MCP 工具</option><option value="web_search">联网研究</option></select></label>}
       </div>
       <label className="admin-form-wide"><span>说明</span><input value={draft.description} maxLength={1000} onChange={(event) => onUpdate((current) => ({ ...current, description: event.target.value }))} /></label>
       <details className="capability-schema"><summary>输入 Schema</summary><pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre></details>

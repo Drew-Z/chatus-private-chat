@@ -6,6 +6,7 @@ import type {
   AdminSkillConfig,
   AdminToolConfig,
 } from "./api";
+import { isExactWebResearchInputSchema } from "../../../src/contracts/web-research";
 
 export const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
 export const MCP_SECRET_REF_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
@@ -31,6 +32,7 @@ export type ToolPolicyDraft = {
   label: string;
   description: string;
   confirmation: AdminToolConfig["confirmation"];
+  capabilityRole: "" | "web_search";
 };
 
 export type McpServerDraft = Omit<AdminMcpServerConfig, "auth"> & {
@@ -90,6 +92,7 @@ export function createToolPolicyDraft(tool: AdminToolConfig): ToolPolicyDraft {
     label: tool.label,
     description: tool.description || "",
     confirmation: tool.confirmation,
+    capabilityRole: tool.capabilityRole || "",
   };
 }
 
@@ -120,10 +123,18 @@ export function validateSkillDraft(draft: SkillDraft, config: AdminConfig, previ
   if (new Set(draft.toolIds).size !== draft.toolIds.length || draft.toolIds.some((id) => !hasOwn(config.tools, id))) {
     return invalid("Skill 工具引用包含重复项或不存在的工具。");
   }
+  if (draft.toolIds.some((id) => config.tools[id]?.capabilityRole === "web_search")) {
+    return invalid("联网研究工具只能由成员逐轮显式启用，不能绑定到普通 Skill。");
+  }
   return { ok: true };
 }
 
-export function validateToolPolicyDraft(tool: AdminToolConfig, draft: ToolPolicyDraft): CapabilityValidation {
+export function validateToolPolicyDraft(
+  tool: AdminToolConfig,
+  draft: ToolPolicyDraft,
+  config?: AdminConfig,
+  toolId?: string,
+): CapabilityValidation {
   if (!draft.label.trim() || draft.label.trim().length > 80) return invalid("工具名称不能为空且最多 80 个字符。");
   if (draft.description.trim().length > 1_000) return invalid("工具说明最多 1000 个字符。");
   if (tool.executor.type === "builtin" && draft.confirmation !== "auto" && draft.confirmation !== "always") {
@@ -131,6 +142,28 @@ export function validateToolPolicyDraft(tool: AdminToolConfig, draft: ToolPolicy
   }
   if (tool.executor.type === "mcp" && draft.confirmation !== "first-per-conversation" && draft.confirmation !== "always") {
     return invalid("MCP 工具只支持首次或每次确认。");
+  }
+  if (draft.capabilityRole === "web_search") {
+    if (
+      tool.executor.type !== "mcp"
+      || !draft.enabled
+      || tool.sideEffect !== "read"
+      || !tool.schemaFingerprint
+      || !tool.securityFingerprint
+      || !tool.reviewRevision
+      || !isExactWebResearchInputSchema(tool.inputSchema)
+    ) return invalid("联网研究只能绑定启用、只读、已完成审查且仅接受 query 的 MCP 工具。");
+    if (config && config.mcpServers[tool.executor.serverId]?.enabled !== true) {
+      return invalid("请先启用这个工具所属的 MCP Server。");
+    }
+    if (config && toolId) {
+      const existing = Object.entries(config.tools).find(([id, candidate]) => (
+        id !== toolId && candidate.capabilityRole === "web_search"
+      ));
+      if (existing) return invalid(`联网研究已绑定到 ${existing[0]}，请先解除原绑定。`);
+      const skill = Object.entries(config.skills).find(([, candidate]) => candidate.toolIds.includes(toolId));
+      if (skill) return invalid(`请先从 Skill ${skill[0]} 移除该工具，再绑定联网研究。`);
+    }
   }
   return { ok: true };
 }
@@ -199,6 +232,7 @@ export function applyToolPolicyDraft(config: AdminConfig, toolId: string, draft:
         ...(draft.description.trim() ? { description: draft.description.trim() } : { description: undefined }),
         confirmation: draft.confirmation,
         ...(tool.executor.type === "mcp" && draft.enabled ? { reviewRequired: false } : {}),
+        ...(draft.capabilityRole ? { capabilityRole: draft.capabilityRole } : { capabilityRole: undefined }),
       },
     },
   };
@@ -266,6 +300,7 @@ export function mergeMcpDiscovery(
         ? sameReview && existing.confirmation === "always" ? "always" : "first-per-conversation"
         : "always",
       reviewRequired: sameReview ? existing.reviewRequired === true : true,
+      ...(sameReview && existing.capabilityRole ? { capabilityRole: existing.capabilityRole } : {}),
     };
   }
   return { config: { ...config, tools }, added, changed, unchanged };

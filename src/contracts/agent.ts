@@ -10,6 +10,7 @@ import {
 } from "./identity";
 import type { WorkspaceConversationFileRef } from "./workspace-file";
 import type { VisionEvidenceRecordV1 } from "./vision-assist";
+import type { WebResearchEvidenceV1 } from "./web-research";
 
 export const MAX_AGENT_CONVERSATIONS = 50;
 export const AGENT_MEMORY_PROPOSAL_TOOL_NAME = "chatus_update_memory";
@@ -38,6 +39,8 @@ export type AgentSkillSelectionMetadata = {
 export type AgentMessageMetadata = {
   finishReason?: "length";
   skillSelection?: AgentSkillSelectionMetadata;
+  capabilityIds?: ["chatus:web_research"];
+  webResearch?: WebResearchEvidenceV1;
 };
 
 export type TeamAgentScope = "root" | "conversation";

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
-import { FileText, Image as ImageIcon, LoaderCircle, Paperclip, RefreshCw, SendHorizontal, Square, X } from "lucide-react";
+import { FileText, Globe2, Image as ImageIcon, LoaderCircle, Paperclip, RefreshCw, SendHorizontal, Square, X } from "lucide-react";
 import type { FileInputPolicy } from "../../../src/contracts/file";
 import type { ImageInputPolicy } from "../../../src/contracts/image";
 import {
@@ -37,6 +37,10 @@ export function MessageComposer({
   agentReady,
   placeholder,
   statusText,
+  webResearchAvailable,
+  webResearchEnabled,
+  webResearchDisabledReason,
+  onToggleWebResearch,
 }: {
   value: string;
   attachments: DraftAttachment[];
@@ -57,6 +61,10 @@ export function MessageComposer({
   agentReady: boolean;
   placeholder: string;
   statusText: string;
+  webResearchAvailable: boolean;
+  webResearchEnabled: boolean;
+  webResearchDisabledReason?: string;
+  onToggleWebResearch: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -76,6 +84,9 @@ export function MessageComposer({
     || !agentReady
     || !routeAvailable
     || hasUnsupportedAttachment;
+  const webResearchDisabled = busy || blocked || !online || !routeAvailable || !agentReady
+    || !webResearchAvailable || Boolean(webResearchDisabledReason);
+  const webResearchLabel = webResearchDisabledReason || (webResearchAvailable ? "联网研究" : "当前会话不可用联网研究");
 
   useEffect(() => {
     if (textareaRef.current) resizeComposerTextarea(textareaRef.current);
@@ -178,6 +189,15 @@ export function MessageComposer({
             title={!attachDisabled ? "添加附件" : "当前会话不支持附件"}
             aria-label={!attachDisabled ? "添加附件" : "当前会话不支持附件"}
           ><Paperclip size={18} /></button>
+          <button
+            className={`composer-tool composer-capability ${webResearchEnabled ? "selected" : ""}`}
+            type="button"
+            disabled={webResearchDisabled}
+            onClick={onToggleWebResearch}
+            title={webResearchLabel}
+            aria-label={webResearchLabel}
+            aria-pressed={webResearchEnabled}
+          ><Globe2 size={18} /></button>
           <textarea
             ref={textareaRef}
             value={value}
