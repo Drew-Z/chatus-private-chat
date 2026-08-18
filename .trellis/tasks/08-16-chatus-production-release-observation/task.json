@@ -15,8 +15,8 @@
   "branch": null,
   "base_branch": "codex/chatus-ux-settings-redesign-ui",
   "worktree_path": null,
-  "commit": "fd6a2690ac3bf5026fde3ee736f35e32d14f940d",
-  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/90",
+  "commit": "5771519e5cbe99768c018313961101a6139cfd4d",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/94",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -31,7 +31,21 @@
       "deployedAt": "2026-08-16T15:36:42.875Z",
       "observationStartedAt": "2026-08-16T15:37:12Z",
       "acceptanceRun": "31956295236",
-      "observationEndsAt": "2026-08-17T15:37:12Z"
+      "observationEndsAt": "2026-08-17T15:37:12Z",
+      "observationWorkflowRun": "32118283425",
+      "observationCompletedAt": "2026-08-18T08:50:38Z",
+      "observationArtifact": "production-model-observation-fd6a2690ac3bf5026fde3ee736f35e32d14f940d/observation.json",
+      "observationStatus": "passed",
+      "observationTotals": {
+        "attempts": 0,
+        "succeeded": 0,
+        "failures": 0,
+        "inFlight": 0,
+        "completed": 0,
+        "successRate": null,
+        "fallbacks": 0,
+        "averageLatencyMs": null
+      }
     },
     "validation": [
       {
@@ -66,8 +80,8 @@
       },
       {
         "command": "passive-observation-start",
-        "status": "in_progress",
-        "summary": "Observation started after the deployment Workflow and production smoke verification completed; no synthetic model traffic was generated.",
+        "status": "passed",
+        "summary": "Observation completed after the deployment Workflow and production smoke verification; no synthetic model traffic was generated.",
         "at": "2026-08-16T15:37:12Z"
       },
       {
@@ -101,18 +115,6 @@
         "at": "2026-08-16T22:53:05.237288+00:00"
       },
       {
-        "command": "git diff --check",
-        "status": "passed",
-        "summary": "Working-tree diff has no whitespace errors.",
-        "at": "2026-08-16T22:53:43.125655+00:00"
-      },
-      {
-        "command": "python ./.trellis/scripts/task.py validate-all",
-        "status": "passed",
-        "summary": "Repository consistency validation passed.",
-        "at": "2026-08-16T22:54:17.918076+00:00"
-      },
-      {
         "command": "npx vitest run tests/model-monitoring-observation.test.ts tests/delivery-governance.test.ts tests/deployment-config.test.ts",
         "status": "passed",
         "summary": "97 focused observation, delivery-governance, and deployment-config tests passed.",
@@ -123,6 +125,48 @@
         "status": "passed",
         "summary": "Model monitoring spec now records the passive 24-hour observation evidence contract, privacy bounds, and exact workflow gates.",
         "at": "2026-08-16T23:25:07.893743+00:00"
+      },
+      {
+        "command": "production-observation-run",
+        "status": "passed",
+        "summary": "Production observation Workflow 32118283425 passed for deployed SHA fd6a2690ac3bf5026fde3ee736f35e32d14f940d; exact 24-hour aggregate reconciled to the legitimate no-data state, and member availability acceptance plus release fences passed.",
+        "at": "2026-08-18T08:56:41.922344+00:00"
+      },
+      {
+        "command": "production-observation-artifact-audit",
+        "status": "passed",
+        "summary": "Artifact observation.json was 746 bytes with exact aggregate-only keys, 24-hour window, 24 buckets, exact reconciliation, zero group identities, and no prohibited fields.",
+        "at": "2026-08-18T08:56:42.484405+00:00"
+      },
+      {
+        "command": "production-observation-member-availability",
+        "status": "passed",
+        "summary": "The same observation Workflow passed model-request-free temporary-member availability projection validation and cleanup.",
+        "at": "2026-08-18T08:56:43.050490+00:00"
+      },
+      {
+        "command": "release-regression-review",
+        "status": "passed",
+        "summary": "No release-critical UX, authorization, privacy, routing, or monitoring regression was observed; no rollback was required and production SHA remained unchanged.",
+        "at": "2026-08-18T08:56:43.613739+00:00"
+      },
+      {
+        "command": "legacy-rollout-boundary-audit",
+        "status": "passed",
+        "summary": "The observation changes and evidence did not modify or advance any legacy rollout task, gate, workflow state, or evidence.",
+        "at": "2026-08-18T08:56:44.186540+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency validation passed after final observation evidence updates.",
+        "at": "2026-08-18T08:57:10.560132+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Final task record diff has no whitespace errors.",
+        "at": "2026-08-18T08:57:11.118340+00:00"
       }
     ]
   }
