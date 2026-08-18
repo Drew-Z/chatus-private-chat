@@ -46,9 +46,9 @@ Rollback point: if deployment fails before Worker promotion, fix through a new r
 ## 6. Close Out
 
 - [x] Update `task.json` validation evidence with PR, merge, deployment, acceptance, and observation results.
-- [ ] Run `python ./.trellis/scripts/task.py validate-all` and `git diff --check` for task records.
-- [ ] Commit and push release evidence through a normal reviewed Git change if repository-tracked records changed.
-- [ ] Archive the task only after the 24-hour observation gate is complete or after a completed rollback is verified.
+- [x] Run `python ./.trellis/scripts/task.py validate-all` and `git diff --check` for task records.
+- [x] Commit and push release evidence through a normal reviewed Git change if repository-tracked records changed; PR #94 merged as `5c1d61edf16996949cb1538e027167ade61f0e66`.
+- [x] Archive the task only after the 24-hour observation gate is complete or after a completed rollback is verified.
 
 ## Guardrails
 
