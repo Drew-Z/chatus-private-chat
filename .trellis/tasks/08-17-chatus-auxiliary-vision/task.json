@@ -15,7 +15,7 @@
   "branch": null,
   "base_branch": "codex/chatus-default-capability-packs",
   "worktree_path": null,
-  "commit": null,
+  "commit": "59fc82e54222f56dbce6120b2ffc478c5cdda5e4",
   "pr_url": null,
   "subtasks": [],
   "children": [],
