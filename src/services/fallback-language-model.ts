@@ -64,6 +64,7 @@ export type FallbackLanguageModelCallbacks = {
 export type FallbackLanguageModelAttemptOptions = {
   createRun: () => ProviderAttemptRun;
   initialRunDeadline?: ProviderFirstVisibleDeadline;
+  beforeAttempt?: (candidate: FallbackModelCandidate) => void | Promise<void>;
   onProgress?: (event: ProviderRunProgressEvent) => void;
 };
 
@@ -117,7 +118,14 @@ export function createFallbackLanguageModel(
           let attempt: ProviderAttemptHandle | undefined;
           let terminalStarted = false;
           let providerCalled = false;
+          let attemptAuthorized = false;
           try {
+            await authorizeAttemptWithinDeadline(
+              attempts?.beforeAttempt,
+              candidate,
+              runDeadline.signal,
+            );
+            attemptAuthorized = true;
             throwIfAborted(runDeadline.signal);
             emitProgress(
               attempts?.onProgress,
@@ -152,6 +160,7 @@ export function createFallbackLanguageModel(
             );
             return result;
           } catch (error) {
+            if (!attemptAuthorized && !runDeadline.signal.aborted) throw error;
             if (isProviderAttemptBlockingError(error)) throw error;
             let effectiveError = error;
             if (attempt && !terminalStarted) {
@@ -213,7 +222,14 @@ export function createFallbackLanguageModel(
           let attempt: ProviderAttemptHandle | undefined;
           let terminalStarted = false;
           let providerCalled = false;
+          let attemptAuthorized = false;
           try {
+            await authorizeAttemptWithinDeadline(
+              attempts?.beforeAttempt,
+              candidate,
+              runDeadline.signal,
+            );
+            attemptAuthorized = true;
             throwIfAborted(runDeadline.signal);
             emitProgress(
               attempts?.onProgress,
@@ -257,6 +273,7 @@ export function createFallbackLanguageModel(
               }),
             };
           } catch (error) {
+            if (!attemptAuthorized && !runDeadline.signal.aborted) throw error;
             if (isProviderAttemptBlockingError(error)) throw error;
             let effectiveError = error;
             if (attempt && !terminalStarted) {
@@ -298,6 +315,19 @@ export function createFallbackLanguageModel(
       }
     },
   };
+}
+
+async function authorizeAttemptWithinDeadline(
+  beforeAttempt: FallbackLanguageModelAttemptOptions["beforeAttempt"],
+  candidate: FallbackModelCandidate,
+  signal: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
+  if (beforeAttempt) {
+    const authorization = beforeAttempt(candidate);
+    if (authorization) await raceWithAbort(Promise.resolve(authorization), signal);
+  }
+  throwIfAborted(signal);
 }
 
 async function primeProviderStream(

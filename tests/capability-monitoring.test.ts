@@ -36,6 +36,25 @@ describe("capability monitoring contracts", () => {
     expect(decodeCapabilityMonitoringEvent({ ...event(), query: "private search" })).toBeNull();
   });
 
+  it.each([
+    ["member identity", "memberId", "member-alice"],
+    ["turn identity", "turnId", "turn-private"],
+    ["conversation identity", "conversationId", "conversation-private"],
+    ["request identity", "requestId", "request-private"],
+    ["prompt content", "prompt", "private prompt"],
+    ["image content", "image", "data:image/png;base64,PRIVATE"],
+    ["research query", "query", "private search"],
+    ["citation content", "citations", [{ title: "Private citation" }]],
+    ["credential material", "credential", "secret-token"],
+    ["endpoint metadata", "endpoint", "https://private-provider.example/v1"],
+    ["raw tool body", "toolBody", { account: "private" }],
+    ["raw tool result", "toolResult", { answer: "private" }],
+    ["Provider identity", "providerId", "private-provider"],
+    ["memory content", "memory", "private memory"],
+  ] as const)("rejects the prohibited %s field", (_label, field, value) => {
+    expect(decodeCapabilityMonitoringEvent({ ...event(), [field]: value })).toBeNull();
+  });
+
   it("reduces hourly outcome and latency rows without retaining event payloads", () => {
     let aggregate = reduceCapabilityMonitoringAggregate(null, event(), now);
     aggregate = reduceCapabilityMonitoringAggregate(aggregate, event({ latencyMs: null, occurredAt: now + 10 }), now + 10);

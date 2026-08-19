@@ -1603,6 +1603,39 @@ describe("React client runtime validation", () => {
     expect(isSessionProjection(validSession)).toBe(true);
   });
 
+  it.each([
+    ["native image route", "native", true, true, true],
+    ["native mode without image support", "native", false, true, false],
+    ["tool-assisted route", "assisted_tool", false, true, true],
+    ["tool assistance without tool support", "assisted_tool", false, false, false],
+    ["pre-answer-assisted route", "assisted_preanswer", false, false, true],
+    ["pre-answer assistance with tool support", "assisted_preanswer", false, true, false],
+    ["unsupported image route", "none", false, true, true],
+    ["unsupported mode with native image support", "none", true, true, false],
+  ] as const)(
+    "validates the %s image-mode invariant",
+    (_label, imageMode, supportsImages, supportsTools, expected) => {
+      expect(isSessionProjection({
+        ...validSession,
+        routes: [{ ...validSession.routes[0], imageMode, supportsImages, supportsTools }],
+        capabilities: { ...validSession.capabilities, imageInput: imageMode !== "none" },
+      })).toBe(expected);
+    },
+  );
+
+  it("requires session image capability to match the usable route modes", () => {
+    expect(isSessionProjection({
+      ...validSession,
+      capabilities: { ...validSession.capabilities, imageInput: false },
+    })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      routes: [],
+      defaultRoute: "",
+      capabilities: { ...validSession.capabilities, imageInput: true },
+    })).toBe(false);
+  });
+
   it("strictly validates member-safe public capability items", () => {
     const capability = validSession.availableCapabilities[0];
     expect(isSessionProjection({ ...validSession, availableCapabilities: [{ ...capability, extra: true }] })).toBe(false);
@@ -1623,7 +1656,12 @@ describe("React client runtime validation", () => {
   });
 
   it("accepts an authenticated degraded state with no configured route", () => {
-    expect(isSessionProjection({ ...validSession, routes: [], defaultRoute: "" })).toBe(true);
+    expect(isSessionProjection({
+      ...validSession,
+      routes: [],
+      defaultRoute: "",
+      capabilities: { ...validSession.capabilities, imageInput: false },
+    })).toBe(true);
   });
 
   it("requires the complete session policy projection", () => {

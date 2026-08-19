@@ -8679,19 +8679,33 @@ class VisionAssistError extends Error {
   }
 }
 
+type VisionAssistAuthorization = {
+  configRevision: string;
+  session: Extract<Session, { kind: "member" }>;
+  routeId: string;
+  imageMode: "assisted_tool" | "assisted_preanswer";
+};
+
 function scheduleCapabilityMonitoring(
   env: Env,
   waitUntil: TeamAgentTurnInput["waitUntil"],
   event: CapabilityMonitoringEventV1,
 ): void {
   if (!waitUntil) return;
-  const write = env.PROVIDER_COORDINATOR
-    .getByName(CAPABILITY_MONITORING_COORDINATOR)
-    .recordCapabilityMonitoringEvent(event)
-    .then(() => undefined)
-    .catch(() => undefined);
+  let accepted = false;
+  const write = Promise.resolve().then(async () => {
+    if (!accepted) return;
+    try {
+      await env.PROVIDER_COORDINATOR
+        .getByName(CAPABILITY_MONITORING_COORDINATOR)
+        .recordCapabilityMonitoringEvent(event);
+    } catch {
+      // Passive monitoring must never affect the turn.
+    }
+  });
   try {
     waitUntil(write);
+    accepted = true;
   } catch {
     // Passive monitoring must never affect the turn.
   }
@@ -8723,9 +8737,10 @@ async function runVisionAssist(
   sources: TeamAgentVisionSource[],
   signal: AbortSignal | undefined,
   providerAttempts: ProviderAttemptRuntime,
+  authorization: VisionAssistAuthorization | undefined,
 ): Promise<VisionEvidenceV1> {
   const helper = config.visionAssist;
-  if (!helper?.enabled || !helper.routeId || !sources.length) {
+  if (!helper?.enabled || !helper.routeId || !sources.length || !authorization) {
     throw new VisionAssistError("vision_assist_unavailable");
   }
   const maxOutputChars = normalizeVisionAssistMaxOutputChars(helper.maxOutputChars);
@@ -8776,6 +8791,7 @@ async function runVisionAssist(
   })));
   const model = createFallbackLanguageModel(candidates, {}, {
     createRun: () => providerAttempts.createRun("auxiliary_vision"),
+    beforeAttempt: () => assertVisionAssistAuthorization(env, authorization),
   });
   const result = await generateText({
     model,
@@ -8792,6 +8808,22 @@ async function runVisionAssist(
   const evidence = parseVisionEvidenceV1(result.text, maxOutputChars);
   if (!evidence) throw new VisionAssistError("vision_assist_invalid_response");
   return evidence;
+}
+
+async function assertVisionAssistAuthorization(
+  env: Env,
+  authorization: VisionAssistAuthorization,
+): Promise<void> {
+  const currentConfig = await loadAppConfig(env);
+  const currentRevision = await configRevision(currentConfig);
+  const currentAccess = await getRouteAccess(currentConfig, authorization.session, env);
+  const currentRoute = currentAccess.routes.find((route) => route.id === authorization.routeId);
+  if (
+    currentRevision !== authorization.configRevision
+    || currentRoute?.imageMode !== authorization.imageMode
+  ) {
+    throw new VisionAssistError("vision_assist_unavailable");
+  }
 }
 
 function normalizeVisionSources(
@@ -9217,6 +9249,16 @@ export async function prepareTeamAgentTurn(
   }
   if (input.abortSignal?.aborted) return cancelTurn();
   const selectedImageMode = selectedPublicRoute?.imageMode || "none";
+  const visionAuthorization: VisionAssistAuthorization | undefined = selectedPublicRoute
+    && session.kind === "member"
+    && (selectedImageMode === "assisted_tool" || selectedImageMode === "assisted_preanswer")
+    ? {
+        configRevision: await configRevision(config),
+        session,
+        routeId: selectedPublicRoute.id,
+        imageMode: selectedImageMode,
+      }
+    : undefined;
   const hasConversationImages = messagesContainImages(normalized);
   const normalizedVisionSources = normalizeVisionSources(
     input.visionSources,
@@ -9269,6 +9311,7 @@ export async function prepareTeamAgentTurn(
         visionScope.missing,
         input.abortSignal,
         providerAttempts,
+        visionAuthorization,
       );
       if (input.abortSignal?.aborted) {
         scheduleCapabilityMonitoring(env, input.waitUntil, {
@@ -9332,7 +9375,14 @@ export async function prepareTeamAgentTurn(
         visionInspectPromise ||= (async () => {
           const visionStartedAt = Date.now();
           try {
-            const evidence = await runVisionAssist(env, config, visionScope.missing, signal, providerAttempts);
+            const evidence = await runVisionAssist(
+              env,
+              config,
+              visionScope.missing,
+              signal,
+              providerAttempts,
+              visionAuthorization,
+            );
             if (signal?.aborted) {
               throw signal.reason instanceof Error
                 ? signal.reason
@@ -12611,11 +12661,12 @@ function guestCleanupLabel(raw: string | null): string | null {
 }
 
 function sessionCapabilities(session: Session, access: RouteAccess): SessionCapabilities {
+  const imageInput = access.routes.some((route) => route.imageMode !== "none");
   if (session.kind === "member") {
-    return { imageInput: true, fileInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
+    return { imageInput, fileInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
   }
   return {
-    imageInput: access.routes.some((route) => route.imageMode !== "none"),
+    imageInput,
     fileInput: false,
     memory: false,
     messageActions: false,

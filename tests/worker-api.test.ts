@@ -948,6 +948,100 @@ describe("Worker API", () => {
     });
   });
 
+  it("derives every image mode and the session image capability from current assignment", async () => {
+    const deniedLabel = `image-mode-denied-${crypto.randomUUID()}`;
+    const noneOnlyLabel = `image-mode-none-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        native: {
+          label: "Native image",
+          type: "openai-chat",
+          baseUrl: "https://native-mode.example/v1",
+          apiKey: "native-mode-key",
+          supportsImages: true,
+          supportsTools: false,
+        },
+        tool: {
+          label: "Tool text",
+          type: "openai-chat",
+          baseUrl: "https://tool-mode.example/v1",
+          apiKey: "tool-mode-key",
+          supportsImages: false,
+          supportsTools: true,
+        },
+        plain: {
+          label: "Plain text",
+          type: "openai-chat",
+          baseUrl: "https://plain-mode.example/v1",
+          apiKey: "plain-mode-key",
+          supportsImages: false,
+          supportsTools: false,
+        },
+        vision: {
+          label: "Vision helper",
+          type: "openai-chat",
+          baseUrl: "https://vision-mode.example/v1",
+          apiKey: "vision-mode-key",
+          supportsImages: true,
+          supportsTools: false,
+        },
+      },
+      routes: {
+        native: { label: "Native image", offerings: [{ providerId: "native", model: "native-model" }] },
+        tool: {
+          label: "Tool text",
+          offerings: [{ providerId: "tool", model: "tool-model" }],
+          supportsTools: true,
+        },
+        plain: { label: "Plain text", offerings: [{ providerId: "plain", model: "plain-model" }] },
+        vision: { label: "Vision helper", offerings: [{ providerId: "vision", model: "vision-model" }] },
+      },
+      defaults: {
+        defaultRoute: "native",
+        allowedRoutes: ["native", "tool", "plain"],
+        allowedAugmentations: ["vision_assist"],
+      },
+      users: {
+        [deniedLabel]: { allowedAugmentations: [] },
+        [noneOnlyLabel]: { allowedRoutes: ["tool", "plain"], allowedAugmentations: [] },
+      },
+      visionAssist: { enabled: true, routeId: "vision", maxOutputChars: 1_024 },
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const routeModes = (session: any) => Object.fromEntries(session.routes.map((route: any) => [route.id, {
+      supportsImages: route.supportsImages,
+      supportsTools: route.supportsTools,
+      imageMode: route.imageMode,
+    }]));
+
+    const assigned = await login(`image-mode-assigned-${crypto.randomUUID()}`);
+    const assignedSession = await apiRequest("/api/session", assigned.cookie).then((response) => response.json()) as any;
+    expect(routeModes(assignedSession)).toEqual({
+      native: { supportsImages: true, supportsTools: false, imageMode: "native" },
+      tool: { supportsImages: false, supportsTools: true, imageMode: "assisted_tool" },
+      plain: { supportsImages: false, supportsTools: false, imageMode: "assisted_preanswer" },
+    });
+    expect(assignedSession.capabilities.imageInput).toBe(true);
+
+    const denied = await login(deniedLabel);
+    const deniedSession = await apiRequest("/api/session", denied.cookie).then((response) => response.json()) as any;
+    expect(routeModes(deniedSession)).toEqual({
+      native: { supportsImages: true, supportsTools: false, imageMode: "native" },
+      tool: { supportsImages: false, supportsTools: true, imageMode: "none" },
+      plain: { supportsImages: false, supportsTools: false, imageMode: "none" },
+    });
+    expect(deniedSession.capabilities.imageInput).toBe(true);
+
+    const noneOnly = await login(noneOnlyLabel);
+    const noneOnlySession = await apiRequest("/api/session", noneOnly.cookie).then((response) => response.json()) as any;
+    expect(routeModes(noneOnlySession)).toEqual({
+      tool: { supportsImages: false, supportsTools: true, imageMode: "none" },
+      plain: { supportsImages: false, supportsTools: false, imageMode: "none" },
+    });
+    expect(noneOnlySession.capabilities.imageInput).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("issues isolated guest identities with one secret-free logical model", async () => {
     await configurePublicAccess();
     const source = `guest-source-${crypto.randomUUID()}`;

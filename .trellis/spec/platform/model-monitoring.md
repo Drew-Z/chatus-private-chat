@@ -126,10 +126,11 @@ the bounded aggregate. No new Durable Object binding or migration is required.
   bucket start, bounded count, latency sum/count, and last occurrence. Retention is
   48 hours; the public window is exactly 24 hours with hourly buckets.
 - Event writes validate exact keys and ID-to-kind pairing, cap latency at 600,000 ms,
-  cap one row at 100,000 events, and run best-effort through `waitUntil` or a caught
-  promise. A direct invocation without a lifecycle `waitUntil` owner skips passive
-  telemetry instead of starting an untracked cross-Durable-Object RPC. Monitoring
-  failure is never allowed to fail an otherwise successful turn.
+  and cap one row at 100,000 events. Scheduling creates a deferred microtask that
+  checks a synchronous `accepted` flag; the cross-Durable-Object RPC starts only
+  after `waitUntil(write)` returns successfully. A missing or synchronously throwing
+  lifecycle owner therefore starts no RPC. Monitoring failure is caught and never
+  allowed to fail an otherwise successful turn.
 - The admin snapshot contains rows plus summaries only. It contains no member,
   conversation, prompt, image, query, citation, instruction, credential, endpoint,
   raw tool body, Provider identity, attempt identity, or memory field.
@@ -153,6 +154,7 @@ the bounded aggregate. No new Durable Object binding or migration is required.
 | Evidence/stale combination contradicts rows | Reject the complete snapshot |
 | Monitoring write fails during a chat turn | Preserve the original turn result and expose no raw failure payload |
 | No lifecycle `waitUntil` owner exists | Skip the passive write; do not launch an untracked RPC |
+| Lifecycle `waitUntil` throws synchronously | Leave `accepted` false; deferred work resolves without launching an RPC |
 
 ### 5. Good / Base / Bad Cases
 
@@ -172,7 +174,8 @@ the bounded aggregate. No new Durable Object binding or migration is required.
 - Coordinator tests cover persistence, invalid-event no-op behavior, range reads,
   alarm cleanup, and best-effort write failures.
 - Worker tests cover admin authentication, exact query bounds, content-free output,
-  and successful turns when monitoring writes reject.
+  successful turns when monitoring writes reject, and zero rows/RPCs for missing or
+  synchronously throwing lifecycle owners. An accepting owner records exactly one row.
 - Client tests import the shared snapshot decoder and reject malformed summaries or
   evidence instead of maintaining a second browser contract.
 
@@ -191,13 +194,22 @@ can put passive telemetry on the user-visible critical path.
 #### Correct
 
 ```typescript
-ctx.waitUntil(
-  coordinator.recordCapabilityMonitoringEvent(event).catch(() => undefined),
-);
+let accepted = false;
+const write = Promise.resolve().then(async () => {
+  if (!accepted) return;
+  await coordinator.recordCapabilityMonitoringEvent(event).catch(() => undefined);
+});
+try {
+  waitUntil(write);
+  accepted = true;
+} catch {
+  // No lifecycle owner means no RPC.
+}
 ```
 
-One bounded logical event reaches the existing coordinator owner asynchronously;
-Provider attempts remain physical-call only and chat success cannot be downgraded.
+One bounded logical event reaches the existing coordinator owner only after
+lifecycle ownership is accepted; Provider attempts remain physical-call only and
+chat success cannot be downgraded.
 
 ## Scenario: Passive 24-Hour Production Observation Evidence
 

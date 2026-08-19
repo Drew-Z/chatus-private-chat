@@ -1928,6 +1928,7 @@ export function isSessionProjection(value: unknown): value is SessionProjection 
   if (!Array.isArray(value.skills) || !value.skills.every(isSkillProjection)) return false;
   if (!Array.isArray(value.tools) || !value.tools.every(isToolProjection)) return false;
   if (!Array.isArray(value.mcpConnections) || !value.mcpConnections.every(isMcpOAuthConnection)) return false;
+  if (value.capabilities.imageInput !== value.routes.some((route) => route.imageMode !== "none")) return false;
   const routeIds = value.routes.map((route) => route.id);
   const capabilityIds = value.availableCapabilities.map((capability) => capability.id);
   const skillIds = value.skills.map((skill) => skill.id);
@@ -1967,7 +1968,7 @@ function isGuestSessionProjection(value: SessionProjection, routeIds: string[]):
     && value.capabilities.feedback === false
     && value.capabilities.accountData === false
     && value.capabilities.fileInput === false;
-  const imageInputAllowed = value.routes.some((route) => route.supportsImages);
+  const imageInputAllowed = value.routes.some((route) => route.imageMode !== "none");
   return value.allowBringYourOwnKey === false
     && value.hasUserSystemPrompt === false
     && value.availableCapabilities.length === 0
@@ -3428,15 +3429,17 @@ function isRouteProjection(value: unknown): value is RouteProjection {
     && isNonEmptyString(value.model)
     && isNonEmptyString(value.type)
     && typeof value.supportsImages === "boolean"
-    && (
-      value.imageMode === "native"
-      || value.imageMode === "assisted_tool"
-      || value.imageMode === "assisted_preanswer"
-      || value.imageMode === "none"
-    )
     && typeof value.supportsTools === "boolean"
+    && hasConsistentRouteImageMode(value)
     && (value.healthStatus === undefined || value.healthStatus === "healthy" || value.healthStatus === "unhealthy" || value.healthStatus === "unknown")
     && (value.healthOutcome === undefined || typeof value.healthOutcome === "string");
+}
+
+function hasConsistentRouteImageMode(value: Record<string, unknown>): boolean {
+  if (value.supportsImages === true) return value.imageMode === "native";
+  if (value.imageMode === "assisted_tool") return value.supportsTools === true;
+  if (value.imageMode === "assisted_preanswer") return value.supportsTools === false;
+  return value.imageMode === "none";
 }
 
 export function getAgentWebResearchMetadata(value: unknown): WebResearchEvidenceV1 | undefined {

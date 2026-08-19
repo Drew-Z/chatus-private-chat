@@ -52,6 +52,134 @@ function model(args: {
 }
 
 describe("fallback language model", () => {
+  it.each(["generate", "stream"] as const)(
+    "runs the %s pre-attempt guard after capacity and before ledger or Provider I/O",
+    async (operation) => {
+      const primary = model({
+        generate: generateResult("must not generate"),
+        stream: successfulStream("must not stream"),
+      });
+      const backup = model({
+        generate: generateResult("must not generate fallback"),
+        stream: successfulStream("must not stream fallback"),
+      });
+      const primaryGenerate = vi.spyOn(primary, "doGenerate");
+      const primaryStream = vi.spyOn(primary, "doStream");
+      const backupGenerate = vi.spyOn(backup, "doGenerate");
+      const backupStream = vi.spyOn(backup, "doStream");
+      const primaryRelease = vi.fn(async () => undefined);
+      const primaryAcquire = vi.fn(async () => ({ release: primaryRelease }));
+      const backupAcquire = vi.fn(async () => ({ release: vi.fn(async () => undefined) }));
+      const revoked = new Error("attempt authorization changed");
+      const beforeAttempt = vi.fn(async () => { throw revoked; });
+      const run = {
+        turnId: `turn_${crypto.randomUUID()}`,
+        runId: `run_${crypto.randomUUID()}`,
+        runKind: "auxiliary_vision",
+        start: vi.fn(async () => { throw new Error("ledger must not start"); }),
+      } satisfies ProviderAttemptRun;
+      const router = createFallbackLanguageModel([
+        {
+          routeId: "primary",
+          providerId: "primary",
+          usedUserKey: false,
+          model: primary,
+          acquireLease: primaryAcquire,
+        },
+        {
+          routeId: "backup",
+          providerId: "backup",
+          usedUserKey: false,
+          model: backup,
+          acquireLease: backupAcquire,
+        },
+      ], {}, { createRun: () => run, beforeAttempt });
+
+      const result = operation === "generate"
+        ? router.doGenerate(CALL_OPTIONS)
+        : router.doStream(CALL_OPTIONS);
+      await expect(result).rejects.toBe(revoked);
+      expect(primaryAcquire).toHaveBeenCalledOnce();
+      expect(primaryRelease).toHaveBeenCalledOnce();
+      expect(backupAcquire).not.toHaveBeenCalled();
+      expect(beforeAttempt).toHaveBeenCalledOnce();
+      expect(beforeAttempt.mock.calls[0][0]).toMatchObject({ routeId: "primary", providerId: "primary" });
+      expect(run.start).not.toHaveBeenCalled();
+      expect(primaryGenerate).not.toHaveBeenCalled();
+      expect(primaryStream).not.toHaveBeenCalled();
+      expect(backupGenerate).not.toHaveBeenCalled();
+      expect(backupStream).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["generate", "stream"] as const)(
+    "cancels a pending %s pre-attempt guard without ledger, Provider, or fallback I/O",
+    async (operation) => {
+      const primary = model({
+        generate: generateResult("must not generate"),
+        stream: successfulStream("must not stream"),
+      });
+      const backup = model({
+        generate: generateResult("must not generate fallback"),
+        stream: successfulStream("must not stream fallback"),
+      });
+      const primaryGenerate = vi.spyOn(primary, "doGenerate");
+      const primaryStream = vi.spyOn(primary, "doStream");
+      const backupGenerate = vi.spyOn(backup, "doGenerate");
+      const backupStream = vi.spyOn(backup, "doStream");
+      const primaryRelease = vi.fn(async () => undefined);
+      const primaryAcquire = vi.fn(async () => ({ release: primaryRelease }));
+      const backupAcquire = vi.fn(async () => ({ release: vi.fn(async () => undefined) }));
+      let markGuardStarted!: () => void;
+      const guardStarted = new Promise<void>((resolve) => { markGuardStarted = resolve; });
+      const beforeAttempt = vi.fn(() => {
+        markGuardStarted();
+        return new Promise<void>(() => undefined);
+      });
+      const run = {
+        turnId: `turn_${crypto.randomUUID()}`,
+        runId: `run_${crypto.randomUUID()}`,
+        runKind: "auxiliary_vision",
+        start: vi.fn(async () => { throw new Error("ledger must not start"); }),
+      } satisfies ProviderAttemptRun;
+      const controller = new AbortController();
+      const router = createFallbackLanguageModel([
+        {
+          routeId: "primary",
+          providerId: "primary",
+          usedUserKey: false,
+          model: primary,
+          acquireLease: primaryAcquire,
+        },
+        {
+          routeId: "backup",
+          providerId: "backup",
+          usedUserKey: false,
+          model: backup,
+          acquireLease: backupAcquire,
+        },
+      ], {}, { createRun: () => run, beforeAttempt });
+
+      const options = { ...CALL_OPTIONS, abortSignal: controller.signal };
+      const result = operation === "generate"
+        ? router.doGenerate(options)
+        : router.doStream(options);
+      await guardStarted;
+      controller.abort(new DOMException("cancelled by user", "AbortError"));
+
+      await expect(result).rejects.toMatchObject({ name: "AbortError" });
+      expect(primaryAcquire).toHaveBeenCalledOnce();
+      expect(primaryRelease).toHaveBeenCalledOnce();
+      expect(backupAcquire).not.toHaveBeenCalled();
+      expect(beforeAttempt).toHaveBeenCalledOnce();
+      expect(run.start).not.toHaveBeenCalled();
+      expect(primaryGenerate).not.toHaveBeenCalled();
+      expect(primaryStream).not.toHaveBeenCalled();
+      expect(backupGenerate).not.toHaveBeenCalled();
+      expect(backupStream).not.toHaveBeenCalled();
+    },
+  );
+
   it("fails closed before Provider execution when required ledger start is unavailable", async () => {
     const primary = model({ stream: successfulStream("must not run") });
     const backup = model({ stream: successfulStream("must not run either") });

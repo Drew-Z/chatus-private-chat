@@ -146,6 +146,7 @@ type VisionEvidenceV1 = {
 GET /api/session
   -> routes[].supportsImages: boolean
   -> routes[].imageMode: PublicImageMode
+  -> capabilities.imageInput: boolean
 
 PUT /api/admin/config
   <- config.visionAssist: { enabled, routeId, maxOutputChars }
@@ -153,9 +154,11 @@ PUT /api/admin/config
 
 ### 3. Contracts
 
-- `supportsImages` remains the native Provider capability. `imageMode` is derived separately and is exactly one of the four values above; an assisted route is never projected as natively multimodal.
+- `supportsImages` remains the native Provider capability. `imageMode` is derived separately and is exactly one of the four values above: `native` iff `supportsImages === true`; `assisted_tool` requires native images false and tools true; `assisted_preanswer` requires both native images and tools false; `none` requires native images false and no executable assigned helper. An assisted route is never projected as natively multimodal.
+- `capabilities.imageInput` is true iff at least one projected route has `imageMode !== "none"`. The browser decoder rejects an impossible mode/support combination or a session capability that contradicts its routes.
 - `native` sends canonical image parts to the selected Provider. `assisted_tool` forces the trusted `image_inspect` executor between the initial answer request and its tool continuation. `assisted_preanswer` runs the helper before constructing the unsupported text-model history. `none` rejects the image turn before unsupported Provider I/O.
 - The helper is administrator-selected, enabled, credential-ready, instance-owned, and backed by an executable native-image offering. It cannot use member BYOK or recursively select assisted vision.
+- After helper capacity is acquired and before ledger admission or Provider I/O, the Worker reloads configuration and route access. The configuration revision and selected route `imageMode` must still equal the admitted snapshot; assignment/configuration drift throws `vision_assist_unavailable`, releases the lease, creates zero helper attempts, and cannot fall back.
 - Raw image data URLs are passed only to the helper's canonical image scope. They never enter generic MCP JSON, monitoring, logs, or the unsupported main text request.
 - `VisionEvidenceV1` accepts exactly its four keys, bounded description/OCR/limitations, no URLs/control characters/reasoning, and a complete JSON output at or below `maxOutputChars`. It is private Agent state keyed to validated source image message IDs.
 - Evidence is copied only with source images, revalidated on import/branch/restore, removed on conversation deletion, excluded from member export and passive monitoring, and never exposed in diagnostics.
@@ -167,6 +170,7 @@ PUT /api/admin/config
 | Native image route | Direct native request; no helper run |
 | Tool-capable text route | Forced trusted `image_inspect`; refusal fails before visible answer |
 | Text-only route with ready helper | `auxiliary_vision` before `main_answer` |
+| Assignment/configuration changes while helper waits for capacity | `503 vision_assist_unavailable`; release the lease; zero helper ledger rows, Provider calls, or fallback |
 | Missing helper config, credential, capacity, budget, timeout, or cancellation | Terminal public error; zero unsupported main calls |
 | Evidence has unknown keys, URL, reasoning, oversize field/array, or invalid source image | Reject and persist nothing |
 | Member export or monitoring reads evidence | Omit evidence and image bytes |
@@ -179,7 +183,8 @@ PUT /api/admin/config
 
 ### 6. Tests Required
 
-- Assert the four route modes, exact helper sequence/run kinds, one admission, fallback, usage/cost, cancellation, and terminal ledger settlement with fake Providers.
+- `tests/worker-api.test.ts` asserts all four route modes and derives `capabilities.imageInput` from the usable route set; `tests/client-api.test.ts` rejects impossible mode/support and session-capability combinations.
+- `tests/vision-assist-turn.test.ts` asserts exact helper sequence/run kinds, one admission, fallback, usage/cost, non-cooperative late cancellation, and assignment revocation during capacity wait with zero helper I/O/attempts.
 - Assert malformed/orphan evidence, branch/edit/resend/regenerate/continue, delete, export, capture, and restore behavior.
 - Run only local fixtures; no live Provider, MCP, OAuth, capability probe, or production request.
 

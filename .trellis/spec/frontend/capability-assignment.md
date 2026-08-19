@@ -786,6 +786,7 @@ PUT /api/admin/config
 
 - `allowedAugmentations` preserves omission as inheritance and `[]` as explicit deny-all. Guests always receive no augmentation.
 - A helper is executable only when the assignment includes `vision_assist`, the admin config is enabled, its route is selected, credentials are ready, and the selected route has a native-image offering. The helper route itself cannot be assisted.
+- Helper execution captures the admitted config revision and selected route image mode. After Provider-capacity wait and before ledger admission/I/O, it reloads config/access and requires both values to match; revocation or any config drift fails with `vision_assist_unavailable`, releases capacity, and creates zero helper attempts or fallback calls.
 - The admin Catalog/Setup projection derives `installed`, `disabled`, or `requires_setup` from the real local readiness helper without sending a model request. It never projects credentials or Provider payloads.
 - Vision config saves are revisioned and atomic with unrelated admin config. On `409 config_conflict`, the authoritative snapshot refreshes while the local vision draft remains editable for retry.
 
@@ -796,6 +797,7 @@ PUT /api/admin/config
 | Missing/invalid route or output bound | `400 invalid_config`; zero writes |
 | Assigned augmentation with helper not ready | `requires_setup`; image mode is `none` |
 | Explicit empty augmentation assignment | No helper and no assisted mode |
+| Assignment/config changes while the helper waits for capacity | `vision_assist_unavailable`; zero helper ledger rows, Provider calls, and fallback |
 | Stale revision | `409 config_conflict`; preserve the local draft |
 | Guest projection | Omit augmentation and helper controls |
 
@@ -808,6 +810,7 @@ PUT /api/admin/config
 ### 6. Tests Required
 
 - Test inheritance/deny-all assignment, readiness state transitions, route validation, exact config decoding, conflict draft retention, retry success, guest denial, and no model calls.
+- `tests/vision-assist-turn.test.ts` holds helper capacity, revokes `allowedAugmentations`, releases capacity, and asserts terminal denial with zero helper attempts/Provider calls.
 - Exercise desktop and touch-admin layouts with keyboard-reachable controls and no horizontal overflow.
 
 ### 7. Wrong vs Correct

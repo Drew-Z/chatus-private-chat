@@ -452,6 +452,51 @@ describe("auxiliary vision Provider turns", () => {
     }
   });
 
+  it("rechecks assignment after helper capacity waiting and denies stale Provider I/O", async () => {
+    const providerId = `vision-revoked-${crypto.randomUUID()}`;
+    const config = singleHelperConfig({
+      helperBaseUrl: "https://vision-revoked.example/v1",
+      mainBaseUrl: "https://main-must-not-run.example/v1",
+      providerId,
+      concurrency: "exclusive",
+      queueTimeoutMs: 2_000,
+    });
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(config));
+    const coordinator = env.PROVIDER_COORDINATOR.getByName(providerId);
+    const held = await coordinator.acquire({
+      requestId: `held-${crypto.randomUUID()}`,
+      capacity: 1,
+      waitMs: 0,
+    });
+    expect(held.ok).toBe(true);
+    if (!held.ok) return;
+    let released = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const session = await createMemberSession(`agent-vision-revoked-${crypto.randomUUID()}`);
+      const preparing = prepareTeamAgentTurn(env, session, visionTurnInput(turnContext()));
+      await vi.waitFor(async () => {
+        await expect(coordinator.inspect()).resolves.toMatchObject({ active: 1, waiting: 1 });
+      });
+
+      config.defaults.allowedAugmentations = [];
+      await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(config));
+      await coordinator.release({ token: held.token });
+      released = true;
+
+      await expect(preparing).resolves.toMatchObject({
+        ok: false,
+        error: "vision_assist_unavailable",
+        status: 503,
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      await expect(env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent()).resolves.toEqual([]);
+      await expect(coordinator.inspect()).resolves.toMatchObject({ active: 0, waiting: 0 });
+    } finally {
+      if (!released) await coordinator.release({ token: held.token });
+    }
+  });
+
   it("blocks helper budget admission before any Provider request", async () => {
     const providerId = `vision-budget-${crypto.randomUUID()}`;
     await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(singleHelperConfig({
@@ -517,27 +562,30 @@ describe("auxiliary vision Provider turns", () => {
     const started = new Promise<void>((resolve) => {
       markStarted = resolve;
     });
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    let resolveLate!: (response: Response) => void;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       markStarted();
-      return await new Promise<Response>((_resolve, reject) => {
-        const abort = () => reject(init?.signal?.reason instanceof Error
-          ? init.signal.reason
-          : new DOMException("cancelled", "AbortError"));
-        if (init?.signal?.aborted) abort();
-        else init?.signal?.addEventListener("abort", abort, { once: true });
+      return await new Promise<Response>((resolve) => {
+        resolveLate = resolve;
       });
     });
     const session = await createMemberSession(`agent-vision-cancel-${crypto.randomUUID()}`);
     const controller = new AbortController();
     const context = turnContext();
+    const persisted: string[] = [];
     const preparing = prepareTeamAgentTurn(env, session, {
       ...visionTurnInput(context),
       abortSignal: controller.signal,
+      persistVisionEvidence: (ids) => persisted.push(...ids),
     });
     await started;
     controller.abort(new DOMException("cancelled by user", "AbortError"));
-    expect(await preparing).toMatchObject({ ok: false, error: "request_cancelled", status: 499 });
+    await expect(Promise.race([
+      preparing,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("cancellation did not settle promptly")), 500)),
+    ])).resolves.toMatchObject({ ok: false, error: "request_cancelled", status: 499 });
     expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(persisted).toEqual([]);
     const [attempt] = await env.PROVIDER_ATTEMPT_LEDGER.getByName(providerId).listRecent();
     expect(attempt).toMatchObject({
       turnId: context.turnId,
@@ -553,6 +601,57 @@ describe("auxiliary vision Provider turns", () => {
     });
     expect(replacement.ok).toBe(true);
     if (replacement.ok) await coordinator.release({ token: replacement.token });
+
+    resolveLate(openAiCompletionResponse(JSON.stringify({
+      version: 1,
+      description: "This late helper result must remain inert.",
+      ocrText: [],
+      limitations: [],
+    })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(persisted).toEqual([]);
+  });
+});
+
+describe("capability monitoring lifecycle ownership", () => {
+  it("starts monitoring only when waitUntil accepts lifecycle ownership", async () => {
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(singleHelperConfig({
+      helperBaseUrl: "https://monitor-helper.example/v1",
+      mainBaseUrl: "https://monitor-main.example/v1",
+    })));
+    const session = await createMemberSession(`monitoring-owner-${crypto.randomUUID()}`);
+    const runDeniedResearch = (waitUntil?: (promise: Promise<unknown>) => void) => prepareTeamAgentTurn(env, session, {
+      ...turnContext(),
+      messages: [{ role: "user", content: "Local monitoring lifecycle test." }],
+      capabilityIds: ["chatus:web_research"],
+      disableTools: true,
+      ...(waitUntil ? { waitUntil } : {}),
+    });
+    const baseline = await deniedWebResearchMonitoringCount();
+
+    await expect(runDeniedResearch()).resolves.toMatchObject({
+      ok: false,
+      error: "web_research_not_available",
+    });
+    await Promise.resolve();
+    expect(await deniedWebResearchMonitoringCount()).toBe(baseline);
+
+    await expect(runDeniedResearch(() => { throw new Error("lifecycle rejected"); })).resolves.toMatchObject({
+      ok: false,
+      error: "web_research_not_available",
+    });
+    await Promise.resolve();
+    expect(await deniedWebResearchMonitoringCount()).toBe(baseline);
+
+    let acceptedWrite: Promise<unknown> | undefined;
+    await expect(runDeniedResearch((promise) => { acceptedWrite = promise; })).resolves.toMatchObject({
+      ok: false,
+      error: "web_research_not_available",
+    });
+    expect(acceptedWrite).toBeDefined();
+    await acceptedWrite;
+    expect(await deniedWebResearchMonitoringCount()).toBe(baseline + 1);
   });
 });
 
@@ -561,6 +660,7 @@ type SingleHelperOptions = {
   mainBaseUrl: string;
   providerId?: string;
   concurrency?: "unlimited" | "exclusive";
+  queueTimeoutMs?: number;
 };
 
 function singleHelperConfig(options: SingleHelperOptions) {
@@ -581,7 +681,7 @@ function singleHelperConfig(options: SingleHelperOptions) {
         apiKey: "vision-test-key",
         supportsImages: true,
         concurrency: options.concurrency || "unlimited",
-        queueTimeoutMs: 0,
+        queueTimeoutMs: options.queueTimeoutMs ?? 0,
       },
     },
     routes: {
@@ -603,6 +703,19 @@ function singleHelperConfig(options: SingleHelperOptions) {
     },
     visionAssist: { enabled: true, routeId: "vision", maxOutputChars: 1_024 },
   };
+}
+
+async function deniedWebResearchMonitoringCount(): Promise<number> {
+  const now = Date.now();
+  const rows = await env.PROVIDER_COORDINATOR
+    .getByName("$capability-monitoring-v1")
+    .getCapabilityMonitoringAggregate({
+      periodStart: now - 24 * 60 * 60 * 1_000,
+      periodEnd: now,
+    });
+  return rows
+    .filter((row) => row.capabilityId === "chatus:web_research" && row.status === "denied")
+    .reduce((total, row) => total + row.count, 0);
 }
 
 function visionTurnInput(context: ReturnType<typeof turnContext>) {
