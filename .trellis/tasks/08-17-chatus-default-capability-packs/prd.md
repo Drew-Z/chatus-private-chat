@@ -186,41 +186,63 @@ degrade when an auxiliary service is unavailable.
 
 ## Acceptance Criteria
 
-- [ ] AC1: A new unconfigured instance exposes the five bounded workflow Skills,
+- [x] AC1: A new unconfigured instance exposes the five bounded workflow Skills,
   while an existing stored/secret configuration is byte-semantically unchanged
   until a revision-checked install action succeeds.
-- [ ] AC2: Guests and explicit deny-all assignments receive no capabilities;
+- [x] AC2: Guests and explicit deny-all assignments receive no capabilities;
   legacy missing fields retain inheritance; automatic selection never exceeds
   three total per-turn Skills.
-- [ ] AC3: Catalog install previews additions and collisions, rejects stale
+- [x] AC3: Catalog install previews additions and collisions, rejects stale
   revisions, never overwrites an existing ID, and installs no external endpoint
   or credential.
-- [ ] AC4: Public route/capability projections and UI distinguish native image,
+- [x] AC4: Public route/capability projections and UI distinguish native image,
   tool-assisted image, pre-answer assisted image, and unavailable image modes.
-- [ ] AC5: A text-only model can answer about an uploaded image using bounded
+- [x] AC5: A text-only model can answer about an uploaded image using bounded
   auxiliary evidence; helper failure sends no unsupported image data to the main
   Provider and preserves actionable retry/switch recovery.
-- [ ] AC6: Web research runs only after explicit per-turn member activation,
+- [x] AC6: Web research runs only after explicit per-turn member activation,
   returns sanitized usable citations, and exposes denial, timeout, drift,
   malformed, and empty-result states without a false freshness claim.
-- [ ] AC7: Every external capability obeys assignment, approval, timeout, result
+- [x] AC7: Every external capability obeys assignment, approval, timeout, result
   size, review revision, credential redaction, and cancellation rules.
-- [ ] AC8: Member and administrator surfaces expose source, availability,
+- [x] AC8: Member and administrator surfaces expose source, availability,
   execution state, and material cost/privacy implications with keyboard,
   screen-reader, touch, reduced-motion, and five-viewport coverage.
-- [ ] AC9: Content-free monitoring distinguishes selector, auxiliary vision,
+- [x] AC9: Content-free monitoring distinguishes selector, auxiliary vision,
   web research, tool continuation, and main-answer activity without retaining
   any prohibited identity or content field.
-- [ ] AC10: Unit, Worker, Agent, and browser tests cover revocation races,
+- [x] AC10: Unit, Worker, Agent, and browser tests cover revocation races,
   configuration conflicts, partial failure, timeout, cancellation, branch and
   deletion behavior, and route fallback with zero live external requests.
-- [ ] AC11: `npm run check:frontend`, `npm test`,
+- [x] AC11: `npm run check:frontend`, `npm test`,
   `npm run test:browser:workspace`, `npm run test:browser:agent`,
   `npm run typecheck`, `npx wrangler deploy --dry-run`, and
   `git diff --check` pass in the required serial order.
-- [ ] AC12: The implementation and its Trellis artifacts remain isolated from
+- [x] AC12: The implementation and its Trellis artifacts remain isolated from
   PR #93, production observation, legacy rollout tasks/gates/evidence, and
   production deployment.
+
+## Final Integration Review
+
+- AC1-AC3 are owned by the archived catalog/adoption child: work `b42d180`,
+  archive `2b3f093`, with every child acceptance item checked.
+- AC4-AC5 are owned by the archived auxiliary-vision child: work `59fc82e`,
+  archive `8a493cb`, plus final route-decoder, capacity-revocation, cancellation,
+  and pre-attempt ordering regressions in `49cb0f9`.
+- AC6-AC7 are owned by the archived explicit-research child: work `1584599`,
+  archive `0591f4e`, revalidated by the final fake MCP/OAuth suite.
+- AC8-AC9 are owned by the archived experience/monitoring child: work `273492a`,
+  archive `dbb68ed`, plus final lifecycle-ownership and prohibited-field scans in
+  `49cb0f9`.
+- AC10-AC12 are closed by the archived integration-hardening child: work
+  `49cb0f9`, archive `7f332fc`. Its completion evidence maps all AC1-AC12 and
+  records the protected-path/external-request audit.
+- Final ordered validation on 2026-08-19 passed frontend structure; 60 files / 918
+  Vitest tests; Workspace Playwright 119 passed with 71 conditional skips; Agent
+  E2E 3 passed; typecheck; Wrangler packaging dry-run; and `git diff --check`.
+- All five child tasks are completed and archived. No production deploy, live
+  Provider/MCP/OAuth/capability probe, synthetic production request, PR #93
+  mutation, production-observation action, or legacy rollout artifact change ran.
 
 ## References
 
