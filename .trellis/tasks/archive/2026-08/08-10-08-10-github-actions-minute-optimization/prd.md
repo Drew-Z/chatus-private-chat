@@ -32,7 +32,7 @@ Reduce billed GitHub-hosted runner minutes for the private Chatus repository whi
 - [x] `.github/dependabot.yml` groups all npm updates and all GitHub Actions updates into weekly batches with one open PR per ecosystem.
 - [x] Delivery-governance structural tests enforce the new trigger, concurrency, path classification, and deployment contracts.
 - [x] `npm run check:frontend`, `npm test`, `npm run typecheck`, `npx wrangler deploy --dry-run`, `python ./.trellis/scripts/task.py validate-all`, and `git diff --check` pass locally.
-- [ ] The branch is pushed and reviewed through a PR without touching the existing dirty Chatus worktree.
+- [x] The branch is pushed and reviewed through a PR without touching the existing dirty Chatus worktree.
 
 ## Out Of Scope
 
