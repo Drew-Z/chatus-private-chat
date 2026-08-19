@@ -15,7 +15,7 @@
   "branch": "codex/chatus-default-capability-packs",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "7565ae347094e62682217788060243a111dc3853",
   "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/97",
   "subtasks": [],
   "children": [],
