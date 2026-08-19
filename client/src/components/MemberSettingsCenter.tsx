@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   Brain,
@@ -8,7 +7,10 @@ import {
   Download,
   Laptop,
   LogOut,
+  Palette,
   Trash2,
+  UserRound,
+  type LucideIcon,
 } from "lucide-react";
 import type { SessionProjection } from "../lib/api";
 import type { ThemePreference } from "../lib/device-preferences";
@@ -135,11 +137,11 @@ export function MemberSettingsCenter({
             </div>
             <h1 id="member-settings-title">设置</h1>
             <div className="settings-nav-list">
-              <SettingsNavButton active={section === "appearance"} label="外观" detail={themePreferenceLabel(themePreference)} onClick={() => selectSection("appearance")} />
-              {session.capabilities.memory && <SettingsNavButton active={section === "memory"} label="记忆" detail="查看和管理 Agent 记忆" onClick={() => selectSection("memory")} />}
-              {session.access === "member" && <SettingsNavButton active={section === "connections"} label="连接" detail={`MCP · ${connectedMcpCount} 已连接`} onClick={() => selectSection("connections")} />}
-              {session.capabilities.accountData && <SettingsNavButton active={section === "account"} label="账户与数据" detail="导出、会话和删除" onClick={() => selectSection("account")} />}
-              {session.capabilities.accountData && <SettingsNavButton active={section === "sessions"} label="会话与设备" detail="查看与撤销登录会话" onClick={() => selectSection("sessions")} />}
+              <SettingsNavButton icon={Palette} active={section === "appearance"} label="外观" detail={themePreferenceLabel(themePreference)} onClick={() => selectSection("appearance")} />
+              {session.capabilities.memory && <SettingsNavButton icon={Brain} active={section === "memory"} label="记忆" detail="查看和管理 Agent 记忆" onClick={() => selectSection("memory")} />}
+              {session.access === "member" && <SettingsNavButton icon={Cable} active={section === "connections"} label="连接" detail={`MCP · ${connectedMcpCount} 已连接`} onClick={() => selectSection("connections")} />}
+              {session.capabilities.accountData && <SettingsNavButton icon={UserRound} active={section === "account"} label="账户与数据" detail="导出、会话和删除" onClick={() => selectSection("account")} />}
+              {session.capabilities.accountData && <SettingsNavButton icon={Laptop} active={section === "sessions"} label="会话与设备" detail="查看与撤销登录会话" onClick={() => selectSection("sessions")} />}
             </div>
             <p className="settings-nav-footer">{session.displayName} · 当前设备</p>
           </nav>
@@ -229,14 +231,16 @@ export function MemberSettingsCenter({
   );
 }
 
-function SettingsNavButton({ active, label, detail, onClick }: {
+function SettingsNavButton({ icon: Icon, active, label, detail, onClick }: {
+  icon: LucideIcon;
   active: boolean;
   label: string;
   detail: string;
   onClick: () => void;
 }) {
   return (
-    <button type="button" aria-label={label} aria-pressed={active} onClick={onClick}>
+    <button type="button" aria-label={label} aria-pressed={active} aria-current={active ? "page" : undefined} onClick={onClick}>
+      <Icon size={18} aria-hidden="true" />
       <span><strong>{label}</strong><small>{detail}</small></span>
       <ChevronRight size={17} aria-hidden="true" />
     </button>

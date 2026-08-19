@@ -169,6 +169,19 @@ const memberModelAvailability: MemberModelAvailability = {
   }],
 };
 
+function fixtureModelAvailability(mode: string | null): MemberModelAvailability {
+  const route = memberModelAvailability.routes[0];
+  if (mode === "none") return {
+    ...memberModelAvailability,
+    routes: [{ ...route, status: "unknown", confidence: "limited", speed: "unknown", observedAt: null, message: "unknown" }],
+  };
+  if (mode === "limited") return { ...memberModelAvailability, routes: [{ ...route, confidence: "limited" }] };
+  if (mode === "stale") return { ...memberModelAvailability, routes: [{ ...route, confidence: "stale", observedAt: now - 90_000_000 }] };
+  if (mode === "degraded") return { ...memberModelAvailability, routes: [{ ...route, status: "degraded", confidence: "recent", fallbackRecentlyUsed: true, message: "degraded" }] };
+  if (mode === "unavailable") return { ...memberModelAvailability, routes: [{ ...route, status: "unavailable", confidence: "recent", message: "unavailable" }] };
+  return memberModelAvailability;
+}
+
 const guestSession: SessionProjection = {
   ...memberSession,
   access: "guest",
@@ -601,6 +614,26 @@ const operationModelMonitor: ModelMonitorSnapshot = {
   failureClasses: [{ errorClass: "upstream_timeout", count: 4 }],
 };
 
+const emptyOperationModelMonitor: ModelMonitorSnapshot = {
+  ...operationModelMonitor,
+  totals: {
+    attempts: 0,
+    succeeded: 0,
+    failures: 0,
+    inFlight: 0,
+    completed: 0,
+    successRate: null,
+    fallbacks: 0,
+    averageLatencyMs: null,
+  },
+  trend: operationModelMonitor.trend.map((item) => ({ ...item, attempts: 0, succeeded: 0, failures: 0, inFlight: 0, fallbacks: 0 })),
+  routes: [],
+  providers: [],
+  models: [],
+  runKinds: [],
+  failureClasses: [],
+};
+
 const operationsSnapshot: AdminOperationsSnapshot = {
   stats: {
     day: "2026-07-26",
@@ -805,7 +838,9 @@ function WorkspaceFixture() {
   const [busy, setBusy] = useState(params.get("busy") === "1");
   const [logoutState, setLogoutState] = useState(() => readLogoutFixtureState(params.get("logout")));
   const [operationsFilter, setOperationsFilter] = useState("");
-  const [operationsFixtureSnapshot, setOperationsFixtureSnapshot] = useState(operationsSnapshot);
+  const [operationsFixtureSnapshot, setOperationsFixtureSnapshot] = useState(() => params.get("monitor") === "empty"
+    ? { ...operationsSnapshot, modelMonitor: emptyOperationModelMonitor }
+    : operationsSnapshot);
   const [legacySurfaceFixtureDirty, setLegacySurfaceFixtureDirty] = useState(false);
   const [legacySurfaceMutationAttempts, setLegacySurfaceMutationAttempts] = useState(0);
   const [legacySurfaceFixtureResult, setLegacySurfaceFixtureResult] = useState({ kind: "", operationId: "", requestedAt: 0 });
@@ -848,6 +883,9 @@ function WorkspaceFixture() {
   const logoutPending = logoutState === "pending";
   const workspaceBlocked = blocked || logoutPending;
   const connectionState = (params.get("connection") || "ready") as ConnectionState;
+  const availabilityMode = params.get("availability");
+  const availabilityFixture = fixtureModelAvailability(availabilityMode);
+  const availabilityRefreshing = availabilityMode === "refreshing";
   const session = params.get("access") === "guest" ? guestSession : memberSession;
   const routeId = session.defaultRoute || "reasoning";
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
@@ -1108,8 +1146,8 @@ function WorkspaceFixture() {
             conversation={activeConversation}
             routeId={routeId}
             connectionState={connectionState}
-            modelAvailability={memberModelAvailability}
-            modelAvailabilityRefreshing={false}
+            modelAvailability={availabilityFixture}
+            modelAvailabilityRefreshing={availabilityRefreshing}
             busy={turnBusy}
             accountBusy={logoutPending}
             logoutPending={logoutPending}
@@ -1195,8 +1233,8 @@ function WorkspaceFixture() {
           session={session}
           conversation={activeConversation}
           routeId={routeId}
-          modelAvailability={memberModelAvailability}
-          modelAvailabilityRefreshing={false}
+          modelAvailability={availabilityFixture}
+          modelAvailabilityRefreshing={availabilityRefreshing}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState="idle"
