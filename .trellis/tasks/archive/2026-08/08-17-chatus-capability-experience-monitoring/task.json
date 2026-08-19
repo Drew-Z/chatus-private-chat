@@ -3,7 +3,7 @@
   "name": "chatus-capability-experience-monitoring",
   "title": "Chatus capability experience and monitoring",
   "description": "Unify member and administrator capability UX and add content-free availability and execution monitoring.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,16 +11,25 @@
   "creator": "codex",
   "assignee": "codex",
   "createdAt": "2026-08-17",
-  "completedAt": null,
+  "completedAt": "2026-08-19",
   "branch": null,
   "base_branch": "codex/chatus-default-capability-packs",
   "worktree_path": null,
-  "commit": null,
+  "commit": "273492a3c39629bbbc2a1a8f891a8143c57c667a",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": "08-17-chatus-default-capability-packs",
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend && npm test && npm run test:browser:workspace && npm run test:browser:agent && npm run typecheck && npx wrangler deploy --dry-run && git diff --check",
+        "status": "passed",
+        "summary": "Frontend structure passed; 888 Vitest tests passed; Workspace 119 passed and 71 matrix skips; Agent E2E 3 passed; typecheck, Wrangler dry-run, and diff check passed.",
+        "at": "2026-08-19T04:52:19.292700+00:00"
+      }
+    ]
+  }
 }
