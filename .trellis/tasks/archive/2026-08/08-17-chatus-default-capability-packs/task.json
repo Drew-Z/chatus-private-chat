@@ -16,7 +16,7 @@
   "base_branch": "main",
   "worktree_path": null,
   "commit": "8ccffe7ad8d7398871b53ff842800edfb98f1e86",
-  "pr_url": null,
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/97",
   "subtasks": [],
   "children": [
     "08-17-chatus-capability-catalog-adoption",
