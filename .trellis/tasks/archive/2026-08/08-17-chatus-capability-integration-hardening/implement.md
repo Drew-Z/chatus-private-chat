@@ -22,7 +22,7 @@ Start only after all four implementation children are complete and archived.
   `npx wrangler deploy --dry-run`, `git diff --check`.
 - [x] Verify no protected path changed and no live external request or production
   deployment occurred.
-- [ ] Commit/archive this child, perform parent AC1-AC12 review, then archive the
+- [x] Commit/archive this child, perform parent AC1-AC12 review, then archive the
   parent planning task.
 
 ## Validation Record
