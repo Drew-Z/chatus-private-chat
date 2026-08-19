@@ -380,3 +380,36 @@ Hardened pre-attempt authorization, vision revocation, session capability decodi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Harden Playwright CI installation
+
+**Date**: 2026-08-19
+**Task**: Harden Playwright CI installation
+**Branch**: `codex/playwright-ci-reliability`
+
+### Summary
+
+Removed apt from both PR browser installation paths, added bounded Chromium download governance and structural tests, and verified draft PR #98 with all local and remote quality/browser gates green.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `385aa0b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

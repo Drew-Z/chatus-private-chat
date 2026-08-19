@@ -36,6 +36,7 @@ type WorkflowStep = {
   uses?: string;
   if?: string;
   run?: string;
+  "timeout-minutes"?: number;
   env?: Record<string, unknown>;
   with?: Record<string, unknown>;
 };
@@ -296,6 +297,25 @@ describe("pull-request delivery workflow", () => {
     expect(agent.needs).toBe("changes");
     expect(agent.if).toBe("needs.changes.outputs.agent == 'true'");
     expect(joinJobRuns(agent)).toContain("npm run test:browser:agent");
+  });
+
+  it("installs package-locked Chromium without invoking apt in browser jobs", () => {
+    for (const [jobName, testCommand] of [
+      ["workspace-browser", "npm run test:browser:workspace"],
+      ["agent-browser", "npm run test:browser:agent"],
+    ] as const) {
+      const job = getJob(parsedCiWorkflow, jobName);
+      const install = getNamedStep(job, "Install Chromium");
+      expect(install.run).toBe("npx playwright install chromium");
+      expect(install["timeout-minutes"]).toBe(5);
+      expect(install.env).toEqual({
+        PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000",
+      });
+      expect(getNamedStepIndex(job, "Install Chromium")).toBeLessThan(
+        getRunStepIndex(job, testCommand),
+      );
+      expect(joinJobRuns(job)).not.toMatch(/--with-deps|install-deps|apt-get/gu);
+    }
   });
 
   it("normalizes frontend structure-check text before multi-line assertions", () => {
@@ -1021,6 +1041,12 @@ function getNamedStep(job: WorkflowJob, name: string): WorkflowStep {
 function getNamedStepIndex(job: WorkflowJob, name: string): number {
   const index = getJobSteps(job).findIndex((candidate) => candidate.name === name);
   if (index === -1) throw new Error(`Workflow step ${name} is missing`);
+  return index;
+}
+
+function getRunStepIndex(job: WorkflowJob, command: string): number {
+  const index = getJobSteps(job).findIndex((candidate) => candidate.run === command);
+  if (index === -1) throw new Error(`Workflow command ${command} is missing`);
   return index;
 }
 

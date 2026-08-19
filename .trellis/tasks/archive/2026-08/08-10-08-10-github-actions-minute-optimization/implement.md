@@ -8,7 +8,7 @@
 - [x] Group and bound Dependabot update PRs.
 - [x] Update delivery-governance structural tests and code spec.
 - [x] Run the full local Chatus quality gate without live provider or production operations.
-- [ ] Commit, push the isolated branch, and open a PR.
+- [x] Commit, push the isolated branch, and open a PR.
 
 ## Validation Commands
 

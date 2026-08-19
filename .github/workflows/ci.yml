@@ -132,7 +132,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - name: Install Chromium
+        timeout-minutes: 5
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
+        run: npx playwright install chromium
       - run: npm run test:browser:workspace
       - name: Retain Workspace Playwright artifacts
         if: always()
@@ -155,7 +159,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - name: Install Chromium
+        timeout-minutes: 5
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
+        run: npx playwright install chromium
       - name: Run local fake-Provider Agent acceptance
         env:
           CHATUS_E2E_ARTIFACT_DIR: test-results/agent-e2e-ci
