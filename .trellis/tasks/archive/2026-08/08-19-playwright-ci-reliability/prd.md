@@ -24,12 +24,12 @@ Make the pull-request Workspace and fake-Provider Agent browser gates complete r
 
 ## Acceptance Criteria
 
-- [ ] Both PR browser jobs use `npx playwright install chromium` and contain no `--with-deps` or `install-deps` command.
-- [ ] Both install steps use `timeout-minutes: 5` and `PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"` before their existing browser test step.
-- [ ] Delivery-governance tests structurally enforce the installation contract for both browser jobs.
-- [ ] Delivery-governance documentation explains that browser launch is the hosted-image dependency check and that installation must not invoke apt.
-- [ ] `npm run check:frontend`, `npm test`, `npm run test:browser:workspace`, `npm run test:browser:agent`, `npm run typecheck`, `npx wrangler deploy --dry-run`, `git diff --check`, and `python ./.trellis/scripts/task.py validate-all` pass without live Provider or production operations.
-- [ ] A dedicated pull request runs both GitHub browser jobs successfully, or any remaining failure is shown by job logs to occur after Chromium installation rather than in apt dependency resolution.
+- [x] Both PR browser jobs use `npx playwright install chromium` and contain no `--with-deps` or `install-deps` command.
+- [x] Both install steps use `timeout-minutes: 5` and `PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"` before their existing browser test step.
+- [x] Delivery-governance tests structurally enforce the installation contract for both browser jobs.
+- [x] Delivery-governance documentation explains that browser launch is the hosted-image dependency check and that installation must not invoke apt.
+- [x] `npm run check:frontend`, `npm test`, `npm run test:browser:workspace`, `npm run test:browser:agent`, `npm run typecheck`, `npx wrangler deploy --dry-run`, `git diff --check`, and `python ./.trellis/scripts/task.py validate-all` pass without live Provider or production operations.
+- [x] A dedicated pull request runs both GitHub browser jobs successfully, or any remaining failure is shown by job logs to occur after Chromium installation rather than in apt dependency resolution.
 
 ## Out Of Scope
 

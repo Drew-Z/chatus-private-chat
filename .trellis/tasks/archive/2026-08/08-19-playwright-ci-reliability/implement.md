@@ -5,10 +5,10 @@
 - [x] Replace both apt-owning Playwright install steps with the bounded Chromium-only contract.
 - [x] Extend workflow structural tests for exact command, environment, timeout, no-apt flags, and step ordering.
 - [x] Update the delivery-governance spec.
-- [ ] Run focused delivery-governance tests.
-- [ ] Run the full local serial quality and both browser suites.
-- [ ] Commit and push the isolated branch, open a dedicated draft PR, and observe both remote browser jobs.
-- [ ] Record the work commit and PR URL before archive review.
+- [x] Run focused delivery-governance tests.
+- [x] Run the full local serial quality and both browser suites.
+- [x] Commit and push the isolated branch, open a dedicated draft PR, and observe both remote browser jobs.
+- [x] Record the work commit and PR URL before archive review.
 
 ## Validation Commands
 
