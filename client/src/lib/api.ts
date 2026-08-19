@@ -44,6 +44,10 @@ import type {
   ModelMonitorTrendBucketV1,
 } from "../../../src/contracts/model-monitoring";
 import {
+  decodeCapabilityMonitoringSnapshot,
+  type CapabilityMonitoringSnapshotV1,
+} from "../../../src/contracts/capability-monitoring";
+import {
   isConversationAccessRole,
   isConversationGrantRole,
   isPrincipalId,
@@ -83,6 +87,7 @@ export type RouteProjection = {
 };
 
 export type ModelMonitorSnapshot = ModelMonitorSnapshotV1;
+export type CapabilityMonitorSnapshot = CapabilityMonitoringSnapshotV1;
 export type MemberModelAvailability = MemberModelAvailabilityV1;
 
 export type SkillProjection = {
@@ -713,6 +718,7 @@ export type AdminOperationsSnapshot = {
   finance: AdminProviderFinanceSnapshot;
   legacySurfaces: AdminLegacySurfaceSnapshot;
   modelMonitor?: ModelMonitorSnapshot;
+  capabilityMonitor?: CapabilityMonitorSnapshot;
 };
 
 export type AdminSkillConfig = {
@@ -1260,6 +1266,14 @@ export async function fetchAdminModelMonitor(): Promise<ModelMonitorSnapshot> {
   return data;
 }
 
+export async function fetchAdminCapabilityMonitor(): Promise<CapabilityMonitorSnapshot> {
+  const data = await requestJson("/api/admin/capability-monitor?window=24h&bucket=hour");
+  if (!isCapabilityMonitorSnapshot(data)) {
+    throw new ApiError("invalid_admin_capability_monitor_response", "能力监控数据格式无效。", 502);
+  }
+  return data;
+}
+
 export async function fetchModelAvailability(): Promise<MemberModelAvailability> {
   const data = await requestJson("/api/model-availability");
   if (!isMemberModelAvailability(data)) {
@@ -1269,13 +1283,14 @@ export async function fetchModelAvailability(): Promise<MemberModelAvailability>
 }
 
 export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
-  const [stats, audit, feedback, finance, legacySurfaces, modelMonitor] = await Promise.all([
+  const [stats, audit, feedback, finance, legacySurfaces, modelMonitor, capabilityMonitor] = await Promise.all([
     requestJson("/api/admin/stats"),
     requestJson("/api/admin/audit"),
     requestJson("/api/admin/feedback"),
     requestJson("/api/admin/provider-finance?limit=100"),
     fetchAdminLegacySurfaces(),
     fetchAdminModelMonitor().catch(() => undefined),
+    fetchAdminCapabilityMonitor().catch(() => undefined),
   ]);
   if (!isAdminOperationsStats(stats)) {
     throw new ApiError("invalid_admin_stats_response", "运营统计格式无效。", 502);
@@ -1289,7 +1304,15 @@ export async function fetchAdminOperations(): Promise<AdminOperationsSnapshot> {
   if (!isAdminProviderFinanceSnapshot(finance)) {
     throw new ApiError("invalid_admin_provider_finance_response", "服务商成本数据格式无效。", 502);
   }
-  return { stats, audit: audit.entries, feedback: feedback.entries, finance, legacySurfaces, ...(modelMonitor ? { modelMonitor } : {}) };
+  return {
+    stats,
+    audit: audit.entries,
+    feedback: feedback.entries,
+    finance,
+    legacySurfaces,
+    ...(modelMonitor ? { modelMonitor } : {}),
+    ...(capabilityMonitor ? { capabilityMonitor } : {}),
+  };
 }
 
 export async function fetchAdminLegacySurfaces(
@@ -2398,6 +2421,10 @@ export function isModelMonitorSnapshot(value: unknown): value is ModelMonitorSna
     && monitorCountsMatch(totals, models)
     && monitorCountsMatch(totals, runKinds)
     && failureClasses.reduce((sum, item) => sum + item.count, 0) === totals.failures;
+}
+
+export function isCapabilityMonitorSnapshot(value: unknown): value is CapabilityMonitorSnapshot {
+  return decodeCapabilityMonitoringSnapshot(value) !== null;
 }
 
 export function isMemberModelAvailability(value: unknown): value is MemberModelAvailability {

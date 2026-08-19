@@ -31,6 +31,7 @@ import {
   isMcpOAuthRevokeResponse,
   isMcpOAuthStartResponse,
   isMcpOAuthStatusResponse,
+  isCapabilityMonitorSnapshot,
   isMemberModelAvailability,
   isModelMonitorSnapshot,
   isAdminUsageResetResponse,
@@ -2211,5 +2212,72 @@ describe("React client runtime validation", () => {
     expect(isMemberModelAvailability(availability)).toBe(true);
     expect(isMemberModelAvailability({ ...availability, routes: [{ ...availability.routes[0], providerId: "hidden" }] })).toBe(false);
     expect(isMemberModelAvailability({ ...availability, routes: [{ ...availability.routes[0], message: "healthy" }] })).toBe(false);
+  });
+
+  it("validates exact content-free capability monitoring projections", () => {
+    const generatedAt = 1_900_000_000_000;
+    const periodStart = generatedAt - 86_400_000;
+    const bucketStart = Math.floor((generatedAt - 1_000) / 3_600_000) * 3_600_000;
+    const rows = [
+      {
+        version: 1,
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        status: "succeeded",
+        bucketStart,
+        count: 2,
+        latencySumMs: 300,
+        latencyCount: 2,
+        lastOccurredAt: generatedAt - 1_000,
+      },
+      {
+        version: 1,
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        status: "failed",
+        bucketStart,
+        count: 1,
+        latencySumMs: 300,
+        latencyCount: 1,
+        lastOccurredAt: generatedAt - 2_000,
+      },
+    ];
+    const snapshot = {
+      version: 1,
+      window: "24h",
+      bucket: "hour",
+      generatedAt,
+      periodStart,
+      periodEnd: generatedAt,
+      evidence: "fresh",
+      stale: false,
+      rows,
+      capabilities: [{
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        total: 3,
+        succeeded: 2,
+        failed: 1,
+        denied: 0,
+        cancelled: 0,
+        timedOut: 0,
+        successRate: 2 / 3,
+        averageLatencyMs: 200,
+        lastOccurredAt: generatedAt - 1_000,
+      }],
+    };
+    expect(isCapabilityMonitorSnapshot(snapshot)).toBe(true);
+    expect(isCapabilityMonitorSnapshot({ ...snapshot, query: "private" })).toBe(false);
+    expect(isCapabilityMonitorSnapshot({ ...snapshot, rows: [{ ...rows[0], kind: "tool" }, rows[1]] })).toBe(false);
+    expect(isCapabilityMonitorSnapshot({
+      ...snapshot,
+      capabilities: [{ ...snapshot.capabilities[0], total: 4 }],
+    })).toBe(false);
+    expect(isCapabilityMonitorSnapshot({
+      ...snapshot,
+      evidence: "no_data",
+      rows: [],
+      capabilities: [],
+    })).toBe(true);
   });
 });

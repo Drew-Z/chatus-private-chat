@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { UIMessage } from "ai";
 import { ConversationSidebar, type SidebarView } from "../../../../client/src/components/ConversationSidebar";
@@ -23,6 +23,7 @@ import {
 } from "../../../../client/src/lib/state";
 import type { AdminOperationsSnapshot, AdminReliabilityProvider, AgentConversation, MemberModelAvailability, ModelMonitorSnapshot, SessionProjection } from "../../../../client/src/lib/api";
 import { resolveAgentError } from "../../../../client/src/lib/agent-errors";
+import type { CapabilityTurnSnapshot, CapabilityTurnStatus } from "../../../../client/src/lib/capability-turn";
 import { providerTurnProgressText } from "../../../../client/src/lib/provider-turn-progress";
 import type { ThemePreference } from "../../../../client/src/lib/device-preferences";
 import {
@@ -116,10 +117,19 @@ const memberSession: SessionProjection = {
     label: "高质量推理线路",
     model: "synthetic-reasoning-model-with-a-long-name",
     type: "openai-chat",
-            supportsImages: true,
-            imageMode: "native",
-            supportsTools: true,
+    supportsImages: true,
+    imageMode: "native",
+    supportsTools: true,
     healthStatus: "healthy",
+  }, {
+    id: "balanced",
+    label: "均衡备用线路",
+    model: "synthetic-balanced-model",
+    type: "openai-chat",
+    supportsImages: false,
+    imageMode: "assisted_preanswer",
+    supportsTools: true,
+    healthStatus: "unknown",
   }],
   defaultRoute: "reasoning",
   allowBringYourOwnKey: false,
@@ -153,6 +163,34 @@ const memberSession: SessionProjection = {
       latency: "small",
       cost: "none",
     },
+  }, {
+    id: "chatus:web_research",
+    label: "联网研究",
+    description: "通过已审核的只读 MCP 工具获取当前公开来源。",
+    source: "chatus",
+    activation: "explicit_turn",
+    availability: "available",
+    disclosure: {
+      execution: "reviewed_mcp",
+      externalRequest: true,
+      dataClasses: ["search_query"],
+      latency: "variable",
+      cost: "external_service",
+    },
+  }, {
+    id: "chatus:vision_assist",
+    label: "视觉辅助",
+    description: "在文字模型回答前生成受限图像证据。",
+    source: "chatus",
+    activation: "route_augmentation",
+    availability: "available",
+    disclosure: {
+      execution: "auxiliary_provider",
+      externalRequest: true,
+      dataClasses: ["image"],
+      latency: "variable",
+      cost: "provider_request",
+    },
   }],
   skills: [{ id: "project", label: "项目协作", description: "合成测试能力", toolIds: ["search"] }],
   tools: [{ id: "search", label: "项目资料检索", description: "合成测试工具", source: "builtin", confirmation: "always" }],
@@ -166,6 +204,20 @@ const memberSession: SessionProjection = {
     status: "connected",
   }],
   agent: { transport: "websocket", basePath: "agent", instance: "visual-fixture" },
+};
+
+const setupRequiredMemberSession: SessionProjection = {
+  ...memberSession,
+  availableCapabilities: memberSession.availableCapabilities.map((capability) => capability.id === "chatus:web_research"
+    ? { ...capability, availability: "requires_setup", unavailableReason: "connection_required" }
+    : capability.id === "chatus:vision_assist"
+      ? { ...capability, availability: "requires_setup", unavailableReason: "helper_unavailable" }
+      : capability),
+  mcpConnections: memberSession.mcpConnections.map((connection) => ({
+    ...connection,
+    connected: false,
+    status: "disconnected",
+  })),
 };
 
 const memberModelAvailability: MemberModelAvailability = {
@@ -805,6 +857,31 @@ function fixtureAttachments(mode: string | null): DraftAttachment[] {
   }];
 }
 
+function readCapabilityTurnFixture(value: string | null, conversationId: string): CapabilityTurnSnapshot | null {
+  const fixtures: Partial<Record<CapabilityTurnStatus, CapabilityTurnSnapshot["items"][number]>> = {
+    selected: { kind: "workflow_selection", status: "selected", recovery: [] },
+    waiting: { kind: "image_understanding", status: "waiting", recovery: [] },
+    running: { kind: "web_research", status: "running", recovery: [] },
+    succeeded: { kind: "tool_execution", status: "succeeded", recovery: [] },
+    unavailable: {
+      kind: "image_understanding",
+      status: "unavailable",
+      recovery: ["remove_images", "switch_route", "connect_mcp"],
+    },
+    denied: { kind: "tool_execution", status: "denied", recovery: [] },
+    timed_out: { kind: "web_research", status: "timed_out", recovery: ["retry"] },
+    cancelled: { kind: "workflow_selection", status: "cancelled", recovery: ["retry"] },
+    error: { kind: "web_research", status: "error", recovery: ["retry"] },
+  };
+  const status = value === "empty-result"
+    ? "error"
+    : value && Object.prototype.hasOwnProperty.call(fixtures, value)
+      ? value as CapabilityTurnStatus
+      : null;
+  const item = status ? fixtures[status] : undefined;
+  return item ? { conversationId, items: [item] } : null;
+}
+
 function WorkspaceFixture() {
   const params = new URLSearchParams(window.location.search);
   const fixtureAccessRole = readFixtureAccessRole(params.get("acl"));
@@ -821,7 +898,12 @@ function WorkspaceFixture() {
   const [sidebarOpen, setSidebarOpen] = useState(params.get("drawer") === "open");
   const [sidebarView, setSidebarView] = useState<SidebarView>("history");
   const [inspectorOpen, setInspectorOpen] = useState(params.get("inspector") === "open");
-  const [inspectorSection, setInspectorSection] = useState<InspectorSection>(params.get("section") === "files" ? "files" : "model");
+  const requestedInspectorSection = params.get("section");
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>(
+    requestedInspectorSection === "files" || requestedInspectorSection === "sharing"
+      ? requestedInspectorSection
+      : "capabilities",
+  );
   const [memberSettingsOpen, setMemberSettingsOpen] = useState(params.get("settings") === "open");
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
     const value = params.get("theme");
@@ -846,6 +928,11 @@ function WorkspaceFixture() {
   const [financeFixtureResult, setFinanceFixtureResult] = useState<{ kind: string; effectiveFrom?: number; createdAt?: number }>({ kind: "" });
   const [adminLoggedOut, setAdminLoggedOut] = useState(false);
   const [mcpNotice, setMcpNotice] = useState<McpConnectionNotice | null>({ kind: "warning", text: "一个连接需要重新授权或管理员重审。" });
+  const [mcpConnectionsOpen, setMcpConnectionsOpen] = useState(false);
+  const mcpConnectionsOpener = useRef<HTMLElement | null>(null);
+  const [capabilityTurn, setCapabilityTurn] = useState<CapabilityTurnSnapshot | null>(() => (
+    readCapabilityTurnFixture(params.get("capability"), initialActiveId)
+  ));
   const forcedPhase = readTurnPhase(params.get("phase"));
   const turnPhase = forcedPhase || (busy ? "waiting-first-output" : "completed");
   const turnBusy = isActiveTurnPhase(turnPhase);
@@ -881,7 +968,11 @@ function WorkspaceFixture() {
   const logoutPending = logoutState === "pending";
   const workspaceBlocked = blocked || logoutPending;
   const connectionState = (params.get("connection") || "ready") as ConnectionState;
-  const session = params.get("access") === "guest" ? guestSession : memberSession;
+  const session = params.get("access") === "guest"
+    ? guestSession
+    : params.get("setup") === "required"
+      ? setupRequiredMemberSession
+      : memberSession;
   const routeId = session.defaultRoute || "reasoning";
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
   const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
@@ -893,6 +984,21 @@ function WorkspaceFixture() {
   const parentMissing = Boolean(activeConversation?.parentChatId && !parentConversation);
 
   const handleMessageAction = async (_action: MessageAction, _editedText?: string) => undefined;
+
+  const openMcpConnections = () => {
+    mcpConnectionsOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMcpConnectionsOpen(true);
+    setMcpNotice(null);
+  };
+
+  const closeMcpConnections = () => {
+    setMcpConnectionsOpen(false);
+    const opener = mcpConnectionsOpener.current;
+    mcpConnectionsOpener.current = null;
+    window.requestAnimationFrame(() => {
+      if (opener?.isConnected) opener.focus();
+    });
+  };
 
   const addAttachments = (files: File[]) => {
     const currentIds = new Set(attachments.map((attachment) => attachment.id));
@@ -1111,7 +1217,7 @@ function WorkspaceFixture() {
           onViewChange={(view) => {
             setSidebarView(view);
             if (view === "files") setInspectorSection("files");
-            else if (view === "settings") setInspectorSection("model");
+            else if (view === "settings") setInspectorSection("capabilities");
             if (view !== "history") setInspectorOpen(true);
           }}
           onSelect={(conversation) => setActiveId(conversation.id)}
@@ -1149,7 +1255,7 @@ function WorkspaceFixture() {
             parentConversation={parentConversation}
             parentMissing={parentMissing}
             onOpenSidebar={() => setSidebarOpen(true)}
-            onOpenRouteSettings={() => { setInspectorSection("model"); setInspectorOpen(true); setSidebarOpen(false); }}
+            onOpenRouteSettings={() => { setInspectorSection("capabilities"); setInspectorOpen(true); setSidebarOpen(false); }}
             onReturnToParent={() => {
               if (parentConversation) setActiveId(parentConversation.id);
             }}
@@ -1234,10 +1340,13 @@ function WorkspaceFixture() {
           routeId={routeId}
           modelAvailability={memberModelAvailability}
           modelAvailabilityRefreshing={false}
+          mcpConnections={session.mcpConnections}
+          capabilityTurn={capabilityTurn}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState="idle"
           busy={turnBusy || workspaceBlocked}
+          nestedOpen={mcpConnectionsOpen}
           onClose={() => setInspectorOpen(false)}
           onSectionChange={setInspectorSection}
           onConversationUpdated={(conversation) => setConversations((current) => current.map((item) => item.id === conversation.id ? conversation : item))}
@@ -1246,11 +1355,21 @@ function WorkspaceFixture() {
           onSkillModeChange={(nextSkillMode) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillMode: nextSkillMode } : conversation))}
           onSkillChange={(nextSkillIds) => setConversations((current) => current.map((conversation) => conversation.id === activeId ? { ...conversation, skillIds: nextSkillIds } : conversation))}
           onRetrySave={() => undefined}
+          onOpenMcpConnections={openMcpConnections}
+          onRetryCapabilityTurn={() => setCapabilityTurn((current) => current ? {
+            ...current,
+            items: current.items.map((item) => ({ ...item, status: "selected", recovery: [] })),
+          } : current)}
+          onRemoveCapabilityImages={() => setAttachments((current) => {
+            const images = current.filter((attachment) => attachment.kind === "image");
+            releaseAttachmentPreviews(images);
+            return current.filter((attachment) => attachment.kind !== "image");
+          })}
         />
       </div>
       <MemberSettingsCenter
         open={memberSettingsOpen}
-        nestedOpen={false}
+        nestedOpen={mcpConnectionsOpen}
         session={session}
         themePreference={themePreference}
         connectedMcpCount={session.mcpConnections.filter((item) => item.connected).length}
@@ -1258,11 +1377,23 @@ function WorkspaceFixture() {
         onClose={() => setMemberSettingsOpen(false)}
         onThemePreferenceChange={(next) => { setThemePreference(next); return true; }}
         onOpenMemory={() => undefined}
-        onOpenMcpConnections={() => undefined}
+        onOpenMcpConnections={openMcpConnections}
         onExportUserData={async () => ({ truncated: false })}
         onRevokeAllSessions={async () => undefined}
         onDeleteUserData={async () => undefined}
       />
+      {mcpConnectionsOpen && (
+        <McpConnectionsDialog
+          connections={session.mcpConnections}
+          busyServerId=""
+          notice={mcpNotice}
+          onClose={closeMcpConnections}
+          onRefresh={async () => setMcpNotice({ kind: "success", text: "连接状态已刷新。" })}
+          onConnect={async () => setMcpNotice({ kind: "success", text: "合成授权跳转已验证。" })}
+          onDiscover={async () => setMcpNotice({ kind: "success", text: "已生成发现候选：3 个工具，1 个被拒绝。" })}
+          onRevoke={async () => setMcpNotice({ kind: "success", text: "MCP 授权已撤销。" })}
+        />
+      )}
     </main>
   );
 }

@@ -752,10 +752,23 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await attachScreenshot(page, testInfo, "guest-workspace");
 });
 
-test("member Skill mode switches between automatic and exact manual selection", async ({ page }, testInfo) => {
-  await page.getByRole("button", { name: "查看线路与状态" }).click();
-  await expect(page.locator(".model-availability-footnote")).toContainText("更新时间：");
-  await page.getByRole("button", { name: "Skills", exact: true }).click();
+test("member capability inspector unifies readiness and exact workflow selection", async ({ page }, testInfo) => {
+  const opener = page.getByRole("button", { name: "查看线路与状态" });
+  await opener.click();
+  const inspector = page.locator(".conversation-inspector");
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByRole("button", { name: "能力", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(inspector.locator(".model-availability-footnote")).toContainText("更新时间：");
+  await expect(inspector.locator("#capability-route-title")).toHaveText("模型与线路");
+  await expect(inspector.locator("#capability-workflow-title")).toHaveText("工作流");
+  await expect(inspector.locator("#capability-turn-tools-title")).toHaveText("本轮工具");
+  await expect(inspector.locator("#capability-image-title")).toHaveText("图像理解");
+  await expect(inspector.locator("#capability-tools-title")).toHaveText("工具与连接");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "联网研究" })).toContainText("可用");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "视觉辅助" })).toContainText("可用");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("1 已连接");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("0 待处理");
+
   const mode = page.getByRole("group", { name: "Skill 模式" });
   const automatic = mode.getByRole("button", { name: "自动" });
   const manual = mode.getByRole("button", { name: "手动" });
@@ -763,16 +776,154 @@ test("member Skill mode switches between automatic and exact manual selection", 
 
   await expect(automatic).toHaveAttribute("aria-pressed", "true");
   await expect(manual).toHaveAttribute("aria-pressed", "false");
-  await expect(projectSkill).toBeChecked();
+  await expect(page.locator(".message-skill-selection")).toContainText("上次成功");
+  await expect(projectSkill).not.toBeChecked();
   await expect(projectSkill).toBeDisabled();
 
   await manual.click();
   await expect(automatic).toHaveAttribute("aria-pressed", "false");
   await expect(manual).toHaveAttribute("aria-pressed", "true");
   await expect(projectSkill).toBeEnabled();
+  await expect(projectSkill).toBeChecked();
   await projectSkill.uncheck();
   await expect(projectSkill).not.toBeChecked();
-  if (testInfo.project.name === "desktop-1440") await attachScreenshot(page, testInfo, "conversation-inspector");
+
+  const geometry = await inspector.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const durationMs = (value: string) => Math.max(...value.split(",").map((duration) => (
+      duration.trim().endsWith("ms") ? Number.parseFloat(duration) : Number.parseFloat(duration) * 1_000
+    )));
+    const styles = getComputedStyle(element);
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      inspectorFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth,
+      contentFits: element.scrollWidth <= element.clientWidth,
+      transitionMs: durationMs(styles.transitionDuration),
+      animationMs: durationMs(styles.animationDuration),
+    };
+  });
+  expect(geometry).toMatchObject({ documentFits: true, bodyFits: true, inspectorFits: true, contentFits: true });
+  expect(geometry.transitionMs).toBeLessThanOrEqual(1);
+  expect(geometry.animationMs).toBeLessThanOrEqual(1);
+
+  if (testInfo.project.name === "touch-390") {
+    const targetSizes = await inspector.locator("button, select").evaluateAll((elements) => elements
+      .filter((element) => element.getClientRects().length > 0)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          name: element.getAttribute("aria-label") || element.textContent?.trim() || element.tagName,
+          width: rect.width,
+          height: rect.height,
+        };
+      }));
+    expect(targetSizes.length).toBeGreaterThan(6);
+    expect(targetSizes.filter(({ width, height }) => width < 44 || height < 44)).toEqual([]);
+
+    const close = inspector.getByRole("button", { name: "关闭对话上下文" });
+    await close.focus();
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect.poll(() => page.evaluate(() => Boolean(
+      document.querySelector(".conversation-inspector")?.contains(document.activeElement),
+    ))).toBe(true);
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+  }
+
+  await inspector.locator(".inspector-body").evaluate((element) => { element.scrollTop = 0; });
+  await attachScreenshot(page, testInfo, "conversation-capabilities");
+  await page.keyboard.press("Escape");
+  await expect(inspector).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test("capability inspector distinguishes ready and setup-required projections", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "setup readiness targets desktop and 390px");
+  await page.goto("/?inspector=open&setup=required");
+  const inspector = page.locator(".conversation-inspector");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "联网研究" })).toContainText("需要连接");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "视觉辅助" })).toContainText("辅助线路未就绪");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("0 已连接");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("1 待处理");
+  await attachScreenshot(page, testInfo, "conversation-capabilities-setup-required");
+});
+
+test("capability inspector reports every bounded turn state", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "runtime state matrix uses the desktop fixture");
+  const cases = [
+    ["selected", "工作流选择", "已选择"],
+    ["waiting", "图像理解", "等待中"],
+    ["running", "联网研究", "执行中"],
+    ["succeeded", "工具执行", "已完成"],
+    ["unavailable", "图像理解", "不可用"],
+    ["denied", "工具执行", "已拒绝"],
+    ["timed_out", "联网研究", "已超时"],
+    ["cancelled", "工作流选择", "已取消"],
+    ["empty-result", "联网研究", "失败"],
+  ] as const;
+
+  for (const [fixture, kind, status] of cases) {
+    await page.goto(`/?inspector=open&capability=${fixture}`);
+    const liveRegion = page.locator(".capability-turn-status");
+    await expect(liveRegion).toHaveAttribute("aria-live", "polite");
+    await expect(liveRegion).toHaveAttribute("aria-atomic", "true");
+    const row = liveRegion.locator(".capability-turn-row");
+    await expect(row).toContainText(kind);
+    await expect(row).toContainText(status);
+  }
+});
+
+test("capability recovery reuses draft, route, and nested connection owners", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "recovery coverage targets desktop and 390px");
+  await page.goto("/?inspector=open&capability=timed_out");
+  const inspector = page.locator(".conversation-inspector");
+  const retry = inspector.getByRole("button", { name: "重试本轮" });
+  await retry.click();
+  await expect(inspector.locator(".capability-turn-row")).toContainText("已选择");
+  await expect(retry).toHaveCount(0);
+
+  await page.goto("/?inspector=open&capability=unavailable&attachments=states");
+  const recoveryInspector = page.locator(".conversation-inspector");
+  const routeSelect = recoveryInspector.getByRole("combobox", { name: "当前模型线路" });
+  await recoveryInspector.getByRole("button", { name: "切换模型" }).click();
+  await expect(routeSelect).toBeFocused();
+
+  await recoveryInspector.getByRole("button", { name: "移除图片" }).click();
+  await expect(page.locator(".attachment-preview")).toHaveCount(1);
+  await expect(page.locator(".attachment-preview")).toContainText("notes.md");
+
+  const manageConnection = recoveryInspector.getByRole("button", { name: "管理连接" });
+  await manageConnection.click();
+  const dialog = page.getByRole("dialog", { name: "MCP 连接" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "关闭 MCP 连接" })).toBeFocused();
+  if (testInfo.project.name === "touch-390") {
+    const undersized = await dialog.locator("button").evaluateAll((elements) => elements
+      .filter((element) => element.getClientRects().length > 0)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          name: element.getAttribute("aria-label") || element.textContent?.trim() || element.tagName,
+          width: rect.width,
+          height: rect.height,
+        };
+      })
+      .filter(({ width, height }) => width < 44 || height < 44));
+    expect(undersized).toEqual([]);
+  }
+  const refresh = dialog.getByRole("button", { name: "刷新 MCP 连接" });
+  await refresh.focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect.poll(() => page.evaluate(() => Boolean(
+    document.querySelector(".mcp-connections-dialog")?.contains(document.activeElement),
+  ))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(manageConnection).toBeFocused();
+  await expect(recoveryInspector).toBeVisible();
+  await attachScreenshot(page, testInfo, "conversation-capability-recovery");
 });
 
 test("member settings center keeps global preferences out of conversation context", async ({ page }, testInfo) => {

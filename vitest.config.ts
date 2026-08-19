@@ -19,6 +19,8 @@ export default defineConfig({
     // The measured Node/Workers split missed its final performance gate.
     // Keep the full Miniflare suite serial for Windows port stability.
     maxWorkers: 1,
+    // Cross-Durable-Object integration cases can exceed Vitest's 5s default on Windows.
+    testTimeout: 10_000,
   },
   plugins: [
     cloudflareTest({

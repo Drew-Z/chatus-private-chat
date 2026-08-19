@@ -122,6 +122,16 @@ import {
   type ProviderAttemptAvailabilityEvidenceV1,
 } from "./contracts/model-monitoring";
 import {
+  CAPABILITY_ID_TOOL_EXECUTION,
+  CAPABILITY_ID_VISION_ASSIST,
+  CAPABILITY_ID_WEB_RESEARCH,
+  CAPABILITY_ID_WORKFLOW_SELECTION,
+  CAPABILITY_MONITORING_WINDOW_MS,
+  buildCapabilityMonitoringSnapshot,
+  type CapabilityMonitoringEventV1,
+  type CapabilityMonitoringStatus,
+} from "./contracts/capability-monitoring";
+import {
   PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
   decodeProviderBudgetOperatorActionRequest,
   decodeProviderBudgetPolicyMutationInput,
@@ -573,6 +583,7 @@ const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ADMIN_CONFIG_MUTATION_COORDINATOR = "$admin-config";
+const CAPABILITY_MONITORING_COORDINATOR = "$capability-monitoring-v1";
 const ADMIN_CONFIG_MUTATION_WAIT_MS = 10_000;
 const ADMIN_CONFIG_MUTATION_LEASE_TTL_MS = 60_000;
 const ADMIN_CONFIG_MUTATION_RENEW_MS = 20_000;
@@ -3067,6 +3078,10 @@ async function handleAdminApi(
 
   if (url.pathname === "/api/admin/model-monitor" && request.method === "GET") {
     return handleAdminModelMonitor(env, url);
+  }
+
+  if (url.pathname === "/api/admin/capability-monitor" && request.method === "GET") {
+    return handleAdminCapabilityMonitor(env, url);
   }
 
   if (url.pathname === "/api/admin/legacy-surfaces" && request.method === "GET") {
@@ -7402,6 +7417,24 @@ async function handleAdminModelMonitor(env: Env, url: URL): Promise<Response> {
   }
 }
 
+async function handleAdminCapabilityMonitor(env: Env, url: URL): Promise<Response> {
+  const window = url.searchParams.get("window") || "24h";
+  const bucket = url.searchParams.get("bucket") || "hour";
+  if (window !== "24h" || bucket !== "hour") {
+    return jsonResponse({ error: "invalid_capability_monitor_query" }, 400);
+  }
+  const generatedAt = Date.now();
+  const periodStart = generatedAt - CAPABILITY_MONITORING_WINDOW_MS;
+  try {
+    const rows = await env.PROVIDER_COORDINATOR
+      .getByName(CAPABILITY_MONITORING_COORDINATOR)
+      .getCapabilityMonitoringAggregate({ periodStart, periodEnd: generatedAt });
+    return jsonResponse(buildCapabilityMonitoringSnapshot(rows, generatedAt));
+  } catch {
+    return jsonResponse({ error: "capability_monitor_unavailable", retryable: true }, 503);
+  }
+}
+
 async function handleModelAvailability(env: Env, session: Session): Promise<Response> {
   if (session.kind !== "member") return jsonResponse({ error: "member_required" }, 403);
   const config = await loadAppConfig(env);
@@ -8646,6 +8679,44 @@ class VisionAssistError extends Error {
   }
 }
 
+function scheduleCapabilityMonitoring(
+  env: Env,
+  waitUntil: TeamAgentTurnInput["waitUntil"],
+  event: CapabilityMonitoringEventV1,
+): void {
+  if (!waitUntil) return;
+  const write = env.PROVIDER_COORDINATOR
+    .getByName(CAPABILITY_MONITORING_COORDINATOR)
+    .recordCapabilityMonitoringEvent(event)
+    .then(() => undefined)
+    .catch(() => undefined);
+  try {
+    waitUntil(write);
+  } catch {
+    // Passive monitoring must never affect the turn.
+  }
+}
+
+function capabilityMonitoringLatency(startedAt: number): number {
+  return Math.min(600_000, Math.max(0, Date.now() - startedAt));
+}
+
+function capabilityMonitoringStatusForError(error: unknown): CapabilityMonitoringStatus {
+  const code = error instanceof CapabilityError
+    ? error.code
+    : error instanceof WebResearchRuntimeError
+      ? error.code
+      : error instanceof Error
+        ? `${error.name}:${error.message}`
+        : "";
+  if (code === "request_cancelled" || /abort|cancel/i.test(code)) return "cancelled";
+  if (/timeout|timed_out|超时/i.test(code)) return "timed_out";
+  if (
+    /not_allowed|not_found|review_required|connection_required|arguments_invalid|changed|closed|limit_exceeded|budget_exceeded/i.test(code)
+  ) return "denied";
+  return "failed";
+}
+
 async function runVisionAssist(
   env: Env,
   config: AppConfig,
@@ -8864,6 +8935,14 @@ export async function prepareTeamAgentTurn(
   }
   const webResearchRequested = requestedCapabilityIds.includes(WEB_RESEARCH_CAPABILITY_ID);
   if (webResearchRequested && (session.kind !== "member" || input.disableTools === true || input.continuation === true)) {
+    scheduleCapabilityMonitoring(env, input.waitUntil, {
+      version: 1,
+      capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+      kind: "web_research",
+      status: "denied",
+      latencyMs: null,
+      occurredAt: Date.now(),
+    });
     return {
       ok: false,
       error: "web_research_not_available",
@@ -8925,6 +9004,14 @@ export async function prepareTeamAgentTurn(
     && input.skillMode !== "automatic"
     && getSelectedSkills(config, selectedSkillIds, access.user).length >= MAX_SELECTED_SKILLS
   ) {
+    scheduleCapabilityMonitoring(env, input.waitUntil, {
+      version: 1,
+      capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+      kind: "web_research",
+      status: "denied",
+      latencyMs: null,
+      occurredAt: Date.now(),
+    });
     return {
       ok: false,
       error: "web_research_slot_limit",
@@ -8934,10 +9021,31 @@ export async function prepareTeamAgentTurn(
   }
   if (session.kind === "member" && input.skillMode === "automatic" && selectedPublicRoute) {
     const availableSkills = getPublicCapabilities(config, access.user).skills;
+    const selectionStartedAt = availableSkills.length ? Date.now() : null;
     if (availableSkills.length) {
       const selectorAdmission = await admitOnce();
-      if (!selectorAdmission.ok) return rejectAdmission(selectorAdmission);
-      if (input.abortSignal?.aborted) return cancelTurn();
+      if (!selectorAdmission.ok) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+          kind: "workflow_selection",
+          status: "denied",
+          latencyMs: null,
+          occurredAt: Date.now(),
+        });
+        return rejectAdmission(selectorAdmission);
+      }
+      if (input.abortSignal?.aborted) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+          kind: "workflow_selection",
+          status: "cancelled",
+          latencyMs: capabilityMonitoringLatency(selectionStartedAt!),
+          occurredAt: Date.now(),
+        });
+        return cancelTurn();
+      }
     }
     let selectorAttempt: AutomaticSkillSelectorAttempt;
     try {
@@ -8953,8 +9061,35 @@ export async function prepareTeamAgentTurn(
         providerAttempts,
       });
     } catch (error) {
+      if (selectionStartedAt !== null) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+          kind: "workflow_selection",
+          status: capabilityMonitoringStatusForError(error),
+          latencyMs: capabilityMonitoringLatency(selectionStartedAt),
+          occurredAt: Date.now(),
+        });
+      }
       if (admission?.ok) await admission.release().catch(() => undefined);
       throw error;
+    }
+    if (selectionStartedAt !== null) {
+      const status: CapabilityMonitoringStatus = input.abortSignal?.aborted
+        ? "cancelled"
+        : selectorAttempt.skillIds?.length
+          ? "succeeded"
+          : selectorAttempt.reason === "timeout"
+            ? "timed_out"
+            : "failed";
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+        kind: "workflow_selection",
+        status,
+        latencyMs: capabilityMonitoringLatency(selectionStartedAt),
+        occurredAt: Date.now(),
+      });
     }
     if (input.abortSignal?.aborted) return cancelTurn();
 
@@ -8983,8 +9118,28 @@ export async function prepareTeamAgentTurn(
   let webResearch: WebResearchEvidenceV1 | undefined;
   if (webResearchRequested) {
     const researchAdmission = await admitOnce();
-    if (!researchAdmission.ok) return rejectAdmission(researchAdmission);
-    if (input.abortSignal?.aborted) return cancelTurn();
+    if (!researchAdmission.ok) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return rejectAdmission(researchAdmission);
+    }
+    if (input.abortSignal?.aborted) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "cancelled",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return cancelTurn();
+    }
 
     config = await loadAppConfig(env);
     access = await getRouteAccess(config, session, env);
@@ -8997,6 +9152,14 @@ export async function prepareTeamAgentTurn(
       const error = selectedSkills.length >= MAX_SELECTED_SKILLS
         ? "web_research_slot_limit" as const
         : "web_research_not_available" as const;
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
       return { ok: false, error, message: agentErrorMessage(error), status: error === "web_research_slot_limit" ? 409 : 403 };
     }
     const binding = resolveWebResearchBinding(config, access.user);
@@ -9007,8 +9170,17 @@ export async function prepareTeamAgentTurn(
         : binding.reason === "connection_required"
           ? "web_research_connection_required" as const
           : "web_research_not_available" as const;
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
       return { ok: false, error, message: agentErrorMessage(error), status: error === "web_research_not_available" ? 403 : 409 };
     }
+    const researchStartedAt = Date.now();
     try {
       webResearch = await executeWebResearch(
         mcpRuntime(env, session).createExecution(),
@@ -9016,7 +9188,23 @@ export async function prepareTeamAgentTurn(
         input.webResearchQuery,
         input.abortSignal,
       );
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "succeeded",
+        latencyMs: capabilityMonitoringLatency(researchStartedAt),
+        occurredAt: Date.now(),
+      });
     } catch (error) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: capabilityMonitoringStatusForError(error),
+        latencyMs: capabilityMonitoringLatency(researchStartedAt),
+        occurredAt: Date.now(),
+      });
       if (admission?.ok) await admission.release().catch(() => undefined);
       const code = error instanceof WebResearchRuntimeError ? error.code : "web_research_not_available";
       const status = code === "request_cancelled" ? 499
@@ -9051,8 +9239,29 @@ export async function prepareTeamAgentTurn(
   }
   if (selectedImageMode === "assisted_preanswer" && visionScope.missing.length) {
     const visionAdmission = await admitOnce();
-    if (!visionAdmission.ok) return rejectAdmission(visionAdmission);
-    if (input.abortSignal?.aborted) return cancelTurn();
+    if (!visionAdmission.ok) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return rejectAdmission(visionAdmission);
+    }
+    if (input.abortSignal?.aborted) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: "cancelled",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return cancelTurn();
+    }
+    const visionStartedAt = Date.now();
     try {
       const evidence = await runVisionAssist(
         env,
@@ -9061,7 +9270,17 @@ export async function prepareTeamAgentTurn(
         input.abortSignal,
         providerAttempts,
       );
-      if (input.abortSignal?.aborted) return cancelTurn();
+      if (input.abortSignal?.aborted) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_VISION_ASSIST,
+          kind: "auxiliary_vision",
+          status: "cancelled",
+          latencyMs: capabilityMonitoringLatency(visionStartedAt),
+          occurredAt: Date.now(),
+        });
+        return cancelTurn();
+      }
       await input.persistVisionEvidence?.(
         visionScope.missing.map((source) => source.sourceMessageId),
         evidence,
@@ -9073,7 +9292,23 @@ export async function prepareTeamAgentTurn(
         )),
         missing: [],
       };
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: "succeeded",
+        latencyMs: capabilityMonitoringLatency(visionStartedAt),
+        occurredAt: Date.now(),
+      });
     } catch (error) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: capabilityMonitoringStatusForError(error),
+        latencyMs: capabilityMonitoringLatency(visionStartedAt),
+        occurredAt: Date.now(),
+      });
       if (admission?.ok) await admission.release().catch(() => undefined);
       const projected = projectAgentStreamError(error);
       const status = providerBudgetErrorHttpStatus(projected)
@@ -9095,17 +9330,38 @@ export async function prepareTeamAgentTurn(
   const visionInspect = forceImageInspect
     ? (signal?: AbortSignal) => {
         visionInspectPromise ||= (async () => {
-          const evidence = await runVisionAssist(env, config, visionScope.missing, signal, providerAttempts);
-          if (signal?.aborted) {
-            throw signal.reason instanceof Error
-              ? signal.reason
-              : new DOMException("The operation was aborted", "AbortError");
+          const visionStartedAt = Date.now();
+          try {
+            const evidence = await runVisionAssist(env, config, visionScope.missing, signal, providerAttempts);
+            if (signal?.aborted) {
+              throw signal.reason instanceof Error
+                ? signal.reason
+                : new DOMException("The operation was aborted", "AbortError");
+            }
+            await input.persistVisionEvidence?.(
+              visionScope.missing.map((source) => source.sourceMessageId),
+              evidence,
+            );
+            scheduleCapabilityMonitoring(env, input.waitUntil, {
+              version: 1,
+              capabilityId: CAPABILITY_ID_VISION_ASSIST,
+              kind: "auxiliary_vision",
+              status: "succeeded",
+              latencyMs: capabilityMonitoringLatency(visionStartedAt),
+              occurredAt: Date.now(),
+            });
+            return evidence;
+          } catch (error) {
+            scheduleCapabilityMonitoring(env, input.waitUntil, {
+              version: 1,
+              capabilityId: CAPABILITY_ID_VISION_ASSIST,
+              kind: "auxiliary_vision",
+              status: capabilityMonitoringStatusForError(error),
+              latencyMs: capabilityMonitoringLatency(visionStartedAt),
+              occurredAt: Date.now(),
+            });
+            throw error;
           }
-          await input.persistVisionEvidence?.(
-            visionScope.missing.map((source) => source.sourceMessageId),
-            evidence,
-          );
-          return evidence;
         })();
         return visionInspectPromise;
       }
@@ -9325,7 +9581,7 @@ export async function prepareTeamAgentTurn(
         }) satisfies CapabilityToolRunner,
         close: async () => undefined,
       }
-    : createAgentCapabilityRuntime(toolDefinitions, env, session);
+    : createAgentCapabilityRuntime(toolDefinitions, env, session, input.waitUntil);
 
   return {
     ok: true,
@@ -11447,15 +11703,39 @@ async function runCapabilityLoopInner(
     }
 
     if (totalCalls + turn.toolCalls.length > MAX_TOOL_CALLS) {
+      scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+        kind: "tool",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
       throw new CapabilityError("tool_call_limit", `单次对话最多执行 ${MAX_TOOL_CALLS} 次工具调用`);
     }
     const results: ProviderToolExecutionResult[] = [];
     for (const call of turn.toolCalls) {
       const definition = aliasMap.get(call.providerName);
       if (!definition || definition.id !== call.toolId) {
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: "denied",
+          latencyMs: null,
+          occurredAt: Date.now(),
+        });
         throw new CapabilityError("tool_not_allowed", "模型请求了未授权的工具");
       }
       if (!call.argumentsValid) {
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: "denied",
+          latencyMs: null,
+          occurredAt: Date.now(),
+        });
         throw new CapabilityError("tool_arguments_invalid", `工具 ${definition.label} 的参数不是有效 JSON`);
       }
       validateToolArguments(definition, call.arguments);
@@ -11475,16 +11755,46 @@ async function runCapabilityLoopInner(
       const policy = normalizeToolConfirmation(definition.config);
       let confirmation: "once" | "conversation" | undefined;
       if (policy !== "auto") {
-        if (!requestApproval) throw new CapabilityError("tool_confirmation_required", "工具调用需要用户确认");
+        if (!requestApproval) {
+          scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+            version: 1,
+            capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+            kind: "tool",
+            status: "denied",
+            latencyMs: null,
+            occurredAt: Date.now(),
+          });
+          throw new CapabilityError("tool_confirmation_required", "工具调用需要用户确认");
+        }
         const approvalResult = requestApproval(definition, baseEvent);
         let decision: ToolApprovalDecision;
-        if (typeof approvalResult === "string") {
-          decision = approvalResult;
-        } else {
-          emit({ type: "confirmation_required", runId, callId: eventId, event: baseEvent });
-          decision = await approvalResult;
+        try {
+          if (typeof approvalResult === "string") {
+            decision = approvalResult;
+          } else {
+            emit({ type: "confirmation_required", runId, callId: eventId, event: baseEvent });
+            decision = await approvalResult;
+          }
+        } catch (error) {
+          scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+            version: 1,
+            capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+            kind: "tool",
+            status: capabilityMonitoringStatusForError(error),
+            latencyMs: capabilityMonitoringLatency(startedAt),
+            occurredAt: Date.now(),
+          });
+          throw error;
         }
         if (decision === "deny") {
+          scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+            version: 1,
+            capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+            kind: "tool",
+            status: "denied",
+            latencyMs: capabilityMonitoringLatency(startedAt),
+            occurredAt: Date.now(),
+          });
           emit({ type: "tool", event: { ...baseEvent, status: "denied", updatedAt: Date.now() } });
           results.push({
             providerCallId: call.providerCallId,
@@ -11506,11 +11816,32 @@ async function runCapabilityLoopInner(
         updatedAt: Date.now(),
       };
       emit({ type: "tool", event: runningEvent });
-      const result = await executeCapabilityTool(definition, call.arguments, args.env, signal, mcpExecution);
-      const duration = Date.now() - startedAt;
-      toolBudgetMs += duration;
-      if (toolBudgetMs > TOOL_TOTAL_BUDGET_MS) {
-        throw new CapabilityError("tool_time_budget_exceeded", "工具累计执行时间超过限制", true);
+      let result: CapabilityToolExecutionResult;
+      try {
+        result = await executeCapabilityTool(definition, call.arguments, args.env, signal, mcpExecution);
+        const duration = Date.now() - startedAt;
+        toolBudgetMs += duration;
+        if (toolBudgetMs > TOOL_TOTAL_BUDGET_MS) {
+          throw new CapabilityError("tool_time_budget_exceeded", "工具累计执行时间超过限制", true);
+        }
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: "succeeded",
+          latencyMs: capabilityMonitoringLatency(startedAt),
+          occurredAt: Date.now(),
+        });
+      } catch (error) {
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: capabilityMonitoringStatusForError(error),
+          latencyMs: capabilityMonitoringLatency(startedAt),
+          occurredAt: Date.now(),
+        });
+        throw error;
       }
       emit({
         type: "tool",
@@ -11792,6 +12123,7 @@ function createAgentCapabilityRuntime(
   definitions: NormalizedToolDefinition[],
   env: Env,
   session: Session,
+  waitUntil?: TeamAgentTurnInput["waitUntil"],
 ): { runTool: CapabilityToolRunner; close: () => Promise<void> } {
   const allowed = new Map(definitions.map((definition) => [definition.id, definition]));
   const mcpExecution = mcpRuntime(env, session).createExecution();
@@ -11800,24 +12132,26 @@ function createAgentCapabilityRuntime(
   let closed = false;
 
   const runTool: CapabilityToolRunner = async (definition, input, signal) => {
-    if (closed) throw new CapabilityError("tool_runtime_closed", "工具运行时已关闭");
-    const allowedDefinition = allowed.get(definition.id);
-    if (!allowedDefinition || allowedDefinition.providerName !== definition.providerName) {
-      throw new CapabilityError("tool_not_found", "工具不在当前成员的允许列表中");
-    }
-    callCount += 1;
-    if (callCount > MAX_TOOL_CALLS) {
-      throw new CapabilityError("tool_call_limit_exceeded", "本轮工具调用次数超过限制");
-    }
-    const remainingBudgetMs = TOOL_TOTAL_BUDGET_MS - elapsedMs;
-    if (remainingBudgetMs <= 0) {
-      throw new CapabilityError("tool_budget_exceeded", "本轮工具执行时间超过限制");
-    }
-
-    validateToolArguments(allowedDefinition, input);
     const startedAt = Date.now();
+    let counted = false;
     try {
-      return await executeCapabilityTool(
+      if (closed) throw new CapabilityError("tool_runtime_closed", "工具运行时已关闭");
+      const allowedDefinition = allowed.get(definition.id);
+      if (!allowedDefinition || allowedDefinition.providerName !== definition.providerName) {
+        throw new CapabilityError("tool_not_found", "工具不在当前成员的允许列表中");
+      }
+      callCount += 1;
+      counted = true;
+      if (callCount > MAX_TOOL_CALLS) {
+        throw new CapabilityError("tool_call_limit_exceeded", "本轮工具调用次数超过限制");
+      }
+      const remainingBudgetMs = TOOL_TOTAL_BUDGET_MS - elapsedMs;
+      if (remainingBudgetMs <= 0) {
+        throw new CapabilityError("tool_budget_exceeded", "本轮工具执行时间超过限制");
+      }
+
+      validateToolArguments(allowedDefinition, input);
+      const result = await executeCapabilityTool(
         allowedDefinition,
         input,
         env,
@@ -11825,8 +12159,27 @@ function createAgentCapabilityRuntime(
         mcpExecution,
         Math.min(TOOL_CALL_TIMEOUT_MS, remainingBudgetMs),
       );
+      scheduleCapabilityMonitoring(env, waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+        kind: "tool",
+        status: "succeeded",
+        latencyMs: capabilityMonitoringLatency(startedAt),
+        occurredAt: Date.now(),
+      });
+      return result;
+    } catch (error) {
+      scheduleCapabilityMonitoring(env, waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+        kind: "tool",
+        status: capabilityMonitoringStatusForError(error),
+        latencyMs: capabilityMonitoringLatency(startedAt),
+        occurredAt: Date.now(),
+      });
+      throw error;
     } finally {
-      elapsedMs += Date.now() - startedAt;
+      if (counted) elapsedMs += Date.now() - startedAt;
     }
   };
 

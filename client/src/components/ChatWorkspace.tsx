@@ -1,6 +1,6 @@
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, WifiOff } from "lucide-react";
 import {
   ApiError,
@@ -12,6 +12,7 @@ import {
   exportUserData,
   fetchModelAvailability,
   fetchMcpOAuthConnections,
+  getAgentWebResearchMetadata,
   listAgentConversations,
   revokeMcpOAuthConnection,
   revokeAllSessions,
@@ -69,6 +70,12 @@ import {
   selectNewestProviderTurnProgress,
 } from "../lib/provider-turn-progress";
 import {
+  buildCapabilityTurnSnapshot,
+  type CapabilityToolActivity,
+  type CapabilityTurnSelection,
+  type CapabilityTurnSnapshot,
+} from "../lib/capability-turn";
+import {
   readDeviceBoolean,
   writeDeviceBoolean,
   getDeviceStorage,
@@ -79,6 +86,11 @@ type LogoutState =
   | { status: "idle" }
   | { status: "pending" }
   | { status: "error"; message: string };
+
+type CapabilityRecoveryActions = {
+  retry?: () => void;
+  removeImages?: () => void;
+};
 
 export function ChatWorkspace({
   session,
@@ -113,7 +125,7 @@ export function ChatWorkspace({
     window.matchMedia("(min-width: 781px)").matches
       && readDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open")
   ));
-  const [inspectorSection, setInspectorSection] = useState<InspectorSection>("model");
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>("capabilities");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSave, setSettingsSave] = useState<{ conversationId: string; state: ConversationSettingsSaveState }>({ conversationId: "", state: "idle" });
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -124,6 +136,7 @@ export function ChatWorkspace({
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [modelAvailability, setModelAvailability] = useState<MemberModelAvailability | null>(null);
   const [modelAvailabilityRefreshing, setModelAvailabilityRefreshing] = useState(false);
+  const [capabilityTurn, setCapabilityTurn] = useState<CapabilityTurnSnapshot | null>(null);
   const bootstrapped = useRef(false);
   const logoutInFlight = useRef(false);
   const mcpRefresh = useRef<Promise<void> | null>(null);
@@ -132,6 +145,8 @@ export function ChatWorkspace({
   const modelAvailabilityGeneration = useRef(0);
   const settingsQueues = useRef(new Map<string, Promise<void>>());
   const modelAvailabilityRefreshAt = useRef(0);
+  const capabilityRecoveryActions = useRef<CapabilityRecoveryActions>({});
+  const mcpConnectionsOpener = useRef<HTMLElement | null>(null);
   const activeConversation = conversations.find((conversation) => conversation.id === activeId) || null;
   const activePermissions = resolveConversationAccessPermissions(activeConversation?.accessRole);
   const logoutPending = logoutState.status === "pending";
@@ -177,8 +192,26 @@ export function ChatWorkspace({
     return task;
   }, [session.access]);
 
+  const openMcpConnections = useCallback(() => {
+    mcpConnectionsOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMcpConnectionsOpen(true);
+    setMcpConnectionNotice(null);
+    void refreshMcpConnections();
+  }, [refreshMcpConnections]);
+
+  const closeMcpConnections = useCallback(() => {
+    if (mcpBusyServerId) return;
+    setMcpConnectionsOpen(false);
+    const opener = mcpConnectionsOpener.current;
+    mcpConnectionsOpener.current = null;
+    window.requestAnimationFrame(() => {
+      if (opener?.isConnected) opener.focus();
+    });
+  }, [mcpBusyServerId]);
+
   useEffect(() => {
     if (!mcpOAuthResult) return;
+    mcpConnectionsOpener.current = null;
     setMcpConnectionsOpen(true);
     setMcpConnectionNotice(mcpOAuthResult === "connected"
       ? { kind: "success", text: "MCP 已连接。" }
@@ -188,6 +221,13 @@ export function ChatWorkspace({
     onMcpOAuthResultConsumed();
     void refreshMcpConnections();
   }, [mcpOAuthResult, onMcpOAuthResultConsumed, refreshMcpConnections]);
+
+  const handleCapabilityTurnChange = useCallback((conversationId: string, turn: CapabilityTurnSnapshot | null) => {
+    setCapabilityTurn((current) => {
+      if (turn) return turn;
+      return current?.conversationId === conversationId ? null : current;
+    });
+  }, []);
 
   async function connectMcp(serverId: string) {
     if (busy || accountActionBusy || mcpBusyServerId) return;
@@ -457,14 +497,14 @@ export function ChatWorkspace({
     setSidebarView(section === "files" ? "files" : "settings");
     setSidebarOpen(false);
     writeDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open", true);
-    if (section === "model") void refreshModelAvailability();
+    if (section === "capabilities") void refreshModelAvailability();
   };
   const closeInspector = () => {
     setInspectorOpen(false);
     setSidebarView("history");
     writeDeviceBoolean(getDeviceStorage(), session.user, "conversation-inspector-open", false);
   };
-  const openRouteSettings = () => openInspector("model");
+  const openRouteSettings = () => openInspector("capabilities");
   const parentConversation = activeConversation?.parentChatId
     ? conversations.find((conversation) => conversation.id === activeConversation.parentChatId) || null
     : null;
@@ -549,7 +589,7 @@ export function ChatWorkspace({
               setSidebarView("history");
               return;
             }
-            openInspector(view === "files" ? "files" : "model");
+            openInspector(view === "files" ? "files" : "capabilities");
           }}
           onSelect={(conversation) => setActiveId(conversation.id)}
           onCreate={createConversation}
@@ -608,6 +648,8 @@ export function ChatWorkspace({
                 onConversationChanged={handleConversationChanged}
                 onAccessInvalidated={handleConversationAccessInvalidated}
                 onBranch={handleBranch}
+                onCapabilityTurnChange={handleCapabilityTurnChange}
+                capabilityRecoveryActions={capabilityRecoveryActions}
               />
             ) : (
               <div className="chat-loading">
@@ -625,10 +667,13 @@ export function ChatWorkspace({
           routeId={routeId}
           modelAvailability={modelAvailability}
           modelAvailabilityRefreshing={modelAvailabilityRefreshing}
+          mcpConnections={mcpConnections}
+          capabilityTurn={capabilityTurn?.conversationId === activeConversation?.id ? capabilityTurn : null}
           skillMode={skillMode}
           skillIds={skillIds}
           saveState={settingsSave.conversationId === activeConversation?.id ? settingsSave.state : "idle"}
           busy={busy || accountOperationBusy}
+          nestedOpen={mcpConnectionsOpen}
           onClose={closeInspector}
           onSectionChange={setInspectorSection}
           onConversationUpdated={updateConversationInList}
@@ -640,6 +685,9 @@ export function ChatWorkspace({
           onSkillModeChange={(nextSkillMode) => { setSkillMode(nextSkillMode); void persistSettings({ skillMode: nextSkillMode }); }}
           onSkillChange={(nextSkillIds) => { setSkillIds(nextSkillIds); void persistSettings({ skillIds: nextSkillIds }); }}
           onRetrySave={() => { void persistSettings({ routeId, skillMode, skillIds }); }}
+          onOpenMcpConnections={openMcpConnections}
+          onRetryCapabilityTurn={() => capabilityRecoveryActions.current.retry?.()}
+          onRemoveCapabilityImages={() => capabilityRecoveryActions.current.removeImages?.()}
         />
       </div>
       {session.capabilities.memory && <MemoryPanel open={memoryOpen} onClose={() => setMemoryOpen(false)} />}
@@ -648,7 +696,7 @@ export function ChatWorkspace({
           connections={mcpConnections}
           busyServerId={busy || accountActionBusy ? "__blocked__" : mcpBusyServerId}
           notice={mcpConnectionNotice}
-          onClose={() => { if (!mcpBusyServerId) setMcpConnectionsOpen(false); }}
+          onClose={closeMcpConnections}
           onRefresh={refreshMcpConnections}
           onConnect={connectMcp}
           onDiscover={discoverMcpTools}
@@ -665,11 +713,7 @@ export function ChatWorkspace({
         onClose={() => setSettingsOpen(false)}
         onThemePreferenceChange={onThemePreferenceChange}
         onOpenMemory={() => setMemoryOpen(true)}
-        onOpenMcpConnections={() => {
-          setMcpConnectionsOpen(true);
-          setMcpConnectionNotice(null);
-          void refreshMcpConnections();
-        }}
+        onOpenMcpConnections={openMcpConnections}
         onExportUserData={handleUserDataExport}
         onRevokeAllSessions={handleRevokeAllSessions}
         onDeleteUserData={handleDeleteUserData}
@@ -690,6 +734,8 @@ function ConversationChat({
   onConversationChanged,
   onAccessInvalidated,
   onBranch,
+  onCapabilityTurnChange,
+  capabilityRecoveryActions,
 }: {
   session: SessionProjection;
   conversation: AgentConversation;
@@ -707,6 +753,8 @@ function ConversationChat({
     sourceMessageId: string,
     editedText?: string,
   ) => Promise<void>;
+  onCapabilityTurnChange: (conversationId: string, turn: CapabilityTurnSnapshot | null) => void;
+  capabilityRecoveryActions: { current: CapabilityRecoveryActions };
 }) {
   const online = useOnlineStatus();
   const [input, setInput] = useState(() => localStorage.getItem(conversationDraftKey(session.user, conversation.id)) || "");
@@ -726,6 +774,8 @@ function ConversationChat({
   const [lastSubmittedText, setLastSubmittedText] = useState("");
   const [lastSubmittedAttachments, setLastSubmittedAttachments] = useState<DraftAttachment[]>([]);
   const [webResearchEnabled, setWebResearchEnabled] = useState(false);
+  const [capabilitySelection, setCapabilitySelection] = useState<(CapabilityTurnSelection & { messageCountAtStart: number }) | null>(null);
+  const [localSubmissionFailed, setLocalSubmissionFailed] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const followTranscriptRef = useRef(true);
@@ -817,6 +867,34 @@ function ConversationChat({
     accessRole: conversation.accessRole,
   }).retry;
   const errorPresentation = chat.error ? resolveAgentError(chat.error.message, online) : null;
+  const capabilityMessages = useMemo(() => capabilitySelection
+    ? chat.messages.slice(capabilitySelection.messageCountAtStart)
+    : [], [capabilitySelection, chat.messages]);
+  const capabilityToolActivity = summarizeCapabilityToolActivity(capabilityMessages);
+  const capabilityTurnSnapshot = useMemo(() => buildCapabilityTurnSnapshot({
+    selection: capabilitySelection,
+    phase: turnPhase,
+    submissionPending: Boolean(pendingSubmission),
+    errorCode: errorPresentation?.code || (localSubmissionFailed ? "agent_error" : undefined),
+    webResearchEvidence: capabilityMessages.some((message) => Boolean(getAgentWebResearchMetadata(message.metadata))),
+    toolActivity: capabilityToolActivity,
+  }), [
+    capabilityMessages,
+    capabilitySelection,
+    capabilityToolActivity,
+    errorPresentation?.code,
+    localSubmissionFailed,
+    pendingSubmission,
+    turnPhase,
+  ]);
+
+  useEffect(() => {
+    onCapabilityTurnChange(conversation.id, capabilityTurnSnapshot);
+  }, [capabilityTurnSnapshot, conversation.id, onCapabilityTurnChange]);
+
+  useEffect(() => () => {
+    onCapabilityTurnChange(conversation.id, null);
+  }, [conversation.id, onCapabilityTurnChange]);
 
   useEffect(() => {
     if (chat.error && isConversationAccessRefreshError(chat.error.message)) {
@@ -902,11 +980,11 @@ function ConversationChat({
   }, [chat.error, chat.status, pendingSubmission, settledSubmission]);
 
   useEffect(() => () => {
-    releaseAttachmentPreviews([
-      ...attachmentsRef.current,
-      ...(pendingSubmissionRef.current?.attachments || []),
-      ...lastSubmittedAttachmentsRef.current,
-    ]);
+    releaseDistinctAttachmentPreviews(
+      attachmentsRef.current,
+      pendingSubmissionRef.current?.attachments || [],
+      lastSubmittedAttachmentsRef.current,
+    );
   }, []);
 
   useEffect(() => {
@@ -992,6 +1070,14 @@ function ConversationChat({
     setProviderProgress(null);
     setProgressNow(localTurnStartedAtRef.current);
     setStopRequested(false);
+    setLocalSubmissionFailed(false);
+    setCapabilitySelection({
+      conversationId: conversation.id,
+      workflowSelection: skillMode === "automatic" ? session.skills.length > 0 : skillIds.length > 0,
+      webResearch: webResearchEnabled,
+      imageUnderstanding: submittedAttachments.some((attachment) => attachment.kind === "image"),
+      messageCountAtStart: chat.messages.length,
+    });
     chat.clearError();
     setLastSubmittedText("");
     setLastSubmittedAttachments([]);
@@ -1018,6 +1104,7 @@ function ConversationChat({
       );
       setWebResearchEnabled(false);
     } catch {
+      setLocalSubmissionFailed(true);
       if (draftGeneration.current === submittedDraftGeneration) {
         setLastSubmittedText(submittedDraft);
         setLastSubmittedAttachments(submittedAttachments);
@@ -1095,6 +1182,31 @@ function ConversationChat({
     setProviderProgress(null);
     chat.stop();
   };
+
+  const removeCapabilityImages = () => {
+    draftGeneration.current += 1;
+    const currentImages = attachmentsRef.current.filter((attachment) => attachment.kind === "image");
+    const submittedImages = lastSubmittedAttachmentsRef.current.filter((attachment) => attachment.kind === "image");
+    releaseDistinctAttachmentPreviews(currentImages, submittedImages);
+    setAttachments((current) => {
+      return current.filter((attachment) => attachment.kind !== "image");
+    });
+    setLastSubmittedAttachments((current) => {
+      return current.filter((attachment) => attachment.kind !== "image");
+    });
+    setCapabilitySelection((current) => current ? { ...current, imageUnderstanding: false } : current);
+  };
+
+  useEffect(() => {
+    const actions: CapabilityRecoveryActions = {
+      retry: () => { void retryFailedTurn(); },
+      removeImages: removeCapabilityImages,
+    };
+    capabilityRecoveryActions.current = actions;
+    return () => {
+      if (capabilityRecoveryActions.current === actions) capabilityRecoveryActions.current = {};
+    };
+  });
 
   return (
     <div className="conversation-chat" data-turn-phase={turnPhase}>
@@ -1198,6 +1310,46 @@ function ConversationChat({
       /> : <div className="conversation-read-only" role="status">查看者权限：可以阅读这段对话，但不能发送消息或修改内容。</div>}
     </div>
   );
+}
+
+function releaseDistinctAttachmentPreviews(...groups: DraftAttachment[][]): void {
+  const seen = new Set<string>();
+  const images = groups.flat().filter((attachment) => {
+    if (attachment.kind !== "image" || !attachment.previewUrl || seen.has(attachment.previewUrl)) return false;
+    seen.add(attachment.previewUrl);
+    return true;
+  });
+  releaseAttachmentPreviews(images);
+}
+
+function summarizeCapabilityToolActivity(messages: UIMessage[]): CapabilityToolActivity {
+  let succeeded = false;
+  let denied = false;
+  let failed = false;
+  let running = false;
+  let waiting = false;
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (!part || typeof part !== "object" || Array.isArray(part)) continue;
+      const value = part as Record<string, unknown>;
+      if (typeof value.type !== "string" || (value.type !== "dynamic-tool" && !value.type.startsWith("tool-"))) continue;
+      if (value.state === "approval-requested") waiting = true;
+      else if (value.state === "input-streaming" || value.state === "input-available") running = true;
+      else if (value.state === "approval-responded") {
+        const approval = value.approval;
+        if (approval && typeof approval === "object" && !Array.isArray(approval)
+          && (approval as Record<string, unknown>).approved === false) denied = true;
+        else running = true;
+      } else if (value.state === "output-available") succeeded = true;
+      else if (value.state === "output-error") failed = true;
+      else if (value.state === "output-denied") denied = true;
+    }
+  }
+  if (waiting) return "waiting";
+  if (running) return "running";
+  if (failed) return "error";
+  if (denied) return "denied";
+  return succeeded ? "succeeded" : "none";
 }
 
 function useOnlineStatus(): boolean {

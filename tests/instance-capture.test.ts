@@ -985,7 +985,7 @@ describe("instance capture contracts", () => {
     const providerName = `capture-provider-schema-${crypto.randomUUID()}`;
     const provider = env.PROVIDER_COORDINATOR.getByName(providerName) as DurableObjectStub<ProviderCoordinator>;
     await expect(provider.captureInstanceState("epoch-provider-schema"))
-      .resolves.toMatchObject({ schemaVersion: "provider-coordinator-v1" });
+      .resolves.toMatchObject({ schemaVersion: "provider-coordinator-v2" });
     const providerLedgerName = `capture-provider-ledger-${crypto.randomUUID()}`;
     const providerAttempts = createProviderAttemptRuntime({
       ledger: env.PROVIDER_ATTEMPT_LEDGER,

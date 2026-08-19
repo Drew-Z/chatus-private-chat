@@ -339,6 +339,58 @@ describe("ProviderCoordinator", () => {
       sample: reliabilitySample(selectorRouteId, providerId),
     })).resolves.toMatchObject({ attempts: 6, successes: 3, fallbackCount: 1 });
   });
+
+  it("serializes bounded capability monitoring rows and restores them after eviction", async () => {
+    const name = `capability-monitoring-${crypto.randomUUID()}`;
+    const coordinator = env.PROVIDER_COORDINATOR.getByName(name);
+    const occurredAt = Date.now();
+    await Promise.all([
+      coordinator.recordCapabilityMonitoringEvent({
+        version: 1,
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        status: "succeeded",
+        latencyMs: 250,
+        occurredAt,
+      }),
+      coordinator.recordCapabilityMonitoringEvent({
+        version: 1,
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        status: "failed",
+        latencyMs: 500,
+        occurredAt: occurredAt + 1,
+      }),
+    ]);
+
+    await expect(runInDurableObject(coordinator, async (_instance, state) => (
+      state.storage.get("capability-monitoring:v1")
+    ))).resolves.toMatchObject({
+      version: 1,
+      rows: expect.arrayContaining([
+        expect.objectContaining({ capabilityId: "chatus:web_research", status: "succeeded", count: 1 }),
+        expect.objectContaining({ capabilityId: "chatus:web_research", status: "failed", count: 1 }),
+      ]),
+    });
+
+    await evictDurableObject(coordinator);
+    const restored = env.PROVIDER_COORDINATOR.getByName(name);
+    await restored.recordCapabilityMonitoringEvent({
+      version: 1,
+      capabilityId: "chatus:web_research",
+      kind: "web_research",
+      status: "succeeded",
+      latencyMs: null,
+      occurredAt: occurredAt + 2,
+    });
+    await expect(restored.getCapabilityMonitoringAggregate({
+      periodStart: occurredAt - 60_000,
+      periodEnd: occurredAt + 60_000,
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "succeeded", count: 2, latencySumMs: 250, latencyCount: 1 }),
+      expect.objectContaining({ status: "failed", count: 1, latencySumMs: 500, latencyCount: 1 }),
+    ]));
+  });
 });
 
 function reliabilitySample(

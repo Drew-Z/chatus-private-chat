@@ -665,6 +665,8 @@ export function CapabilityAdminPanel({
             selected={catalogSelection}
             busy={busy}
             conflict={conflict}
+            config={snapshot.config}
+            members={members}
             routes={snapshot.config.routes}
             visionDraft={visionAssistDraft}
             visionDirty={visionAssistDirty}
@@ -915,7 +917,7 @@ function EmptyCapabilityState({ label }: { label: string }) {
 }
 
 function CapabilityCatalogView({
-  catalog, loading, error, selected, busy, conflict, routes, visionDraft, visionDirty,
+  catalog, loading, error, selected, busy, conflict, config, members, routes, visionDraft, visionDirty,
   onToggle, onVisionUpdate, onVisionSave, onInstall, onRetry, onUseServer,
 }: {
   catalog: AdminCapabilityCatalogSnapshot | null;
@@ -924,6 +926,8 @@ function CapabilityCatalogView({
   selected: string[];
   busy: boolean;
   conflict: boolean;
+  config: AdminConfigSnapshot["config"];
+  members: AdminMemberProjection[];
   routes: AdminConfigSnapshot["config"]["routes"];
   visionDraft: VisionAssistDraft;
   visionDirty: boolean;
@@ -1005,10 +1009,11 @@ function CapabilityCatalogView({
             <div className="capability-catalog-items">
               {pack.items.map((item) => {
                 const checked = selected.includes(item.id);
+                const assignment = capabilityCatalogAssignment(item.id, config, members);
                 return (
                   <label className={`capability-catalog-item status-${item.status}`} key={item.id}>
                     <input type="checkbox" checked={checked} disabled={busy || (!item.installable && !checked)} onChange={() => onToggle(item.id)} />
-                    <span className="capability-catalog-item-copy"><span><strong>{item.label}</strong><code>{item.id}</code></span><small>{item.description}</small><span className="capability-catalog-meta"><em>{capabilityStatusLabel(item.status)}</em><span>{capabilitySourceLabel(item.source)}</span><span>{capabilityActivationLabel(item.activation)}</span><span>{item.disclosure.dataClasses.map(capabilityDataClassLabel).join(" · ")}</span><span>{item.disclosure.externalRequest ? "外部请求" : "仅本地指令"}</span></span></span>
+                    <span className="capability-catalog-item-copy"><span><strong>{item.label}</strong><code>{item.id}</code></span><small>{item.description}</small><span className="capability-catalog-meta"><em>{capabilityStatusLabel(item.status)}</em><span>{capabilitySourceLabel(item.source)}</span><span>{capabilityActivationLabel(item.activation)}</span><span>{item.disclosure.dataClasses.map(capabilityDataClassLabel).join(" · ")}</span><span>{item.disclosure.externalRequest ? "外部请求" : "仅本地指令"}</span><span>{assignment.assigned}</span><span>{assignment.readiness}</span></span></span>
                   </label>
                 );
               })}
@@ -1018,6 +1023,53 @@ function CapabilityCatalogView({
       </div>
     </div>
   );
+}
+
+function capabilityCatalogAssignment(
+  capabilityId: string,
+  config: AdminConfigSnapshot["config"],
+  members: AdminMemberProjection[],
+): { assigned: string; readiness: string } {
+  const effectiveMembers = members.map((member) => ({
+    ...config.defaults,
+    ...(config.users[member.label] || {}),
+  }));
+  const webToolIds = Object.entries(config.tools)
+    .filter(([, tool]) => tool.capabilityRole === "web_search")
+    .map(([toolId]) => toolId);
+  const assigned = effectiveMembers.filter((member) => {
+    if (capabilityId === "chatus:vision_assist") {
+      return member.allowedAugmentations?.includes("vision_assist") === true;
+    }
+    if (capabilityId === "chatus:web_research") {
+      return webToolIds.some((toolId) => member.allowedTools?.includes(toolId));
+    }
+    return member.allowedSkills === undefined || member.allowedSkills.includes(capabilityId);
+  }).length;
+  const assignment = `已分配 ${assigned} / ${members.length} 位成员`;
+
+  if (capabilityId === "chatus:vision_assist") {
+    const route = config.visionAssist?.routeId ? config.routes[config.visionAssist.routeId] : undefined;
+    const ready = config.visionAssist?.enabled === true && Boolean(route) && route?.enabled !== false;
+    return { assigned: assignment, readiness: ready ? "辅助视觉线路已配置" : "辅助视觉线路待配置" };
+  }
+  if (capabilityId === "chatus:web_research") {
+    const tools = webToolIds.map((toolId) => config.tools[toolId]);
+    const ready = tools.some((tool) => {
+      if (!tool || tool.enabled !== true || tool.reviewRequired === true || tool.executor.type !== "mcp") return false;
+      return config.mcpServers[tool.executor.serverId]?.enabled === true;
+    });
+    const needsReview = tools.some((tool) => tool?.reviewRequired === true);
+    return {
+      assigned: assignment,
+      readiness: ready ? "审核搜索链路已配置" : needsReview ? "搜索工具待重新审查" : "搜索链路待配置",
+    };
+  }
+  const skill = config.skills[capabilityId];
+  return {
+    assigned: assignment,
+    readiness: skill?.enabled === true ? "工作流已启用" : skill ? "工作流已停用" : "工作流未安装",
+  };
 }
 
 function getInitialSelection(snapshot: AdminConfigSnapshot, tab: CapabilityTab): Selection {

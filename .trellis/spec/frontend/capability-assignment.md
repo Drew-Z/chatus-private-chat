@@ -954,3 +954,112 @@ const messages = [{ role: "system", content: formatWebResearchEvidenceForModel(e
 
 The administrator-reviewed MCP contract owns network access, the shared decoder
 owns public evidence, and the Provider sees only bounded numbered sources.
+
+## Scenario: Unified Member Capability Experience
+
+### 1. Scope / Trigger
+
+Use this contract when changing the conversation capability inspector, transient
+per-turn capability status, recovery actions, or the nested MCP connection dialog.
+It covers the React workspace and deterministic Workspace fixture only; capability
+truth still comes from the exact session and availability projections above.
+
+### 2. Signatures
+
+```typescript
+type CapabilityTurnStatus =
+  | "selected" | "waiting" | "running" | "succeeded"
+  | "unavailable" | "denied" | "timed_out" | "cancelled" | "error";
+
+type CapabilityTurnSnapshot = {
+  conversationId: string;
+  items: Array<{
+    kind: "workflow_selection" | "web_research" | "image_understanding" | "tool_execution";
+    status: CapabilityTurnStatus;
+    recovery: Array<"retry" | "remove_images" | "switch_route" | "connect_mcp">;
+  }>;
+};
+```
+
+```text
+ConversationInspector section: capabilities | files | sharing
+Capability recovery owners: ChatWorkspace draft, route, and MCP dialog actions
+```
+
+### 3. Contracts
+
+- One `capabilities` inspector section owns model availability, workflow selection,
+  explicit turn tools, image understanding, and MCP readiness. Attachment, one-turn
+  research, and send controls remain in the composer.
+- Labels, source, activation, affected data, latency, cost, assignment, and setup
+  readiness are rendered from strict server projections. The browser does not infer
+  Provider identity, connection readiness, or executable capability from labels.
+- A turn snapshot is React memory scoped to one conversation. It is not written to
+  local storage, Agent messages, exports, Provider evidence, or monitoring events.
+  Switching conversations must not display or clear another conversation's state.
+- Tool-part and error projections map to the closed status set. Live status uses one
+  restrained polite atomic region; historical message content remains the durable
+  source for completed tool output and citations.
+- Recovery delegates to the existing owner: retry reuses restored draft state,
+  remove-image revokes each distinct object URL once, route switching focuses the
+  existing selector, and connection recovery opens the existing MCP dialog.
+- A nested MCP dialog traps focus and consumes Escape before the inspector. Closing
+  it restores the invoking control; closing the inspector restores its opener.
+- The five required viewports keep controls contained. Touch layouts expose at least
+  44 by 44 CSS-pixel interactive targets and reduced motion removes nonessential
+  inspector transition and animation duration.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Turn snapshot belongs to another conversation | Do not render it in the active inspector |
+| No capability selected or active | Render neutral current-state copy; do not invent success |
+| Image capability is unavailable | Offer image removal and route/connection recovery only when applicable |
+| Retry races with a newer draft | Preserve the newer draft; never overwrite it with the failed submission |
+| The same image appears in draft/submitted/retry arrays | Revoke its object URL once, then remove every matching image reference |
+| MCP dialog receives Escape | Close only the dialog and restore its opener; keep the inspector open |
+| Server projection is malformed or inconsistent | Reject the complete response before rendering capability facts |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a timed-out research turn is shown as timed out, retry delegates to the
+  restored draft owner, and the live region announces only the bounded state change.
+- Base: no turn is active; the inspector still shows exact readiness and disclosure
+  while the composer retains its high-frequency controls.
+- Bad: persist waiting state, duplicate capability facts across several tabs, infer
+  readiness from a tool name, revoke one object URL more than once, or let nested
+  Escape close both dialog and inspector.
+
+### 6. Tests Required
+
+- Pure client tests cover all nine statuses, error mapping, tool-part reduction,
+  recovery lists, and empty-result failure without serializing private payloads.
+- State tests cover draft-generation-safe retry, conversation switching, and
+  distinct image-preview cleanup.
+- Workspace Playwright covers ready/setup-required projections, status matrix,
+  retry/image/route/MCP recovery, focus trap and restoration, reduced motion, local
+  scrolling, no horizontal overflow, and screenshots at 1920, 1440, 780, 480, and
+  touch 390 widths. The fixture must abort unexpected network and Agent requests.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+localStorage.setItem("capability-turn", JSON.stringify(turn));
+setMcpOpen(false);
+setInspectorOpen(false);
+```
+
+This persists transient execution state and lets one Escape close two focus scopes.
+
+#### Correct
+
+```typescript
+setCapabilityTurn(turn); // in-memory, conversation-scoped projection
+closeMcpConnections();   // restores the nested opener; inspector remains mounted
+```
+
+The runtime owner remains authoritative, transient state cannot leak into durable
+surfaces, and each modal layer owns exactly one keyboard/focus boundary.

@@ -85,6 +85,120 @@ const snapshot = mergeProviderAttemptMonitoringRows(rows, labels, generatedAt, p
 
 The server merges bounded aggregate rows, keeps terminal semantics explicit, and produces separate privacy-scoped admin/member projections.
 
+## Scenario: Content-free Capability Execution Monitoring
+
+### 1. Scope / Trigger
+
+Use this contract when recording or displaying orchestration outcomes for workflow
+selection, auxiliary vision, explicit web research, or tool execution. These rows
+describe logical capability work and must remain separate from physical Provider
+attempt semantics.
+
+### 2. Signatures
+
+```text
+GET /api/admin/capability-monitor?window=24h&bucket=hour
+
+ProviderCoordinator.recordCapabilityMonitoringEvent(event)
+ProviderCoordinator.getCapabilityMonitoringAggregate({ periodStart, periodEnd })
+```
+
+```typescript
+type CapabilityMonitoringEventV1 = {
+  version: 1;
+  capabilityId: "chatus:workflow_selection" | "chatus:vision_assist"
+    | "chatus:web_research" | "chatus:tool_execution";
+  kind: "workflow_selection" | "auxiliary_vision" | "web_research" | "tool";
+  status: "succeeded" | "failed" | "denied" | "cancelled" | "timed_out";
+  latencyMs: number | null;
+  occurredAt: number;
+};
+```
+
+The singleton named `ProviderCoordinator` object `$capability-monitoring-v1` owns
+the bounded aggregate. No new Durable Object binding or migration is required.
+
+### 3. Contracts
+
+- Capability monitoring is logical orchestration telemetry. It never creates a
+  Provider attempt, changes Provider-attempt denominators, or affects chat outcome.
+- The owner stores only the closed capability ID/kind/status dimensions, hourly
+  bucket start, bounded count, latency sum/count, and last occurrence. Retention is
+  48 hours; the public window is exactly 24 hours with hourly buckets.
+- Event writes validate exact keys and ID-to-kind pairing, cap latency at 600,000 ms,
+  cap one row at 100,000 events, and run best-effort through `waitUntil` or a caught
+  promise. A direct invocation without a lifecycle `waitUntil` owner skips passive
+  telemetry instead of starting an untracked cross-Durable-Object RPC. Monitoring
+  failure is never allowed to fail an otherwise successful turn.
+- The admin snapshot contains rows plus summaries only. It contains no member,
+  conversation, prompt, image, query, citation, instruction, credential, endpoint,
+  raw tool body, Provider identity, attempt identity, or memory field.
+- `total` reconciles exactly to the five terminal status counts. `successRate` uses
+  that total; average latency uses only rows with latency evidence. Summary values,
+  evidence, staleness, time window, row uniqueness, and row bounds are recomputed by
+  the shared decoder before either server or React code accepts a snapshot.
+- `no_data` means an available aggregate with no rows. `unavailable` is permitted
+  only with empty rows/summaries and `stale: true`. Non-empty evidence is `fresh` or
+  becomes `stale` when the latest event is older than six hours.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Query differs from exact `window=24h&bucket=hour` | `400 invalid_capability_monitor_query` |
+| Aggregate read fails | `503 capability_monitor_unavailable`, `retryable: true` |
+| Event has unknown keys, mismatched ID/kind, invalid status/time/latency | Discard it; do not mutate aggregate state |
+| Row is duplicated, out of window, misaligned, over-bounded, or internally inconsistent | Reject the complete aggregate/snapshot |
+| Summary differs from recomputed rows | Reject the complete snapshot before rendering |
+| Evidence/stale combination contradicts rows | Reject the complete snapshot |
+| Monitoring write fails during a chat turn | Preserve the original turn result and expose no raw failure payload |
+| No lifecycle `waitUntil` owner exists | Skip the passive write; do not launch an untracked RPC |
+
+### 5. Good / Base / Bad Cases
+
+- Good: one timed-out research operation increments one hourly research row, the
+  summary reconciles, and the original user-visible timeout remains unchanged.
+- Base: no capability work occurred; the endpoint returns exact `no_data` evidence
+  and empty rows/summaries.
+- Bad: reuse a Provider-attempt row for a tool invocation, store a query or member
+  label for debugging, accept client-side summary math, or await telemetry on the
+  successful-turn critical path.
+
+### 6. Tests Required
+
+- Contract tests cover exact decoding, all terminal statuses, retention, future and
+  old events, saturation, duplicate rows, latency bounds, stale/no-data/unavailable
+  evidence, summary reconciliation, unknown keys, and privacy-field rejection.
+- Coordinator tests cover persistence, invalid-event no-op behavior, range reads,
+  alarm cleanup, and best-effort write failures.
+- Worker tests cover admin authentication, exact query bounds, content-free output,
+  and successful turns when monitoring writes reject.
+- Client tests import the shared snapshot decoder and reject malformed summaries or
+  evidence instead of maintaining a second browser contract.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await providerAttemptLedger.start({ runKind: "tool", prompt, member });
+await coordinator.recordCapabilityMonitoringEvent({ ...event, query, providerId });
+```
+
+This corrupts physical-attempt accounting, stores prohibited content/identity, and
+can put passive telemetry on the user-visible critical path.
+
+#### Correct
+
+```typescript
+ctx.waitUntil(
+  coordinator.recordCapabilityMonitoringEvent(event).catch(() => undefined),
+);
+```
+
+One bounded logical event reaches the existing coordinator owner asynchronously;
+Provider attempts remain physical-call only and chat success cannot be downgraded.
+
 ## Scenario: Passive 24-Hour Production Observation Evidence
 
 ### 1. Scope / Trigger

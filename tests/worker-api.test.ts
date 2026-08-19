@@ -7982,6 +7982,44 @@ describe("Worker API", () => {
     expect(JSON.stringify(availability)).not.toContain(endpoint);
   });
 
+  it("projects authenticated content-free capability monitoring with strict query bounds", async () => {
+    const privateMarker = `PRIVATE_CAPABILITY_MARKER_${crypto.randomUUID()}`;
+    await env.PROVIDER_COORDINATOR.getByName("$capability-monitoring-v1").recordCapabilityMonitoringEvent({
+      version: 1,
+      capabilityId: "chatus:tool_execution",
+      kind: "tool",
+      status: "denied",
+      latencyMs: null,
+      occurredAt: Date.now(),
+    });
+
+    expect((await exports.default.fetch(new Request(
+      "https://example.test/api/admin/capability-monitor?window=24h&bucket=hour",
+    ))).status).toBe(401);
+    const adminCookie = await adminLogin();
+    const invalid = await apiRequest("/api/admin/capability-monitor?window=7d&bucket=hour", adminCookie);
+    expect(invalid.status).toBe(400);
+
+    const response = await apiRequest("/api/admin/capability-monitor?window=24h&bucket=hour", adminCookie);
+    expect(response.status, await response.clone().text()).toBe(200);
+    const snapshot = await response.json() as any;
+    expect(snapshot).toMatchObject({
+      version: 1,
+      window: "24h",
+      bucket: "hour",
+      evidence: "fresh",
+      stale: false,
+    });
+    expect(snapshot.capabilities).toEqual(expect.arrayContaining([expect.objectContaining({
+      capabilityId: "chatus:tool_execution",
+      kind: "tool",
+      denied: expect.any(Number),
+    })]));
+    expect(JSON.stringify(snapshot)).not.toContain(privateMarker);
+    expect(JSON.stringify(snapshot)).not.toContain("providerId");
+    expect(JSON.stringify(snapshot)).not.toContain("member");
+  });
+
   it("projects hard budget policy denial for memory suggestions and summaries without Provider calls", async () => {
     const providerId = `auxiliary-budget-${crypto.randomUUID()}`;
     const endpoint = `https://${providerId}.example/v1`;
