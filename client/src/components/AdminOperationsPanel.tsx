@@ -717,6 +717,7 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
   const [groupPageNumber, setGroupPageNumber] = useState(1);
   const maxAttempts = Math.max(1, ...snapshot.trend.map((item) => item.attempts));
   const total = snapshot.totals;
+  const noObservation = total.attempts === 0 && total.completed === 0 && total.failures === 0 && total.inFlight === 0;
   const groups = groupKind === "routes" ? snapshot.routes : groupKind === "providers" ? snapshot.providers : snapshot.models;
   const groupPage = paginateOperations(groups, groupPageNumber);
 
@@ -727,26 +728,41 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
 
   return (
     <div className="model-monitor-content">
-      <dl className="model-monitor-summary" aria-label="最近 24 小时模型监控摘要">
-        <div><dt>Provider 请求</dt><dd>{total.attempts}</dd></div>
-        <div><dt>成功</dt><dd>{total.succeeded}</dd></div>
-        <div><dt>失败</dt><dd>{total.failures}</dd></div>
-        <div><dt>进行中</dt><dd>{total.inFlight}</dd></div>
-        <div><dt>成功率</dt><dd>{total.successRate === null ? "—" : `${Math.round(total.successRate * 1000) / 10}%`}</dd></div>
-        <div><dt>Fallback</dt><dd>{total.fallbacks}</dd></div>
-        <div><dt>平均延迟</dt><dd>{total.averageLatencyMs === null ? "未知" : `${total.averageLatencyMs} ms`}</dd></div>
-      </dl>
+      <div className="model-monitor-summary" role="group" aria-label="最近 24 小时模型监控摘要">
+        <dl className="model-monitor-primary">
+          <div><dt>Provider 请求</dt><dd>{total.attempts}</dd></div>
+          <div><dt>已完成</dt><dd>{total.completed}</dd></div>
+          <div><dt>失败</dt><dd>{total.failures}</dd></div>
+          <div><dt>进行中</dt><dd>{total.inFlight}</dd></div>
+        </dl>
+        <dl className="model-monitor-secondary">
+          <div><dt>成功</dt><dd>{total.succeeded}</dd></div>
+          <div><dt>成功率</dt><dd>{total.successRate === null ? "暂无数据" : `${Math.round(total.successRate * 1000) / 10}%`}</dd></div>
+          <div><dt>Fallback</dt><dd>{total.fallbacks}</dd></div>
+          <div><dt>平均延迟</dt><dd>{total.averageLatencyMs === null ? "暂无数据" : `${total.averageLatencyMs} ms`}</dd></div>
+        </dl>
+      </div>
+      {noObservation && (
+        <div className="model-monitor-empty" role="status">
+          <strong>最近 24 小时暂无真实模型请求</strong>
+          <span>监控是被动观测，不代表成功或失败判断，也不会生成合成请求。</span>
+        </div>
+      )}
       <div className="model-monitor-grid">
         <div>
           <h3>小时趋势</h3>
-          <div className="model-monitor-trend">
-            {snapshot.trend.map((item) => (
-              <div className="model-monitor-trend-row" key={item.bucketStart}>
-                <span>{new Date(item.bucketStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                <progress max={maxAttempts} value={item.attempts} aria-label={`${formatMonitorTime(item.bucketStart)} 请求 ${item.attempts}`} />
-                <small>{item.attempts} · 成 {item.succeeded} · 败 {item.failures} · F {item.fallbacks}</small>
-              </div>
-            ))}
+          <div className="model-monitor-chart" role="list" aria-label="24 小时请求趋势">
+            {snapshot.trend.map((item, index) => {
+              const attemptLevel = monitorBarLevel(item.attempts, maxAttempts);
+              const failureLevel = monitorBarLevel(item.failures, maxAttempts);
+              const bucketLabel = `${formatMonitorTime(item.bucketStart)}：请求 ${item.attempts}，已完成 ${item.succeeded + item.failures}，失败 ${item.failures}，进行中 ${item.inFlight}，Fallback ${item.fallbacks}`;
+              return (
+                <div className="model-monitor-chart-column" key={item.bucketStart} role="listitem" aria-label={bucketLabel} title={bucketLabel}>
+                  <span className="model-monitor-bar-track"><i className={`level-${attemptLevel}`} /><b className={failureLevel > 0 ? `has-failures level-${failureLevel}` : ""} /></span>
+                  {(index === 0 || index % 4 === 0 || index === snapshot.trend.length - 1) && <small>{new Date(item.bucketStart).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>}
+                </div>
+              );
+            })}
           </div>
         </div>
         <div>
@@ -766,7 +782,7 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
             {groupPage.items.map((group) => <MonitorGroupRow key={`${groupKind}:${group.id}`} prefix={groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"} group={group} />)}
             {!groupPage.total && <p className="typed-admin-empty">当前分组暂无记录</p>}
           </div>
-          <PaginationControls label={`模型监控${groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"}`} page={groupPage} onPageChange={setGroupPageNumber} />
+          {groupPage.total > 0 && <PaginationControls label={`模型监控${groupKind === "routes" ? "线路" : groupKind === "providers" ? "Provider" : "模型"}`} page={groupPage} onPageChange={setGroupPageNumber} />}
         </div>
       </div>
       <div className="model-monitor-foot">
@@ -778,6 +794,11 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
 }
 
 type ModelMonitorGroupKind = "routes" | "providers" | "models";
+
+function monitorBarLevel(value: number, maximum: number): number {
+  if (value <= 0) return 0;
+  return Math.max(1, Math.min(10, Math.ceil((value / Math.max(1, maximum)) * 10)));
+}
 
 function MonitorGroupRow({ prefix, group }: { prefix: string; group: ModelMonitorSnapshot["routes"][number] }) {
   return (

@@ -213,3 +213,37 @@ Completed exact-SHA production deployment evidence, passive 24-hour aggregate ob
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Complete Chatus post-release UX optimization
+
+**Date**: 2026-08-19
+**Task**: Complete Chatus post-release UX optimization
+**Branch**: `codex/chatus-ux-settings-redesign-ui`
+
+### Summary
+
+Implemented the approved Chatus workspace, member settings, availability, and bounded model-monitor refinements; added responsive, dark-theme, zoom-equivalent, state-matrix, and zero-observation coverage; all required quality gates passed.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `23fd58c` | (see git log) |
+| `e0dee38` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

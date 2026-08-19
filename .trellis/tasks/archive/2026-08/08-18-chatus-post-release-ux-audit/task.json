@@ -1,0 +1,35 @@
+{
+  "id": "chatus-post-release-ux-audit",
+  "name": "chatus-post-release-ux-audit",
+  "title": "Chatus post-release UX audit and optimization",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-18",
+  "completedAt": "2026-08-19",
+  "branch": null,
+  "base_branch": "codex/chatus-ux-settings-redesign-ui",
+  "worktree_path": null,
+  "commit": "e0dee38fb2ac4eb229961b9739fbe6d1414be20f",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "55 files and 811 tests passed; frontend, browser, typecheck, dry-run, diff, and Trellis gates also passed.",
+        "at": "2026-08-19T05:27:44.308289+00:00"
+      }
+    ]
+  }
+}

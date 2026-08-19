@@ -283,12 +283,18 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
 
   expect(geometry.documentFits).toBe(true);
   expect(geometry.bodyFits).toBe(true);
-  expect(geometry.header.height).toBeLessThanOrEqual(60);
+  if (viewport!.width <= 780) {
+    expect(geometry.header.height).toBeLessThanOrEqual(96);
+    expect(geometry.header.height).toBeGreaterThanOrEqual(88);
+    expect(geometry.headerRoute.top).toBeGreaterThanOrEqual(geometry.headerTitle.bottom - 1);
+  } else {
+    expect(geometry.header.height).toBeLessThanOrEqual(60);
+    expect(geometry.headerTitle.right).toBeLessThanOrEqual(geometry.headerRoute.left + 1);
+    expect(geometry.headerRoute.right).toBeLessThanOrEqual(geometry.headerActions.left + 1);
+  }
   expect(geometry.header.top).toBeGreaterThanOrEqual(geometry.layout.top - 1);
   expect(geometry.header.bottom).toBeLessThanOrEqual(geometry.layout.bottom + 1);
   expect(geometry.headerLeading.right).toBeLessThanOrEqual(geometry.headerTitle.left + 1);
-  expect(geometry.headerTitle.right).toBeLessThanOrEqual(geometry.headerRoute.left + 1);
-  expect(geometry.headerRoute.right).toBeLessThanOrEqual(geometry.headerActions.left + 1);
   expect(geometry.messageList.bottom).toBeLessThanOrEqual(geometry.composer.top + 1);
   expect(geometry.transcript.width).toBeLessThanOrEqual(720);
   expect(geometry.transcript.left).toBeGreaterThanOrEqual(0);
@@ -315,6 +321,49 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   }
 
   await attachScreenshot(page, testInfo, "workspace");
+});
+
+test("workspace stays contained at a 200 percent desktop zoom equivalent", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "wide-1920", "zoom-equivalent coverage uses the 1920px desktop baseline");
+  await page.setViewportSize({ width: 960, height: 540 });
+  const geometry = await page.evaluate(() => {
+    const header = document.querySelector<HTMLElement>(".workspace-header");
+    const route = document.querySelector<HTMLElement>(".header-route-button");
+    const actions = document.querySelector<HTMLElement>(".header-actions");
+    const composer = document.querySelector<HTMLElement>(".composer-box");
+    if (!header || !route || !actions || !composer) throw new Error("missing zoom-equivalent workspace regions");
+    const viewportWidth = document.documentElement.clientWidth;
+    return {
+      documentFits: document.documentElement.scrollWidth <= viewportWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      headerFits: header.getBoundingClientRect().right <= viewportWidth,
+      routeFits: route.getBoundingClientRect().right <= viewportWidth,
+      routeBeforeActions: route.getBoundingClientRect().right <= actions.getBoundingClientRect().left + 1,
+      composerFits: composer.getBoundingClientRect().right <= viewportWidth,
+    };
+  });
+  expect(geometry).toEqual({ documentFits: true, bodyFits: true, headerFits: true, routeFits: true, routeBeforeActions: true, composerFits: true });
+  await attachScreenshot(page, testInfo, "workspace-zoom-200-equivalent");
+});
+
+test("dark workspace preserves semantic surface separation", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "mobile-480"].includes(testInfo.project.name), "dark workspace coverage targets desktop and mobile");
+  await page.goto("/?theme=dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  const colors = await page.evaluate(() => {
+    const header = document.querySelector<HTMLElement>(".workspace-header");
+    const userMessage = document.querySelector<HTMLElement>(".message.user .message-body");
+    if (!header || !userMessage) throw new Error("missing dark workspace surfaces");
+    return {
+      canvas: getComputedStyle(document.body).backgroundColor,
+      structural: getComputedStyle(header).backgroundColor,
+      muted: getComputedStyle(userMessage).backgroundColor,
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    };
+  });
+  expect(new Set([colors.canvas, colors.structural, colors.muted]).size).toBe(3);
+  expect(colors.documentFits).toBe(true);
+  await attachScreenshot(page, testInfo, "workspace-dark");
 });
 
 test("bounded Provider progress stays neutral and contained", async ({ page }, testInfo) => {
@@ -683,12 +732,15 @@ test("branch origin hint returns to parent and handles missing parents", async (
       headerHeight: headerRect.height,
       chipInsideStack: chipRect.left >= stackRect.left - 1 && chipRect.right <= stackRect.right + 1,
       stackBeforeRoute: stackRect.right <= routeRect.left + 1,
+      routeBelowStack: routeRect.top >= stackRect.bottom - 1,
     };
   });
   expect(geometry.documentFits).toBe(true);
-  expect(geometry.headerHeight).toBeLessThanOrEqual(60);
+  if ((page.viewportSize()?.width || 0) <= 780) expect(geometry.headerHeight).toBeLessThanOrEqual(96);
+  else expect(geometry.headerHeight).toBeLessThanOrEqual(60);
   expect(geometry.chipInsideStack).toBe(true);
-  expect(geometry.stackBeforeRoute).toBe(true);
+  if ((page.viewportSize()?.width || 0) <= 780) expect(geometry.routeBelowStack).toBe(true);
+  else expect(geometry.stackBeforeRoute).toBe(true);
   await origin.click();
   await expect(page.locator(".header-conversation-title")).toHaveText("第二个会话");
 
@@ -725,11 +777,13 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
       documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       routeHasWidth: route.width >= 48,
       routeBeforeActions: route.right <= actions.left + 1,
+      routeBelowActions: route.top >= actions.bottom - 1,
     };
   });
   expect(geometry.documentFits).toBe(true);
   expect(geometry.routeHasWidth).toBe(true);
-  expect(geometry.routeBeforeActions).toBe(true);
+  if ((page.viewportSize()?.width || 0) <= 780) expect(geometry.routeBelowActions).toBe(true);
+  else expect(geometry.routeBeforeActions).toBe(true);
   await attachScreenshot(page, testInfo, "guest-workspace");
 });
 
@@ -754,6 +808,24 @@ test("member Skill mode switches between automatic and exact manual selection", 
   await projectSkill.uncheck();
   await expect(projectSkill).not.toBeChecked();
   if (testInfo.project.name === "desktop-1440") await attachScreenshot(page, testInfo, "conversation-inspector");
+});
+
+test("member model availability distinguishes confidence and refresh states", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "availability state matrix targets desktop and touch");
+  const states = [
+    ["limited", "样本较少"],
+    ["stale", "状态已过期"],
+    ["degraded", "有波动"],
+    ["unavailable", "暂不可用"],
+    ["none", "暂无观测"],
+    ["refreshing", "正在更新"],
+  ] as const;
+  for (const [mode, label] of states) {
+    await page.goto(`/?availability=${mode}`);
+    await expect(page.locator(".header-route-button").getByLabel(`模型状态：${label}`)).toBeVisible();
+    await page.getByRole("button", { name: "查看线路与状态" }).click();
+    await expect(page.locator(".model-availability-row").getByLabel(`模型状态：${label}`)).toBeVisible();
+  }
 });
 
 test("member settings center keeps global preferences out of conversation context", async ({ page }, testInfo) => {
@@ -1000,7 +1072,9 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await page.goto("/?view=operations");
   await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
   await expect(page.getByRole("heading", { name: "模型监控 · 最近 24 小时" })).toBeVisible();
-  await expect(page.getByLabel("最近 24 小时模型监控摘要")).toContainText("Provider 请求");
+  const modelMonitorSummary = page.getByLabel("最近 24 小时模型监控摘要");
+  await expect(modelMonitorSummary).toContainText("Provider 请求");
+  await expect(modelMonitorSummary.locator("dt", { hasText: /^成功$/ }).locator("..")).toContainText("36");
   await expect(page.getByText("仅统计实际 Provider attempt；Fallback 单独计数。", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "模型监控线路：下一页" })).toBeVisible();
   await page.getByRole("button", { name: "模型监控线路：下一页" }).click();
@@ -1019,6 +1093,9 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "Provider 尝试" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "预算占用与复核" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider 对账" })).toBeVisible();
+  await expect(page.locator(".model-monitor-chart-column")).toHaveCount(24);
+  const lowVolumeFailure = page.locator('.model-monitor-chart-column[aria-label*="请求 1"][aria-label*="失败 1"]');
+  await expect(lowVolumeFailure.locator("b")).toHaveClass("has-failures level-1");
   await expect(page.getByRole("progressbar", { name: "2026-07-26 请求 5" })).toBeVisible();
   await expect(page.getByText("更新配置", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/不准确/).first()).toBeVisible();
@@ -1074,6 +1151,20 @@ test("operations data stays scannable with local table overflow", async ({ page 
   expect(geometry.wrapperFits).toBe(true);
   if (testInfo.project.name === "touch-390") expect(geometry.localOverflow).toBe(true);
   await attachScreenshot(page, testInfo, "operations");
+});
+
+test("model monitor makes a zero-observation window explicit", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "zero-observation coverage targets desktop and touch");
+  await page.goto("/?view=operations&monitor=empty");
+  await expect(page.locator(".model-monitor-empty")).toContainText("最近 24 小时暂无真实模型请求");
+  await expect(page.getByLabel("最近 24 小时模型监控摘要")).toContainText("暂无数据");
+  await expect(page.locator(".model-monitor-chart-column")).toHaveCount(24);
+  await expect(page.locator(".model-monitor-groups")).toContainText("当前分组暂无记录");
+  const geometry = await page.evaluate(() => ({
+    documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+  }));
+  expect(geometry).toEqual({ documentFits: true, bodyFits: true });
 });
 
 test("legacy surface transition keeps evidence retryable and refreshes authority", async ({ page }, testInfo) => {
