@@ -39,16 +39,16 @@ Rollback point: if deployment fails before Worker promotion, fix through a new r
 - [x] Add a main-only, serialized, exact-SHA observation Workflow that reads the admin aggregate through the existing session boundary and retains only bounded aggregate evidence.
 - [x] Extend model-request-free production acceptance to validate the member `/api/model-availability` projection shape and privacy boundary.
 - [x] Add contract and workflow-governance regressions for exact 24-hour buckets, reconciliation, release fencing, artifact bounds, and no model-call paths.
-- [ ] Inspect member route-availability presentation and administrator aggregate monitoring without recording prohibited data.
-- [ ] At or after 24 hours, record aggregate freshness and attempt/success/failure reconciliation or the legitimate no-data state.
-- [ ] Confirm no release-critical UX, authorization, privacy, routing, or monitoring regression remains open.
+- [x] Inspect member route-availability presentation and administrator aggregate monitoring without recording prohibited data; the production observation Workflow's member availability acceptance and aggregate monitor decoder passed without retaining identities.
+- [x] At or after 24 hours, record aggregate freshness and attempt/success/failure reconciliation or the legitimate no-data state; Workflow `32118283425` recorded the exact 24-hour no-data aggregate with `successRate=null`.
+- [x] Confirm no release-critical UX, authorization, privacy, routing, or monitoring regression remains open; the observation Workflow, member acceptance, and release SHA fences passed with no rollback.
 
 ## 6. Close Out
 
-- [ ] Update `task.json` validation evidence with PR, merge, deployment, acceptance, and observation results.
-- [ ] Run `python ./.trellis/scripts/task.py validate-all` and `git diff --check` for task records.
-- [ ] Commit and push release evidence through a normal reviewed Git change if repository-tracked records changed.
-- [ ] Archive the task only after the 24-hour observation gate is complete or after a completed rollback is verified.
+- [x] Update `task.json` validation evidence with PR, merge, deployment, acceptance, and observation results.
+- [x] Run `python ./.trellis/scripts/task.py validate-all` and `git diff --check` for task records.
+- [x] Commit and push release evidence through a normal reviewed Git change if repository-tracked records changed; PR #94 merged as `5c1d61edf16996949cb1538e027167ade61f0e66`.
+- [x] Archive the task only after the 24-hour observation gate is complete or after a completed rollback is verified.
 
 ## Guardrails
 

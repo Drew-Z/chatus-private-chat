@@ -174,7 +174,48 @@ Synced the approved Figma member workspace and settings direction into the typed
 - None - task complete
 
 
-## Session 6: Capability catalog and adoption
+## Session 6: Chatus production release observation
+
+**Date**: 2026-08-18
+**Task**: Chatus production release observation
+**Branch**: `codex/chatus-ux-settings-redesign-ui`
+
+### Summary
+
+Completed exact-SHA production deployment evidence, passive 24-hour aggregate observation, model-request-free member availability acceptance, privacy audit, and task archive.
+
+### Main Changes
+
+- Recorded the exact production deployment SHA and the successful 24-hour passive observation workflow.
+- Reconciled attempts, completed successes/failures, in-flight requests, success-rate semantics, freshness, and member availability from aggregate-only evidence.
+- Confirmed the zero-traffic observation state was internally consistent and archived the completed Trellis task.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5771519e5cbe99768c018313961101a6139cfd4d` | (see git log) |
+| `18724b60658730c45355c650364a936b843b8d4b` | (see git log) |
+| `32a0110411a2630627f061ecd580ee15c3558660` | (see git log) |
+
+### Testing
+
+- [OK] GitHub Actions production observation run `32118283425`
+- [OK] Aggregate evidence and 24 hourly buckets reconciled with no synthetic model traffic
+- [OK] Privacy audit found no restricted content or identity fields in the observation artifact
+- [OK] `python ./.trellis/scripts/task.py validate-all`
+- [OK] `git diff --check origin/main...HEAD`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 7: Capability catalog and adoption
 
 **Date**: 2026-08-18
 **Task**: Capability catalog and adoption
@@ -207,7 +248,7 @@ Implemented and verified the revisioned Chatus capability catalog, five instruct
 - None - task complete
 
 
-## Session 7: Explicit web research capability
+## Session 8: Explicit web research capability
 
 **Date**: 2026-08-18
 **Task**: Explicit web research capability
@@ -240,7 +281,7 @@ Implemented member-initiated per-turn web research through a reviewed read-only 
 - None - task complete
 
 
-## Session 8: Capability experience and monitoring
+## Session 9: Capability experience and monitoring
 
 **Date**: 2026-08-19
 **Task**: Capability experience and monitoring
@@ -273,7 +314,7 @@ Unified member and administrator capability UX, added strict content-free capabi
 - None - task complete
 
 
-## Session 9: Complete Chatus default capability packs
+## Session 10: Complete Chatus default capability packs
 
 **Date**: 2026-08-19
 **Task**: Complete Chatus default capability packs
