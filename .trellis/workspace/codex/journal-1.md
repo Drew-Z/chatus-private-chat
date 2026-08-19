@@ -271,3 +271,37 @@ Unified member and administrator capability UX, added strict content-free capabi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Complete Chatus default capability packs
+
+**Date**: 2026-08-19
+**Task**: Complete Chatus default capability packs
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Hardened pre-attempt authorization, vision revocation, session capability decoding, monitoring lifecycle ownership, privacy tests, and cancellation; passed the complete local quality gate; archived the integration child and parent capability task tree without touching protected production observation or legacy rollout work.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `49cb0f9` | (see git log) |
+| `8ccffe7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
