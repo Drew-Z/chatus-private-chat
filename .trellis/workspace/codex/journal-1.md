@@ -238,3 +238,36 @@ Implemented member-initiated per-turn web research through a reviewed read-only 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Capability experience and monitoring
+
+**Date**: 2026-08-19
+**Task**: Capability experience and monitoring
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Unified member and administrator capability UX, added strict content-free capability monitoring, covered five responsive viewports, and stabilized lifecycle-owned telemetry plus Windows Worker test timing.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `273492a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
