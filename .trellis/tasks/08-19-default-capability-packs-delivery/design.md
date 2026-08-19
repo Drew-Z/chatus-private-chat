@@ -54,4 +54,3 @@ over rewriting the branch. Do not roll back PR #98 or PR #99 on `main`.
 - Do not modify or advance any legacy rollout task, gate, workflow, or evidence.
 - Do not modify PR #93 or the archived production observation task/evidence.
 - Do not deploy production or run live Provider, MCP, OAuth, or model probes.
-
