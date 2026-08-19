@@ -80,8 +80,8 @@ Examples in `public/app.js` include the session list, model picker, settings dia
   the authoritative Operations snapshot refreshes successfully. Read rollback
   must project `recovery_proven`; write rollback must project `shadowing`.
 - Use an unframed, scannable operations layout. Summary metrics form one full-width band; sections use restrained separators rather than nested cards. The eight-column member table scrolls inside its own wrapper on narrow screens and must never widen the admin page.
-- Render the 24-bucket monitor with stylesheet-owned discrete height classes for attempt and failure levels. Do not add React inline `style` props for the chart: the production CSP keeps `style-src 'self'`, and the accessible bucket label remains the exact-count source of truth.
-- Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model. Finance mutation coverage injects fake actions and asserts no horizontal overflow at both widths.
+- Render the 24-bucket monitor with stylesheet-owned discrete height classes for attempt and failure levels. Both levels use the same chart-wide `maxAttempts` denominator (`monitorBarLevel(value, maxAttempts)`); scaling failures against one bucket's attempts falsely turns a low-volume single failure into a full-height marker. Do not add React inline `style` props for the chart: the production CSP keeps `style-src 'self'`, and the accessible bucket label remains the exact-count source of truth.
+- Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model. Monitor coverage includes a low-volume bucket with one attempt and one failure beside a higher chart-wide attempt peak, then asserts the failure marker keeps the corresponding low discrete level. Finance mutation coverage injects fake actions and asserts no horizontal overflow at both widths.
 
 ## Scenario: Recoverable React Admin Safety
 

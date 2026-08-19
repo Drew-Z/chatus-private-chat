@@ -736,6 +736,7 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
           <div><dt>进行中</dt><dd>{total.inFlight}</dd></div>
         </dl>
         <dl className="model-monitor-secondary">
+          <div><dt>成功</dt><dd>{total.succeeded}</dd></div>
           <div><dt>成功率</dt><dd>{total.successRate === null ? "暂无数据" : `${Math.round(total.successRate * 1000) / 10}%`}</dd></div>
           <div><dt>Fallback</dt><dd>{total.fallbacks}</dd></div>
           <div><dt>平均延迟</dt><dd>{total.averageLatencyMs === null ? "暂无数据" : `${total.averageLatencyMs} ms`}</dd></div>
@@ -753,7 +754,7 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
           <div className="model-monitor-chart" role="list" aria-label="24 小时请求趋势">
             {snapshot.trend.map((item, index) => {
               const attemptLevel = monitorBarLevel(item.attempts, maxAttempts);
-              const failureLevel = monitorBarLevel(item.failures, item.attempts);
+              const failureLevel = monitorBarLevel(item.failures, maxAttempts);
               const bucketLabel = `${formatMonitorTime(item.bucketStart)}：请求 ${item.attempts}，已完成 ${item.succeeded + item.failures}，失败 ${item.failures}，进行中 ${item.inFlight}，Fallback ${item.fallbacks}`;
               return (
                 <div className="model-monitor-chart-column" key={item.bucketStart} role="listitem" aria-label={bucketLabel} title={bucketLabel}>

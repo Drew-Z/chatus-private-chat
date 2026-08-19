@@ -550,9 +550,9 @@ const operationModelMonitor: ModelMonitorSnapshot = {
   trend: Array.from({ length: 24 }, (_, index) => ({
     bucketStart: operationMonitorPeriodStart + index * 3_600_000,
     bucketEnd: operationMonitorPeriodStart + (index + 1) * 3_600_000,
-    attempts: index === 23 ? 42 : 0,
+    attempts: index === 22 ? 1 : index === 23 ? 41 : 0,
     succeeded: index === 23 ? 36 : 0,
-    failures: index === 23 ? 4 : 0,
+    failures: index === 22 ? 1 : index === 23 ? 3 : 0,
     inFlight: index === 23 ? 2 : 0,
     fallbacks: index === 23 ? 6 : 0,
   })),

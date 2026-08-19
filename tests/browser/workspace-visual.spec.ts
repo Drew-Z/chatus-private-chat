@@ -1072,7 +1072,9 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await page.goto("/?view=operations");
   await expect(page.getByLabel("7 日运营摘要")).toBeVisible();
   await expect(page.getByRole("heading", { name: "模型监控 · 最近 24 小时" })).toBeVisible();
-  await expect(page.getByLabel("最近 24 小时模型监控摘要")).toContainText("Provider 请求");
+  const modelMonitorSummary = page.getByLabel("最近 24 小时模型监控摘要");
+  await expect(modelMonitorSummary).toContainText("Provider 请求");
+  await expect(modelMonitorSummary.locator("dt", { hasText: /^成功$/ }).locator("..")).toContainText("36");
   await expect(page.getByText("仅统计实际 Provider attempt；Fallback 单独计数。", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "模型监控线路：下一页" })).toBeVisible();
   await page.getByRole("button", { name: "模型监控线路：下一页" }).click();
@@ -1092,6 +1094,8 @@ test("operations data stays scannable with local table overflow", async ({ page 
   await expect(page.getByRole("heading", { name: "预算占用与复核" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provider 对账" })).toBeVisible();
   await expect(page.locator(".model-monitor-chart-column")).toHaveCount(24);
+  const lowVolumeFailure = page.locator('.model-monitor-chart-column[aria-label*="请求 1"][aria-label*="失败 1"]');
+  await expect(lowVolumeFailure.locator("b")).toHaveClass("has-failures level-1");
   await expect(page.getByRole("progressbar", { name: "2026-07-26 请求 5" })).toBeVisible();
   await expect(page.getByText("更新配置", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/不准确/).first()).toBeVisible();
