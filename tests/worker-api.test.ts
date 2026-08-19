@@ -16,7 +16,13 @@ import {
   type ConversationResourceRouteV1,
   type PrincipalRouteV1,
 } from "../src/contracts/identity";
-import { isAdminConfigSnapshot, isAdminLegacyRouteMigrationResponse, isAdminLegacySurfaceSnapshot } from "../client/src/lib/api";
+import {
+  isAdminCapabilityCatalogSnapshot,
+  isAdminCapabilityPackInstallResponse,
+  isAdminConfigSnapshot,
+  isAdminLegacyRouteMigrationResponse,
+  isAdminLegacySurfaceSnapshot,
+} from "../client/src/lib/api";
 import {
   LEGACY_SURFACE_MANIFEST,
   legacySurfaceManifestDigest,
@@ -762,6 +768,18 @@ async function getPersistedAgentMessages(agent: DurableObjectStub<TeamAgent>): P
   });
 }
 
+async function getVisionEvidenceRows(agent: DurableObjectStub<TeamAgent>): Promise<Array<{
+  source_message_id: string;
+  evidence_json: string;
+}>> {
+  return runInDurableObject(agent, async (_instance, state) => state.storage.sql.exec<{
+    source_message_id: string;
+    evidence_json: string;
+  }>(
+    "SELECT source_message_id, evidence_json FROM chatus_vision_evidence ORDER BY source_message_id",
+  ).toArray());
+}
+
 async function seedProviderAttempt(providerId: string) {
   const runtime = createProviderAttemptRuntime({
     ledger: env.PROVIDER_ATTEMPT_LEDGER,
@@ -930,6 +948,100 @@ describe("Worker API", () => {
     });
   });
 
+  it("derives every image mode and the session image capability from current assignment", async () => {
+    const deniedLabel = `image-mode-denied-${crypto.randomUUID()}`;
+    const noneOnlyLabel = `image-mode-none-${crypto.randomUUID()}`;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify({
+      providers: {
+        native: {
+          label: "Native image",
+          type: "openai-chat",
+          baseUrl: "https://native-mode.example/v1",
+          apiKey: "native-mode-key",
+          supportsImages: true,
+          supportsTools: false,
+        },
+        tool: {
+          label: "Tool text",
+          type: "openai-chat",
+          baseUrl: "https://tool-mode.example/v1",
+          apiKey: "tool-mode-key",
+          supportsImages: false,
+          supportsTools: true,
+        },
+        plain: {
+          label: "Plain text",
+          type: "openai-chat",
+          baseUrl: "https://plain-mode.example/v1",
+          apiKey: "plain-mode-key",
+          supportsImages: false,
+          supportsTools: false,
+        },
+        vision: {
+          label: "Vision helper",
+          type: "openai-chat",
+          baseUrl: "https://vision-mode.example/v1",
+          apiKey: "vision-mode-key",
+          supportsImages: true,
+          supportsTools: false,
+        },
+      },
+      routes: {
+        native: { label: "Native image", offerings: [{ providerId: "native", model: "native-model" }] },
+        tool: {
+          label: "Tool text",
+          offerings: [{ providerId: "tool", model: "tool-model" }],
+          supportsTools: true,
+        },
+        plain: { label: "Plain text", offerings: [{ providerId: "plain", model: "plain-model" }] },
+        vision: { label: "Vision helper", offerings: [{ providerId: "vision", model: "vision-model" }] },
+      },
+      defaults: {
+        defaultRoute: "native",
+        allowedRoutes: ["native", "tool", "plain"],
+        allowedAugmentations: ["vision_assist"],
+      },
+      users: {
+        [deniedLabel]: { allowedAugmentations: [] },
+        [noneOnlyLabel]: { allowedRoutes: ["tool", "plain"], allowedAugmentations: [] },
+      },
+      visionAssist: { enabled: true, routeId: "vision", maxOutputChars: 1_024 },
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const routeModes = (session: any) => Object.fromEntries(session.routes.map((route: any) => [route.id, {
+      supportsImages: route.supportsImages,
+      supportsTools: route.supportsTools,
+      imageMode: route.imageMode,
+    }]));
+
+    const assigned = await login(`image-mode-assigned-${crypto.randomUUID()}`);
+    const assignedSession = await apiRequest("/api/session", assigned.cookie).then((response) => response.json()) as any;
+    expect(routeModes(assignedSession)).toEqual({
+      native: { supportsImages: true, supportsTools: false, imageMode: "native" },
+      tool: { supportsImages: false, supportsTools: true, imageMode: "assisted_tool" },
+      plain: { supportsImages: false, supportsTools: false, imageMode: "assisted_preanswer" },
+    });
+    expect(assignedSession.capabilities.imageInput).toBe(true);
+
+    const denied = await login(deniedLabel);
+    const deniedSession = await apiRequest("/api/session", denied.cookie).then((response) => response.json()) as any;
+    expect(routeModes(deniedSession)).toEqual({
+      native: { supportsImages: true, supportsTools: false, imageMode: "native" },
+      tool: { supportsImages: false, supportsTools: true, imageMode: "none" },
+      plain: { supportsImages: false, supportsTools: false, imageMode: "none" },
+    });
+    expect(deniedSession.capabilities.imageInput).toBe(true);
+
+    const noneOnly = await login(noneOnlyLabel);
+    const noneOnlySession = await apiRequest("/api/session", noneOnly.cookie).then((response) => response.json()) as any;
+    expect(routeModes(noneOnlySession)).toEqual({
+      tool: { supportsImages: false, supportsTools: true, imageMode: "none" },
+      plain: { supportsImages: false, supportsTools: false, imageMode: "none" },
+    });
+    expect(noneOnlySession.capabilities.imageInput).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("issues isolated guest identities with one secret-free logical model", async () => {
     await configurePublicAccess();
     const source = `guest-source-${crypto.randomUUID()}`;
@@ -949,6 +1061,7 @@ describe("Worker API", () => {
       defaultRoute: PUBLIC_ROUTE_ID,
       allowBringYourOwnKey: false,
       hasUserSystemPrompt: false,
+      availableCapabilities: [],
       skills: [],
       tools: [],
       capabilities: {
@@ -2822,6 +2935,27 @@ describe("Worker API", () => {
         metadata: { finishReason: "stop", providerTrace: "sensitive-metadata-marker" },
         parts: [{ type: "text", text: "complete response" }],
       },
+      {
+        id: "user-web-research",
+        role: "user",
+        metadata: {
+          capabilityIds: ["chatus:web_research"],
+          privateQueryMarker: "must-not-persist",
+        },
+        parts: [{ type: "text", text: "Find current release notes" }],
+      },
+      {
+        id: "assistant-web-research",
+        role: "assistant",
+        metadata: {
+          webResearch: {
+            version: 1,
+            sources: [{ url: "https://example.com/release", title: "Release notes", snippet: "Current facts" }],
+          },
+          providerTrace: "sensitive-metadata-marker",
+        },
+        parts: [{ type: "text", text: "The current release is documented." }],
+      },
     ] as UIMessage[]);
 
     const persisted = await getPersistedAgentMessages(conversation);
@@ -2829,8 +2963,18 @@ describe("Worker API", () => {
       finishReason: "length",
     });
     expect(persisted.find((message) => message.id === "assistant-stop")).not.toHaveProperty("metadata");
+    expect(persisted.find((message) => message.id === "user-web-research")?.metadata).toEqual({
+      capabilityIds: ["chatus:web_research"],
+    });
+    expect(persisted.find((message) => message.id === "assistant-web-research")?.metadata).toEqual({
+      webResearch: {
+        version: 1,
+        sources: [{ url: "https://example.com/release", title: "Release notes", snippet: "Current facts" }],
+      },
+    });
     expect(JSON.stringify(persisted)).not.toContain("sensitive-metadata-marker");
     expect(JSON.stringify(persisted)).not.toContain("credentialReference");
+    expect(JSON.stringify(persisted)).not.toContain("privateQueryMarker");
   });
 
   it("defaults new member conversations to automatic while preserving exact manual Skills", async () => {
@@ -3925,6 +4069,37 @@ describe("Worker API", () => {
       sourceMessages[2],
     ];
     await sourceAgent.importLegacyMessages(sourceMessages);
+    const retainedEvidence = {
+      version: 1 as const,
+      description: "A synthetic branch image.",
+      ocrText: ["branch evidence"],
+      limitations: ["Synthetic test evidence."],
+    };
+    await sourceAgent.importVisionEvidence([{
+      sourceMessageId: "branch-user-1",
+      evidence: retainedEvidence,
+    }]);
+    await runInDurableObject(sourceAgent, async (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO chatus_vision_evidence(source_message_id, evidence_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        "orphan-evidence",
+        JSON.stringify(retainedEvidence),
+        1,
+        1,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO chatus_vision_evidence(source_message_id, evidence_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        "malformed-evidence",
+        JSON.stringify({ version: 1, description: "malformed" }),
+        1,
+        2,
+      );
+    });
+    await sourceAgent.captureInstanceState(`epoch-vision-revalidate-${crypto.randomUUID()}`);
+    await expect(getVisionEvidenceRows(sourceAgent)).resolves.toEqual([{
+      source_message_id: "branch-user-1",
+      evidence_json: JSON.stringify(retainedEvidence),
+    }]);
     const root = await getRootAgent(label);
     await root.recordConversationActivity({ id: sourceId, messageCount: sourceMessages.length });
     const source = (await root.listConversations()).find((conversation) => conversation.id === sourceId)!;
@@ -3981,6 +4156,10 @@ describe("Worker API", () => {
       filename: "branch.png",
       url: "data:image/png;base64,QQ==",
     });
+    await expect(getVisionEvidenceRows(destinationAgent)).resolves.toEqual([{
+      source_message_id: "branch-user-1",
+      evidence_json: JSON.stringify(retainedEvidence),
+    }]);
     await expect(sourceAgent.exportMessages()).resolves.toMatchObject({
       messages: exportedSourceMessages,
       truncated: false,
@@ -4040,6 +4219,17 @@ describe("Worker API", () => {
         },
       });
       expect(payload.conversation.title).not.toContain("分支 ·");
+      const actionAgent = await getConversationAgent(label, payload.conversation.id);
+      const actionMessages = await getPersistedAgentMessages(actionAgent);
+      const actionEvidence = await getVisionEvidenceRows(actionAgent);
+      const imageMessageId = actionMessages.find((message) => message.role === "user"
+        && message.parts.some((part) => part.type === "file" && part.mediaType?.startsWith("image/")))?.id;
+      expect(actionEvidence).toEqual(imageMessageId ? [{
+        source_message_id: imageMessageId,
+        evidence_json: JSON.stringify(retainedEvidence),
+      }] : []);
+      if (titleCase.action === "edit") expect(imageMessageId).not.toBe("branch-user-1");
+      else expect(imageMessageId).toBe("branch-user-1");
     }
     const expectedConversationCount = 2 + titleCases.length;
     expect(await root.listConversations()).toHaveLength(expectedConversationCount);
@@ -4084,6 +4274,15 @@ describe("Worker API", () => {
       ],
     }];
     await conversationAgent.importLegacyMessages(seededMessages);
+    await conversationAgent.importVisionEvidence([{
+      sourceMessageId: "cleanup-user",
+      evidence: {
+        version: 1,
+        description: "Evidence to remove with the conversation.",
+        ocrText: [],
+        limitations: [],
+      },
+    }]);
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(1);
     const root = await getRootAgent(label);
     const deleted = await root.deleteConversation(chatId, created.conversation.updatedAt);
@@ -4109,6 +4308,7 @@ describe("Worker API", () => {
     await expect(root.listPendingConversationCleanups()).resolves.toEqual([]);
     await expect(conversationAgent.getConversationMessageCount()).resolves.toBe(0);
     await expect(getPersistedAgentMessages(conversationAgent)).resolves.toEqual([]);
+    await expect(getVisionEvidenceRows(conversationAgent)).resolves.toEqual([]);
     await expect(root.inspectCleanupReliability()).resolves.toMatchObject({ scheduledAt: 0 });
 
     const staleReconnect = await apiRequest(`/agent?chatId=${encodeURIComponent(chatId)}`, cookie);
@@ -4426,6 +4626,261 @@ describe("Worker API", () => {
     const legacyMember = await login(`legacy-capability-member-${crypto.randomUUID()}`);
     const legacySession = await apiRequest("/api/session", legacyMember.cookie).then((response) => response.json()) as any;
     expect(legacySession.skills.map((skill: any) => skill.id)).toEqual(["first", "later"]);
+  });
+
+  it("seeds catalog workflows only for the truly unconfigured default", async () => {
+    const adminCookie = await adminLogin();
+    const expectedIds = [
+      "chatus:writing",
+      "chatus:summarize",
+      "chatus:translate",
+      "chatus:code_explanation",
+      "chatus:structured_output",
+    ];
+    const unconfigured = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    expect(unconfigured.source).toBe("default");
+    expect(Object.keys(unconfigured.config.skills)).toEqual(expectedIds);
+    expect(unconfigured.config.defaults.allowedSkills).toEqual(expectedIds);
+
+    const storedConfig = {
+      routes: {
+        stored: {
+          label: "Stored",
+          type: "openai-chat",
+          baseUrl: "https://stored.example/v1",
+          model: "stored-model",
+          apiKey: "stored-test-key",
+        },
+      },
+      defaults: { defaultRoute: "stored", allowedRoutes: ["stored"] },
+    };
+    const secretEnv = { ...env, ROUTES_CONFIG: JSON.stringify(storedConfig) } as any;
+    const secretResponse = await worker.fetch(new Request("https://example.test/api/admin/config", {
+      headers: { Cookie: adminCookie },
+    }), secretEnv);
+    const secret = await secretResponse.json() as any;
+    expect(secret.source).toBe("secret");
+    expect(secret.config.skills).toEqual({});
+    expect(secret.config.defaults).not.toHaveProperty("allowedSkills");
+
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(storedConfig));
+    const kv = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    expect(kv.source).toBe("kv");
+    expect(kv.config.skills).toEqual({});
+    expect(kv.config.defaults).not.toHaveProperty("allowedSkills");
+  });
+
+  it("previews and installs catalog workflows with revision, assignment, and audit boundaries", async () => {
+    const deniedLabel = `catalog-denied-${crypto.randomUUID()}`;
+    const visionLabel = `catalog-vision-${crypto.randomUUID()}`;
+    const baseConfig = {
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://catalog.example/v1",
+          model: "catalog-model",
+          apiKey: "catalog-test-key",
+        },
+      },
+      defaults: {
+        defaultRoute: "default",
+        allowedRoutes: ["default"],
+        allowedSkills: ["custom"],
+      },
+      users: {
+        [deniedLabel]: { allowedSkills: [], allowedAugmentations: [] },
+        [visionLabel]: { allowedSkills: [], allowedAugmentations: ["vision_assist"] },
+      },
+      skills: {
+        custom: { enabled: true, label: "Custom", instructions: "Custom instructions.", toolIds: [] },
+      },
+    };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(baseConfig));
+    const adminCookie = await adminLogin();
+    const initial = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+
+    const previewResponse = await apiRequest("/api/admin/capability-packs", adminCookie);
+    const preview = await previewResponse.json() as any;
+    expect(previewResponse.status).toBe(200);
+    expect(isAdminCapabilityCatalogSnapshot(preview)).toBe(true);
+    expect(preview.packs[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "chatus:writing", status: "missing", installable: true }),
+      expect.objectContaining({ id: "chatus:web_research", status: "requires_setup", installable: false }),
+      expect.objectContaining({ id: "chatus:vision_assist", status: "requires_setup", installable: false }),
+    ]));
+    const readyConfig: any = structuredClone(baseConfig);
+    readyConfig.routes.default.supportsImages = true;
+    readyConfig.visionAssist = { enabled: true, routeId: "default", maxOutputChars: 6_000 };
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(readyConfig));
+    const readyPreview = await apiRequest("/api/admin/capability-packs", adminCookie).then((response) => response.json()) as any;
+    expect(readyPreview.packs[0].items).toContainEqual(expect.objectContaining({
+      id: "chatus:vision_assist",
+      status: "installed",
+      installable: false,
+    }));
+    readyConfig.visionAssist.enabled = false;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(readyConfig));
+    const disabledPreview = await apiRequest("/api/admin/capability-packs", adminCookie).then((response) => response.json()) as any;
+    expect(disabledPreview.packs[0].items).toContainEqual(expect.objectContaining({
+      id: "chatus:vision_assist",
+      status: "disabled",
+      installable: false,
+    }));
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(baseConfig));
+
+    const duplicate = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing", "chatus:writing"],
+        expectedRevision: initial.revision,
+      }),
+    });
+    expect(duplicate.status).toBe(400);
+
+    const unknown = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:unknown"],
+        expectedRevision: initial.revision,
+      }),
+    });
+    expect(unknown.status).toBe(400);
+    await expect(unknown.json()).resolves.toMatchObject({ error: "invalid_capability_pack_items" });
+    expect(await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json")).toEqual(baseConfig);
+    expect(await env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).toBeNull();
+
+    const changedConfig: any = structuredClone(baseConfig);
+    changedConfig.defaults.dailyMessageLimit = 21;
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(changedConfig));
+    const stale = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing"],
+        expectedRevision: initial.revision,
+      }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ error: "config_conflict" });
+    expect((await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json")).skills).not.toHaveProperty("chatus:writing");
+
+    const latest = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const selected = ["chatus:writing", "chatus:summarize"];
+    const installResponse = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: selected,
+        expectedRevision: latest.revision,
+      }),
+    });
+    const installed = await installResponse.json() as any;
+    expect(installResponse.status, JSON.stringify(installed)).toBe(200);
+    expect(isAdminCapabilityPackInstallResponse(installed, selected)).toBe(true);
+    expect(installed.installed).toEqual(selected);
+    expect(installed.skipped).toEqual([]);
+    expect(installed.config.defaults.allowedSkills).toEqual(["custom", ...selected]);
+    expect(installed.config.skills["chatus:writing"]).toMatchObject({
+      origin: "chatus",
+      activation: "automatic",
+      toolIds: [],
+    });
+
+    const stored = await env.CHAT_STORE.get<any>(ROUTES_CONFIG_KEY, "json");
+    expect(stored.defaults.allowedSkills).toEqual(["custom", ...selected]);
+    expect(stored.users[deniedLabel].allowedSkills).toEqual([]);
+    expect(stored.users[deniedLabel].allowedAugmentations).toEqual([]);
+    const audit = await env.CHAT_STORE.get<any>(ADMIN_AUDIT_KEY, "json");
+    expect(audit[0]).toMatchObject({ action: "capability-pack.install", target: "chatus:starter-capabilities:2" });
+    expect(JSON.stringify(audit)).not.toContain("Custom instructions");
+    expect(JSON.stringify(audit)).not.toContain("catalog-test-key");
+
+    const denied = await login(deniedLabel);
+    const deniedSession = await apiRequest("/api/session", denied.cookie).then((response) => response.json()) as any;
+    expect(deniedSession.availableCapabilities).toEqual([]);
+    const vision = await login(visionLabel);
+    const visionSession = await apiRequest("/api/session", vision.cookie).then((response) => response.json()) as any;
+    expect(visionSession.availableCapabilities).toEqual([expect.objectContaining({
+      id: "chatus:vision_assist",
+      activation: "route_augmentation",
+      availability: "requires_setup",
+      unavailableReason: "helper_unavailable",
+    })]);
+
+    const invalidActivation = structuredClone(installed.config);
+    invalidActivation.skills.custom.activation = "scheduled";
+    const invalidActivationResponse = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: invalidActivation, expectedRevision: installed.revision }),
+    });
+    expect(invalidActivationResponse.status).toBe(400);
+
+    const invalidBuiltinRole = structuredClone(installed.config);
+    invalidBuiltinRole.tools["builtin:text_stats"].capabilityRole = "web_search";
+    const invalidBuiltinRoleResponse = await apiRequest("/api/admin/config", adminCookie, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: invalidBuiltinRole, expectedRevision: installed.revision }),
+    });
+    expect(invalidBuiltinRoleResponse.status).toBe(400);
+  });
+
+  it("refuses a catalog ID collision without changing configuration or audit", async () => {
+    const rawConfig = {
+      routes: {
+        default: {
+          label: "Default",
+          type: "openai-chat",
+          baseUrl: "https://collision.example/v1",
+          model: "collision-model",
+          apiKey: "collision-test-key",
+        },
+      },
+      defaults: { defaultRoute: "default", allowedRoutes: ["default"] },
+      skills: {
+        "chatus:writing": {
+          enabled: true,
+          label: "Administrator writing",
+          instructions: "Keep this administrator-owned definition.",
+          toolIds: [],
+        },
+      },
+    };
+    const raw = JSON.stringify(rawConfig);
+    await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, raw);
+    const adminCookie = await adminLogin();
+    const snapshot = await apiRequest("/api/admin/config", adminCookie).then((response) => response.json()) as any;
+    const preview = await apiRequest("/api/admin/capability-packs", adminCookie).then((response) => response.json()) as any;
+    expect(preview.packs[0].items).toContainEqual(expect.objectContaining({
+      id: "chatus:writing",
+      status: "conflict",
+      installable: false,
+    }));
+
+    const response = await apiRequest("/api/admin/capability-packs/install", adminCookie, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing"],
+        expectedRevision: snapshot.revision,
+      }),
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "capability_pack_collision",
+      itemIds: ["chatus:writing"],
+    });
+    expect(await env.CHAT_STORE.get(ROUTES_CONFIG_KEY)).toBe(raw);
+    expect(await env.CHAT_STORE.get(ADMIN_AUDIT_KEY)).toBeNull();
   });
 
   it("adds the disabled built-in tool to legacy editable configs without granting it", async () => {
@@ -7619,6 +8074,44 @@ describe("Worker API", () => {
     })]);
     expect(JSON.stringify(availability)).not.toContain(providerId);
     expect(JSON.stringify(availability)).not.toContain(endpoint);
+  });
+
+  it("projects authenticated content-free capability monitoring with strict query bounds", async () => {
+    const privateMarker = `PRIVATE_CAPABILITY_MARKER_${crypto.randomUUID()}`;
+    await env.PROVIDER_COORDINATOR.getByName("$capability-monitoring-v1").recordCapabilityMonitoringEvent({
+      version: 1,
+      capabilityId: "chatus:tool_execution",
+      kind: "tool",
+      status: "denied",
+      latencyMs: null,
+      occurredAt: Date.now(),
+    });
+
+    expect((await exports.default.fetch(new Request(
+      "https://example.test/api/admin/capability-monitor?window=24h&bucket=hour",
+    ))).status).toBe(401);
+    const adminCookie = await adminLogin();
+    const invalid = await apiRequest("/api/admin/capability-monitor?window=7d&bucket=hour", adminCookie);
+    expect(invalid.status).toBe(400);
+
+    const response = await apiRequest("/api/admin/capability-monitor?window=24h&bucket=hour", adminCookie);
+    expect(response.status, await response.clone().text()).toBe(200);
+    const snapshot = await response.json() as any;
+    expect(snapshot).toMatchObject({
+      version: 1,
+      window: "24h",
+      bucket: "hour",
+      evidence: "fresh",
+      stale: false,
+    });
+    expect(snapshot.capabilities).toEqual(expect.arrayContaining([expect.objectContaining({
+      capabilityId: "chatus:tool_execution",
+      kind: "tool",
+      denied: expect.any(Number),
+    })]));
+    expect(JSON.stringify(snapshot)).not.toContain(privateMarker);
+    expect(JSON.stringify(snapshot)).not.toContain("providerId");
+    expect(JSON.stringify(snapshot)).not.toContain("member");
   });
 
   it("projects hard budget policy denial for memory suggestions and summaries without Provider calls", async () => {

@@ -29,6 +29,16 @@ const AGENT_ERROR_MESSAGES = {
   empty_messages: "消息不能为空，请补充内容后重试。",
   blocked_prompt: "该请求不符合当前使用策略，请改为一个真实任务。",
   image_not_supported: "当前模型不支持图片，请移除图片或切换模型。",
+  vision_assist_unavailable: "视觉辅助暂时不可用，请重试、移除图片或切换到原生图片模型。",
+  vision_assist_invalid_response: "视觉辅助返回了无法使用的结果，请重试、移除图片或切换到原生图片模型。",
+  web_research_not_available: "联网研究当前不可用，请关闭本轮联网研究或联系管理员检查能力配置。",
+  web_research_slot_limit: "联网研究需要占用一个 Skill 槽位，请将本轮手动 Skill 减少到两个后重试。",
+  web_research_connection_required: "联网研究连接未就绪，请先在成员设置中连接对应 MCP 服务。",
+  web_research_review_required: "联网研究工具定义或权限已变化，请联系管理员重新审核。",
+  web_research_timeout: "联网研究超时，未生成声称使用了最新搜索结果的回答。",
+  web_research_invalid_response: "联网研究返回了无法验证的来源，请稍后重试或联系管理员。",
+  web_research_no_sources: "联网研究没有返回可用的公开来源，请调整问题后重试。",
+  web_research_query_invalid: "联网研究查询为空或过长，请将本轮文本控制在 2000 个字符以内。",
   invalid_image_type: "图片格式不受支持。",
   invalid_image_data: "图片数据无效。",
   image_too_large: "单张图片超过大小限制。",
@@ -131,6 +141,14 @@ export function projectAgentStreamError(error: unknown): AgentErrorCode {
   if (chain.some((item) => item.code === "conversation_acl_unavailable")) return "conversation_acl_unavailable";
   if (chain.some((item) => item.code === "provider_budget_exceeded")) return "provider_budget_exceeded";
   if (chain.some((item) => item.code === "provider_budget_policy_unknown")) return "provider_budget_policy_unknown";
+  if (chain.some((item) => item.code === "vision_assist_unavailable")) return "vision_assist_unavailable";
+  if (chain.some((item) => item.code === "vision_assist_invalid_response")) return "vision_assist_invalid_response";
+  const webResearchError = chain.find((item) => (
+    typeof item.code === "string" && item.code.startsWith("web_research_") && isAgentErrorCode(item.code)
+  ));
+  if (webResearchError && typeof webResearchError.code === "string" && isAgentErrorCode(webResearchError.code)) {
+    return webResearchError.code;
+  }
   if (hasName(chain, "ProviderAttemptLedgerError")) return "provider_budget_unavailable";
   if (hasName(chain, "ProviderBusyError")) return "provider_busy";
   if (

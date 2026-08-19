@@ -4,6 +4,10 @@ import {
   AGENT_MEMORY_PROPOSAL_TOOL_NAME,
   type AgentMemoryMutationResult,
 } from "../contracts/agent";
+import {
+  IMAGE_INSPECT_TOOL_NAME,
+  type VisionEvidenceV1,
+} from "../contracts/vision-assist";
 import type {
   CapabilityToolRunner,
   NormalizedToolDefinition,
@@ -24,6 +28,9 @@ type CreateAgentToolSetArgs = {
     revision: string;
     maxChars: number;
     update: (memory: string, expectedRevision: string) => Promise<AgentMemoryMutationResult>;
+  };
+  vision?: {
+    inspect: (signal?: AbortSignal) => Promise<VisionEvidenceV1>;
   };
 };
 
@@ -92,6 +99,20 @@ export function createAgentToolSet(args: CreateAgentToolSetArgs): ToolSet {
         if (!result.ok) return JSON.stringify({ ok: false, error: result.error || "memory_update_failed" });
         return JSON.stringify({ ok: true, status: "memory_updated", updatedAt: result.record?.updatedAt || 0 });
       },
+    });
+  }
+
+  if (args.vision) {
+    const vision = args.vision;
+    tools[IMAGE_INSPECT_TOOL_NAME] = tool({
+      description: "Inspect the images already bound to this request. Never pass image bytes or URLs as arguments.",
+      inputSchema: jsonSchema<Record<string, never>>({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      }),
+      needsApproval: false,
+      execute: async (_input, options) => JSON.stringify(await vision.inspect(options.abortSignal)),
     });
   }
 

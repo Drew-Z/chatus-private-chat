@@ -22,6 +22,11 @@ The admin endpoint requires the existing admin session. The member endpoint requ
 - One actual upstream request is one Provider attempt. `started` is in flight; `succeeded` is success; `failed`, `cancelled`, and `timed_out` are terminal failures. `successRate = succeeded / (succeeded + failures)` and is `null` with no completed attempts.
 - Fallback attempts count independently and increment `fallbacks` when `fallback_index > 0`. Average latency includes only terminal rows with `ended_at >= started_at`; missing or invalid durations remain unknown.
 - The admin projection may include bounded logical-route, configured Provider, actual-model, run-kind, hourly, and normalized failure-class aggregates. It must not include prompts, completions, raw errors, request headers, credentials, attempt IDs, turn IDs, idempotency keys, or operation fences.
+- Run kind is closed and includes `auxiliary_vision`. Each physical helper
+  request participates in totals, hourly buckets, fallback counts, latency, and
+  the run-kind breakdown exactly once. `VisionEvidenceV1`, raw images, helper
+  output, and source message IDs never enter aggregate rows or either public
+  projection.
 - The member projection contains only already-allowed logical route ID/label/model plus `healthy | degraded | unavailable | unknown`, confidence, coarse first-visible speed, freshness evidence, and a fallback-used hint. It must not include Provider identity, exact counts/rates, or raw failure classes.
 - Member status is advisory: one recent failure is `degraded`; three latest terminal failures within 15 minutes with no later success are `unavailable`; later success recovers the route. Existing permission, configuration, credential, candidate, and send checks remain authoritative.
 - Member availability refreshes on bootstrap, model inspector opening, and request settlement with a 60-second client guard. A read failure retains the last projection and must not block the composer. Admin monitoring is best-effort in Operations and must not remove the existing seven-day or finance projections.
@@ -36,18 +41,25 @@ The admin endpoint requires the existing admin session. The member endpoint requ
 | Member route is not in `getRouteAccess()` | Omit it; never trust a browser-supplied route list |
 | No recent route evidence | `unknown` with stale confidence and unknown speed |
 | Only in-flight evidence | Keep it out of the success denominator and do not claim success |
+| Auxiliary helper attempt is present | Count its bounded attempt fields under `auxiliary_vision`; discard no attempt and expose no private evidence |
 | Decoder sees unknown fields, negative/fractional counts, duplicate IDs, impossible rates, invalid buckets, or Provider/secret/content fields | Reject the complete response before rendering |
 | Monitoring fetch fails or evidence is stale | Preserve chat/send behavior and show stale/unknown guidance rather than changing routing |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: the Worker fans out to configured ledger shards, merges complete aggregate rows, reconciles every breakdown to totals, and returns exact null/unknown values where evidence is incomplete.
+- Good: helper fallback attempts reconcile into the same totals and an
+  `auxiliary_vision` run-kind row while the private evidence table and response
+  payload remain unreachable from monitoring.
 - Base: a member sees a compact status beside model selection, can still choose a degraded/unavailable route, and receives a safe fallback hint without seeing the physical Provider.
 - Bad: derive totals from a 25-row recent-attempt list, sum per-Provider user turns as if they were attempts, return a partial denominator, expose a Provider ID to a member, or disable sending because passive telemetry says unavailable.
 
 ## 6. Tests Required
 
 - Contract tests cover no data, in-flight-only, success, failure, cancellation, timeout, fallback, mixed status, null latency, three-failure anti-flap, and recovery semantics.
+- Contract tests include `auxiliary_vision` success/fallback/failure rows and
+  assert exact total/run-kind reconciliation with zero evidence, image, or
+  source-message fields.
 - Ledger tests assert aggregate totals are independent of `listRecent` limits and contain no content or secret fields.
 - Worker tests assert admin/member authorization, bounded query errors, exact reconciliation, shard-failure fail-closed behavior, allowed-route projection, privacy redaction, and advisory send behavior.
 - Browser API tests reject unknown keys, invalid counts/rates/buckets, duplicate IDs, and Provider/credential/content leakage.
@@ -72,6 +84,132 @@ const snapshot = mergeProviderAttemptMonitoringRows(rows, labels, generatedAt, p
 ```
 
 The server merges bounded aggregate rows, keeps terminal semantics explicit, and produces separate privacy-scoped admin/member projections.
+
+## Scenario: Content-free Capability Execution Monitoring
+
+### 1. Scope / Trigger
+
+Use this contract when recording or displaying orchestration outcomes for workflow
+selection, auxiliary vision, explicit web research, or tool execution. These rows
+describe logical capability work and must remain separate from physical Provider
+attempt semantics.
+
+### 2. Signatures
+
+```text
+GET /api/admin/capability-monitor?window=24h&bucket=hour
+
+ProviderCoordinator.recordCapabilityMonitoringEvent(event)
+ProviderCoordinator.getCapabilityMonitoringAggregate({ periodStart, periodEnd })
+```
+
+```typescript
+type CapabilityMonitoringEventV1 = {
+  version: 1;
+  capabilityId: "chatus:workflow_selection" | "chatus:vision_assist"
+    | "chatus:web_research" | "chatus:tool_execution";
+  kind: "workflow_selection" | "auxiliary_vision" | "web_research" | "tool";
+  status: "succeeded" | "failed" | "denied" | "cancelled" | "timed_out";
+  latencyMs: number | null;
+  occurredAt: number;
+};
+```
+
+The singleton named `ProviderCoordinator` object `$capability-monitoring-v1` owns
+the bounded aggregate. No new Durable Object binding or migration is required.
+
+### 3. Contracts
+
+- Capability monitoring is logical orchestration telemetry. It never creates a
+  Provider attempt, changes Provider-attempt denominators, or affects chat outcome.
+- The owner stores only the closed capability ID/kind/status dimensions, hourly
+  bucket start, bounded count, latency sum/count, and last occurrence. Retention is
+  48 hours; the public window is exactly 24 hours with hourly buckets.
+- Event writes validate exact keys and ID-to-kind pairing, cap latency at 600,000 ms,
+  and cap one row at 100,000 events. Scheduling creates a deferred microtask that
+  checks a synchronous `accepted` flag; the cross-Durable-Object RPC starts only
+  after `waitUntil(write)` returns successfully. A missing or synchronously throwing
+  lifecycle owner therefore starts no RPC. Monitoring failure is caught and never
+  allowed to fail an otherwise successful turn.
+- The admin snapshot contains rows plus summaries only. It contains no member,
+  conversation, prompt, image, query, citation, instruction, credential, endpoint,
+  raw tool body, Provider identity, attempt identity, or memory field.
+- `total` reconciles exactly to the five terminal status counts. `successRate` uses
+  that total; average latency uses only rows with latency evidence. Summary values,
+  evidence, staleness, time window, row uniqueness, and row bounds are recomputed by
+  the shared decoder before either server or React code accepts a snapshot.
+- `no_data` means an available aggregate with no rows. `unavailable` is permitted
+  only with empty rows/summaries and `stale: true`. Non-empty evidence is `fresh` or
+  becomes `stale` when the latest event is older than six hours.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Query differs from exact `window=24h&bucket=hour` | `400 invalid_capability_monitor_query` |
+| Aggregate read fails | `503 capability_monitor_unavailable`, `retryable: true` |
+| Event has unknown keys, mismatched ID/kind, invalid status/time/latency | Discard it; do not mutate aggregate state |
+| Row is duplicated, out of window, misaligned, over-bounded, or internally inconsistent | Reject the complete aggregate/snapshot |
+| Summary differs from recomputed rows | Reject the complete snapshot before rendering |
+| Evidence/stale combination contradicts rows | Reject the complete snapshot |
+| Monitoring write fails during a chat turn | Preserve the original turn result and expose no raw failure payload |
+| No lifecycle `waitUntil` owner exists | Skip the passive write; do not launch an untracked RPC |
+| Lifecycle `waitUntil` throws synchronously | Leave `accepted` false; deferred work resolves without launching an RPC |
+
+### 5. Good / Base / Bad Cases
+
+- Good: one timed-out research operation increments one hourly research row, the
+  summary reconciles, and the original user-visible timeout remains unchanged.
+- Base: no capability work occurred; the endpoint returns exact `no_data` evidence
+  and empty rows/summaries.
+- Bad: reuse a Provider-attempt row for a tool invocation, store a query or member
+  label for debugging, accept client-side summary math, or await telemetry on the
+  successful-turn critical path.
+
+### 6. Tests Required
+
+- Contract tests cover exact decoding, all terminal statuses, retention, future and
+  old events, saturation, duplicate rows, latency bounds, stale/no-data/unavailable
+  evidence, summary reconciliation, unknown keys, and privacy-field rejection.
+- Coordinator tests cover persistence, invalid-event no-op behavior, range reads,
+  alarm cleanup, and best-effort write failures.
+- Worker tests cover admin authentication, exact query bounds, content-free output,
+  successful turns when monitoring writes reject, and zero rows/RPCs for missing or
+  synchronously throwing lifecycle owners. An accepting owner records exactly one row.
+- Client tests import the shared snapshot decoder and reject malformed summaries or
+  evidence instead of maintaining a second browser contract.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await providerAttemptLedger.start({ runKind: "tool", prompt, member });
+await coordinator.recordCapabilityMonitoringEvent({ ...event, query, providerId });
+```
+
+This corrupts physical-attempt accounting, stores prohibited content/identity, and
+can put passive telemetry on the user-visible critical path.
+
+#### Correct
+
+```typescript
+let accepted = false;
+const write = Promise.resolve().then(async () => {
+  if (!accepted) return;
+  await coordinator.recordCapabilityMonitoringEvent(event).catch(() => undefined);
+});
+try {
+  waitUntil(write);
+  accepted = true;
+} catch {
+  // No lifecycle owner means no RPC.
+}
+```
+
+One bounded logical event reaches the existing coordinator owner only after
+lifecycle ownership is accepted; Provider attempts remain physical-call only and
+chat success cannot be downgraded.
 
 ## Scenario: Passive 24-Hour Production Observation Evidence
 

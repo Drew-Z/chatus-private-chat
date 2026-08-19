@@ -249,7 +249,140 @@ Implemented the approved Chatus workspace, member settings, availability, and bo
 - None - task complete
 
 
-## Session 8: Harden Playwright CI installation
+## Session 8: Capability catalog and adoption
+
+**Date**: 2026-08-18
+**Task**: Capability catalog and adoption
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Implemented and verified the revisioned Chatus capability catalog, five instruction-only default Skills, safe installation and assignment flows, member-safe projections, responsive administrator Catalog UI, and regression coverage; archived child 1 without touching production observation or legacy rollout work.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b42d180` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 9: Explicit web research capability
+
+**Date**: 2026-08-18
+**Task**: Explicit web research capability
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Implemented member-initiated per-turn web research through a reviewed read-only MCP binding, normalized citations, recoverable UI state, strict metadata persistence, and complete local quality gates.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1584599` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 10: Capability experience and monitoring
+
+**Date**: 2026-08-19
+**Task**: Capability experience and monitoring
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Unified member and administrator capability UX, added strict content-free capability monitoring, covered five responsive viewports, and stabilized lifecycle-owned telemetry plus Windows Worker test timing.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `273492a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 11: Complete Chatus default capability packs
+
+**Date**: 2026-08-19
+**Task**: Complete Chatus default capability packs
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Hardened pre-attempt authorization, vision revocation, session capability decoding, monitoring lifecycle ownership, privacy tests, and cancellation; passed the complete local quality gate; archived the integration child and parent capability task tree without touching protected production observation or legacy rollout work.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `49cb0f9` | (see git log) |
+| `8ccffe7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 12: Harden Playwright CI installation
 
 **Date**: 2026-08-19
 **Task**: Harden Playwright CI installation
@@ -268,6 +401,42 @@ Removed apt from both PR browser installation paths, added bounded Chromium down
 | Hash | Message |
 |------|---------|
 | `385aa0b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 13: Deliver default capability packs PR
+
+**Date**: 2026-08-20
+**Task**: Deliver default capability packs PR
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Merged current main into PR 97, preserved capability and CI histories, passed all local and remote gates, and marked the mergeable pull request Ready without deploying or merging.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dbb6e38` | (see git log) |
+| `7565ae3` | (see git log) |
+| `a5509b9` | (see git log) |
+| `c9dba7c` | (see git log) |
 
 ### Testing
 

@@ -62,13 +62,14 @@ SQLite v3 owns `provider_attempt_schema_migrations`,
   one logical execution within that turn. `attemptId` identifies one exact
   Provider/offering/model request. All three are opaque server-issued UUIDs.
 - Main-answer fallback attempts share one turn and run. Automatic Skill and
-  every tool continuation receive distinct runs under the same turn. Memory
-  suggestion, conversation summary, and administrator model discovery create
-  their own server-side turn and run. TeamAgent schema v7 persists the current
-  turn ID so an approval/tool continuation reuses it after hibernation.
+  auxiliary vision, and every tool continuation receive distinct runs under the
+  same turn. Memory suggestion, conversation summary, and administrator model
+  discovery create their own server-side turn and run. TeamAgent schema v9
+  persists the current turn ID so an approval/tool continuation reuses it after
+  hibernation.
 - Run kinds are the closed set `main_answer`, `automatic_skill`,
   `memory_suggestion`, `conversation_summary`, `model_discovery`,
-  `tool_continuation`, and `legacy_capability`.
+  `auxiliary_vision`, `tool_continuation`, and `legacy_capability`.
 - Start input is exact and content-free. It contains version, idempotency key,
   turn/run/run-kind, logical route, Provider, derived offering ID, model,
   fallback index, credential class, the exact instance operation fence, and
@@ -130,6 +131,16 @@ SQLite v3 owns `provider_attempt_schema_migrations`,
 - User-message quota remains one admission per user message. Selector,
   fallback, retry, and continuation attempts add ledger evidence but never
   increment that quota again.
+- Every auxiliary-image helper Provider request uses an `auxiliary_vision` run.
+  Helper fallback candidates share that run and differ by `fallbackIndex`; they
+  use the same pre-I/O budget reservation, usage/cost evidence, cancellation,
+  timeout, and terminal settlement contract as other Provider attempts. The
+  helper reuses the admitted user turn and never increments message quota.
+- `VisionEvidenceV1`, raw image bytes, and helper output are content and must
+  never enter attempt events, finance rows, diagnostics, or monitoring rows.
+  Those surfaces may expose only the existing bounded route/model/run-kind,
+  status, timing, usage, and cost fields. Member export excludes both the
+  private evidence and instance-level ledger rows.
 - Usage evidence is append-only and normalized per token dimension. Cumulative
   readings are converted to non-negative deltas against the attempt projection;
   delta readings are accepted as-is; missing/late dimensions remain `null`.
@@ -192,6 +203,7 @@ SQLite v3 owns `provider_attempt_schema_migrations`,
 | Hard terminal cost remains unknown | Move full remaining reserve to `held`; after 72 hours promote to `review_required`, never release as zero |
 | Duplicate budget start, terminal, evidence, or operator callback | Replay original result without changing integer balances; conflicting identity fails closed |
 | Automatic Skill reaches five seconds with an active attempt | Record `timed_out/upstream_timeout`, abort Provider work, ignore late result |
+| Auxiliary vision fails validation, times out, or is cancelled | Settle every started helper attempt with the bounded terminal class; do not start the unsupported main Provider call |
 | Stream handoff has no body | Record `failed/provider_protocol_error`, cancel upstream, release lease/admission |
 | Diagnostics are unauthenticated, limit is outside 1..100, or Provider is unconfigured | `401`, `400 invalid_limit`, or `400/404` without opening an arbitrary shard |
 | Account deletion or user export runs | Retain ledger / exclude ledger respectively |
@@ -203,6 +215,10 @@ SQLite v3 owns `provider_attempt_schema_migrations`,
   offering, a successful fallback, and a tool continuation; every Provider call
   has one attempt, all share one turn, logical executions have separate runs,
   and quota increments once.
+- Good: one admitted image turn performs a failed and successful helper fallback
+  in one `auxiliary_vision` run, records exact usage/cost settlement for both
+  attempts, then starts the main-answer run without storing evidence content in
+  the ledger.
 - Good: a policy begins in shadow, advances by version to hard, atomically
   reserves before I/O, settles known cost, and retains unknown exposure for
   review without changing message quota.
@@ -224,13 +240,15 @@ SQLite v3 owns `provider_attempt_schema_migrations`,
   replay, attribution conflicts, event/projection counts, and disabled mode.
 - Exercise fake Provider main answer, pre-visible fallback, cancellation,
   timeout, bodyless stream, Automatic Skill, Agent and legacy tool
-  continuations, memory suggestion, conversation summary, and model discovery.
+  continuations, auxiliary vision, memory suggestion, conversation summary, and
+  model discovery.
 - Assert every fake Provider request maps to exactly one attempt and that one
   admitted message is not charged again for selector/fallback/continuation.
 - Inject ledger start and terminal failures; assert zero Provider calls on start
   failure and admission/lease cleanup before terminal failure is surfaced.
 - Scan SQL columns, diagnostics, logs, account deletion, and user export for
-  prompt/completion/tool/credential/raw metadata/invoice markers.
+  prompt/completion/tool/credential/raw metadata/invoice markers, raw images,
+  and `VisionEvidenceV1` fields.
 - Cover cumulative/delta/missing/late usage, partial projections, effective-date
   price selection, append-only cost corrections, duplicate/revisioned
   reconciliation imports, and strict finance response decoding.

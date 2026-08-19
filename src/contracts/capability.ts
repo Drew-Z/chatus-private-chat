@@ -3,6 +3,67 @@ import type { ProviderTokenUsageV1 } from "./provider-finance";
 
 export type ToolConfirmation = "auto" | "first-per-conversation" | "always";
 export type McpToolSideEffect = "read" | "write" | "destructive";
+export type SkillActivation = "automatic" | "explicit_turn";
+export type CapabilityOrigin = "chatus" | "administrator";
+export type CapabilityAugmentation = "vision_assist";
+export type CapabilityActivation = "workflow" | "explicit_turn" | "route_augmentation";
+export type CapabilityAvailability = "available" | "unavailable" | "requires_setup" | "disabled";
+export type CapabilityUnavailableReason = "not_assigned" | "route_incompatible" | "helper_unavailable"
+  | "tool_unavailable" | "review_required" | "connection_required";
+
+export type PublicCapabilityDisclosureV1 = {
+  execution: "instructions" | "trusted_local" | "auxiliary_provider" | "reviewed_mcp";
+  externalRequest: boolean;
+  dataClasses: Array<"prompt_text" | "search_query" | "image">;
+  latency: "none" | "small" | "variable";
+  cost: "none" | "provider_request" | "external_service";
+};
+
+export type PublicCapabilityV1 = {
+  id: string;
+  label: string;
+  description: string;
+  source: CapabilityOrigin;
+  activation: CapabilityActivation;
+  availability: CapabilityAvailability;
+  disclosure: PublicCapabilityDisclosureV1;
+  unavailableReason?: CapabilityUnavailableReason;
+};
+
+export type AdminCapabilityPackItemStatus = "installed" | "missing" | "disabled" | "conflict" | "requires_setup";
+
+export type AdminCapabilityPackItemV1 = {
+  id: string;
+  label: string;
+  description: string;
+  source: "chatus";
+  activation: CapabilityActivation;
+  status: AdminCapabilityPackItemStatus;
+  installable: boolean;
+  disclosure: PublicCapabilityDisclosureV1;
+};
+
+export type AdminCapabilityPackV1 = {
+  id: string;
+  version: number;
+  label: string;
+  description: string;
+  items: AdminCapabilityPackItemV1[];
+};
+
+export type AdminCapabilityCatalogSnapshotV1 = {
+  version: 1;
+  packs: AdminCapabilityPackV1[];
+};
+
+export type AdminCapabilityPackInstallResultV1 = {
+  ok: true;
+  config: Record<string, unknown>;
+  source: "kv";
+  revision: string;
+  installed: string[];
+  skipped: string[];
+};
 
 export type ToolExecutor =
   | { type: "builtin"; name: "text_stats" }
@@ -15,6 +76,8 @@ export type SkillConfig = {
   instructions: string;
   toolIds?: string[];
   order?: number;
+  activation?: SkillActivation;
+  origin?: CapabilityOrigin;
 };
 
 export type ToolConfig = {
@@ -29,6 +92,7 @@ export type ToolConfig = {
   sideEffect?: McpToolSideEffect;
   reviewRevision?: string;
   reviewRequired?: boolean;
+  capabilityRole?: "web_search";
 };
 
 export type McpAuthType = "none" | "bearer" | "x-api-key";
@@ -130,4 +194,5 @@ export type CapabilityRegistryConfig = {
 export type CapabilityAssignment = {
   allowedSkills?: string[];
   allowedTools?: string[];
+  allowedAugmentations?: CapabilityAugmentation[];
 };

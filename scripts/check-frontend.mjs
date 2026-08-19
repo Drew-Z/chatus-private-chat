@@ -119,7 +119,12 @@ assert(reactClient.includes("if (mcpRefresh.current) return mcpRefresh.current")
 assert(reactApp.includes("consumeMcpOAuthCallback(window.location.href)") && reactApp.includes("window.history.replaceState"), "React client: MCP OAuth callback result must be consumed once and removed from the URL");
 assert(reactMcpOAuth.includes('url.searchParams.delete("mcpOAuth")') && reactMcpOAuth.includes("url.pathname"), "React client: MCP OAuth callback cleanup must preserve the current path and unrelated URL state");
 assert(reactMcpConnections.includes("dialog.showModal()") && reactMcpConnections.includes("aria-busy={busy}") && reactMcpConnections.includes("trapFocus"), "React client: MCP connections must use a focus-contained modal with explicit busy state");
-assert(reactClient.includes("await chat.sendMessage(text ? { text, files: fileParts } : { files: fileParts })"), "React client: text and attachment-only send failures must be observed");
+assert(
+  reactClient.includes("await chat.sendMessage(")
+    && reactClient.includes("files: fileParts")
+    && reactClient.includes("capabilityIds: [WEB_RESEARCH_CAPABILITY_ID]"),
+  "React client: text and attachment-only send failures must be observed and explicit capability metadata must be sent",
+);
 assert(reactClient.includes("resolvePendingDraftAction("), "React client: SDK resolve-with-error status must resolve pending drafts explicitly");
 assert(reactClient.includes("const value = input || pendingSubmission?.text || \"\""), "React client: submitted text must remain device-persisted until the request settles");
 assert(reactClient.includes("draftGeneration.current === submittedDraftGeneration") && reactClient.includes("setAttachments(submittedAttachments)"), "React client: rejected sends must restore the complete submitted draft only when no newer draft exists");

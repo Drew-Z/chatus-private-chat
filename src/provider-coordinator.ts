@@ -16,6 +16,16 @@ import {
   INSTANCE_MAINTENANCE_COORDINATOR,
 } from "./services/instance-capture";
 import type { InstanceCoordinator } from "./instance-coordinator";
+import {
+  bucketStartForCapabilityMonitoring,
+  decodeCapabilityMonitoringAggregate,
+  decodeCapabilityMonitoringEvent,
+  emptyCapabilityMonitoringAggregate,
+  reduceCapabilityMonitoringAggregate,
+  type CapabilityMonitoringAggregateV1,
+  type CapabilityMonitoringEventV1,
+  type CapabilityMonitoringRowV1,
+} from "./contracts/capability-monitoring";
 
 const LEASES_STORAGE_KEY = "provider-leases:v1";
 const DEFAULT_LEASE_TTL_MS = 15 * 60 * 1_000;
@@ -25,7 +35,8 @@ const MAX_CAPACITY = 100;
 const MAX_WAITERS = 200;
 const RELIABILITY_CHAT_PREFIX = "reliability:chat:";
 const RELIABILITY_SELECTOR_PREFIX = "reliability:skill_selection:";
-export const PROVIDER_COORDINATOR_SCHEMA_VERSION = 1;
+const CAPABILITY_MONITORING_STORAGE_KEY = "capability-monitoring:v1";
+export const PROVIDER_COORDINATOR_SCHEMA_VERSION = 2;
 
 type ProviderCoordinatorEnv = {
   CHAT_STORE: KVNamespace;
@@ -37,6 +48,11 @@ export type ProviderReliabilityOperation = "chat" | "skill_selection";
 export type ProviderReliabilitySampleInput = {
   operation: ProviderReliabilityOperation;
   sample: ProviderReliabilitySample;
+};
+
+export type CapabilityMonitoringPeriodInput = {
+  periodStart: number;
+  periodEnd: number;
 };
 
 export type ProviderLeaseAcquireInput = {
@@ -106,6 +122,11 @@ export class ProviderCoordinator extends DurableObject<ProviderCoordinatorEnv> {
       this.leases = normalizeStoredLeases(await ctx.storage.get(LEASES_STORAGE_KEY), Date.now());
       // Rewrite recovered state so malformed records cannot survive a restart.
       await this.persistLeases();
+      const monitoring = decodeCapabilityMonitoringAggregate(
+        await ctx.storage.get(CAPABILITY_MONITORING_STORAGE_KEY),
+      );
+      if (monitoring) await ctx.storage.put(CAPABILITY_MONITORING_STORAGE_KEY, monitoring);
+      else await ctx.storage.delete(CAPABILITY_MONITORING_STORAGE_KEY);
     });
   }
 
@@ -130,6 +151,44 @@ export class ProviderCoordinator extends DurableObject<ProviderCoordinatorEnv> {
       await this.ctx.storage.put(storageKey, next);
       await this.writeProjection(input.operation, sample.routeId, sample.providerId, next);
       return next;
+    });
+  }
+
+  async recordCapabilityMonitoringEvent(
+    event: CapabilityMonitoringEventV1,
+  ): Promise<CapabilityMonitoringAggregateV1> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const normalized = decodeCapabilityMonitoringEvent(event);
+      if (!normalized) throw new Error("invalid_capability_monitoring_event");
+      const stored = decodeCapabilityMonitoringAggregate(
+        await this.ctx.storage.get(CAPABILITY_MONITORING_STORAGE_KEY),
+      );
+      const next = reduceCapabilityMonitoringAggregate(stored, normalized, Date.now());
+      if (next.rows.length) await this.ctx.storage.put(CAPABILITY_MONITORING_STORAGE_KEY, next);
+      else await this.ctx.storage.delete(CAPABILITY_MONITORING_STORAGE_KEY);
+      return next;
+    });
+  }
+
+  async getCapabilityMonitoringAggregate(
+    input: CapabilityMonitoringPeriodInput,
+  ): Promise<CapabilityMonitoringRowV1[]> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      if (
+        !Number.isSafeInteger(input.periodStart)
+        || !Number.isSafeInteger(input.periodEnd)
+        || input.periodStart < 0
+        || input.periodEnd < input.periodStart
+      ) return [];
+      const aggregate = decodeCapabilityMonitoringAggregate(
+        await this.ctx.storage.get(CAPABILITY_MONITORING_STORAGE_KEY),
+      );
+      if (!aggregate) return [];
+      const rows = aggregate.rows.filter((row) => (
+        row.bucketStart >= bucketStartForCapabilityMonitoring(input.periodStart)
+        && row.bucketStart <= bucketStartForCapabilityMonitoring(input.periodEnd)
+      ));
+      return rows;
     });
   }
 

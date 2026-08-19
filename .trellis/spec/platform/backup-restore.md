@@ -58,7 +58,12 @@ Changing `CHATUS_WORKER_NAME`, `CHATUS_KV_NAMESPACE_ID`, or the Cloudflare accou
   ACL rows, append-only ACL events, and idempotency evidence. Capture/restore must
   preserve exact revision history; public inspection exposes counts only.
 - Workspace-file state: the `WORKSPACE_FILES` R2 bucket plus root `TeamAgent` file, immutable-version, exact-reference, and operation/outbox tables. A future backup manifest must inventory object keys indirectly, sizes, SHA-256 checksums, version/generation ownership, and include/exclude decisions without exposing keys to users.
-- Conversation `TeamAgent` state: Agents SDK messages, resumable-stream metadata/chunks, request context, tool milestones/runs, branch launches, capability trust, and the persisted `chatus:agent-identity:v1` record.
+- Conversation `TeamAgent` state: Agents SDK messages, resumable-stream
+  metadata/chunks, request context, tool milestones/runs, branch launches,
+  capability trust, private `chatus_vision_evidence` rows bound to canonical
+  source image message IDs, and the persisted `chatus:agent-identity:v1` record.
+  The evidence is recoverable only inside `team-agent-v9` or later compatible
+  instance capture; it remains excluded from member export.
 - `UserState` usage/metrics and compatibility state, including chats, deletion tombstones, and `chats_purged_at` anti-resurrection state.
 - Provider attempt shards are authoritative instance-level operational evidence. Each `provider_attempt_ledger` object captures as `provider-attempt-ledger-v3` with `restoreBehavior: "restore"`; it includes content-free attempt identity, usage, price, cost, reconciliation, versioned budget policies/events/decisions, current reservations, and balance projections. It is retained by member account deletion and excluded from user export. Budget state is never rebuilt or reset during restore; raw invoices and Provider responses are never captured.
 - The legacy-surface control plane captures as exactly one authoritative/restore
@@ -155,6 +160,11 @@ InstanceCoordinator.listRegisteredObjects(): Promise<InstanceObjectRegistryResul
 - Request maintenance before draining. New HTTP mutations, Provider/Agent turns, OAuth callbacks, Queue delivery, Workspace mutation, branches, and cleanup acquire durable fences; each acquisition has an independent `fenceId`, including duplicate logical operation IDs.
 - Ambiguous acquire and release RPCs retry the same `fenceId`; a failed acquire path attempts the same bounded cleanup. Long-term coordinator unavailability or process termination remains fail-closed: never expire a possibly live stream by time alone.
 - Every required store is present in one epoch. KV unknown prefixes, Durable Object unknown tables/values, R2 missing/changed objects, incomplete Queue regeneration evidence, schema drift, duplicate payloads, and unresolved generation references abort sealing.
+- Before a conversation `TeamAgent` seals `team-agent-v9`, it strictly decodes
+  every `chatus_vision_evidence` row and retains only rows whose source is a
+  persisted user message containing a canonical image. Malformed or orphaned
+  evidence is removed under the stop-write boundary; the archive never preserves
+  it as recoverable state.
 - AES-GCM uses an externally supplied 32-byte archive key, fresh IVs, and AAD bound to the archive header plus payload identity and plaintext metadata. The manifest itself is encrypted; key material and source content never enter maintenance evidence.
 - `persistArchive()` must durably accept the encrypted envelope and return a bounded content-free evidence ID before maintenance can be released with `outcome: "captured"`. Persistence failure releases as `failed` and returns no archive result.
 - `instance_coordinator_runtime` is an explicit exclusion rebuilt empty; Provider leases/reliability are rebuildable. No capture outcome implies archive transport, restore, cutover, or numeric RPO/RTO support.
@@ -173,6 +183,7 @@ InstanceCoordinator.listRegisteredObjects(): Promise<InstanceObjectRegistryResul
 | Acquire/release RPC rejects after persisting | Retry/reconcile the exact fence; persistent uncertainty remains fail-closed |
 | Drain proof is unknown/non-zero or a durable fence remains | Do not activate maintenance or capture |
 | Archive key is missing/wrong, payload/AAD is changed, or a store/reference is incomplete | Fail without a valid archive result and release maintenance as failed |
+| TeamAgent evidence is malformed/orphaned or target lacks `team-agent-v9` support | Remove invalid source evidence before capture; reject an incompatible restore target before mutation |
 | Archive persistence fails or returns an invalid evidence ID | Never record `captured`; release as failed |
 | Encrypted envelope verifies but no restore drill exists | Keep full-instance recovery unsupported |
 
@@ -195,6 +206,10 @@ InstanceCoordinator.listRegisteredObjects(): Promise<InstanceObjectRegistryResul
 - For every Durable Object schema bump, seed the immediately previous deployed registration and execute the current startup registration locally; do not rely only on a fresh-object test or the first deployment health smoke.
 - Prove independent duplicate-operation fences, ambiguous acquire/release reconciliation, drain rejection, every capture-phase rollback, and persistent fail-closed behavior.
 - Prove wrong/missing keys, fresh IVs, AAD/header/payload tamper rejection, deterministic manifest checksums, exact payload counts/sizes, and absence of keys/content from evidence.
+- Prove `team-agent-v9` capture includes valid private vision evidence, removes
+  malformed/orphaned rows before sealing, rejects an incompatible restore
+  target, and keeps evidence absent from member export and retained drill
+  evidence.
 - In the archive callback, assert maintenance is still active/pending; inject callback failure and assert no captured outcome or returned archive.
 - Keep all fixtures local. Never call a live Provider/MCP, production storage, local production deploy, or synthetic production probe.
 
@@ -254,7 +269,9 @@ Cleanup rows and guest tickets persist `next_attempt_at`, failed-attempt count, 
 
 - revoke the member's sessions;
 - clear user-owned `UserState` chats, usage, metrics, and leases while retaining `chats_purged_at` so stale clients cannot recreate deleted data;
-- clear root and conversation Agent persistence, including SDK tables, branch launches, memory, cleanup/migration state, capability trust, and `chatus:agent-identity:v1`;
+- clear root and conversation Agent persistence, including SDK tables, branch
+  launches, memory, cleanup/migration state, capability trust, private vision
+  evidence, and `chatus:agent-identity:v1`;
 - delete the exact legacy KV memory, chat-index, and bounded usage keys and remove the member's feedback entries;
 - preserve access codes, provider/logical-model configuration, managed provider/MCP secrets, and instance-level administrator configuration.
 
@@ -311,6 +328,9 @@ Any failed sub-operation fails the request. Retrying must be safe because every 
 - Prove IdentityRegistry capture/restore includes ACL entries/events and resource
   access revisions, with no label, content, credential, or token projection.
 - Prove permanent deletion revokes sessions and removes Agent conversations/memory, legacy KV chat/memory, branch launches, and root/conversation identity records.
+- Prove conversation deletion removes private vision evidence, member export
+  excludes it, and capture contains only strictly decoded evidence with a valid
+  source image message.
 - Prove permanent deletion snapshots and deletes every member-owned R2 version before clearing its metadata, leaves no file operation/outbox row after success, and remains idempotent after partial R2 failure.
 - Prove empty and non-empty workspace purges persist the same account lock, block uploads after the object snapshot and root purge, and release only after the complete user-data path succeeds.
 - Inject each purge backend failure and prove the marker/operation/lock/Root identity remains, the same alarm retry converges after request/session loss, and the final release is idempotent.

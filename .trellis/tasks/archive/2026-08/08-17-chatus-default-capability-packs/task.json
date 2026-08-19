@@ -1,0 +1,79 @@
+{
+  "id": "chatus-default-capability-packs",
+  "name": "chatus-default-capability-packs",
+  "title": "Chatus default capability packs",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "default member capability catalog, model capability augmentation, reviewed web/vision tools, UX, telemetry, and fixture-only validation; excludes production deployment, PR #93, production observation, and legacy rollout work",
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": "2026-08-19",
+  "branch": "codex/chatus-default-capability-packs",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "8ccffe7ad8d7398871b53ff842800edfb98f1e86",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/97",
+  "subtasks": [],
+  "children": [
+    "08-17-chatus-capability-catalog-adoption",
+    "08-17-chatus-auxiliary-vision",
+    "08-17-chatus-web-research",
+    "08-17-chatus-capability-experience-monitoring",
+    "08-17-chatus-capability-integration-hardening"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend && npm test && npm run test:browser:workspace && npm run test:browser:agent && npm run typecheck && npx wrangler deploy --dry-run && git diff --check",
+        "status": "passed",
+        "summary": "All five children archived; parent AC1-AC12 mapped; frontend structure passed; 918 Vitest tests passed; Workspace 119 passed and 71 conditional skips; Agent E2E 3 passed; typecheck, Wrangler dry-run, protected-path audit, and diff check passed.",
+        "at": "2026-08-19T06:23:52.241266+00:00"
+      },
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite production build and frontend structure checks passed; generated assets remained unchanged.",
+        "at": "2026-08-19T06:27:20.968288+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "60 Vitest files and 918 tests passed with local fixtures and controlled rejection warnings only.",
+        "at": "2026-08-19T06:27:21.119495+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker, React client, and browser fixture TypeScript checks passed.",
+        "at": "2026-08-19T06:27:21.277557+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Local Worker packaging dry-run passed without deployment.",
+        "at": "2026-08-19T06:27:21.432835+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "Whitespace validation and protected-path inspection passed.",
+        "at": "2026-08-19T06:27:21.588427+00:00"
+      }
+    ],
+    "waivers": [
+      {
+        "gate": "pull_request",
+        "reason": "Local-only delivery was authorized in the task conversation; pushing a branch or creating a pull request was not requested and would expand external state.",
+        "approver": "codex",
+        "at": "2026-08-19T06:27:21.746074+00:00"
+      }
+    ]
+  }
+}

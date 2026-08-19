@@ -125,6 +125,147 @@ const selectedSkills = getSelectedSkills(reloadedConfig, attempt.skillIds, reloa
 
 The root conversation is authoritative, logical fallback is excluded, the hard boundary rejects late results, and current assignment is enforced immediately before execution.
 
+## Scenario: Code-owned Capability Catalog And Safe Adoption
+
+### 1. Scope / Trigger
+
+- Trigger: changing built-in workflow Skills, capability activation/origin/disclosure,
+  augmentation assignment, the administrator Catalog, or capability-pack adoption.
+- This contract spans the code-owned catalog service, configuration defaults and
+  normalization, revisioned Worker APIs, exact browser decoders, member projection,
+  Skill selection, and the typed administrator workspace.
+
+### 2. Signatures
+
+```text
+GET  /api/admin/capability-packs
+  -> { version: 1, packs: AdminCapabilityPackV1[] }
+
+POST /api/admin/capability-packs/install
+  <- { packId: string, itemIds: string[], expectedRevision: string }
+  -> { ok: true, config: SanitizedAdminConfig, source: "kv",
+       revision: string, installed: string[], skipped: string[] }
+
+GET /api/session
+  -> { availableCapabilities: PublicCapabilityV1[], skills, tools, ... }
+```
+
+```typescript
+type SkillActivation = "automatic" | "explicit_turn";
+type CapabilityOrigin = "chatus" | "administrator";
+type CapabilityAugmentation = "vision_assist";
+
+type CapabilityAssignment = {
+  allowedSkills?: string[];
+  allowedTools?: string[];
+  allowedAugmentations?: CapabilityAugmentation[];
+};
+```
+
+### 3. Contracts
+
+- Catalog version 1 owns exactly five instruction-only workflow Skills:
+  `chatus:writing`, `chatus:summarize`, `chatus:translate`,
+  `chatus:code_explanation`, and `chatus:structured_output`. Their canonical
+  instructions live only in the server catalog; the browser receives labels,
+  descriptions, status, activation, source, and disclosure.
+- `getDefaultAppConfig()` seeds the five Skills and the explicit default
+  `allowedSkills` list only for a truly unconfigured instance.
+  `normalizeAppConfig()` never injects catalog items or assignments into KV or
+  deployment-Secret configurations.
+- Existing custom Skills keep omission-compatible automatic behavior.
+  `activation: "explicit_turn"` Skills may be projected as capabilities, but
+  ordinary/manual Skill lists, automatic selection, and selected prompt
+  composition exclude them. The automatic selector still applies at most three
+  workflow Skills.
+- `allowedAugmentations === undefined` inherits through the effective-user merge;
+  default omission grants none. An explicit empty array is deny-all. Guests always
+  receive no Skills, tools, augmentations, or `availableCapabilities`.
+- `availableCapabilities` is derived after assignment, enabled-state, and tool
+  readiness filtering. Instructions and credentials are never projected. Until
+  the auxiliary helper exists, assigned `vision_assist` projects exactly as
+  `route_augmentation`, `requires_setup`, and `helper_unavailable`.
+- Install accepts one known bounded pack and unique known workflow IDs, acquires
+  the shared admin-config mutation lease, reloads the editable config, and checks
+  `expectedRevision` before classification. A different definition at any chosen
+  ID is a collision for the complete request.
+- A successful install preserves unrelated configuration, appends new IDs to an
+  existing explicit default allow-list, validates the merged config, performs one
+  KV config write, and audits only `capability-pack.install` plus pack ID/item
+  count. It never installs an endpoint, MCP server, credential, or auxiliary
+  Provider helper.
+- The React Catalog uses the server projection and exact decoders. A revision
+  conflict refreshes the authoritative config while retaining the selected item
+  IDs for retry; the explicit server-version action clears that local selection.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Missing/extra request fields or blank revision | `400 invalid_capability_pack_request` or `expected_config_revision_required`; zero writes |
+| Unknown pack | `404 capability_pack_not_found`; zero writes |
+| Empty, duplicate, unknown, over-bounded, or malformed item IDs | `400 invalid_capability_pack_items`; zero config/audit writes |
+| Stale revision | `409 config_conflict` with current revision; retain browser selection |
+| Any selected ID contains another definition | `409 capability_pack_collision` with bounded IDs; zero config/audit writes |
+| Catalog/session/install payload has unknown fields, duplicate IDs, invalid enum/bounds, or inconsistent availability/reason | Exact browser decoder rejects the complete response |
+| `web_search` role appears on a builtin tool | `400 invalid_config`; only reviewed MCP tools may own that role |
+| Guest or explicit deny-all assignment | Project no available capability |
+
+### 5. Good/Base/Bad Cases
+
+- Good: an unconfigured instance exposes the five default workflows; a stored KV
+  instance remains unchanged until an administrator previews and installs two
+  selected IDs at the current revision.
+- Base: an installed canonical workflow is reported as installed or disabled and
+  remains an ordinary administrator-managed Skill; it is never silently replaced
+  or deleted when the catalog changes.
+- Bad: normalize every stored config through a default-seeding helper, copy
+  canonical instructions into React, silently overwrite a same-ID custom Skill,
+  or treat an explicit empty augmentation list as inheritance.
+
+### 6. Tests Required
+
+- Catalog service tests assert the exact five definitions, immutable clone
+  behavior, stable status classification, setup-only references, and no endpoints
+  or credentials.
+- Registry tests assert custom-Skill compatibility, explicit-turn exclusion,
+  assignment inheritance/deny-all, executable readiness, augmentation projection,
+  and the three-Skill ceiling.
+- Worker tests cover default versus Secret/KV injection, authenticated preview,
+  unknown/duplicate IDs, stale revision, collision zero-write behavior, successful
+  assignment/audit redaction, guest denial, and legacy MCP round-trip. No test may
+  call a live Provider, OAuth issuer, discovery endpoint, or MCP server.
+- Browser API tests accept only exact bounded catalog, install, public capability,
+  and admin config projections and reject duplicate IDs, unknown keys, invalid
+  enums, invalid reason combinations, and secret-like extras.
+- Workspace Playwright uses synthetic data at desktop 1440 and touch 390px to
+  prove source/status disclosure, conflict selection retention, retry install,
+  keyboard-reachable controls, and no horizontal overflow.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const config = normalizeAppConfig(storedValue ?? getDefaultAppConfig(env));
+config.skills[id] = catalogSkill; // overwrites a custom collision
+```
+
+#### Correct
+
+```typescript
+const editable = await loadEditableConfig(env); // no catalog injection
+if (await configRevision(editable.config) !== expectedRevision) return conflict();
+if (selectedIds.some((id) => isDifferentDefinition(editable.config.skills[id]))) {
+  return collision(); // no config or audit write
+}
+const next = validateMergedCatalogInstall(editable.config, selectedIds);
+await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(next));
+```
+
+Defaults and explicit adoption stay separate, collisions fail atomically, and the
+browser never becomes a second source for built-in instructions.
+
 ## Scenario: Typed Admin Member Assignment Workspace
 
 ### 1. Scope / Trigger
@@ -616,3 +757,312 @@ tools[id] = { ...tool, reviewRequired };
 const projected = await getAdminConfigThroughWorker();
 expect(isAdminConfigSnapshot(projected)).toBe(true);
 ```
+
+## Scenario: Vision Assist Assignment And Administrator Readiness
+
+### 1. Scope / Trigger
+
+Use this contract when an administrator installs, enables, disables, or repairs the optional `vision_assist` augmentation.
+
+### 2. Signatures
+
+```typescript
+type VisionAssistConfig = {
+  enabled?: boolean;
+  routeId: string;
+  maxOutputChars?: number;
+};
+
+type CapabilityAugmentation = "vision_assist";
+```
+
+```text
+PUT /api/admin/config
+  <- { config, expectedRevision }
+  -> { ok: true, config, source: "kv", revision }
+```
+
+### 3. Contracts
+
+- `allowedAugmentations` preserves omission as inheritance and `[]` as explicit deny-all. Guests always receive no augmentation.
+- A helper is executable only when the assignment includes `vision_assist`, the admin config is enabled, its route is selected, credentials are ready, and the selected route has a native-image offering. The helper route itself cannot be assisted.
+- Helper execution captures the admitted config revision and selected route image mode. After Provider-capacity wait and before ledger admission/I/O, it reloads config/access and requires both values to match; revocation or any config drift fails with `vision_assist_unavailable`, releases capacity, and creates zero helper attempts or fallback calls.
+- The admin Catalog/Setup projection derives `installed`, `disabled`, or `requires_setup` from the real local readiness helper without sending a model request. It never projects credentials or Provider payloads.
+- Vision config saves are revisioned and atomic with unrelated admin config. On `409 config_conflict`, the authoritative snapshot refreshes while the local vision draft remains editable for retry.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Missing/invalid route or output bound | `400 invalid_config`; zero writes |
+| Assigned augmentation with helper not ready | `requires_setup`; image mode is `none` |
+| Explicit empty augmentation assignment | No helper and no assisted mode |
+| Assignment/config changes while the helper waits for capacity | `vision_assist_unavailable`; zero helper ledger rows, Provider calls, and fallback |
+| Stale revision | `409 config_conflict`; preserve the local draft |
+| Guest projection | Omit augmentation and helper controls |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an administrator chooses a native-image helper route, enables the augmentation, saves at the current revision, and sees installed readiness without a probe request.
+- Base: a stored assignment remains visible as setup-required until credentials or a valid native offering are configured.
+- Bad: enable helper mode merely because a route exists, silently overwrite a concurrent draft, or expose the helper credential reference to the browser.
+
+### 6. Tests Required
+
+- Test inheritance/deny-all assignment, readiness state transitions, route validation, exact config decoding, conflict draft retention, retry success, guest denial, and no model calls.
+- `tests/vision-assist-turn.test.ts` holds helper capacity, revokes `allowedAugmentations`, releases capacity, and asserts terminal denial with zero helper attempts/Provider calls.
+- Exercise desktop and touch-admin layouts with keyboard-reachable controls and no horizontal overflow.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const ready = Boolean(config.visionAssist?.routeId);
+return { enabled: ready, imageMode: ready ? "native" : "none" };
+```
+
+#### Correct
+
+```typescript
+const ready = assignmentAllowsVision && helperConfig.enabled
+  && hasManagedCredential && nativeImageOfferingAvailable;
+return { imageMode: route.supportsImages ? "native" : ready ? "assisted_preanswer" : "none" };
+```
+
+Readiness is derived from executable server state and never changes the route's native capability truth.
+
+## Scenario: Explicit Per-turn Web Research
+
+### 1. Scope / Trigger
+
+Use this contract when a member explicitly enables `chatus:web_research` for one
+turn, when an administrator binds the capability to an MCP tool, or when the
+client renders the resulting public citations.
+
+### 2. Signatures
+
+```typescript
+type WebResearchRequest = {
+  capabilityIds?: ["chatus:web_research"];
+  webResearchQuery?: string;
+};
+
+type WebResearchEvidenceV1 = {
+  version: 1;
+  sources: Array<{ url: string; title: string; snippet: string }>;
+};
+
+prepareTeamAgentTurn(input: TeamAgentTurnInput): Promise<PreparedTeamAgentTurn>;
+executeWebResearch(
+  execution: McpRuntimeExecution,
+  binding: WebResearchBinding,
+  query: unknown,
+  signal?: AbortSignal,
+): Promise<WebResearchEvidenceV1>;
+```
+
+The reviewed MCP input schema is exactly one required bounded `query` string;
+there is no browser-controlled URL or secret field.
+
+### 3. Contracts
+
+- `chatus:web_research` is explicit-turn only. It is absent from ordinary tools,
+  automatic Skill candidates, and persisted regular Skill definitions. It may be
+  projected only when exactly one assigned MCP tool owns the `web_search` role.
+- The bound tool must be enabled, MCP-backed, `sideEffect: "read"`,
+  `reviewRequired: false`, fingerprint-complete, attached to an enabled MCP
+  server, and use the exact one-query schema. A tool can never be both a regular
+  Skill dependency and the explicit web-research binding.
+- A member turn spends the existing shared three-Skill budget. Manual selection
+  leaves one slot for research; automatic selection is capped at two ordinary
+  Skills. A full manual selection fails before MCP I/O. Admission is created once
+  and reused by research and the main answer.
+- The MCP call occurs before main Provider construction for both tool-capable and
+  text-only routes. The latest user text is the disclosed query; no hidden query
+  model is introduced. Continuations do not start a new search.
+- MCP output is accepted only as exact JSON text `{ version: 1, sources }`.
+  Results are bounded, normalized to at most ten public HTTPS URLs, canonicalized,
+  deduplicated in server order, and inserted into a numbered Provider system
+  block. Raw MCP bodies, credentials, endpoints, and model-generated Markdown
+  citations never cross the Agent/UI boundary.
+- The normalized evidence is the only persisted assistant `webResearch` metadata.
+  The user activation metadata contains only the capability ID, allowing resend
+  and branch recovery without restoring arbitrary request fields. React links use
+  the shared URL sanitizer and show the exact same normalized titles/snippets.
+- Execution owns a timeout/cancellation race and always closes the MCP execution.
+  Denial, review drift, disconnected OAuth, timeout, cancellation, malformed or
+  empty results return stable recoverable errors and never continue with a false
+  fresh-search claim.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Guest, continuation, disabled tools, unknown capability ID, or no reviewed binding | `web_research_not_available`; zero MCP calls |
+| Three manual Skills already selected | `web_research_slot_limit`; reject before MCP I/O |
+| Tool is unassigned, write-capable, drifted, incomplete, or duplicated | Deny with stable availability/review error; no `tools/call` |
+| OAuth/static connection is not ready | `web_research_connection_required`; no main Provider request |
+| Blank or overlong disclosed query | `web_research_query_invalid`; close without external I/O |
+| MCP exceeds the bounded deadline | `web_research_timeout`; close and do not claim fresh evidence |
+| Parent cancellation | `request_cancelled`; close, release admission, and do not fall back |
+| Non-text, malformed, oversized, empty, duplicate-only, or unsafe URL result | `web_research_invalid_response` or `web_research_no_sources`; raw body is discarded |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a member enables research, one reviewed read-only MCP call returns ten
+  sanitized sources, both route types receive the same numbered evidence, and the
+  assistant history renders the exact safe links.
+- Base: a failed search leaves the draft and activation recoverable for retry;
+  no response says it used current web results.
+- Bad: expose the MCP tool in ordinary tool lists, let the model choose the URL,
+  charge quota once for research and again for the answer, or render raw source
+  URLs/snippets without the shared sanitizer.
+
+### 6. Tests Required
+
+- Contract tests reject extra query fields, unsafe/private/credential URLs,
+  malformed/non-text/empty/oversized/duplicate results, and assert canonical URL
+  order plus ten-source/size limits.
+- Binding tests cover assignment, exact schema, review dimensions, side effects,
+  disabled servers, duplicate bindings, and exclusion from ordinary Skill/tool
+  projections.
+- Runtime tests use fake MCP/OAuth executions to assert exact query disclosure,
+  timeout/cancellation races, mandatory `close()`, stable error classes, and zero
+  live network/model calls.
+- Worker/Agent tests cover both supports-tools modes, shared Skill-slot rejection,
+  one admission for research plus answer, exact numbered evidence in Provider
+  messages, and allow-listed user/assistant metadata persistence for resend/branch
+  recovery.
+- Client tests assert strict evidence decoding, accessible source rendering, and
+  no overflow or unsafe links at desktop and 390px touch widths.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const url = body.url;
+return provider.complete(`Search ${url} and cite the Markdown links it returns`);
+```
+
+#### Correct
+
+```typescript
+const binding = resolveWebResearchBinding(config, access.user);
+const evidence = await executeWebResearch(runtime.createExecution(), binding.binding,
+  latestUserText, abortSignal);
+const messages = [{ role: "system", content: formatWebResearchEvidenceForModel(evidence) }, ...baseMessages];
+```
+
+The administrator-reviewed MCP contract owns network access, the shared decoder
+owns public evidence, and the Provider sees only bounded numbered sources.
+
+## Scenario: Unified Member Capability Experience
+
+### 1. Scope / Trigger
+
+Use this contract when changing the conversation capability inspector, transient
+per-turn capability status, recovery actions, or the nested MCP connection dialog.
+It covers the React workspace and deterministic Workspace fixture only; capability
+truth still comes from the exact session and availability projections above.
+
+### 2. Signatures
+
+```typescript
+type CapabilityTurnStatus =
+  | "selected" | "waiting" | "running" | "succeeded"
+  | "unavailable" | "denied" | "timed_out" | "cancelled" | "error";
+
+type CapabilityTurnSnapshot = {
+  conversationId: string;
+  items: Array<{
+    kind: "workflow_selection" | "web_research" | "image_understanding" | "tool_execution";
+    status: CapabilityTurnStatus;
+    recovery: Array<"retry" | "remove_images" | "switch_route" | "connect_mcp">;
+  }>;
+};
+```
+
+```text
+ConversationInspector section: capabilities | files | sharing
+Capability recovery owners: ChatWorkspace draft, route, and MCP dialog actions
+```
+
+### 3. Contracts
+
+- One `capabilities` inspector section owns model availability, workflow selection,
+  explicit turn tools, image understanding, and MCP readiness. Attachment, one-turn
+  research, and send controls remain in the composer.
+- Labels, source, activation, affected data, latency, cost, assignment, and setup
+  readiness are rendered from strict server projections. The browser does not infer
+  Provider identity, connection readiness, or executable capability from labels.
+- A turn snapshot is React memory scoped to one conversation. It is not written to
+  local storage, Agent messages, exports, Provider evidence, or monitoring events.
+  Switching conversations must not display or clear another conversation's state.
+- Tool-part and error projections map to the closed status set. Live status uses one
+  restrained polite atomic region; historical message content remains the durable
+  source for completed tool output and citations.
+- Recovery delegates to the existing owner: retry reuses restored draft state,
+  remove-image revokes each distinct object URL once, route switching focuses the
+  existing selector, and connection recovery opens the existing MCP dialog.
+- A nested MCP dialog traps focus and consumes Escape before the inspector. Closing
+  it restores the invoking control; closing the inspector restores its opener.
+- The five required viewports keep controls contained. Touch layouts expose at least
+  44 by 44 CSS-pixel interactive targets and reduced motion removes nonessential
+  inspector transition and animation duration.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Turn snapshot belongs to another conversation | Do not render it in the active inspector |
+| No capability selected or active | Render neutral current-state copy; do not invent success |
+| Image capability is unavailable | Offer image removal and route/connection recovery only when applicable |
+| Retry races with a newer draft | Preserve the newer draft; never overwrite it with the failed submission |
+| The same image appears in draft/submitted/retry arrays | Revoke its object URL once, then remove every matching image reference |
+| MCP dialog receives Escape | Close only the dialog and restore its opener; keep the inspector open |
+| Server projection is malformed or inconsistent | Reject the complete response before rendering capability facts |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a timed-out research turn is shown as timed out, retry delegates to the
+  restored draft owner, and the live region announces only the bounded state change.
+- Base: no turn is active; the inspector still shows exact readiness and disclosure
+  while the composer retains its high-frequency controls.
+- Bad: persist waiting state, duplicate capability facts across several tabs, infer
+  readiness from a tool name, revoke one object URL more than once, or let nested
+  Escape close both dialog and inspector.
+
+### 6. Tests Required
+
+- Pure client tests cover all nine statuses, error mapping, tool-part reduction,
+  recovery lists, and empty-result failure without serializing private payloads.
+- State tests cover draft-generation-safe retry, conversation switching, and
+  distinct image-preview cleanup.
+- Workspace Playwright covers ready/setup-required projections, status matrix,
+  retry/image/route/MCP recovery, focus trap and restoration, reduced motion, local
+  scrolling, no horizontal overflow, and screenshots at 1920, 1440, 780, 480, and
+  touch 390 widths. The fixture must abort unexpected network and Agent requests.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+localStorage.setItem("capability-turn", JSON.stringify(turn));
+setMcpOpen(false);
+setInspectorOpen(false);
+```
+
+This persists transient execution state and lets one Escape close two focus scopes.
+
+#### Correct
+
+```typescript
+setCapabilityTurn(turn); // in-memory, conversation-scoped projection
+closeMcpConnections();   // restores the nested opener; inspector remains mounted
+```
+
+The runtime owner remains authoritative, transient state cannot leak into durable
+surfaces, and each modal layer owns exactly one keyboard/focus boundary.

@@ -1,0 +1,83 @@
+{
+  "id": "default-capability-packs-delivery",
+  "name": "default-capability-packs-delivery",
+  "title": "Deliver default capability packs PR",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-19",
+  "completedAt": "2026-08-20",
+  "branch": "codex/chatus-default-capability-packs",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "7565ae347094e62682217788060243a111dc3853",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/97",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Vite build and frontend structure checks passed",
+        "at": "2026-08-19T16:05:50.684191+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "61 files and 921 tests passed",
+        "at": "2026-08-19T16:05:50.842460+00:00"
+      },
+      {
+        "command": "npm run test:browser:workspace",
+        "status": "passed",
+        "summary": "126 passed and 84 viewport-specific cases skipped",
+        "at": "2026-08-19T16:05:50.996772+00:00"
+      },
+      {
+        "command": "npm run test:browser:agent",
+        "status": "passed",
+        "summary": "3 fake-Provider Agent browser tests passed",
+        "at": "2026-08-19T16:05:51.157177+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Worker client and browser TypeScript checks passed",
+        "at": "2026-08-19T16:05:51.313853+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker assets and bindings packaged without deployment",
+        "at": "2026-08-19T16:05:51.473193+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed",
+        "at": "2026-08-19T16:05:51.634312+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors",
+        "at": "2026-08-19T16:05:51.786624+00:00"
+      },
+      {
+        "command": "gh pr checks 97 --watch",
+        "status": "passed",
+        "summary": "changes quality workspace-browser and agent-browser passed at head a5509b9",
+        "at": "2026-08-19T16:17:57.081725+00:00"
+      }
+    ]
+  }
+}

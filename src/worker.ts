@@ -39,6 +39,8 @@ import {
   type ProviderTurnProgressV1,
 } from "./contracts/provider-turn-progress";
 import type {
+  AdminCapabilityPackInstallResultV1,
+  CapabilityAugmentation,
   CapabilityAssignment,
   CapabilityToolExecutionResult,
   CapabilityToolRunner,
@@ -92,6 +94,26 @@ import type {
   ResolvedProviderRoute,
   RouteConfig,
 } from "./contracts/provider";
+import {
+  IMAGE_INSPECT_TOOL_NAME,
+  MAX_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  MIN_VISION_ASSIST_MAX_OUTPUT_CHARS,
+  decodeVisionEvidenceV1,
+  formatVisionEvidenceForModel,
+  normalizeVisionAssistMaxOutputChars,
+  parseVisionEvidenceV1,
+  visionEvidencePrompt,
+  type PublicImageMode,
+  type VisionAssistConfig,
+  type VisionEvidenceV1,
+} from "./contracts/vision-assist";
+import {
+  WEB_RESEARCH_CAPABILITY_ID,
+  formatWebResearchEvidenceForModel,
+  isExactWebResearchInputSchema,
+  isReviewedWebResearchTool,
+  type WebResearchEvidenceV1,
+} from "./contracts/web-research";
 import { createProviderTurnId } from "./contracts/provider-attempt";
 import {
   MODEL_MONITORING_WINDOW_MS,
@@ -99,6 +121,16 @@ import {
   type MemberModelAvailabilityV1,
   type ProviderAttemptAvailabilityEvidenceV1,
 } from "./contracts/model-monitoring";
+import {
+  CAPABILITY_ID_TOOL_EXECUTION,
+  CAPABILITY_ID_VISION_ASSIST,
+  CAPABILITY_ID_WEB_RESEARCH,
+  CAPABILITY_ID_WORKFLOW_SELECTION,
+  CAPABILITY_MONITORING_WINDOW_MS,
+  buildCapabilityMonitoringSnapshot,
+  type CapabilityMonitoringEventV1,
+  type CapabilityMonitoringStatus,
+} from "./contracts/capability-monitoring";
 import {
   PROVIDER_BUDGET_HOLD_REVIEW_AFTER_MS,
   decodeProviderBudgetOperatorActionRequest,
@@ -158,6 +190,15 @@ import {
   getSelectedSkills,
   normalizeToolConfirmation,
 } from "./services/capability-registry";
+import {
+  DEFAULT_CAPABILITY_PACK_ID,
+  capabilityCatalogSnapshot,
+  catalogWorkflowSkill,
+  defaultWorkflowSkillIds,
+  defaultWorkflowSkillRegistry,
+  isCatalogWorkflowSkillId,
+  sameCatalogWorkflowDefinition,
+} from "./services/capability-catalog";
 import { createProviderLanguageModel, toProviderModelMessages } from "./services/provider-model";
 import {
   createFallbackLanguageModel,
@@ -203,6 +244,11 @@ import {
   type McpDiscoveryResult,
   type McpRuntimeExecution,
 } from "./services/mcp-runtime";
+import {
+  WebResearchRuntimeError,
+  executeWebResearch,
+  resolveWebResearchBinding,
+} from "./services/web-research";
 import {
   buildMcpOAuthAuthorizationUrl,
   createMcpOAuthPkce,
@@ -360,6 +406,7 @@ type AppConfig = {
   skills?: Record<string, SkillConfig>;
   tools?: Record<string, ToolConfig>;
   mcpServers?: Record<string, McpServerConfig>;
+  visionAssist?: VisionAssistConfig;
 };
 
 type McpToolDriftEntry = {
@@ -399,6 +446,7 @@ type PublicRoute = {
   allowUserKey: boolean;
   requiresUserKey: boolean;
   supportsImages: boolean;
+  imageMode: PublicImageMode;
   supportsTools: boolean;
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   healthCheckedAt?: string;
@@ -535,6 +583,7 @@ const ADMIN_SESSION_TTL_SECONDS = 604_800;
 const BLOCKED_PROMPT_MESSAGE = "不要用这种方式测活，必须使用一个小任务之类的";
 const ROUTES_CONFIG_KEY = "config:routes_config";
 const ADMIN_CONFIG_MUTATION_COORDINATOR = "$admin-config";
+const CAPABILITY_MONITORING_COORDINATOR = "$capability-monitoring-v1";
 const ADMIN_CONFIG_MUTATION_WAIT_MS = 10_000;
 const ADMIN_CONFIG_MUTATION_LEASE_TTL_MS = 60_000;
 const ADMIN_CONFIG_MUTATION_RENEW_MS = 20_000;
@@ -2865,6 +2914,14 @@ async function handleAdminApi(
     return handleGetAdminConfig(env);
   }
 
+  if (url.pathname === "/api/admin/capability-packs" && request.method === "GET") {
+    return handleGetAdminCapabilityPacks(env);
+  }
+
+  if (url.pathname === "/api/admin/capability-packs/install" && request.method === "POST") {
+    return withAdminConfigMutationLock(env, () => handleInstallAdminCapabilityPack(request, env));
+  }
+
   if (url.pathname === "/api/admin/legacy-routes/migrate" && request.method === "POST") {
     return withAdminConfigMutationLock(env, () => handleMigrateLegacyRoutes(request, env));
   }
@@ -3021,6 +3078,10 @@ async function handleAdminApi(
 
   if (url.pathname === "/api/admin/model-monitor" && request.method === "GET") {
     return handleAdminModelMonitor(env, url);
+  }
+
+  if (url.pathname === "/api/admin/capability-monitor" && request.method === "GET") {
+    return handleAdminCapabilityMonitor(env, url);
   }
 
   if (url.pathname === "/api/admin/legacy-surfaces" && request.method === "GET") {
@@ -3513,6 +3574,110 @@ async function handleGetAdminConfig(env: Env): Promise<Response> {
   return jsonResponse({ config: sanitizeAdminConfig(config), source, revision: await configRevision(config) });
 }
 
+async function handleGetAdminCapabilityPacks(env: Env): Promise<Response> {
+  const { config } = await loadEditableConfig(env);
+  const visionAssistStatus = await isVisionAssistReady(config, env)
+    ? "installed" as const
+    : config.visionAssist?.enabled === false && Boolean(config.visionAssist.routeId)
+      ? "disabled" as const
+      : "requires_setup" as const;
+  const webResearchTools = Object.values(config.tools || {}).filter((tool) => tool.capabilityRole === "web_search");
+  const webResearchStatus = webResearchTools.length === 1 && isReviewedWebResearchTool(webResearchTools[0])
+    && config.mcpServers?.[webResearchTools[0].executor.serverId]?.enabled === true
+    ? "installed" as const
+    : webResearchTools.length === 1 && webResearchTools[0].enabled === false
+      ? "disabled" as const
+      : "requires_setup" as const;
+  return jsonResponse(capabilityCatalogSnapshot(config.skills, visionAssistStatus, webResearchStatus));
+}
+
+async function handleInstallAdminCapabilityPack(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<unknown>(request);
+  if (!isRecord(body) || !hasOnlyRecordKeys(body, ["packId", "itemIds", "expectedRevision"])) {
+    return jsonResponse({ error: "invalid_capability_pack_request", message: "能力目录安装请求无效。" }, 400);
+  }
+  const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision.trim() : "";
+  if (!expectedRevision) {
+    return jsonResponse({ error: "expected_config_revision_required", message: "缺少配置版本，请刷新后重试。" }, 400);
+  }
+  if (body.packId !== DEFAULT_CAPABILITY_PACK_ID) {
+    return jsonResponse({ error: "capability_pack_not_found", message: "能力目录包不存在。" }, 404);
+  }
+  if (!Array.isArray(body.itemIds) || body.itemIds.length < 1 || body.itemIds.length > defaultWorkflowSkillIds().length) {
+    return jsonResponse({ error: "invalid_capability_pack_items", message: "请选择有效的能力目录项。" }, 400);
+  }
+  const requestedIds: string[] = [];
+  for (const item of body.itemIds) {
+    if (typeof item !== "string" || !isCatalogWorkflowSkillId(item) || requestedIds.includes(item)) {
+      return jsonResponse({ error: "invalid_capability_pack_items", message: "能力目录项包含未知项或重复项。" }, 400);
+    }
+    requestedIds.push(item);
+  }
+  const requested = defaultWorkflowSkillIds().filter((id) => requestedIds.includes(id));
+
+  const editable = await loadEditableConfig(env);
+  const currentRevision = await configRevision(editable.config);
+  if (currentRevision !== expectedRevision) {
+    return jsonResponse({
+      error: "config_conflict",
+      message: "配置已在其他窗口更新，请刷新后重试。",
+      currentRevision,
+    }, 409);
+  }
+
+  const conflicts: string[] = [];
+  const installed: string[] = [];
+  const skipped: string[] = [];
+  const skills = { ...(editable.config.skills || {}) };
+  for (const id of requested) {
+    const definition = catalogWorkflowSkill(id)!;
+    const current = skills[id];
+    if (!current) {
+      skills[id] = definition;
+      installed.push(id);
+    } else if (sameCatalogWorkflowDefinition(definition, current)) {
+      skipped.push(id);
+    } else {
+      conflicts.push(id);
+    }
+  }
+  if (conflicts.length) {
+    return jsonResponse({
+      error: "capability_pack_collision",
+      message: "所选能力 ID 已被不同的管理员配置占用；未写入任何更改。",
+      itemIds: conflicts,
+    }, 409);
+  }
+
+  const defaults = { ...(editable.config.defaults || {}) };
+  if (defaults.allowedSkills !== undefined) {
+    defaults.allowedSkills = [
+      ...defaults.allowedSkills,
+      ...requested.filter((id) => !defaults.allowedSkills!.includes(id)),
+    ];
+  }
+  const nextConfig = await applyMcpOAuthConfigRevisions(normalizeAppConfig({
+    ...editable.config,
+    defaults,
+    skills,
+  }));
+  const validation = validateAppConfig(nextConfig);
+  if (!validation.ok) return jsonResponse({ error: "invalid_config", message: validation.message }, 400);
+
+  await env.CHAT_STORE.put(ROUTES_CONFIG_KEY, JSON.stringify(nextConfig));
+  await reconcileMcpToolDriftOverlay(env, nextConfig);
+  await appendAdminAudit(env, "capability-pack.install", `${DEFAULT_CAPABILITY_PACK_ID}:${installed.length}`);
+  const result: AdminCapabilityPackInstallResultV1 = {
+    ok: true,
+    config: sanitizeAdminConfig(nextConfig),
+    source: "kv",
+    revision: await configRevision(nextConfig),
+    installed,
+    skipped,
+  };
+  return jsonResponse(result);
+}
+
 async function handleGetAdminSetupStatus(env: Env): Promise<Response> {
   const setup = await buildAdminSetupStatus(env);
   return jsonResponse(setup.projection);
@@ -3723,6 +3888,18 @@ async function buildSessionProjection(
       ? listMcpOAuthConnections(env, session)
       : Promise.resolve([]),
   ]);
+  const webResearchBinding = resolveWebResearchBinding(config, access.user);
+  const availableCapabilities = capabilities.capabilities.map((capability) => {
+    if (capability.id !== WEB_RESEARCH_CAPABILITY_ID || !webResearchBinding.ok) return capability;
+    if (webResearchBinding.binding.server.auth.type !== "oauth2") return capability;
+    const connection = mcpConnections.find(({ serverId }) => serverId === webResearchBinding.binding.tool.executor.serverId);
+    if (connection?.connected) return capability;
+    return {
+      ...capability,
+      availability: "requires_setup" as const,
+      unavailableReason: connection?.reviewRequired ? "review_required" as const : "connection_required" as const,
+    };
+  });
   return {
     authenticated: true,
     access: session.kind,
@@ -3736,6 +3913,7 @@ async function buildSessionProjection(
     imageInput: imageInputPolicy(env),
     fileInput: fileInputPolicy(env),
     capabilities: policy,
+    availableCapabilities: session.kind === "member" ? availableCapabilities : [],
     skills: session.kind === "member" ? capabilities.skills : [],
     tools: session.kind === "member" ? capabilities.tools : [],
     mcpConnections,
@@ -4051,6 +4229,14 @@ async function handlePutAdminConfig(request: Request, env: Env): Promise<Respons
   const rawMcpValidation = validateRawMcpConfiguration(body.config);
   if (!rawMcpValidation.ok) {
     return jsonResponse({ error: "invalid_config", message: rawMcpValidation.message }, 400);
+  }
+  const rawCapabilityValidation = validateRawCapabilityConfiguration(body.config);
+  if (!rawCapabilityValidation.ok) {
+    return jsonResponse({ error: "invalid_config", message: rawCapabilityValidation.message }, 400);
+  }
+  const rawVisionAssistValidation = validateRawVisionAssistConfiguration(body.config);
+  if (!rawVisionAssistValidation.ok) {
+    return jsonResponse({ error: "invalid_config", message: rawVisionAssistValidation.message }, 400);
   }
   const editable = await loadEditableConfig(env);
   const normalized = await applyMcpOAuthConfigRevisions(mergeHiddenCredentialShadows(
@@ -7231,6 +7417,24 @@ async function handleAdminModelMonitor(env: Env, url: URL): Promise<Response> {
   }
 }
 
+async function handleAdminCapabilityMonitor(env: Env, url: URL): Promise<Response> {
+  const window = url.searchParams.get("window") || "24h";
+  const bucket = url.searchParams.get("bucket") || "hour";
+  if (window !== "24h" || bucket !== "hour") {
+    return jsonResponse({ error: "invalid_capability_monitor_query" }, 400);
+  }
+  const generatedAt = Date.now();
+  const periodStart = generatedAt - CAPABILITY_MONITORING_WINDOW_MS;
+  try {
+    const rows = await env.PROVIDER_COORDINATOR
+      .getByName(CAPABILITY_MONITORING_COORDINATOR)
+      .getCapabilityMonitoringAggregate({ periodStart, periodEnd: generatedAt });
+    return jsonResponse(buildCapabilityMonitoringSnapshot(rows, generatedAt));
+  } catch {
+    return jsonResponse({ error: "capability_monitor_unavailable", retryable: true }, 503);
+  }
+}
+
 async function handleModelAvailability(env: Env, session: Session): Promise<Response> {
   if (session.kind !== "member") return jsonResponse({ error: "member_required" }, 403);
   const config = await loadAppConfig(env);
@@ -8418,6 +8622,8 @@ export type TeamAgentTurnInput = {
   routeId?: string;
   skillMode?: ConversationSkillMode;
   skillIds?: string[];
+  capabilityIds?: string[];
+  webResearchQuery?: string;
   userApiKey?: string;
   sessionSummary?: string;
   temperature?: number;
@@ -8429,6 +8635,14 @@ export type TeamAgentTurnInput = {
   waitUntil?: (promise: Promise<unknown>) => void;
   turnId: string;
   operation: InstanceOperationStateV1;
+  visionSources?: TeamAgentVisionSource[];
+  persistVisionEvidence?: (sourceMessageIds: string[], evidence: VisionEvidenceV1) => void | Promise<void>;
+};
+
+export type TeamAgentVisionSource = {
+  sourceMessageId: string;
+  images: string[];
+  evidence?: VisionEvidenceV1;
 };
 
 export type PreparedTeamAgentTurn =
@@ -8449,8 +8663,235 @@ export type PreparedTeamAgentTurn =
       skillSnapshotIds?: string[];
       recordStreamFailure: () => Promise<void>;
       releaseTurn: () => Promise<void>;
+      visionInspect?: (signal?: AbortSignal) => Promise<VisionEvidenceV1>;
+      forceImageInspect: boolean;
+      webResearch?: WebResearchEvidenceV1;
     }
   | { ok: false; error: string; message: string; status: number; routeId?: string };
+
+class VisionAssistError extends Error {
+  readonly code: "vision_assist_unavailable" | "vision_assist_invalid_response";
+
+  constructor(code: "vision_assist_unavailable" | "vision_assist_invalid_response") {
+    super(code);
+    this.name = "VisionAssistError";
+    this.code = code;
+  }
+}
+
+type VisionAssistAuthorization = {
+  configRevision: string;
+  session: Extract<Session, { kind: "member" }>;
+  routeId: string;
+  imageMode: "assisted_tool" | "assisted_preanswer";
+};
+
+function scheduleCapabilityMonitoring(
+  env: Env,
+  waitUntil: TeamAgentTurnInput["waitUntil"],
+  event: CapabilityMonitoringEventV1,
+): void {
+  if (!waitUntil) return;
+  let accepted = false;
+  const write = Promise.resolve().then(async () => {
+    if (!accepted) return;
+    try {
+      await env.PROVIDER_COORDINATOR
+        .getByName(CAPABILITY_MONITORING_COORDINATOR)
+        .recordCapabilityMonitoringEvent(event);
+    } catch {
+      // Passive monitoring must never affect the turn.
+    }
+  });
+  try {
+    waitUntil(write);
+    accepted = true;
+  } catch {
+    // Passive monitoring must never affect the turn.
+  }
+}
+
+function capabilityMonitoringLatency(startedAt: number): number {
+  return Math.min(600_000, Math.max(0, Date.now() - startedAt));
+}
+
+function capabilityMonitoringStatusForError(error: unknown): CapabilityMonitoringStatus {
+  const code = error instanceof CapabilityError
+    ? error.code
+    : error instanceof WebResearchRuntimeError
+      ? error.code
+      : error instanceof Error
+        ? `${error.name}:${error.message}`
+        : "";
+  if (code === "request_cancelled" || /abort|cancel/i.test(code)) return "cancelled";
+  if (/timeout|timed_out|超时/i.test(code)) return "timed_out";
+  if (
+    /not_allowed|not_found|review_required|connection_required|arguments_invalid|changed|closed|limit_exceeded|budget_exceeded/i.test(code)
+  ) return "denied";
+  return "failed";
+}
+
+async function runVisionAssist(
+  env: Env,
+  config: AppConfig,
+  sources: TeamAgentVisionSource[],
+  signal: AbortSignal | undefined,
+  providerAttempts: ProviderAttemptRuntime,
+  authorization: VisionAssistAuthorization | undefined,
+): Promise<VisionEvidenceV1> {
+  const helper = config.visionAssist;
+  if (!helper?.enabled || !helper.routeId || !sources.length || !authorization) {
+    throw new VisionAssistError("vision_assist_unavailable");
+  }
+  const maxOutputChars = normalizeVisionAssistMaxOutputChars(helper.maxOutputChars);
+  const prepared = await providerPlanRuntime(env, config).preparePlan({
+    routeIds: [helper.routeId],
+    accessRoutes: [{ id: helper.routeId, allowUserKey: false, requiresUserKey: false }],
+    userApiKey: "",
+    accepts: (candidate) => candidate.supportsImages && !candidate.requiresUserKey,
+  });
+  if (!prepared.candidates.length || prepared.userKeyRequiredRouteId) {
+    throw new VisionAssistError("vision_assist_unavailable");
+  }
+  const candidates: FallbackModelCandidate[] = prepared.candidates.map((route) => {
+    const baseModel = createProviderLanguageModel(route, route.credential.apiKey);
+    const model: LanguageModelV3 = {
+      ...baseModel,
+      async doGenerate(options) {
+        const result = await baseModel.doGenerate(options);
+        const text = result.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("");
+        if (!parseVisionEvidenceV1(text, maxOutputChars)) {
+          const error = new VisionAssistError("vision_assist_invalid_response");
+          error.name = "ProviderProtocolError";
+          throw error;
+        }
+        return result;
+      },
+    };
+    return {
+      routeId: route.routeId,
+      providerId: route.providerId,
+      model,
+      modelName: route.model,
+      credentialClass: route.credential.source === "missing" ? undefined : route.credential.source,
+      usedUserKey: route.credential.usedUserKey,
+      acquireLease: (waitMs, leaseSignal) => acquireProviderLease(env, route, waitMs, leaseSignal),
+      settings: {
+        temperature: 0,
+        maxOutputTokens: Math.max(256, Math.min(4_096, Math.ceil(maxOutputChars / 3))),
+      },
+    };
+  });
+  const imageParts = sources.flatMap((source) => source.images.map((url) => ({
+    type: "image" as const,
+    image: url,
+  })));
+  const model = createFallbackLanguageModel(candidates, {}, {
+    createRun: () => providerAttempts.createRun("auxiliary_vision"),
+    beforeAttempt: () => assertVisionAssistAuthorization(env, authorization),
+  });
+  const result = await generateText({
+    model,
+    messages: [
+      { role: "system", content: visionEvidencePrompt(maxOutputChars) },
+      { role: "user", content: imageParts },
+    ],
+    temperature: 0,
+    maxOutputTokens: Math.max(256, Math.min(4_096, Math.ceil(maxOutputChars / 3))),
+    maxRetries: 0,
+    allowSystemInMessages: true,
+    abortSignal: signal,
+  });
+  const evidence = parseVisionEvidenceV1(result.text, maxOutputChars);
+  if (!evidence) throw new VisionAssistError("vision_assist_invalid_response");
+  return evidence;
+}
+
+async function assertVisionAssistAuthorization(
+  env: Env,
+  authorization: VisionAssistAuthorization,
+): Promise<void> {
+  const currentConfig = await loadAppConfig(env);
+  const currentRevision = await configRevision(currentConfig);
+  const currentAccess = await getRouteAccess(currentConfig, authorization.session, env);
+  const currentRoute = currentAccess.routes.find((route) => route.id === authorization.routeId);
+  if (
+    currentRevision !== authorization.configRevision
+    || currentRoute?.imageMode !== authorization.imageMode
+  ) {
+    throw new VisionAssistError("vision_assist_unavailable");
+  }
+}
+
+function normalizeVisionSources(
+  sources: TeamAgentVisionSource[] | undefined,
+  maxOutputChars: number,
+): TeamAgentVisionSource[] {
+  if (!Array.isArray(sources)) return [];
+  return sources.flatMap((source) => {
+    if (
+      !source
+      || typeof source.sourceMessageId !== "string"
+      || !source.sourceMessageId.trim()
+      || !Array.isArray(source.images)
+      || !source.images.length
+      || source.images.length > 16
+    ) return [];
+    const images = source.images.flatMap((url) => {
+      if (typeof url !== "string") return [];
+      const parsed = parseDataImage(url);
+      return parsed.ok ? ["data:" + parsed.image.mediaType + ";base64," + parsed.image.data] : [];
+    });
+    if (!images.length) return [];
+    const evidence = source.evidence
+      ? decodeVisionEvidenceV1(source.evidence, maxOutputChars)
+      : undefined;
+    return [{ sourceMessageId: source.sourceMessageId.trim().slice(0, 160), images, ...(evidence ? { evidence } : {}) }];
+  });
+}
+
+function visionSourcesForMessages(
+  messages: ChatMessage[],
+  sources: TeamAgentVisionSource[],
+): { sources: TeamAgentVisionSource[]; missing: TeamAgentVisionSource[] } {
+  const byId = new Map(sources.map((source) => [source.sourceMessageId, source]));
+  const used = new Set<string>();
+  for (const message of messages) {
+    const hasImage = Array.isArray(message.content)
+      && message.content.some((part) => part.type === "image_url");
+    if (!hasImage) continue;
+    const source = message.id ? byId.get(message.id) : undefined;
+    if (source) used.add(source.sourceMessageId);
+  }
+  const selected = sources.filter((source) => used.has(source.sourceMessageId));
+  return { sources: selected, missing: selected.filter((source) => !source.evidence) };
+}
+
+function applyAssistedVisionEvidence(
+  messages: ChatMessage[],
+  sources: TeamAgentVisionSource[],
+  forceTool: boolean,
+): ChatMessage[] {
+  const byId = new Map(sources.map((source) => [source.sourceMessageId, source]));
+  return messages.map((message) => {
+    if (!Array.isArray(message.content) || !message.content.some((part) => part.type === "image_url")) return message;
+    const source = message.id ? byId.get(message.id) : undefined;
+    const textParts = message.content.filter((part): part is Extract<ChatPart, { type: "text" }> => part.type === "text");
+    const text = textParts.map((part) => part.text).join("");
+    const suffix = source?.evidence
+      ? formatVisionEvidenceForModel(source.evidence)
+      : forceTool
+        ? "[图片已绑定到受信 image_inspect 工具，必须先调用该工具。]"
+        : "[图片证据暂时不可用。]";
+    return {
+      ...message,
+      content: text + (text ? "\n\n" : "") + suffix,
+    };
+  });
+}
 
 export async function prepareTeamAgentTurn(
   env: Env,
@@ -8511,7 +8952,37 @@ export async function prepareTeamAgentTurn(
   let memoryToolEnabled = input.disableTools !== true
     && session.kind === "member"
     && selectedPublicRoute?.supportsTools === true;
-  if (messagesContainImages(normalized) && selectedPublicRoute?.supportsImages === false) {
+  const requestedCapabilityIds = input.capabilityIds === undefined || input.capabilityIds.length === 0
+    ? []
+    : input.capabilityIds.length === 1 && input.capabilityIds[0] === WEB_RESEARCH_CAPABILITY_ID
+      ? [WEB_RESEARCH_CAPABILITY_ID]
+      : null;
+  if (!requestedCapabilityIds) {
+    return {
+      ok: false,
+      error: "web_research_not_available",
+      message: agentErrorMessage("web_research_not_available"),
+      status: 403,
+    };
+  }
+  const webResearchRequested = requestedCapabilityIds.includes(WEB_RESEARCH_CAPABILITY_ID);
+  if (webResearchRequested && (session.kind !== "member" || input.disableTools === true || input.continuation === true)) {
+    scheduleCapabilityMonitoring(env, input.waitUntil, {
+      version: 1,
+      capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+      kind: "web_research",
+      status: "denied",
+      latencyMs: null,
+      occurredAt: Date.now(),
+    });
+    return {
+      ok: false,
+      error: "web_research_not_available",
+      message: agentErrorMessage("web_research_not_available"),
+      status: 403,
+    };
+  }
+  if (messagesContainImages(normalized) && selectedPublicRoute?.imageMode === "none") {
     return {
       ok: false,
       error: "image_not_supported",
@@ -8560,12 +9031,53 @@ export async function prepareTeamAgentTurn(
   let skillSelection: AgentSkillSelectionMetadata | undefined;
   let skillSnapshotIds: string[] | undefined;
   let selectedSkillIds = input.skillIds || [];
+  if (
+    webResearchRequested
+    && input.skillMode !== "automatic"
+    && getSelectedSkills(config, selectedSkillIds, access.user).length >= MAX_SELECTED_SKILLS
+  ) {
+    scheduleCapabilityMonitoring(env, input.waitUntil, {
+      version: 1,
+      capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+      kind: "web_research",
+      status: "denied",
+      latencyMs: null,
+      occurredAt: Date.now(),
+    });
+    return {
+      ok: false,
+      error: "web_research_slot_limit",
+      message: agentErrorMessage("web_research_slot_limit"),
+      status: 409,
+    };
+  }
   if (session.kind === "member" && input.skillMode === "automatic" && selectedPublicRoute) {
     const availableSkills = getPublicCapabilities(config, access.user).skills;
+    const selectionStartedAt = availableSkills.length ? Date.now() : null;
     if (availableSkills.length) {
       const selectorAdmission = await admitOnce();
-      if (!selectorAdmission.ok) return rejectAdmission(selectorAdmission);
-      if (input.abortSignal?.aborted) return cancelTurn();
+      if (!selectorAdmission.ok) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+          kind: "workflow_selection",
+          status: "denied",
+          latencyMs: null,
+          occurredAt: Date.now(),
+        });
+        return rejectAdmission(selectorAdmission);
+      }
+      if (input.abortSignal?.aborted) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+          kind: "workflow_selection",
+          status: "cancelled",
+          latencyMs: capabilityMonitoringLatency(selectionStartedAt!),
+          occurredAt: Date.now(),
+        });
+        return cancelTurn();
+      }
     }
     let selectorAttempt: AutomaticSkillSelectorAttempt;
     try {
@@ -8576,12 +9088,40 @@ export async function prepareTeamAgentTurn(
         userApiKey: input.userApiKey?.trim() || "",
         latestUserText: latestPrompt?.text || "",
         availableSkills,
+        maxSkills: webResearchRequested ? MAX_SELECTED_SKILLS - 1 : MAX_SELECTED_SKILLS,
         signal: input.abortSignal,
         providerAttempts,
       });
     } catch (error) {
+      if (selectionStartedAt !== null) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+          kind: "workflow_selection",
+          status: capabilityMonitoringStatusForError(error),
+          latencyMs: capabilityMonitoringLatency(selectionStartedAt),
+          occurredAt: Date.now(),
+        });
+      }
       if (admission?.ok) await admission.release().catch(() => undefined);
       throw error;
+    }
+    if (selectionStartedAt !== null) {
+      const status: CapabilityMonitoringStatus = input.abortSignal?.aborted
+        ? "cancelled"
+        : selectorAttempt.skillIds?.length
+          ? "succeeded"
+          : selectorAttempt.reason === "timeout"
+            ? "timed_out"
+            : "failed";
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WORKFLOW_SELECTION,
+        kind: "workflow_selection",
+        status,
+        latencyMs: capabilityMonitoringLatency(selectionStartedAt),
+        occurredAt: Date.now(),
+      });
     }
     if (input.abortSignal?.aborted) return cancelTurn();
 
@@ -8599,31 +9139,312 @@ export async function prepareTeamAgentTurn(
       access.user,
       selectorAttempt,
       input.skillIds,
+      webResearchRequested ? MAX_SELECTED_SKILLS - 1 : MAX_SELECTED_SKILLS,
     );
     selectedSkillIds = resolved.skillIds;
     skillSelection = resolved.metadata;
     if (resolved.metadata.source === "model") skillSnapshotIds = resolved.skillIds;
   }
   if (input.abortSignal?.aborted) return cancelTurn();
-  const selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
-  const messages = await buildMessagesWithSystem(
+  let selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
+  let webResearch: WebResearchEvidenceV1 | undefined;
+  if (webResearchRequested) {
+    const researchAdmission = await admitOnce();
+    if (!researchAdmission.ok) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return rejectAdmission(researchAdmission);
+    }
+    if (input.abortSignal?.aborted) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "cancelled",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return cancelTurn();
+    }
+
+    config = await loadAppConfig(env);
+    access = await getRouteAccess(config, session, env);
+    selectedPublicRoute = access.routes.find((route) => route.id === selectedRoute)
+      || access.routes.find((route) => route.id === access.defaultRoute);
+    memoryToolEnabled = input.disableTools !== true && selectedPublicRoute?.supportsTools === true;
+    selectedSkills = getSelectedSkills(config, selectedSkillIds, access.user);
+    if (!selectedPublicRoute || selectedSkills.length >= MAX_SELECTED_SKILLS) {
+      if (admission?.ok) await admission.release();
+      const error = selectedSkills.length >= MAX_SELECTED_SKILLS
+        ? "web_research_slot_limit" as const
+        : "web_research_not_available" as const;
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return { ok: false, error, message: agentErrorMessage(error), status: error === "web_research_slot_limit" ? 409 : 403 };
+    }
+    const binding = resolveWebResearchBinding(config, access.user);
+    if (!binding.ok) {
+      if (admission?.ok) await admission.release();
+      const error = binding.reason === "review_required"
+        ? "web_research_review_required" as const
+        : binding.reason === "connection_required"
+          ? "web_research_connection_required" as const
+          : "web_research_not_available" as const;
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return { ok: false, error, message: agentErrorMessage(error), status: error === "web_research_not_available" ? 403 : 409 };
+    }
+    const researchStartedAt = Date.now();
+    try {
+      webResearch = await executeWebResearch(
+        mcpRuntime(env, session).createExecution(),
+        binding.binding,
+        input.webResearchQuery,
+        input.abortSignal,
+      );
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: "succeeded",
+        latencyMs: capabilityMonitoringLatency(researchStartedAt),
+        occurredAt: Date.now(),
+      });
+    } catch (error) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_WEB_RESEARCH,
+        kind: "web_research",
+        status: capabilityMonitoringStatusForError(error),
+        latencyMs: capabilityMonitoringLatency(researchStartedAt),
+        occurredAt: Date.now(),
+      });
+      if (admission?.ok) await admission.release().catch(() => undefined);
+      const code = error instanceof WebResearchRuntimeError ? error.code : "web_research_not_available";
+      const status = code === "request_cancelled" ? 499
+        : code === "web_research_timeout" ? 504
+          : code === "web_research_connection_required" || code === "web_research_review_required" ? 409
+            : code === "web_research_query_invalid" ? 400
+              : code === "web_research_not_available" ? 503 : 502;
+      return { ok: false, error: code, message: agentErrorMessage(code), status };
+    }
+  }
+  if (input.abortSignal?.aborted) return cancelTurn();
+  const selectedImageMode = selectedPublicRoute?.imageMode || "none";
+  const visionAuthorization: VisionAssistAuthorization | undefined = selectedPublicRoute
+    && session.kind === "member"
+    && (selectedImageMode === "assisted_tool" || selectedImageMode === "assisted_preanswer")
+    ? {
+        configRevision: await configRevision(config),
+        session,
+        routeId: selectedPublicRoute.id,
+        imageMode: selectedImageMode,
+      }
+    : undefined;
+  const hasConversationImages = messagesContainImages(normalized);
+  const normalizedVisionSources = normalizeVisionSources(
+    input.visionSources,
+    normalizeVisionAssistMaxOutputChars(config.visionAssist?.maxOutputChars),
+  );
+  let visionScope = visionSourcesForMessages(normalized, normalizedVisionSources);
+  if (
+    hasConversationImages
+    && selectedImageMode !== "native"
+    && (selectedImageMode === "none" || !visionScope.sources.length)
+  ) {
+    if (admission?.ok) await admission.release();
+    return {
+      ok: false,
+      error: selectedImageMode === "none" ? "image_not_supported" : "vision_assist_unavailable",
+      message: agentErrorMessage(selectedImageMode === "none" ? "image_not_supported" : "vision_assist_unavailable"),
+      status: selectedImageMode === "none" ? 400 : 503,
+      routeId: selectedPublicRoute?.id,
+    };
+  }
+  if (selectedImageMode === "assisted_preanswer" && visionScope.missing.length) {
+    const visionAdmission = await admitOnce();
+    if (!visionAdmission.ok) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return rejectAdmission(visionAdmission);
+    }
+    if (input.abortSignal?.aborted) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: "cancelled",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
+      return cancelTurn();
+    }
+    const visionStartedAt = Date.now();
+    try {
+      const evidence = await runVisionAssist(
+        env,
+        config,
+        visionScope.missing,
+        input.abortSignal,
+        providerAttempts,
+        visionAuthorization,
+      );
+      if (input.abortSignal?.aborted) {
+        scheduleCapabilityMonitoring(env, input.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_VISION_ASSIST,
+          kind: "auxiliary_vision",
+          status: "cancelled",
+          latencyMs: capabilityMonitoringLatency(visionStartedAt),
+          occurredAt: Date.now(),
+        });
+        return cancelTurn();
+      }
+      await input.persistVisionEvidence?.(
+        visionScope.missing.map((source) => source.sourceMessageId),
+        evidence,
+      );
+      const missingIds = new Set(visionScope.missing.map((source) => source.sourceMessageId));
+      visionScope = {
+        sources: visionScope.sources.map((source) => (
+          missingIds.has(source.sourceMessageId) ? { ...source, evidence } : source
+        )),
+        missing: [],
+      };
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: "succeeded",
+        latencyMs: capabilityMonitoringLatency(visionStartedAt),
+        occurredAt: Date.now(),
+      });
+    } catch (error) {
+      scheduleCapabilityMonitoring(env, input.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_VISION_ASSIST,
+        kind: "auxiliary_vision",
+        status: capabilityMonitoringStatusForError(error),
+        latencyMs: capabilityMonitoringLatency(visionStartedAt),
+        occurredAt: Date.now(),
+      });
+      if (admission?.ok) await admission.release().catch(() => undefined);
+      const projected = projectAgentStreamError(error);
+      const status = providerBudgetErrorHttpStatus(projected)
+        || (projected === "provider_busy" || projected === "upstream_rate_limited" ? 429
+          : projected === "request_cancelled" ? 499
+            : projected === "upstream_timeout" ? 504
+              : projected === "vision_assist_unavailable" ? 503 : 502);
+      return {
+        ok: false,
+        error: projected,
+        message: agentErrorMessage(projected),
+        status,
+        routeId: selectedPublicRoute?.id,
+      };
+    }
+  }
+  const forceImageInspect = selectedImageMode === "assisted_tool" && visionScope.missing.length > 0;
+  let visionInspectPromise: Promise<VisionEvidenceV1> | undefined;
+  const visionInspect = forceImageInspect
+    ? (signal?: AbortSignal) => {
+        visionInspectPromise ||= (async () => {
+          const visionStartedAt = Date.now();
+          try {
+            const evidence = await runVisionAssist(
+              env,
+              config,
+              visionScope.missing,
+              signal,
+              providerAttempts,
+              visionAuthorization,
+            );
+            if (signal?.aborted) {
+              throw signal.reason instanceof Error
+                ? signal.reason
+                : new DOMException("The operation was aborted", "AbortError");
+            }
+            await input.persistVisionEvidence?.(
+              visionScope.missing.map((source) => source.sourceMessageId),
+              evidence,
+            );
+            scheduleCapabilityMonitoring(env, input.waitUntil, {
+              version: 1,
+              capabilityId: CAPABILITY_ID_VISION_ASSIST,
+              kind: "auxiliary_vision",
+              status: "succeeded",
+              latencyMs: capabilityMonitoringLatency(visionStartedAt),
+              occurredAt: Date.now(),
+            });
+            return evidence;
+          } catch (error) {
+            scheduleCapabilityMonitoring(env, input.waitUntil, {
+              version: 1,
+              capabilityId: CAPABILITY_ID_VISION_ASSIST,
+              kind: "auxiliary_vision",
+              status: capabilityMonitoringStatusForError(error),
+              latencyMs: capabilityMonitoringLatency(visionStartedAt),
+              occurredAt: Date.now(),
+            });
+            throw error;
+          }
+        })();
+        return visionInspectPromise;
+      }
+    : undefined;
+  const providerMessages = selectedImageMode === "native"
+    ? normalized
+    : applyAssistedVisionEvidence(normalized, visionScope.sources, forceImageInspect);
+  const baseMessages = await buildMessagesWithSystem(
     env,
     session,
-    normalized,
+    providerMessages,
     input.sessionSummary || "",
     access.user,
     selectedSkills,
     input.longTermMemory,
     input.workspaceContext,
   );
-  const systemMessageCount = Math.max(0, messages.length - normalized.length);
+  const baseSystemMessageCount = Math.max(0, baseMessages.length - providerMessages.length);
+  const messages = webResearch
+    ? [
+        ...baseMessages.slice(0, baseSystemMessageCount),
+        { role: "system" as const, content: formatWebResearchEvidenceForModel(webResearch) },
+        ...baseMessages.slice(baseSystemMessageCount),
+      ]
+    : baseMessages;
+  const systemMessageCount = Math.max(0, messages.length - providerMessages.length);
   const systemMessages = toProviderModelMessages(messages.slice(0, systemMessageCount));
   const toolDefinitions = input.disableTools !== true && selectedPublicRoute?.supportsTools
     ? await buildCapabilityToolDefinitions(config, access.user, selectedSkills, secretFingerprint)
     : [];
   const routeIds = buildProviderRoutePlan(selectedRoute, config.routes, access);
   const userApiKey = input.userApiKey?.trim() || "";
-  const hasImages = messagesContainImages(normalized);
+  const hasImages = selectedImageMode === "native" && messagesContainImages(normalized);
   const initialRunDeadline = createProviderFirstVisibleDeadline(input.abortSignal, {
     timeoutMs: PROVIDER_TURN_RUN_DEADLINE_MS,
   });
@@ -8810,7 +9631,7 @@ export async function prepareTeamAgentTurn(
         }) satisfies CapabilityToolRunner,
         close: async () => undefined,
       }
-    : createAgentCapabilityRuntime(toolDefinitions, env, session);
+    : createAgentCapabilityRuntime(toolDefinitions, env, session, input.waitUntil);
 
   return {
     ok: true,
@@ -8828,6 +9649,9 @@ export async function prepareTeamAgentTurn(
     skillSelection,
     skillSnapshotIds,
     recordStreamFailure,
+    visionInspect,
+    forceImageInspect,
+    webResearch,
     releaseTurn: async () => {
       initialRunDeadline.dispose();
       await turnAdmission.release();
@@ -8849,6 +9673,7 @@ async function runAutomaticSkillSelector(
     userApiKey: string;
     latestUserText: string;
     availableSkills: ReturnType<typeof getPublicCapabilities>["skills"];
+    maxSkills: number;
     signal?: AbortSignal;
     providerAttempts: ProviderAttemptRuntime;
   },
@@ -8914,6 +9739,7 @@ async function runAutomaticSkillSelectorAttempt(
     routeId: string;
     userApiKey: string;
     latestUserText: string;
+    maxSkills: number;
     providerAttempts: ProviderAttemptRuntime;
   },
   availableSkills: ReturnType<typeof getPublicCapabilities>["skills"],
@@ -8941,7 +9767,7 @@ async function runAutomaticSkillSelectorAttempt(
     {
       role: "system",
       content:
-        "Select one to three relevant Skills for the current user message. "
+        `Select one to ${args.maxSkills} relevant Skills for the current user message. `
         + "Return only strict JSON with exactly this shape: {\"skillIds\":[\"id\"]}. "
         + "Use only IDs from the candidate list. Do not call tools or add prose.",
     },
@@ -8990,7 +9816,7 @@ async function runAutomaticSkillSelectorAttempt(
         signal,
       });
       signal.throwIfAborted();
-      const parsed = parseAutomaticSkillSelection(text, args.config, args.access.user);
+      const parsed = parseAutomaticSkillSelection(text, args.config, args.access.user, args.maxSkills);
       if (parsed.skillIds?.length) {
         const settledHandle = attemptHandle;
         await settledHandle.succeed();
@@ -9059,6 +9885,7 @@ function parseAutomaticSkillSelection(
   text: string,
   config: AppConfig,
   user: UserConfig,
+  maxSkills = MAX_SELECTED_SKILLS,
 ): AutomaticSkillSelectorAttempt {
   if (!text.trim()) return { reason: "empty_response" };
   let value: unknown;
@@ -9074,7 +9901,7 @@ function parseAutomaticSkillSelection(
     || value.skillIds.some((id) => typeof id !== "string")
   ) return { reason: "invalid_response" };
   const requested = normalizeSelectedSkillIds(value.skillIds);
-  const selected = getSelectedSkills(config, requested, user).map(({ id }) => id);
+  const selected = getSelectedSkills(config, requested, user).slice(0, maxSkills).map(({ id }) => id);
   return selected.length ? { skillIds: selected } : { reason: "no_valid_skills" };
 }
 
@@ -9083,8 +9910,9 @@ function resolveAutomaticSkillSelection(
   user: UserConfig,
   attempt: AutomaticSkillSelectorAttempt,
   previousSkillIds: unknown,
+  maxSkills = MAX_SELECTED_SKILLS,
 ): { skillIds: string[]; metadata: AgentSkillSelectionMetadata } {
-  const modelSelection = getSelectedSkills(config, attempt.skillIds, user);
+  const modelSelection = getSelectedSkills(config, attempt.skillIds, user).slice(0, maxSkills);
   if (modelSelection.length) {
     return {
       skillIds: modelSelection.map(({ id }) => id),
@@ -9096,14 +9924,14 @@ function resolveAutomaticSkillSelection(
     };
   }
   const reason = attempt.skillIds?.length ? "no_valid_skills" : attempt.reason || "provider_error";
-  const previous = getSelectedSkills(config, previousSkillIds, user);
+  const previous = getSelectedSkills(config, previousSkillIds, user).slice(0, maxSkills);
   const selected = previous.length
     ? previous
     : getSelectedSkills(
         config,
-        getPublicCapabilities(config, user).skills.slice(0, MAX_SELECTED_SKILLS).map(({ id }) => id),
+        getPublicCapabilities(config, user).skills.slice(0, maxSkills).map(({ id }) => id),
         user,
-      );
+      ).slice(0, maxSkills);
   const source = previous.length ? "last_success" as const : "admin_default" as const;
   return {
     skillIds: selected.map(({ id }) => id),
@@ -9287,6 +10115,7 @@ function hasOnlyRecordKeys(value: Record<string, unknown>, keys: string[]): bool
 }
 
 function getDefaultAppConfig(env: Env): AppConfig {
+  const workflowSkillIds = defaultWorkflowSkillIds();
   return normalizeAppConfig({
     routes: {
       default: {
@@ -9304,7 +10133,9 @@ function getDefaultAppConfig(env: Env): AppConfig {
       allowBringYourOwnKey: false,
       dailyMessageLimit: numberEnv(env.DAILY_MESSAGE_LIMIT, DEFAULT_DAILY_LIMIT),
       blockedPrompts: parsePromptList(env.BLOCKED_PROMPTS),
+      allowedSkills: workflowSkillIds,
     },
+    skills: defaultWorkflowSkillRegistry(),
     tools: { "builtin:text_stats": defaultTextStatsTool() },
   });
 }
@@ -9348,6 +10179,21 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     }
   }
 
+  if (config.visionAssist?.enabled === true) {
+    const helperRoute = config.routes[config.visionAssist.routeId];
+    if (!helperRoute || helperRoute.enabled === false) {
+      return { ok: false, message: "视觉辅助必须选择一条已启用的逻辑模型" };
+    }
+    const helperCandidates = resolveProviderRouteCandidates(
+      config.visionAssist.routeId,
+      helperRoute,
+      config.providers,
+    );
+    if (!helperCandidates.some((candidate) => candidate.supportsImages && !candidate.requiresUserKey)) {
+      return { ok: false, message: "视觉辅助线路至少需要一个使用实例凭据的原生图片服务提供商" };
+    }
+  }
+
   const users = Object.entries(config.users || {});
   for (const [label, user] of users) {
     if (!isValidMemberLabel(label)) {
@@ -9385,6 +10231,9 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
   if (missingDefaultSkill) return { ok: false, message: `默认用户配置允许了不存在的 Skill ${missingDefaultSkill}` };
 
   for (const [skillId, skill] of Object.entries(config.skills || {})) {
+    if (skillId === WEB_RESEARCH_CAPABILITY_ID) {
+      return { ok: false, message: `${WEB_RESEARCH_CAPABILITY_ID} 是代码所有的显式能力，不能保存为普通 Skill` };
+    }
     const missingTool = skill.toolIds?.find((toolId) => !config.tools?.[toolId]);
     if (missingTool) return { ok: false, message: `Skill ${skillId} 引用了不存在的工具 ${missingTool}` };
   }
@@ -9405,9 +10254,25 @@ function validateAppConfig(config: AppConfig): { ok: true } | { ok: false; messa
     }
   }
 
+  const webResearchTools = Object.entries(config.tools || {}).filter(([, tool]) => tool.capabilityRole === "web_search");
+  if (webResearchTools.length > 1) {
+    return { ok: false, message: "联网研究只能绑定一个已审核的 MCP 工具" };
+  }
   for (const [toolId, tool] of Object.entries(config.tools || {})) {
     if (tool.executor.type === "mcp" && !config.mcpServers?.[tool.executor.serverId]) {
       return { ok: false, message: `工具 ${toolId} 引用了不存在的 MCP 服务 ${tool.executor.serverId}` };
+    }
+    if (tool.capabilityRole === "web_search") {
+      if (!isReviewedWebResearchTool(tool)) {
+        return { ok: false, message: `联网研究工具 ${toolId} 必须启用、只读、完成审查并使用精确 query Schema` };
+      }
+      if (config.mcpServers?.[tool.executor.serverId]?.enabled !== true) {
+        return { ok: false, message: `联网研究工具 ${toolId} 的 MCP 服务必须启用` };
+      }
+      const referencingSkill = Object.entries(config.skills || {}).find(([, skill]) => skill.toolIds?.includes(toolId));
+      if (referencingSkill) {
+        return { ok: false, message: `联网研究工具 ${toolId} 不能由普通或自动 Skill ${referencingSkill[0]} 调用` };
+      }
     }
   }
 
@@ -9569,6 +10434,114 @@ function validateRawPublicAccessConfiguration(value: unknown): { ok: true } | { 
   return { ok: true };
 }
 
+function validateRawCapabilityConfiguration(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: true };
+  const skills = isRecord(value.skills) ? value.skills : {};
+  for (const [skillId, rawSkill] of Object.entries(skills)) {
+    if (!isRecord(rawSkill)) continue;
+    if (skillId === WEB_RESEARCH_CAPABILITY_ID) {
+      return { ok: false, message: `${WEB_RESEARCH_CAPABILITY_ID} 不能保存为普通 Skill` };
+    }
+    if ((rawSkill.activation !== undefined && rawSkill.activation !== "automatic" && rawSkill.activation !== "explicit_turn")
+      || (rawSkill.origin !== undefined && rawSkill.origin !== "chatus" && rawSkill.origin !== "administrator")) {
+      return { ok: false, message: `Skill ${skillId} 字段无效` };
+    }
+  }
+
+  if (value.tools !== undefined && !isRecord(value.tools)) {
+    return { ok: false, message: "工具配置必须是对象" };
+  }
+  const tools = isRecord(value.tools) ? value.tools : {};
+  const webResearchToolIds: string[] = [];
+  for (const [toolId, rawTool] of Object.entries(tools)) {
+    if (!isRecord(rawTool)) continue;
+    if (rawTool.capabilityRole !== undefined && rawTool.capabilityRole !== "web_search") {
+      return { ok: false, message: `工具 ${toolId} 的能力角色无效` };
+    }
+    if (rawTool.capabilityRole === "web_search"
+      && (!isRecord(rawTool.executor) || rawTool.executor.type !== "mcp")) {
+      return { ok: false, message: `工具 ${toolId} 的能力角色仅适用于 MCP 工具` };
+    }
+    if (rawTool.capabilityRole === "web_search") {
+      webResearchToolIds.push(toolId);
+      if (
+        rawTool.enabled !== true
+        || rawTool.sideEffect !== "read"
+        || rawTool.reviewRequired !== false
+        || typeof rawTool.schemaFingerprint !== "string"
+        || !isSecretFingerprint(rawTool.schemaFingerprint)
+        || typeof rawTool.securityFingerprint !== "string"
+        || !isSecretFingerprint(rawTool.securityFingerprint)
+        || typeof rawTool.reviewRevision !== "string"
+        || !isSecretFingerprint(rawTool.reviewRevision)
+        || !isExactWebResearchInputSchema(rawTool.inputSchema)
+      ) {
+        return { ok: false, message: `联网研究工具 ${toolId} 必须启用、只读、完成审查并使用精确 query Schema` };
+      }
+      const serverId = isRecord(rawTool.executor) && typeof rawTool.executor.serverId === "string"
+        ? rawTool.executor.serverId
+        : "";
+      const rawServer = isRecord(value.mcpServers) ? value.mcpServers[serverId] : undefined;
+      if (!isRecord(rawServer) || rawServer.enabled !== true) {
+        return { ok: false, message: `联网研究工具 ${toolId} 的 MCP 服务必须启用` };
+      }
+    }
+  }
+  if (webResearchToolIds.length > 1) return { ok: false, message: "联网研究只能绑定一个 MCP 工具" };
+  for (const [skillId, rawSkill] of Object.entries(skills)) {
+    if (!isRecord(rawSkill) || !Array.isArray(rawSkill.toolIds)) continue;
+    const webToolId = rawSkill.toolIds.find((toolId) => typeof toolId === "string" && webResearchToolIds.includes(toolId));
+    if (webToolId) return { ok: false, message: `联网研究工具 ${webToolId} 不能由 Skill ${skillId} 调用` };
+  }
+
+  const assignments: Array<[string, unknown]> = [["默认用户", value.defaults]];
+  if (isRecord(value.users)) assignments.push(...Object.entries(value.users));
+  for (const [label, rawAssignment] of assignments) {
+    if (!isRecord(rawAssignment) || rawAssignment.allowedAugmentations === undefined) continue;
+    if (!isUniqueCapabilityAugmentationList(rawAssignment.allowedAugmentations)) {
+      return { ok: false, message: `${label} 的增强能力分配无效` };
+    }
+  }
+  return { ok: true };
+}
+
+function validateRawVisionAssistConfiguration(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isRecord(value) || value.visionAssist === undefined) return { ok: true };
+  if (!isRecord(value.visionAssist)) return { ok: false, message: "视觉辅助配置必须是对象" };
+  const input = value.visionAssist;
+  if (!hasOnlyRecordKeys(input, ["enabled", "routeId", "maxOutputChars"])) {
+    return { ok: false, message: "视觉辅助配置包含未知字段" };
+  }
+  if (input.enabled !== undefined && typeof input.enabled !== "boolean") {
+    return { ok: false, message: "视觉辅助开关无效" };
+  }
+  if (typeof input.routeId !== "string" || (input.enabled === true && !input.routeId.trim())) {
+    return { ok: false, message: "视觉辅助必须选择逻辑模型" };
+  }
+  if (
+    input.maxOutputChars !== undefined
+    && (
+      typeof input.maxOutputChars !== "number"
+      || !Number.isInteger(input.maxOutputChars)
+      || input.maxOutputChars < MIN_VISION_ASSIST_MAX_OUTPUT_CHARS
+      || input.maxOutputChars > MAX_VISION_ASSIST_MAX_OUTPUT_CHARS
+    )
+  ) {
+    return {
+      ok: false,
+      message: `视觉证据字符上限必须是 ${MIN_VISION_ASSIST_MAX_OUTPUT_CHARS} 至 ${MAX_VISION_ASSIST_MAX_OUTPUT_CHARS} 的整数`,
+    };
+  }
+  return { ok: true };
+}
+
+function isUniqueCapabilityAugmentationList(value: unknown): value is CapabilityAugmentation[] {
+  return Array.isArray(value)
+    && value.length <= 1
+    && value.every((item) => item === "vision_assist")
+    && new Set(value).size === value.length;
+}
+
 function isProviderCapacity(value: unknown): boolean {
   return typeof value === "number"
     && Number.isInteger(value)
@@ -9653,6 +10626,19 @@ function normalizeAppConfig(value: unknown): AppConfig {
     skills,
     tools,
     mcpServers,
+    visionAssist: normalizeVisionAssistConfig(input.visionAssist),
+  };
+}
+
+function normalizeVisionAssistConfig(value: unknown): VisionAssistConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const routeId = typeof value.routeId === "string" ? value.routeId.trim().slice(0, 160) : "";
+  const enabled = value.enabled === true;
+  if (!routeId && !enabled) return undefined;
+  return {
+    enabled,
+    routeId,
+    maxOutputChars: normalizeVisionAssistMaxOutputChars(value.maxOutputChars),
   };
 }
 
@@ -9782,6 +10768,11 @@ function normalizeUserConfig(value: unknown): UserConfig {
   if (Array.isArray(value.allowedTools)) {
     output.allowedTools = normalizeStringIdList(value.allowedTools, MAX_TOOLS, 160);
   }
+  if (Array.isArray(value.allowedAugmentations)) {
+    output.allowedAugmentations = value.allowedAugmentations
+      .filter((item): item is CapabilityAugmentation => item === "vision_assist")
+      .slice(0, 1);
+  }
   if (typeof value.allowBringYourOwnKey === "boolean") {
     output.allowBringYourOwnKey = value.allowBringYourOwnKey;
   }
@@ -9806,6 +10797,7 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
         allowedRoutes: config.publicAccess.routeId ? [config.publicAccess.routeId] : [],
         allowedSkills: [],
         allowedTools: [],
+        allowedAugmentations: [],
         allowBringYourOwnKey: false,
         dailyMessageLimit: config.publicAccess.dailyMessageLimit,
         minuteMessageLimit: config.publicAccess.minuteMessageLimit,
@@ -9814,6 +10806,9 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
   const allowedIds = guest
     ? (config.publicAccess.routeId ? [config.publicAccess.routeId] : [])
     : user.allowedRoutes?.length ? user.allowedRoutes : Object.keys(config.routes);
+  const visionHelperReady = !guest
+    && user.allowedAugmentations?.includes("vision_assist") === true
+    && await isVisionAssistReady(config, env);
   const routes = (await Promise.all(
     allowedIds.map(async (id): Promise<PublicRoute | null> => {
       const route = config.routes[id];
@@ -9836,6 +10831,13 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
       const allowUserKey = Boolean(!guest && user.allowBringYourOwnKey && route.allowUserKey !== false);
       if (!hasServerKey && !allowUserKey) return null;
       const representative = candidates[0];
+      const supportsImages = candidates.some((candidate) => candidate.supportsImages);
+      const supportsTools = !guest && candidates.some((candidate) => candidate.supportsTools);
+      const imageMode: PublicImageMode = supportsImages
+        ? "native"
+        : visionHelperReady
+          ? (supportsTools ? "assisted_tool" : "assisted_preanswer")
+          : "none";
 
       return {
         id,
@@ -9844,8 +10846,9 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
         model: route.label,
         allowUserKey,
         requiresUserKey: Boolean(!hasServerKey),
-        supportsImages: candidates.some((candidate) => candidate.supportsImages),
-        supportsTools: !guest && candidates.some((candidate) => candidate.supportsTools),
+        supportsImages,
+        imageMode,
+        supportsTools,
       };
     }),
   )).filter((route): route is PublicRoute => Boolean(route));
@@ -9856,6 +10859,24 @@ async function getRouteAccess(config: AppConfig, session: Session, env: Env): Pr
       : routes[0]?.id || "";
 
   return { routes, defaultRoute, user, ...(guest ? { publicAccess: config.publicAccess } : {}) };
+}
+
+async function isVisionAssistReady(config: AppConfig, env: Env): Promise<boolean> {
+  const helper = config.visionAssist;
+  if (!helper?.enabled || !helper.routeId) return false;
+  const route = config.routes[helper.routeId];
+  if (!route || route.enabled === false) return false;
+  const prepared = await providerPlanRuntime(env, config).preparePlan({
+    routeIds: [helper.routeId],
+    accessRoutes: [{ id: helper.routeId, allowUserKey: false, requiresUserKey: false }],
+    userApiKey: "",
+    accepts: (candidate) => candidate.supportsImages && !candidate.requiresUserKey,
+  });
+  return prepared.candidates.some((candidate) => (
+    candidate.supportsImages
+    && !candidate.credential.usedUserKey
+    && candidate.credential.source !== "missing"
+  ));
 }
 
 function getEffectiveUserConfig(config: AppConfig, label: string): UserConfig {
@@ -10732,15 +11753,39 @@ async function runCapabilityLoopInner(
     }
 
     if (totalCalls + turn.toolCalls.length > MAX_TOOL_CALLS) {
+      scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+        kind: "tool",
+        status: "denied",
+        latencyMs: null,
+        occurredAt: Date.now(),
+      });
       throw new CapabilityError("tool_call_limit", `单次对话最多执行 ${MAX_TOOL_CALLS} 次工具调用`);
     }
     const results: ProviderToolExecutionResult[] = [];
     for (const call of turn.toolCalls) {
       const definition = aliasMap.get(call.providerName);
       if (!definition || definition.id !== call.toolId) {
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: "denied",
+          latencyMs: null,
+          occurredAt: Date.now(),
+        });
         throw new CapabilityError("tool_not_allowed", "模型请求了未授权的工具");
       }
       if (!call.argumentsValid) {
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: "denied",
+          latencyMs: null,
+          occurredAt: Date.now(),
+        });
         throw new CapabilityError("tool_arguments_invalid", `工具 ${definition.label} 的参数不是有效 JSON`);
       }
       validateToolArguments(definition, call.arguments);
@@ -10760,16 +11805,46 @@ async function runCapabilityLoopInner(
       const policy = normalizeToolConfirmation(definition.config);
       let confirmation: "once" | "conversation" | undefined;
       if (policy !== "auto") {
-        if (!requestApproval) throw new CapabilityError("tool_confirmation_required", "工具调用需要用户确认");
+        if (!requestApproval) {
+          scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+            version: 1,
+            capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+            kind: "tool",
+            status: "denied",
+            latencyMs: null,
+            occurredAt: Date.now(),
+          });
+          throw new CapabilityError("tool_confirmation_required", "工具调用需要用户确认");
+        }
         const approvalResult = requestApproval(definition, baseEvent);
         let decision: ToolApprovalDecision;
-        if (typeof approvalResult === "string") {
-          decision = approvalResult;
-        } else {
-          emit({ type: "confirmation_required", runId, callId: eventId, event: baseEvent });
-          decision = await approvalResult;
+        try {
+          if (typeof approvalResult === "string") {
+            decision = approvalResult;
+          } else {
+            emit({ type: "confirmation_required", runId, callId: eventId, event: baseEvent });
+            decision = await approvalResult;
+          }
+        } catch (error) {
+          scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+            version: 1,
+            capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+            kind: "tool",
+            status: capabilityMonitoringStatusForError(error),
+            latencyMs: capabilityMonitoringLatency(startedAt),
+            occurredAt: Date.now(),
+          });
+          throw error;
         }
         if (decision === "deny") {
+          scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+            version: 1,
+            capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+            kind: "tool",
+            status: "denied",
+            latencyMs: capabilityMonitoringLatency(startedAt),
+            occurredAt: Date.now(),
+          });
           emit({ type: "tool", event: { ...baseEvent, status: "denied", updatedAt: Date.now() } });
           results.push({
             providerCallId: call.providerCallId,
@@ -10791,11 +11866,32 @@ async function runCapabilityLoopInner(
         updatedAt: Date.now(),
       };
       emit({ type: "tool", event: runningEvent });
-      const result = await executeCapabilityTool(definition, call.arguments, args.env, signal, mcpExecution);
-      const duration = Date.now() - startedAt;
-      toolBudgetMs += duration;
-      if (toolBudgetMs > TOOL_TOTAL_BUDGET_MS) {
-        throw new CapabilityError("tool_time_budget_exceeded", "工具累计执行时间超过限制", true);
+      let result: CapabilityToolExecutionResult;
+      try {
+        result = await executeCapabilityTool(definition, call.arguments, args.env, signal, mcpExecution);
+        const duration = Date.now() - startedAt;
+        toolBudgetMs += duration;
+        if (toolBudgetMs > TOOL_TOTAL_BUDGET_MS) {
+          throw new CapabilityError("tool_time_budget_exceeded", "工具累计执行时间超过限制", true);
+        }
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: "succeeded",
+          latencyMs: capabilityMonitoringLatency(startedAt),
+          occurredAt: Date.now(),
+        });
+      } catch (error) {
+        scheduleCapabilityMonitoring(args.env, args.waitUntil, {
+          version: 1,
+          capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+          kind: "tool",
+          status: capabilityMonitoringStatusForError(error),
+          latencyMs: capabilityMonitoringLatency(startedAt),
+          occurredAt: Date.now(),
+        });
+        throw error;
       }
       emit({
         type: "tool",
@@ -11077,6 +12173,7 @@ function createAgentCapabilityRuntime(
   definitions: NormalizedToolDefinition[],
   env: Env,
   session: Session,
+  waitUntil?: TeamAgentTurnInput["waitUntil"],
 ): { runTool: CapabilityToolRunner; close: () => Promise<void> } {
   const allowed = new Map(definitions.map((definition) => [definition.id, definition]));
   const mcpExecution = mcpRuntime(env, session).createExecution();
@@ -11085,24 +12182,26 @@ function createAgentCapabilityRuntime(
   let closed = false;
 
   const runTool: CapabilityToolRunner = async (definition, input, signal) => {
-    if (closed) throw new CapabilityError("tool_runtime_closed", "工具运行时已关闭");
-    const allowedDefinition = allowed.get(definition.id);
-    if (!allowedDefinition || allowedDefinition.providerName !== definition.providerName) {
-      throw new CapabilityError("tool_not_found", "工具不在当前成员的允许列表中");
-    }
-    callCount += 1;
-    if (callCount > MAX_TOOL_CALLS) {
-      throw new CapabilityError("tool_call_limit_exceeded", "本轮工具调用次数超过限制");
-    }
-    const remainingBudgetMs = TOOL_TOTAL_BUDGET_MS - elapsedMs;
-    if (remainingBudgetMs <= 0) {
-      throw new CapabilityError("tool_budget_exceeded", "本轮工具执行时间超过限制");
-    }
-
-    validateToolArguments(allowedDefinition, input);
     const startedAt = Date.now();
+    let counted = false;
     try {
-      return await executeCapabilityTool(
+      if (closed) throw new CapabilityError("tool_runtime_closed", "工具运行时已关闭");
+      const allowedDefinition = allowed.get(definition.id);
+      if (!allowedDefinition || allowedDefinition.providerName !== definition.providerName) {
+        throw new CapabilityError("tool_not_found", "工具不在当前成员的允许列表中");
+      }
+      callCount += 1;
+      counted = true;
+      if (callCount > MAX_TOOL_CALLS) {
+        throw new CapabilityError("tool_call_limit_exceeded", "本轮工具调用次数超过限制");
+      }
+      const remainingBudgetMs = TOOL_TOTAL_BUDGET_MS - elapsedMs;
+      if (remainingBudgetMs <= 0) {
+        throw new CapabilityError("tool_budget_exceeded", "本轮工具执行时间超过限制");
+      }
+
+      validateToolArguments(allowedDefinition, input);
+      const result = await executeCapabilityTool(
         allowedDefinition,
         input,
         env,
@@ -11110,8 +12209,27 @@ function createAgentCapabilityRuntime(
         mcpExecution,
         Math.min(TOOL_CALL_TIMEOUT_MS, remainingBudgetMs),
       );
+      scheduleCapabilityMonitoring(env, waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+        kind: "tool",
+        status: "succeeded",
+        latencyMs: capabilityMonitoringLatency(startedAt),
+        occurredAt: Date.now(),
+      });
+      return result;
+    } catch (error) {
+      scheduleCapabilityMonitoring(env, waitUntil, {
+        version: 1,
+        capabilityId: CAPABILITY_ID_TOOL_EXECUTION,
+        kind: "tool",
+        status: capabilityMonitoringStatusForError(error),
+        latencyMs: capabilityMonitoringLatency(startedAt),
+        occurredAt: Date.now(),
+      });
+      throw error;
     } finally {
-      elapsedMs += Date.now() - startedAt;
+      if (counted) elapsedMs += Date.now() - startedAt;
     }
   };
 
@@ -11543,11 +12661,12 @@ function guestCleanupLabel(raw: string | null): string | null {
 }
 
 function sessionCapabilities(session: Session, access: RouteAccess): SessionCapabilities {
+  const imageInput = access.routes.some((route) => route.imageMode !== "none");
   if (session.kind === "member") {
-    return { imageInput: true, fileInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
+    return { imageInput, fileInput: true, memory: true, messageActions: true, feedback: true, accountData: true };
   }
   return {
-    imageInput: access.routes.some((route) => route.supportsImages),
+    imageInput,
     fileInput: false,
     memory: false,
     messageActions: false,
@@ -11696,7 +12815,11 @@ export function normalizeMessages(
 
     if (typeof item.content === "string") {
       const content = item.content.slice(0, maxTextChars);
-      if (content.trim()) messages.push({ role, content });
+      if (content.trim()) messages.push({
+        role,
+        content,
+        ...(typeof item.id === "string" && item.id.trim() ? { id: item.id.trim().slice(0, 160) } : {}),
+      });
       continue;
     }
 
@@ -11757,7 +12880,11 @@ export function normalizeMessages(
         image_url: { url: `data:${parsed.image.mediaType};base64,${parsed.image.data}` },
       });
     }
-    if (parts.length) messages.push({ role, content: parts });
+    if (parts.length) messages.push({
+      role,
+      content: parts,
+      ...(typeof item.id === "string" && item.id.trim() ? { id: item.id.trim().slice(0, 160) } : {}),
+    });
   }
 
   return { ok: true, messages };
@@ -12018,6 +13145,12 @@ function normalizeSkillRegistry(value: unknown): Record<string, SkillConfig> {
       instructions,
       toolIds: normalizeStringIdList(rawSkill.toolIds, MAX_TOOLS, 160),
       order: order === undefined ? undefined : Math.max(-10_000, Math.min(10_000, Math.trunc(order))),
+      activation: rawSkill.activation === "automatic" || rawSkill.activation === "explicit_turn"
+        ? rawSkill.activation
+        : undefined,
+      origin: rawSkill.origin === "chatus" || rawSkill.origin === "administrator"
+        ? rawSkill.origin
+        : undefined,
     };
   }
   return output;
@@ -12212,6 +13345,7 @@ function normalizeToolRegistry(
       sideEffect,
       reviewRevision,
       reviewRequired,
+      capabilityRole: rawTool.capabilityRole === "web_search" ? "web_search" : undefined,
     };
   }
   return output;

@@ -122,3 +122,89 @@ for (const message of conversation) {
 ```
 
 The canonical parser and per-message counters keep client policy, SQLite persistence, legacy conversion, and provider execution aligned.
+
+## Scenario: Truthful Assisted Image Routes And Private Evidence
+
+### 1. Scope / Trigger
+
+Use this contract when a selected logical route can answer image turns natively, through a trusted image-inspection tool, or through a configured auxiliary vision Provider.
+
+### 2. Signatures
+
+```typescript
+type PublicImageMode = "native" | "assisted_tool" | "assisted_preanswer" | "none";
+
+type VisionEvidenceV1 = {
+  version: 1;
+  description: string;
+  ocrText: string[];
+  limitations: string[];
+};
+```
+
+```text
+GET /api/session
+  -> routes[].supportsImages: boolean
+  -> routes[].imageMode: PublicImageMode
+  -> capabilities.imageInput: boolean
+
+PUT /api/admin/config
+  <- config.visionAssist: { enabled, routeId, maxOutputChars }
+```
+
+### 3. Contracts
+
+- `supportsImages` remains the native Provider capability. `imageMode` is derived separately and is exactly one of the four values above: `native` iff `supportsImages === true`; `assisted_tool` requires native images false and tools true; `assisted_preanswer` requires both native images and tools false; `none` requires native images false and no executable assigned helper. An assisted route is never projected as natively multimodal.
+- `capabilities.imageInput` is true iff at least one projected route has `imageMode !== "none"`. The browser decoder rejects an impossible mode/support combination or a session capability that contradicts its routes.
+- `native` sends canonical image parts to the selected Provider. `assisted_tool` forces the trusted `image_inspect` executor between the initial answer request and its tool continuation. `assisted_preanswer` runs the helper before constructing the unsupported text-model history. `none` rejects the image turn before unsupported Provider I/O.
+- The helper is administrator-selected, enabled, credential-ready, instance-owned, and backed by an executable native-image offering. It cannot use member BYOK or recursively select assisted vision.
+- After helper capacity is acquired and before ledger admission or Provider I/O, the Worker reloads configuration and route access. The configuration revision and selected route `imageMode` must still equal the admitted snapshot; assignment/configuration drift throws `vision_assist_unavailable`, releases the lease, creates zero helper attempts, and cannot fall back.
+- Raw image data URLs are passed only to the helper's canonical image scope. They never enter generic MCP JSON, monitoring, logs, or the unsupported main text request.
+- `VisionEvidenceV1` accepts exactly its four keys, bounded description/OCR/limitations, no URLs/control characters/reasoning, and a complete JSON output at or below `maxOutputChars`. It is private Agent state keyed to validated source image message IDs.
+- Evidence is copied only with source images, revalidated on import/branch/restore, removed on conversation deletion, excluded from member export and passive monitoring, and never exposed in diagnostics.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Native image route | Direct native request; no helper run |
+| Tool-capable text route | Forced trusted `image_inspect`; refusal fails before visible answer |
+| Text-only route with ready helper | `auxiliary_vision` before `main_answer` |
+| Assignment/configuration changes while helper waits for capacity | `503 vision_assist_unavailable`; release the lease; zero helper ledger rows, Provider calls, or fallback |
+| Missing helper config, credential, capacity, budget, timeout, or cancellation | Terminal public error; zero unsupported main calls |
+| Evidence has unknown keys, URL, reasoning, oversize field/array, or invalid source image | Reject and persist nothing |
+| Member export or monitoring reads evidence | Omit evidence and image bytes |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a native route preserves the original image part, while an assisted route stores only bounded evidence and the unsupported text Provider receives no image URL.
+- Base: disabling helper configuration returns assisted routes to `none` without changing native conversations.
+- Bad: label an assisted route as `supportsImages`, forward raw Base64 through MCP, or persist unvalidated Provider JSON as evidence.
+
+### 6. Tests Required
+
+- `tests/worker-api.test.ts` asserts all four route modes and derives `capabilities.imageInput` from the usable route set; `tests/client-api.test.ts` rejects impossible mode/support and session-capability combinations.
+- `tests/vision-assist-turn.test.ts` asserts exact helper sequence/run kinds, one admission, fallback, usage/cost, non-cooperative late cancellation, and assignment revocation during capacity wait with zero helper I/O/attempts.
+- Assert malformed/orphan evidence, branch/edit/resend/regenerate/continue, delete, export, capture, and restore behavior.
+- Run only local fixtures; no live Provider, MCP, OAuth, capability probe, or production request.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+route.supportsImages = Boolean(config.visionAssist);
+await mainTextProvider(messagesWithRawImageDataUrl);
+```
+
+#### Correct
+
+```typescript
+const imageMode = derivePublicImageMode(route, assignment, helperReadiness);
+if (imageMode === "assisted_preanswer") {
+  const evidence = await runAuxiliaryVision(canonicalImageParts);
+  return runMainAnswer(formatVisionEvidenceForModel(evidence));
+}
+```
+
+The public projection preserves native capability truth and the helper boundary keeps image bytes out of unsupported Provider and generic MCP payloads.

@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route, type TestInfo } from "@playwright/test";
 import type { AdminConfig } from "../../client/src/lib/api";
+import { workspaceFixtureBaseURL } from "./workspace-fixture/config";
 
 const blockedRequests = new WeakMap<Page, string[]>();
 
@@ -142,7 +143,7 @@ test.beforeEach(async ({ page }) => {
   shareFixtureStates.set(page, shareState);
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
-    if (url.origin === "http://127.0.0.1:4178" && /^\/api\/agent\/conversations\/[^/]+\/shares(?:\/revoke)?$/.test(url.pathname)) {
+    if (url.origin === workspaceFixtureBaseURL && /^\/api\/agent\/conversations\/[^/]+\/shares(?:\/revoke)?$/.test(url.pathname)) {
       const fixtureParams = new URL(page.url()).searchParams;
       const response = () => ({
         version: 1 as const,
@@ -210,7 +211,7 @@ test.beforeEach(async ({ page }) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mutationResponse) });
       return;
     }
-    const allowed = url.origin === "http://127.0.0.1:4178"
+    const allowed = url.origin === workspaceFixtureBaseURL
       && !url.pathname.startsWith("/api/")
       && !url.pathname.startsWith("/agent");
     if (allowed) await route.continue();
@@ -220,7 +221,7 @@ test.beforeEach(async ({ page }) => {
     }
   });
   await page.goto("/");
-  await expect(page.locator("[data-visual-fixture=true]")).toBeVisible();
+  await expect(page.locator("[data-visual-fixture=true]")).toBeVisible({ timeout: 15_000 });
 });
 
 test.afterEach(async ({ page }) => {
@@ -256,6 +257,10 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
     const skillMessage = skillSelection?.closest<HTMLElement>(".message");
     const skillSelectionRect = skillSelection?.getBoundingClientRect();
     const skillMessageRect = skillMessage?.getBoundingClientRect();
+    const webResearch = document.querySelector<HTMLElement>(".message-web-research");
+    const webResearchMessage = webResearch?.closest<HTMLElement>(".message");
+    const webResearchRect = webResearch?.getBoundingClientRect();
+    const webResearchMessageRect = webResearchMessage?.getBoundingClientRect();
     return {
       documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       bodyFits: document.body.scrollWidth <= document.body.clientWidth,
@@ -277,6 +282,13 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
         && skillMessageRect
         && skillSelectionRect.left >= skillMessageRect.left - 1
         && skillSelectionRect.right <= skillMessageRect.right + 1
+      ),
+      webResearchScrollFits: Boolean(webResearch && webResearch.scrollWidth <= webResearch.clientWidth),
+      webResearchInsideMessage: Boolean(
+        webResearchRect
+        && webResearchMessageRect
+        && webResearchRect.left >= webResearchMessageRect.left - 1
+        && webResearchRect.right <= webResearchMessageRect.right + 1
       ),
     };
   });
@@ -302,7 +314,14 @@ test("workspace geometry stays contained and ordered", async ({ page }, testInfo
   expect(geometry.transcriptScrollFits).toBe(true);
   expect(geometry.skillSelectionScrollFits).toBe(true);
   expect(geometry.skillSelectionInsideMessage).toBe(true);
+  expect(geometry.webResearchScrollFits).toBe(true);
+  expect(geometry.webResearchInsideMessage).toBe(true);
   expect(geometry.codeScrollsLocally).toBe(true);
+
+  const webResearch = page.getByRole("region", { name: "联网研究来源" });
+  await expect(webResearch).toContainText("2 个来源");
+  await expect(webResearch.getByRole("link", { name: "1. 当前版本发布说明" }))
+    .toHaveAttribute("href", "https://example.com/release?a=1&b=2");
 
   if (viewport!.width <= 520) {
     expect(geometry.headerTitle.width).toBeGreaterThanOrEqual(64);
@@ -787,10 +806,23 @@ test("guest workspace keeps the public model fixed and member controls hidden", 
   await attachScreenshot(page, testInfo, "guest-workspace");
 });
 
-test("member Skill mode switches between automatic and exact manual selection", async ({ page }, testInfo) => {
-  await page.getByRole("button", { name: "查看线路与状态" }).click();
-  await expect(page.locator(".model-availability-footnote")).toContainText("更新时间：");
-  await page.getByRole("button", { name: "Skills", exact: true }).click();
+test("member capability inspector unifies readiness and exact workflow selection", async ({ page }, testInfo) => {
+  const opener = page.getByRole("button", { name: "查看线路与状态" });
+  await opener.click();
+  const inspector = page.locator(".conversation-inspector");
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByRole("button", { name: "能力", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(inspector.locator(".model-availability-footnote")).toContainText("更新时间：");
+  await expect(inspector.locator("#capability-route-title")).toHaveText("模型与线路");
+  await expect(inspector.locator("#capability-workflow-title")).toHaveText("工作流");
+  await expect(inspector.locator("#capability-turn-tools-title")).toHaveText("本轮工具");
+  await expect(inspector.locator("#capability-image-title")).toHaveText("图像理解");
+  await expect(inspector.locator("#capability-tools-title")).toHaveText("工具与连接");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "联网研究" })).toContainText("可用");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "视觉辅助" })).toContainText("可用");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("1 已连接");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("0 待处理");
+
   const mode = page.getByRole("group", { name: "Skill 模式" });
   const automatic = mode.getByRole("button", { name: "自动" });
   const manual = mode.getByRole("button", { name: "手动" });
@@ -798,16 +830,154 @@ test("member Skill mode switches between automatic and exact manual selection", 
 
   await expect(automatic).toHaveAttribute("aria-pressed", "true");
   await expect(manual).toHaveAttribute("aria-pressed", "false");
-  await expect(projectSkill).toBeChecked();
+  await expect(page.locator(".message-skill-selection")).toContainText("上次成功");
+  await expect(projectSkill).not.toBeChecked();
   await expect(projectSkill).toBeDisabled();
 
   await manual.click();
   await expect(automatic).toHaveAttribute("aria-pressed", "false");
   await expect(manual).toHaveAttribute("aria-pressed", "true");
   await expect(projectSkill).toBeEnabled();
+  await expect(projectSkill).toBeChecked();
   await projectSkill.uncheck();
   await expect(projectSkill).not.toBeChecked();
-  if (testInfo.project.name === "desktop-1440") await attachScreenshot(page, testInfo, "conversation-inspector");
+
+  const geometry = await inspector.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const durationMs = (value: string) => Math.max(...value.split(",").map((duration) => (
+      duration.trim().endsWith("ms") ? Number.parseFloat(duration) : Number.parseFloat(duration) * 1_000
+    )));
+    const styles = getComputedStyle(element);
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      inspectorFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth,
+      contentFits: element.scrollWidth <= element.clientWidth,
+      transitionMs: durationMs(styles.transitionDuration),
+      animationMs: durationMs(styles.animationDuration),
+    };
+  });
+  expect(geometry).toMatchObject({ documentFits: true, bodyFits: true, inspectorFits: true, contentFits: true });
+  expect(geometry.transitionMs).toBeLessThanOrEqual(1);
+  expect(geometry.animationMs).toBeLessThanOrEqual(1);
+
+  if (testInfo.project.name === "touch-390") {
+    const targetSizes = await inspector.locator("button, select").evaluateAll((elements) => elements
+      .filter((element) => element.getClientRects().length > 0)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          name: element.getAttribute("aria-label") || element.textContent?.trim() || element.tagName,
+          width: rect.width,
+          height: rect.height,
+        };
+      }));
+    expect(targetSizes.length).toBeGreaterThan(6);
+    expect(targetSizes.filter(({ width, height }) => width < 44 || height < 44)).toEqual([]);
+
+    const close = inspector.getByRole("button", { name: "关闭对话上下文" });
+    await close.focus();
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect.poll(() => page.evaluate(() => Boolean(
+      document.querySelector(".conversation-inspector")?.contains(document.activeElement),
+    ))).toBe(true);
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+  }
+
+  await inspector.locator(".inspector-body").evaluate((element) => { element.scrollTop = 0; });
+  await attachScreenshot(page, testInfo, "conversation-capabilities");
+  await page.keyboard.press("Escape");
+  await expect(inspector).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test("capability inspector distinguishes ready and setup-required projections", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "setup readiness targets desktop and 390px");
+  await page.goto("/?inspector=open&setup=required");
+  const inspector = page.locator(".conversation-inspector");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "联网研究" })).toContainText("需要连接");
+  await expect(inspector.locator(".public-capability-row").filter({ hasText: "视觉辅助" })).toContainText("辅助线路未就绪");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("0 已连接");
+  await expect(inspector.locator(".mcp-readiness")).toContainText("1 待处理");
+  await attachScreenshot(page, testInfo, "conversation-capabilities-setup-required");
+});
+
+test("capability inspector reports every bounded turn state", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-1440", "runtime state matrix uses the desktop fixture");
+  const cases = [
+    ["selected", "工作流选择", "已选择"],
+    ["waiting", "图像理解", "等待中"],
+    ["running", "联网研究", "执行中"],
+    ["succeeded", "工具执行", "已完成"],
+    ["unavailable", "图像理解", "不可用"],
+    ["denied", "工具执行", "已拒绝"],
+    ["timed_out", "联网研究", "已超时"],
+    ["cancelled", "工作流选择", "已取消"],
+    ["empty-result", "联网研究", "失败"],
+  ] as const;
+
+  for (const [fixture, kind, status] of cases) {
+    await page.goto(`/?inspector=open&capability=${fixture}`);
+    const liveRegion = page.locator(".capability-turn-status");
+    await expect(liveRegion).toHaveAttribute("aria-live", "polite");
+    await expect(liveRegion).toHaveAttribute("aria-atomic", "true");
+    const row = liveRegion.locator(".capability-turn-row");
+    await expect(row).toContainText(kind);
+    await expect(row).toContainText(status);
+  }
+});
+
+test("capability recovery reuses draft, route, and nested connection owners", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "recovery coverage targets desktop and 390px");
+  await page.goto("/?inspector=open&capability=timed_out");
+  const inspector = page.locator(".conversation-inspector");
+  const retry = inspector.getByRole("button", { name: "重试本轮" });
+  await retry.click();
+  await expect(inspector.locator(".capability-turn-row")).toContainText("已选择");
+  await expect(retry).toHaveCount(0);
+
+  await page.goto("/?inspector=open&capability=unavailable&attachments=states");
+  const recoveryInspector = page.locator(".conversation-inspector");
+  const routeSelect = recoveryInspector.getByRole("combobox", { name: "当前模型线路" });
+  await recoveryInspector.getByRole("button", { name: "切换模型" }).click();
+  await expect(routeSelect).toBeFocused();
+
+  await recoveryInspector.getByRole("button", { name: "移除图片" }).click();
+  await expect(page.locator(".attachment-preview")).toHaveCount(1);
+  await expect(page.locator(".attachment-preview")).toContainText("notes.md");
+
+  const manageConnection = recoveryInspector.getByRole("button", { name: "管理连接" });
+  await manageConnection.click();
+  const dialog = page.getByRole("dialog", { name: "MCP 连接" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "关闭 MCP 连接" })).toBeFocused();
+  if (testInfo.project.name === "touch-390") {
+    const undersized = await dialog.locator("button").evaluateAll((elements) => elements
+      .filter((element) => element.getClientRects().length > 0)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          name: element.getAttribute("aria-label") || element.textContent?.trim() || element.tagName,
+          width: rect.width,
+          height: rect.height,
+        };
+      })
+      .filter(({ width, height }) => width < 44 || height < 44));
+    expect(undersized).toEqual([]);
+  }
+  const refresh = dialog.getByRole("button", { name: "刷新 MCP 连接" });
+  await refresh.focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect.poll(() => page.evaluate(() => Boolean(
+    document.querySelector(".mcp-connections-dialog")?.contains(document.activeElement),
+  ))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(manageConnection).toBeFocused();
+  await expect(recoveryInspector).toBeVisible();
+  await attachScreenshot(page, testInfo, "conversation-capability-recovery");
 });
 
 test("member model availability distinguishes confidence and refresh states", async ({ page }, testInfo) => {
@@ -824,7 +994,9 @@ test("member model availability distinguishes confidence and refresh states", as
     await page.goto(`/?availability=${mode}`);
     await expect(page.locator(".header-route-button").getByLabel(`模型状态：${label}`)).toBeVisible();
     await page.getByRole("button", { name: "查看线路与状态" }).click();
-    await expect(page.locator(".model-availability-row").getByLabel(`模型状态：${label}`)).toBeVisible();
+    await expect(page.locator(".model-availability-row")
+      .filter({ hasText: "高质量推理线路" })
+      .getByLabel(`模型状态：${label}`)).toBeVisible();
   }
 });
 
@@ -2026,6 +2198,219 @@ test("capability registry keeps drafts, secrets, and review actions contained", 
   expect(currentConfig.tools["builtin:text_stats"]).toBeDefined();
   expect(currentConfig.providers.shared).toBeDefined();
   expect(currentConfig.users.bill).toBeDefined();
+});
+
+test("capability catalog retains a stale-revision selection and installs on retry", async ({ page }, testInfo) => {
+  test.skip(!["desktop-1440", "touch-390"].includes(testInfo.project.name), "catalog coverage targets desktop and 390px");
+  let currentConfig: AdminConfig = structuredClone(adminMemberConfig);
+  let revision = "a".repeat(64);
+  let installAttempts = 0;
+  let visionSaveAttempts = 0;
+  const instructionsDisclosure = {
+    execution: "instructions",
+    externalRequest: false,
+    dataClasses: ["prompt_text"],
+    latency: "none",
+    cost: "none",
+  } as const;
+  const catalog = () => ({
+    version: 1,
+    packs: [{
+      id: "chatus:starter-capabilities",
+      version: 1,
+      label: "Chatus 默认能力",
+      description: "低风险语言工作流，以及需要管理员完成外部配置的可选能力。",
+      items: [
+        {
+          id: "chatus:writing",
+          label: "写作与改写",
+          description: "起草、改写并润色文本。",
+          source: "chatus",
+          activation: "workflow",
+          status: currentConfig.skills["chatus:writing"] ? "installed" : "missing",
+          installable: !currentConfig.skills["chatus:writing"],
+          disclosure: instructionsDisclosure,
+        },
+        ...["summarize", "translate", "code_explanation", "structured_output"].map((name) => ({
+          id: `chatus:${name}`,
+          label: name,
+          description: `${name} workflow`,
+          source: "chatus",
+          activation: "workflow",
+          status: "missing",
+          installable: true,
+          disclosure: instructionsDisclosure,
+        })),
+        {
+          id: "chatus:web_research",
+          label: "联网研究",
+          description: "通过管理员审核的只读 MCP 搜索工具获取当前来源。",
+          source: "chatus",
+          activation: "explicit_turn",
+          status: "requires_setup",
+          installable: false,
+          disclosure: {
+            execution: "reviewed_mcp",
+            externalRequest: true,
+            dataClasses: ["search_query"],
+            latency: "variable",
+            cost: "external_service",
+          },
+        },
+        {
+          id: "chatus:vision_assist",
+          label: "视觉辅助",
+          description: "通过管理员选择的原生视觉线路生成受限图像证据。",
+          source: "chatus",
+          activation: "route_augmentation",
+          status: currentConfig.visionAssist?.enabled ? "installed" : currentConfig.visionAssist ? "disabled" : "requires_setup",
+          installable: false,
+          disclosure: {
+            execution: "auxiliary_provider",
+            externalRequest: true,
+            dataClasses: ["image"],
+            latency: "variable",
+            cost: "provider_request",
+          },
+        },
+      ],
+    }],
+  });
+
+  await page.route("**/api/admin/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = (body: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+    if (url.pathname === "/api/admin/config" && request.method() === "GET") {
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/members" && request.method() === "GET") {
+      await json({ members: [], accessRevision: "m".repeat(64), accessSource: "managed" });
+      return;
+    }
+    if (url.pathname === "/api/admin/setup-status" && request.method() === "GET") {
+      await json(adminSetupReady);
+      return;
+    }
+    if (url.pathname === "/api/admin/config" && request.method() === "PUT") {
+      const payload = request.postDataJSON() as { config: AdminConfig; expectedRevision: string };
+      expect(payload.expectedRevision).toBe(revision);
+      visionSaveAttempts += 1;
+      if (visionSaveAttempts === 1) {
+        revision = "b".repeat(64);
+        await json({ error: "config_conflict", message: "合成配置冲突。", currentRevision: revision }, 409);
+        return;
+      }
+      currentConfig = payload.config;
+      revision = "c".repeat(64);
+      await json({ config: currentConfig, source: "kv", revision });
+      return;
+    }
+    if (url.pathname === "/api/admin/mcp-secrets" && request.method() === "GET") {
+      await json({ masterKeyReady: true, items: [] });
+      return;
+    }
+    if (url.pathname === "/api/admin/capability-packs" && request.method() === "GET") {
+      await json(catalog());
+      return;
+    }
+    if (url.pathname === "/api/admin/capability-packs/install" && request.method() === "POST") {
+      const payload = request.postDataJSON() as { packId: string; itemIds: string[]; expectedRevision: string };
+      expect(payload).toMatchObject({
+        packId: "chatus:starter-capabilities",
+        itemIds: ["chatus:writing"],
+        expectedRevision: revision,
+      });
+      installAttempts += 1;
+      if (installAttempts === 1) {
+        revision = "b".repeat(64);
+        await json({ error: "config_conflict", message: "合成配置冲突。", currentRevision: revision }, 409);
+        return;
+      }
+      currentConfig = {
+        ...currentConfig,
+        defaults: {
+          ...currentConfig.defaults,
+          allowedSkills: [...(currentConfig.defaults.allowedSkills || []), "chatus:writing"],
+        },
+        skills: {
+          ...currentConfig.skills,
+          "chatus:writing": {
+            enabled: true,
+            label: "写作与改写",
+            description: "起草、改写并润色文本。",
+            instructions: "Write only from supplied information.",
+            toolIds: [],
+            order: 100,
+            activation: "automatic",
+            origin: "chatus",
+          },
+        },
+      };
+      revision = "c".repeat(64);
+      await json({
+        ok: true,
+        config: currentConfig,
+        source: "kv",
+        revision,
+        installed: ["chatus:writing"],
+        skipped: [],
+      });
+      return;
+    }
+    throw new Error(`unexpected catalog fixture request: ${request.method()} ${url.pathname}`);
+  });
+
+  await page.goto("/?view=admin-members");
+  await page.getByRole("button", { name: "AI 能力" }).click();
+  await page.getByRole("tab", { name: "能力目录" }).click();
+  await expect(page.getByRole("heading", { name: "Chatus 能力目录" })).toBeVisible();
+  await expect(page.getByText("Chatus 内置", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("联网研究", { exact: true })).toBeVisible();
+  await expect(page.getByText("视觉辅助", { exact: true })).toBeVisible();
+
+  const visionToggle = page.getByRole("checkbox", { name: "启用视觉辅助" });
+  await page.getByLabel("辅助视觉逻辑模型").selectOption("primary");
+  await visionToggle.check();
+  await page.getByLabel("证据字符上限").fill("7000");
+  await page.getByRole("button", { name: "保存视觉辅助" }).click();
+  await expect(page.getByText("配置已被其他窗口更新；当前能力草稿仍保留。", { exact: true })).toBeVisible();
+  await expect(visionToggle).toBeChecked();
+  await page.getByRole("button", { name: "保存视觉辅助" }).click();
+  await expect(page.getByText("视觉辅助配置已保存。", { exact: true })).toBeVisible();
+  expect(visionSaveAttempts).toBe(2);
+  expect(currentConfig.visionAssist).toEqual({ enabled: true, routeId: "primary", maxOutputChars: 7000 });
+
+  const writing = page.getByRole("checkbox", { name: /写作与改写/ });
+  await writing.check();
+  await page.getByRole("button", { name: "安装所选" }).click();
+  await expect(page.getByText("配置已更新；目录选择仍保留，请核对状态后重试。", { exact: true })).toBeVisible();
+  await expect(writing).toBeChecked();
+  await expect(page.getByRole("button", { name: "使用服务器版本" })).toBeVisible();
+
+  await page.getByRole("button", { name: "安装所选" }).click();
+  await expect(page.getByText("已安装 1 项能力。", { exact: true })).toBeVisible();
+  expect(installAttempts).toBe(2);
+  expect(currentConfig.defaults.allowedSkills).toContain("chatus:writing");
+  expect(currentConfig.skills["chatus:writing"]).toMatchObject({ origin: "chatus", activation: "automatic" });
+
+  const geometry = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>(".capability-admin-panel");
+    if (!panel) throw new Error("missing capability catalog panel");
+    const rect = panel.getBoundingClientRect();
+    return {
+      documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      bodyFits: document.body.scrollWidth <= document.body.clientWidth,
+      panelFits: rect.left >= 0 && rect.right <= document.documentElement.clientWidth + 1,
+    };
+  });
+  expect(geometry).toEqual({ documentFits: true, bodyFits: true, panelFits: true });
+  await attachScreenshot(page, testInfo, "admin-capability-catalog");
 });
 
 test("member OAuth MCP connections stay actionable and contained", async ({ page }, testInfo) => {

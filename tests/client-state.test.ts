@@ -256,9 +256,12 @@ describe("React client state recovery", () => {
       message: "当前模型的可用线路都在忙，请稍后重试或切换模型。",
       requestId: "turn_request-123",
     }), true)).toEqual({
+      code: "provider_busy",
       message: "当前模型的可用线路都在忙，请稍后重试或切换模型。",
       requestId: "turn_request-123",
     });
+    expect(resolveAgentError(JSON.stringify({ error: "web_research_timeout" }), true).code)
+      .toBe("web_research_timeout");
     expect(friendlyAgentError(JSON.stringify({
       error: "user_api_key_required",
     }), true)).toBe("当前模型需要额外凭据，请切换模型或联系管理员。");
@@ -276,9 +279,10 @@ describe("React client state recovery", () => {
     expect(friendlyAgentError('{"error":"upstream_error","providerId":"private-provider"}', true))
       .toBe("本轮任务暂时失败，可以稍后重试。");
     expect(resolveAgentError('{"error":"upstream_error","requestId":"private provider"}', true))
-      .toEqual({ message: "本轮任务暂时失败，可以稍后重试。" });
+      .toEqual({ code: "agent_error", message: "本轮任务暂时失败，可以稍后重试。" });
     expect(resolveAgentError(JSON.stringify({ error: "provider_busy", requestId: "turn_request-123" }), false))
-      .toEqual({ message: "网络已断开，草稿仍保存在当前设备。", requestId: "turn_request-123" });
+      .toEqual({ code: "provider_busy", message: "网络已断开，草稿仍保存在当前设备。", requestId: "turn_request-123" });
+    expect(resolveAgentError("timeout", true).code).toBe("upstream_timeout");
     expect(friendlyAgentError("timeout", false)).toBe("网络已断开，草稿仍保存在当前设备。");
   });
 

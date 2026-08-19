@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AdminConfig, AdminMcpDiscoveryResponse } from "../client/src/lib/api";
+import { WEB_RESEARCH_INPUT_SCHEMA } from "../src/contracts/web-research";
 import {
   applyMcpServerDraft,
   applySkillDraft,
@@ -48,12 +49,14 @@ function createConfig(): AdminConfig {
 describe("typed capability administration helpers", () => {
   it("renames and deletes Skills while repairing every explicit assignment", () => {
     const source = createConfig();
+    source.skills.coding = { ...source.skills.coding, activation: "explicit_turn", origin: "chatus" };
     const draft = { ...createSkillDraft(source.skills.coding, "coding-v2"), label: "Coding V2" };
     expect(validateSkillDraft(draft, source, "coding")).toEqual({ ok: true });
 
     const renamed = applySkillDraft(source, "coding", draft);
     expect(renamed.skills.coding).toBeUndefined();
     expect(renamed.skills["coding-v2"].label).toBe("Coding V2");
+    expect(renamed.skills["coding-v2"]).toMatchObject({ activation: "explicit_turn", origin: "chatus" });
     expect(renamed.defaults.allowedSkills).toEqual(["coding-v2"]);
     expect(renamed.users.bill.allowedSkills).toEqual(["coding-v2", "writing"]);
     expect(renamed.users.alice.allowedSkills).toEqual(["coding-v2"]);
@@ -73,16 +76,22 @@ describe("typed capability administration helpers", () => {
 
   it("updates tool policy without replacing schema or executor", () => {
     const config = createConfig();
+    config.tools["mcp:docs:search"] = {
+      ...config.tools["mcp:docs:search"],
+      inputSchema: WEB_RESEARCH_INPUT_SCHEMA,
+      capabilityRole: "web_search",
+    };
     const original = config.tools["mcp:docs:search"];
-    const draft = { ...createToolPolicyDraft(original), enabled: false, label: "Docs search" };
+    const draft = { ...createToolPolicyDraft(original), label: "Docs search" };
     expect(validateToolPolicyDraft(original, draft)).toEqual({ ok: true });
     const next = applyToolPolicyDraft(config, "mcp:docs:search", draft);
     expect(next.tools["mcp:docs:search"]).toMatchObject({
-      enabled: false,
+      enabled: true,
       label: "Docs search",
       executor: original.executor,
       inputSchema: original.inputSchema,
       schemaFingerprint: original.schemaFingerprint,
+      capabilityRole: "web_search",
     });
   });
 

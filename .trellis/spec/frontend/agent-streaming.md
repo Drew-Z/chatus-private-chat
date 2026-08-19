@@ -725,3 +725,68 @@ const operation = await root.reserveConversationBranch({
   // bounded prefix and sanitized metadata are copied by the Agent
 });
 ```
+
+## Scenario: Auxiliary Vision Turn Sequencing
+
+### 1. Scope / Trigger
+
+Use this contract when `onChatMessage()` prepares an image turn for a route whose native text model cannot consume image parts.
+
+### 2. Signatures
+
+```text
+tool-capable text route: main_answer -> auxiliary_vision -> tool_continuation
+text-only route:          auxiliary_vision -> main_answer
+```
+
+```typescript
+prepareTeamAgentTurn({ messages, routeId, admission }): Promise<PreparedTeamAgentTurn>;
+```
+
+### 3. Contracts
+
+- One submitted user message calls `admitOnce()` exactly once. Helper, fallback, and tool continuation attempts reuse that admission and do not consume another message quota unit.
+- Helper planning uses the shared route plan, credential, capacity, budget, deadline, usage/cost, cancellation, and required attempt-ledger services. The helper run kind is `auxiliary_vision`.
+- A forced `image_inspect` tool refusal, malformed evidence, timeout, cancellation, or late result settles before unsupported main I/O. A late helper completion cannot persist evidence or start the main call.
+- The main text model receives formatted bounded evidence, never raw image data URLs. After visible output, no route fallback or helper retry may replace the committed answer.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Parent signal already aborted | `request_cancelled`, zero admission and Provider calls |
+| Helper credential/capacity/budget/ledger start failure | Public setup/budget error, zero main calls |
+| Helper timeout or cancellation | Terminal helper status, no unsupported main request |
+| Helper succeeds | Continue with exactly one main answer path |
+| Main answer has visible output | Commit route; no fallback across the visible boundary |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a tool route performs the forced inspection and one continuation, while a text-only route performs one pre-answer helper call and then one answer call.
+- Base: a native route bypasses this contract and keeps the existing direct stream path.
+- Bad: charge the user once per helper/answer call, let a late helper write evidence, or pass the source image through the generic tool JSON.
+
+### 6. Tests Required
+
+- Fake-Provider tests assert exact run order/count/kind, one admission, fallback, usage/cost, timeout, cancellation, late-result inertness, and required ledger settlement.
+- Browser tests assert neutral waiting/error recovery and no helper/provider identity or image bytes in UI state.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+await runVisionHelper(imageParts);
+await admitTurn();
+await streamText(unsupportedTextModel, imageParts);
+```
+
+#### Correct
+
+```typescript
+const admission = await admitOnce();
+const evidence = await runAuxiliaryVision(canonicalImageParts, admission);
+return streamText(textModel, [formatVisionEvidenceForModel(evidence)], admission);
+```
+
+Admission and evidence preparation are completed before unsupported main I/O, with shared cancellation and settlement ownership.

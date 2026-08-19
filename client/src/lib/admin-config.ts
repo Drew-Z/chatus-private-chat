@@ -16,6 +16,8 @@ export type CapabilityAssignmentDraft = {
   allowedSkills: string[];
   inheritTools: boolean;
   allowedTools: string[];
+  inheritAugmentations: boolean;
+  allowedAugmentations: Array<"vision_assist">;
   inheritRoutes: boolean;
   allowedRoutes: string[];
   routeSelectionMode: "all" | "selected";
@@ -50,6 +52,8 @@ export function createCapabilityAssignmentDraft(
     allowedSkills: orderSelection(skillIds, effective.allowedSkills ?? skillIds),
     inheritTools: !isDefault && own.allowedTools === undefined,
     allowedTools: orderSelection(toolIds, effective.allowedTools ?? []),
+    inheritAugmentations: !isDefault && own.allowedAugmentations === undefined,
+    allowedAugmentations: effective.allowedAugmentations?.includes("vision_assist") ? ["vision_assist"] : [],
     inheritRoutes: !isDefault && own.allowedRoutes === undefined,
     allowedRoutes,
     routeSelectionMode: effective.allowedRoutes?.length ? "selected" : "all",
@@ -122,6 +126,9 @@ export function rebaseCapabilityAssignmentDraft(
       : latest.minuteMessageLimit,
     allowedSkills: draft.inheritSkills ? defaults.allowedSkills : orderSelection(skillIds, draft.allowedSkills),
     allowedTools: draft.inheritTools ? defaults.allowedTools : orderSelection(toolIds, draft.allowedTools),
+    allowedAugmentations: draft.inheritAugmentations
+      ? defaults.allowedAugmentations
+      : draft.allowedAugmentations.includes("vision_assist") ? ["vision_assist"] : [],
     allowedRoutes: normalizedRoutes,
     routeSelectionMode: draft.inheritRoutes ? defaults.routeSelectionMode : draft.routeSelectionMode,
     defaultRoute: resolveDefaultRoute(
@@ -292,6 +299,8 @@ function applyDraftToUser(
   else next.allowedSkills = [...draft.allowedSkills];
   if (allowInheritance && draft.inheritTools) delete next.allowedTools;
   else next.allowedTools = [...draft.allowedTools];
+  if (allowInheritance && draft.inheritAugmentations) delete next.allowedAugmentations;
+  else next.allowedAugmentations = [...draft.allowedAugmentations];
 
   if (draft.routesDirty) {
     const routeIds = orderedRouteIds(config);

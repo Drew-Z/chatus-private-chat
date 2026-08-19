@@ -10,6 +10,8 @@ import {
   fetchAdminLegacySurfaceCensus,
   fetchAdminSetupStatus,
   getAgentSkillSelectionMetadata,
+  isAdminCapabilityCatalogSnapshot,
+  isAdminCapabilityPackInstallResponse,
   isAdminConfigSnapshot,
   isAdminLegacyRouteMigrationResponse,
   isAdminLegacySurfaceMutationResult,
@@ -29,6 +31,7 @@ import {
   isMcpOAuthRevokeResponse,
   isMcpOAuthStartResponse,
   isMcpOAuthStatusResponse,
+  isCapabilityMonitorSnapshot,
   isMemberModelAvailability,
   isModelMonitorSnapshot,
   isAdminUsageResetResponse,
@@ -124,6 +127,7 @@ const validSession = {
     type: "openai-chat",
     supportsImages: true,
     supportsTools: true,
+    imageMode: "native",
     healthStatus: "unknown",
   }],
   defaultRoute: "primary",
@@ -144,6 +148,21 @@ const validSession = {
     feedback: true,
     accountData: true,
   },
+  availableCapabilities: [{
+    id: "coding",
+    label: "Coding",
+    description: "Explain supplied code.",
+    source: "administrator",
+    activation: "workflow",
+    availability: "available",
+    disclosure: {
+      execution: "trusted_local",
+      externalRequest: false,
+      dataClasses: ["prompt_text"],
+      latency: "small",
+      cost: "none",
+    },
+  }],
   skills: [{ id: "coding", label: "Coding", toolIds: ["builtin:text_stats"] }],
   tools: [{
     id: "builtin:text_stats",
@@ -964,6 +983,108 @@ describe("React client runtime validation", () => {
       source: "kv",
       revision: "a",
     })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        tools: {
+          "builtin:text_stats": { ...validAdminConfig.tools["builtin:text_stats"], capabilityRole: "web_search" },
+        },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(false);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        visionAssist: { enabled: true, routeId: "primary", maxOutputChars: 6_000 },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(true);
+    expect(isAdminConfigSnapshot({
+      config: {
+        ...validAdminConfig,
+        visionAssist: { enabled: true, routeId: "primary", maxOutputChars: 12_001 },
+      },
+      source: "kv",
+      revision: "a",
+    })).toBe(false);
+  });
+
+  it("strictly decodes capability catalog and installation envelopes", () => {
+    const item = {
+      id: "chatus:writing",
+      label: "写作与改写",
+      description: "起草并改写文本。",
+      source: "chatus",
+      activation: "workflow",
+      status: "missing",
+      installable: true,
+      disclosure: {
+        execution: "instructions",
+        externalRequest: false,
+        dataClasses: ["prompt_text"],
+        latency: "none",
+        cost: "none",
+      },
+    };
+    const catalog = {
+      version: 1,
+      packs: [{
+        id: "chatus:starter-capabilities",
+        version: 1,
+        label: "Chatus 默认能力",
+        description: "默认能力目录。",
+        items: [item],
+      }],
+    };
+    expect(isAdminCapabilityCatalogSnapshot(catalog)).toBe(true);
+    expect(isAdminCapabilityCatalogSnapshot({ ...catalog, token: "secret" })).toBe(false);
+    expect(isAdminCapabilityCatalogSnapshot({
+      ...catalog,
+      packs: [{ ...catalog.packs[0], items: [{ ...item, source: "administrator" }] }],
+    })).toBe(false);
+    expect(isAdminCapabilityCatalogSnapshot({
+      ...catalog,
+      packs: [{ ...catalog.packs[0], items: [{ ...item, status: "installed", installable: true }] }],
+    })).toBe(false);
+    expect(isAdminCapabilityCatalogSnapshot({
+      ...catalog,
+      packs: [{ ...catalog.packs[0], items: [item, { ...item }] }],
+    })).toBe(false);
+    expect(isAdminCapabilityCatalogSnapshot({
+      ...catalog,
+      packs: [{ ...catalog.packs[0], items: [{ ...item, description: "x".repeat(501) }] }],
+    })).toBe(false);
+
+    const installedConfig = {
+      ...validAdminConfig,
+      defaults: { ...validAdminConfig.defaults, allowedSkills: ["coding", "chatus:writing"] },
+      skills: {
+        ...validAdminConfig.skills,
+        "chatus:writing": {
+          enabled: true,
+          label: "写作与改写",
+          description: "起草并改写文本。",
+          instructions: "Write only from supplied information.",
+          toolIds: [],
+          activation: "automatic",
+          origin: "chatus",
+        },
+      },
+    };
+    const result = {
+      ok: true,
+      config: installedConfig,
+      source: "kv",
+      revision: "b".repeat(64),
+      installed: ["chatus:writing"],
+      skipped: [],
+    };
+    expect(isAdminCapabilityPackInstallResponse(result, ["chatus:writing"])).toBe(true);
+    expect(isAdminCapabilityPackInstallResponse({ ...result, accessCode: "secret" }, ["chatus:writing"])).toBe(false);
+    expect(isAdminCapabilityPackInstallResponse({ ...result, skipped: ["chatus:writing"] }, ["chatus:writing"])).toBe(false);
+    expect(isAdminCapabilityPackInstallResponse(result, ["chatus:summarize"])).toBe(false);
   });
 
   it("accepts incomplete legacy MCP tools only in the fail-closed review state", () => {
@@ -1482,8 +1603,65 @@ describe("React client runtime validation", () => {
     expect(isSessionProjection(validSession)).toBe(true);
   });
 
+  it.each([
+    ["native image route", "native", true, true, true],
+    ["native mode without image support", "native", false, true, false],
+    ["tool-assisted route", "assisted_tool", false, true, true],
+    ["tool assistance without tool support", "assisted_tool", false, false, false],
+    ["pre-answer-assisted route", "assisted_preanswer", false, false, true],
+    ["pre-answer assistance with tool support", "assisted_preanswer", false, true, false],
+    ["unsupported image route", "none", false, true, true],
+    ["unsupported mode with native image support", "none", true, true, false],
+  ] as const)(
+    "validates the %s image-mode invariant",
+    (_label, imageMode, supportsImages, supportsTools, expected) => {
+      expect(isSessionProjection({
+        ...validSession,
+        routes: [{ ...validSession.routes[0], imageMode, supportsImages, supportsTools }],
+        capabilities: { ...validSession.capabilities, imageInput: imageMode !== "none" },
+      })).toBe(expected);
+    },
+  );
+
+  it("requires session image capability to match the usable route modes", () => {
+    expect(isSessionProjection({
+      ...validSession,
+      capabilities: { ...validSession.capabilities, imageInput: false },
+    })).toBe(false);
+    expect(isSessionProjection({
+      ...validSession,
+      routes: [],
+      defaultRoute: "",
+      capabilities: { ...validSession.capabilities, imageInput: true },
+    })).toBe(false);
+  });
+
+  it("strictly validates member-safe public capability items", () => {
+    const capability = validSession.availableCapabilities[0];
+    expect(isSessionProjection({ ...validSession, availableCapabilities: [{ ...capability, extra: true }] })).toBe(false);
+    expect(isSessionProjection({ ...validSession, availableCapabilities: [capability, capability] })).toBe(false);
+    expect(isSessionProjection({ ...validSession, availableCapabilities: [{ ...capability, activation: "automatic" }] })).toBe(false);
+    expect(isSessionProjection({ ...validSession, availableCapabilities: [{
+      ...capability,
+      availability: "unavailable",
+    }] })).toBe(false);
+    expect(isSessionProjection({ ...validSession, availableCapabilities: [{
+      ...capability,
+      unavailableReason: "tool_unavailable",
+    }] })).toBe(false);
+    expect(isSessionProjection({ ...validSession, availableCapabilities: [{
+      ...capability,
+      disclosure: { ...capability.disclosure, execution: "reviewed_mcp" },
+    }] })).toBe(false);
+  });
+
   it("accepts an authenticated degraded state with no configured route", () => {
-    expect(isSessionProjection({ ...validSession, routes: [], defaultRoute: "" })).toBe(true);
+    expect(isSessionProjection({
+      ...validSession,
+      routes: [],
+      defaultRoute: "",
+      capabilities: { ...validSession.capabilities, imageInput: false },
+    })).toBe(true);
   });
 
   it("requires the complete session policy projection", () => {
@@ -1533,6 +1711,7 @@ describe("React client runtime validation", () => {
       routes: [{ ...validSession.routes[0], supportsTools: false }],
       allowBringYourOwnKey: false,
       hasUserSystemPrompt: false,
+      availableCapabilities: [],
       skills: [],
       tools: [],
       mcpConnections: [],
@@ -1557,6 +1736,7 @@ describe("React client runtime validation", () => {
       defaultRoute: "",
       allowBringYourOwnKey: false,
       hasUserSystemPrompt: false,
+      availableCapabilities: [],
       skills: [],
       tools: [],
       mcpConnections: [],
@@ -1576,6 +1756,7 @@ describe("React client runtime validation", () => {
     ["BYOK", { allowBringYourOwnKey: true }],
     ["custom system prompt", { hasUserSystemPrompt: true }],
     ["member capability", { capabilities: { ...validSession.capabilities, memory: true } }],
+    ["member capability catalog", { availableCapabilities: validSession.availableCapabilities }],
     ["Skill projection", { skills: validSession.skills }],
     ["tool projection", { tools: validSession.tools }],
     ["MCP OAuth connection", { mcpConnections: validSession.mcpConnections }],
@@ -1592,6 +1773,7 @@ describe("React client runtime validation", () => {
       routes: [{ ...validSession.routes[0], supportsTools: false }],
       allowBringYourOwnKey: false,
       hasUserSystemPrompt: false,
+      availableCapabilities: [],
       skills: [],
       tools: [],
       mcpConnections: [],
@@ -2068,5 +2250,72 @@ describe("React client runtime validation", () => {
     expect(isMemberModelAvailability(availability)).toBe(true);
     expect(isMemberModelAvailability({ ...availability, routes: [{ ...availability.routes[0], providerId: "hidden" }] })).toBe(false);
     expect(isMemberModelAvailability({ ...availability, routes: [{ ...availability.routes[0], message: "healthy" }] })).toBe(false);
+  });
+
+  it("validates exact content-free capability monitoring projections", () => {
+    const generatedAt = 1_900_000_000_000;
+    const periodStart = generatedAt - 86_400_000;
+    const bucketStart = Math.floor((generatedAt - 1_000) / 3_600_000) * 3_600_000;
+    const rows = [
+      {
+        version: 1,
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        status: "succeeded",
+        bucketStart,
+        count: 2,
+        latencySumMs: 300,
+        latencyCount: 2,
+        lastOccurredAt: generatedAt - 1_000,
+      },
+      {
+        version: 1,
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        status: "failed",
+        bucketStart,
+        count: 1,
+        latencySumMs: 300,
+        latencyCount: 1,
+        lastOccurredAt: generatedAt - 2_000,
+      },
+    ];
+    const snapshot = {
+      version: 1,
+      window: "24h",
+      bucket: "hour",
+      generatedAt,
+      periodStart,
+      periodEnd: generatedAt,
+      evidence: "fresh",
+      stale: false,
+      rows,
+      capabilities: [{
+        capabilityId: "chatus:web_research",
+        kind: "web_research",
+        total: 3,
+        succeeded: 2,
+        failed: 1,
+        denied: 0,
+        cancelled: 0,
+        timedOut: 0,
+        successRate: 2 / 3,
+        averageLatencyMs: 200,
+        lastOccurredAt: generatedAt - 1_000,
+      }],
+    };
+    expect(isCapabilityMonitorSnapshot(snapshot)).toBe(true);
+    expect(isCapabilityMonitorSnapshot({ ...snapshot, query: "private" })).toBe(false);
+    expect(isCapabilityMonitorSnapshot({ ...snapshot, rows: [{ ...rows[0], kind: "tool" }, rows[1]] })).toBe(false);
+    expect(isCapabilityMonitorSnapshot({
+      ...snapshot,
+      capabilities: [{ ...snapshot.capabilities[0], total: 4 }],
+    })).toBe(false);
+    expect(isCapabilityMonitorSnapshot({
+      ...snapshot,
+      evidence: "no_data",
+      rows: [],
+      capabilities: [],
+    })).toBe(true);
   });
 });

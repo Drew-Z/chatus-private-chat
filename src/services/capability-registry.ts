@@ -2,12 +2,16 @@ import type {
   CapabilityAssignment,
   CapabilityRegistryConfig,
   NormalizedToolDefinition,
+  PublicCapabilityDisclosureV1,
+  PublicCapabilityV1,
   PublicSkill,
   PublicTool,
   SelectedSkill,
   ToolConfig,
   ToolConfirmation,
 } from "../contracts/capability";
+import { WEB_RESEARCH_CAPABILITY_ID } from "../contracts/web-research";
+import { resolveWebResearchBinding } from "./web-research";
 
 const MAX_SELECTED_SKILLS = 3;
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
@@ -17,13 +21,14 @@ type CapabilityFingerprint = (value: string) => Promise<string>;
 export function getPublicCapabilities(
   config: CapabilityRegistryConfig,
   assignment: CapabilityAssignment,
-): { skills: PublicSkill[]; tools: PublicTool[] } {
+): { capabilities: PublicCapabilityV1[]; skills: PublicSkill[]; tools: PublicTool[] } {
   const allowedSkillIds = getAllowedSkillIds(assignment);
   const allowedToolIds = new Set(assignment.allowedTools || []);
   const tools = Object.entries(config.tools || {})
     .filter(([id, tool]) => (
       tool.enabled === true
       && allowedToolIds.has(id)
+      && tool.capabilityRole !== "web_search"
       && isToolExecutorAvailable(tool, config)
     ))
     .map(([id, tool]): PublicTool => ({
@@ -37,7 +42,11 @@ export function getPublicCapabilities(
 
   const publicToolIds = new Set(tools.map((tool) => tool.id));
   const skills = Object.entries(config.skills || {})
-    .filter(([id, skill]) => skill.enabled === true && (!allowedSkillIds || allowedSkillIds.has(id)))
+    .filter(([id, skill]) => (
+      skill.enabled === true
+      && skill.activation !== "explicit_turn"
+      && (!allowedSkillIds || allowedSkillIds.has(id))
+    ))
     .sort(([leftId, left], [rightId, right]) => (
       (left.order || 0) - (right.order || 0) || leftId.localeCompare(rightId)
     ))
@@ -48,7 +57,77 @@ export function getPublicCapabilities(
       toolIds: (skill.toolIds || []).filter((toolId) => publicToolIds.has(toolId)),
     }));
 
-  return { skills, tools };
+  const capabilities = Object.entries(config.skills || {})
+    .filter(([id, skill]) => (
+      id !== WEB_RESEARCH_CAPABILITY_ID
+      && skill.enabled === true
+      && (!allowedSkillIds || allowedSkillIds.has(id))
+    ))
+    .sort(([leftId, left], [rightId, right]) => (
+      (left.order || 0) - (right.order || 0) || compareStableText(leftId, rightId)
+    ))
+    .map(([id, skill]): PublicCapabilityV1 => {
+      const referencedTools = (skill.toolIds || [])
+        .map((toolId) => config.tools?.[toolId])
+        .filter((tool): tool is ToolConfig => Boolean(tool));
+      const executable = (skill.toolIds || []).every((toolId) => publicToolIds.has(toolId));
+      return {
+        id,
+        label: skill.label,
+        description: skill.description || "",
+        source: skill.origin || "administrator",
+        activation: skill.activation === "explicit_turn" ? "explicit_turn" : "workflow",
+        availability: executable ? "available" : "unavailable",
+        disclosure: capabilityDisclosure(referencedTools),
+        ...(executable ? {} : { unavailableReason: "tool_unavailable" as const }),
+      };
+    });
+
+  const assignedWebResearchTool = Object.entries(config.tools || {}).find(([id, tool]) => (
+    tool.capabilityRole === "web_search" && allowedToolIds.has(id)
+  ));
+  if (assignedWebResearchTool) {
+    const binding = resolveWebResearchBinding(config, assignment);
+    capabilities.push({
+      id: WEB_RESEARCH_CAPABILITY_ID,
+      label: "联网研究",
+      description: "通过管理员审核的只读 MCP 搜索工具获取当前来源。",
+      source: "chatus",
+      activation: "explicit_turn",
+      availability: binding.ok
+        ? "available"
+        : binding.reason === "review_required" ? "requires_setup" : "unavailable",
+      ...(!binding.ok ? { unavailableReason: binding.reason } : {}),
+      disclosure: {
+        execution: "reviewed_mcp",
+        externalRequest: true,
+        dataClasses: ["search_query"],
+        latency: "variable",
+        cost: "external_service",
+      },
+    });
+  }
+
+  if (assignment.allowedAugmentations?.includes("vision_assist")) {
+    capabilities.push({
+      id: "chatus:vision_assist",
+      label: "视觉辅助",
+      description: "通过管理员选择的原生视觉线路为文本模型生成受限图像证据。",
+      source: "chatus",
+      activation: "route_augmentation",
+      availability: "requires_setup",
+      unavailableReason: "helper_unavailable",
+      disclosure: {
+        execution: "auxiliary_provider",
+        externalRequest: true,
+        dataClasses: ["image"],
+        latency: "variable",
+        cost: "provider_request",
+      },
+    });
+  }
+
+  return { capabilities, skills, tools };
 }
 
 export function getSelectedSkills(
@@ -62,6 +141,7 @@ export function getSelectedSkills(
     .filter(([id, skill]) => (
       requested.has(id)
       && skill.enabled === true
+      && skill.activation !== "explicit_turn"
       && (!allowedSkillIds || allowedSkillIds.has(id))
     ))
     .sort(([leftId, left], [rightId, right]) => (
@@ -83,7 +163,13 @@ export async function buildCapabilityToolDefinitions(
 
   for (const toolId of referenced) {
     const tool = config.tools?.[toolId];
-    if (!tool || tool.enabled !== true || !allowed.has(toolId) || !isToolExecutorAvailable(tool, config)) {
+    if (
+      !tool
+      || tool.enabled !== true
+      || tool.capabilityRole === "web_search"
+      || !allowed.has(toolId)
+      || !isToolExecutorAvailable(tool, config)
+    ) {
       continue;
     }
     definitions.push({
@@ -141,4 +227,23 @@ function normalizeCapabilityId(value: unknown, maxChars: number): string {
   if (typeof value !== "string") return "";
   const id = value.trim();
   return id.length > 0 && id.length <= maxChars && CAPABILITY_ID_PATTERN.test(id) ? id : "";
+}
+
+function capabilityDisclosure(tools: ToolConfig[]): PublicCapabilityDisclosureV1 {
+  const hasMcp = tools.some((tool) => tool.executor.type === "mcp");
+  const hasBuiltin = tools.some((tool) => tool.executor.type === "builtin");
+  const hasWebSearch = tools.some((tool) => tool.capabilityRole === "web_search");
+  return {
+    execution: hasMcp ? "reviewed_mcp" : hasBuiltin ? "trusted_local" : "instructions",
+    externalRequest: hasMcp,
+    dataClasses: hasWebSearch ? ["search_query"] : ["prompt_text"],
+    latency: hasMcp ? "variable" : hasBuiltin ? "small" : "none",
+    cost: hasMcp ? "external_service" : "none",
+  };
+}
+
+function compareStableText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }

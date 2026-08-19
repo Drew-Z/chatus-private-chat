@@ -26,6 +26,7 @@ import {
   type AdminProviderFinanceProvider,
   type AdminProviderPriceCatalog,
   type AdminProviderReconciliationInput,
+  type CapabilityMonitorSnapshot,
   type ModelMonitorSnapshot,
 } from "../lib/api";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -388,6 +389,18 @@ export function AdminOperationsContent({
           <ModelMonitorSection snapshot={snapshot.modelMonitor} />
         ) : (
           <p className="typed-admin-empty">模型监控暂时不可用；不影响现有运营统计和消息发送。</p>
+        )}
+      </OperationsSection>
+
+      <OperationsSection
+        icon={<Gauge size={17} />}
+        title="能力执行监控 · 最近 24 小时"
+        meta={capabilityMonitorMeta(snapshot.capabilityMonitor)}
+      >
+        {snapshot.capabilityMonitor ? (
+          <CapabilityMonitorSection snapshot={snapshot.capabilityMonitor} />
+        ) : (
+          <p className="typed-admin-empty">能力监控暂时不可用；模型监控与成员聊天仍可独立运行。</p>
         )}
       </OperationsSection>
 
@@ -791,6 +804,84 @@ function ModelMonitorSection({ snapshot }: { snapshot: ModelMonitorSnapshot }) {
       </div>
     </div>
   );
+}
+
+function CapabilityMonitorSection({ snapshot }: { snapshot: CapabilityMonitorSnapshot }) {
+  const totals = snapshot.capabilities.reduce((current, capability) => ({
+    total: current.total + capability.total,
+    succeeded: current.succeeded + capability.succeeded,
+    failed: current.failed + capability.failed,
+    denied: current.denied + capability.denied,
+    cancelled: current.cancelled + capability.cancelled,
+    timedOut: current.timedOut + capability.timedOut,
+  }), { total: 0, succeeded: 0, failed: 0, denied: 0, cancelled: 0, timedOut: 0 });
+  const maxTotal = Math.max(1, ...snapshot.capabilities.map((capability) => capability.total));
+
+  if (snapshot.evidence === "no_data") {
+    return <p className="typed-admin-empty">最近 24 小时尚无能力编排结果。监控已连接，不代表能力不可用。</p>;
+  }
+
+  return (
+    <div className="capability-monitor-content">
+      {snapshot.stale && (
+        <p className="capability-monitor-warning" role="status">
+          最近证据已超过 6 小时，请结合能力目录的当前配置判断可用性。
+        </p>
+      )}
+      <dl className="model-monitor-summary" aria-label="最近 24 小时能力执行摘要">
+        <div><dt>执行结果</dt><dd>{totals.total}</dd></div>
+        <div><dt>成功</dt><dd>{totals.succeeded}</dd></div>
+        <div><dt>失败</dt><dd>{totals.failed}</dd></div>
+        <div><dt>拒绝</dt><dd>{totals.denied}</dd></div>
+        <div><dt>超时</dt><dd>{totals.timedOut}</dd></div>
+        <div><dt>取消</dt><dd>{totals.cancelled}</dd></div>
+      </dl>
+      <div className="capability-monitor-list">
+        {snapshot.capabilities.map((capability) => (
+          <div className="capability-monitor-row" key={capability.capabilityId}>
+            <span>
+              <strong>{capabilityMonitorLabel(capability.capabilityId)}</strong>
+              <small>{capabilityMonitoringKindLabel(capability.kind)} · 最近 {capability.lastOccurredAt === null ? "未知" : formatMonitorTime(capability.lastOccurredAt)}</small>
+            </span>
+            <progress
+              max={maxTotal}
+              value={capability.total}
+              aria-label={`${capabilityMonitorLabel(capability.capabilityId)} 共 ${capability.total} 次结果`}
+            />
+            <em>
+              成 {capability.succeeded} · 败 {capability.failed} · 拒 {capability.denied} · 超 {capability.timedOut} · 取消 {capability.cancelled}
+              {capability.averageLatencyMs === null ? " · 延迟未知" : ` · 平均 ${capability.averageLatencyMs} ms`}
+            </em>
+          </div>
+        ))}
+      </div>
+      <div className="model-monitor-foot">
+        <span>仅保存固定能力 ID 的小时计数与延迟汇总；不含成员、会话、请求、查询、图片或工具参数。</span>
+        <span>模型监控仅统计 Provider 物理 attempt；此处统计工作流选择、视觉辅助、联网研究与工具执行。</span>
+      </div>
+    </div>
+  );
+}
+
+function capabilityMonitorMeta(snapshot: CapabilityMonitorSnapshot | undefined): string {
+  if (!snapshot) return "监控不可用";
+  if (snapshot.evidence === "no_data") return "已连接 · 暂无结果";
+  if (snapshot.evidence === "stale") return `证据已过期 · 生成于 ${formatMonitorTime(snapshot.generatedAt)}`;
+  return `生成于 ${formatMonitorTime(snapshot.generatedAt)} · 内容无关聚合`;
+}
+
+function capabilityMonitorLabel(capabilityId: CapabilityMonitorSnapshot["capabilities"][number]["capabilityId"]): string {
+  if (capabilityId === "chatus:workflow_selection") return "自动工作流选择";
+  if (capabilityId === "chatus:vision_assist") return "图片理解辅助";
+  if (capabilityId === "chatus:web_research") return "联网研究";
+  return "工具执行";
+}
+
+function capabilityMonitoringKindLabel(kind: CapabilityMonitorSnapshot["capabilities"][number]["kind"]): string {
+  if (kind === "workflow_selection") return "工作流编排";
+  if (kind === "auxiliary_vision") return "辅助视觉";
+  if (kind === "web_research") return "显式联网";
+  return "工具运行时";
 }
 
 type ModelMonitorGroupKind = "routes" | "providers" | "models";

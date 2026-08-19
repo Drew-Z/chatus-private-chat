@@ -1,0 +1,35 @@
+{
+  "id": "chatus-capability-integration-hardening",
+  "name": "chatus-capability-integration-hardening",
+  "title": "Chatus capability integration hardening",
+  "description": "Complete cross-layer lifecycle, privacy, recovery, responsive accessibility, quality-gate, and specification hardening.",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-17",
+  "completedAt": "2026-08-19",
+  "branch": null,
+  "base_branch": "codex/chatus-default-capability-packs",
+  "worktree_path": null,
+  "commit": "49cb0f9ad143ec0357aa6df3e827ba4319757342",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-17-chatus-default-capability-packs",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend && npm test && npm run test:browser:workspace && npm run test:browser:agent && npm run typecheck && npx wrangler deploy --dry-run && git diff --check",
+        "status": "passed",
+        "summary": "Frontend structure passed; 918 Vitest tests passed; Workspace 119 passed and 71 conditional skips; Agent E2E 3 passed; typecheck, Wrangler dry-run, protected-path audit, and diff check passed.",
+        "at": "2026-08-19T06:21:07.277034+00:00"
+      }
+    ]
+  }
+}
