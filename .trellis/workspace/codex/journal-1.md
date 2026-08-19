@@ -413,3 +413,39 @@ Removed apt from both PR browser installation paths, added bounded Chromium down
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Deliver default capability packs PR
+
+**Date**: 2026-08-20
+**Task**: Deliver default capability packs PR
+**Branch**: `codex/chatus-default-capability-packs`
+
+### Summary
+
+Merged current main into PR 97, preserved capability and CI histories, passed all local and remote gates, and marked the mergeable pull request Ready without deploying or merging.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dbb6e38` | (see git log) |
+| `7565ae3` | (see git log) |
+| `a5509b9` | (see git log) |
+| `c9dba7c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
