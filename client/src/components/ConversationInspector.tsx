@@ -29,12 +29,13 @@ import type {
 } from "../lib/capability-turn";
 import { resolveConversationAccessPermissions } from "../lib/state";
 import { ConversationShareDialog } from "./ConversationShareDialog";
-import { FileWorkspacePanel } from "./FileWorkspacePanel";
 import {
   ModelAvailabilityBadge,
+  availabilityConfidenceLabel,
+  availabilityPresentation,
   availabilitySpeedLabel,
-  availabilityStatusDescription,
 } from "./ModelAvailabilityBadge";
+import { FileWorkspacePanel } from "./FileWorkspacePanel";
 
 export type InspectorSection = "capabilities" | "files" | "sharing";
 export type ConversationSettingsSaveState = "idle" | "saving" | "saved" | "error";
@@ -228,8 +229,8 @@ export function ConversationInspector({
               <small>{session.routes.length === 0
                 ? "请联系管理员配置模型线路"
                 : availabilityRoute
-                  ? `${availabilityStatusDescription(availabilityRoute.status)}${availabilityRoute.speed !== "unknown" ? ` · ${availabilitySpeedLabel(availabilityRoute.speed)}` : ""}`
-                  : routeStatusText(selectedRoute?.healthStatus)}{modelAvailabilityRefreshing ? " · 正在更新可用性" : ""}</small>
+                  ? `${availabilityPresentation(availabilityRoute, modelAvailabilityRefreshing).description}${availabilityRoute.speed !== "unknown" ? ` · ${availabilitySpeedLabel(availabilityRoute.speed)}` : ""}`
+                  : modelAvailabilityRefreshing ? "正在更新最近可用性" : "暂无观测"}</small>
               {availabilityRoute?.fallbackRecentlyUsed && <small className="model-availability-fallback">最近请求已自动切换备用线路。</small>}
               {modelAvailability && session.routes.length > 0 && (
                 <div className="model-availability-list" aria-label="模型可用性">
@@ -237,8 +238,12 @@ export function ConversationInspector({
                     const status = modelAvailability.routes.find((candidate) => candidate.routeId === route.id);
                     return (
                       <div className="model-availability-row" key={route.id}>
-                        <span><strong>{route.label}</strong><small>{route.model}</small></span>
-                        <ModelAvailabilityBadge route={status} compact />
+                        <span>
+                          <strong>{route.label}</strong>
+                          <small>{route.model}</small>
+                          <small>{status ? `${availabilityConfidenceLabel(status.confidence)}${status.observedAt ? ` · 最近 ${formatAvailabilityTime(status.observedAt)}` : ""}` : "暂无观测"}</small>
+                        </span>
+                        <ModelAvailabilityBadge route={status} compact refreshing={modelAvailabilityRefreshing} />
                       </div>
                     );
                   })}
@@ -438,12 +443,6 @@ function inspectorNavItem(section: InspectorSection) {
 function selectedRouteLabel(session: SessionProjection, routeId: string): string {
   const route = session.routes.find((candidate) => candidate.id === routeId);
   return route ? `${route.label} · ${route.model}` : "尚未配置可用线路";
-}
-
-function routeStatusText(status: SessionProjection["routes"][number]["healthStatus"]): string {
-  if (status === "healthy") return "最近真实任务运行正常";
-  if (status === "unhealthy") return "最近真实任务出现异常，可切换其他线路";
-  return "尚无近期真实任务记录";
 }
 
 function imageModeLabel(mode: SessionProjection["routes"][number]["imageMode"]): string {

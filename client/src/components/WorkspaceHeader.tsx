@@ -42,7 +42,6 @@ export function WorkspaceHeader({
   onLogout: () => Promise<void>;
 }) {
   const route = session.routes.find((candidate) => candidate.id === routeId);
-  const health = routeHealthLabel(route?.healthStatus);
   const availability = modelAvailability?.routes.find((candidate) => candidate.routeId === routeId);
   const connection = connectionLabel(connectionState);
   const logoutLabel = logoutPending ? "正在退出登录" : "退出登录";
@@ -84,16 +83,16 @@ export function WorkspaceHeader({
               <span>{sharedRole === "editor" ? "编辑者" : "查看者"}</span>
             </span>
           ) : null}
-          <span className={`header-context-line ${connectionState}`} role="status">
-            {route?.label || "默认线路"} · {connection}
-          </span>
+          <span className={`header-context-line ${connectionState}`} role="status">{connection}</span>
         </div>
         {session.access === "guest" || !permissions.canManageSettings ? (
           <div className="header-route-button static" title={route ? `${route.label} · ${route.model}` : "未选择线路"}>
             <Route size={14} aria-hidden="true" />
             <span className="header-route-copy">
               <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
-              <small>{availability ? <><ModelAvailabilityBadge route={availability} compact /> · {health}</> : health}{modelAvailabilityRefreshing ? " · 更新中" : ""}</small>
+              <small>{availability
+                ? <ModelAvailabilityBadge route={availability} compact refreshing={modelAvailabilityRefreshing} />
+                : modelAvailabilityRefreshing ? "正在更新" : "暂无观测"}</small>
             </span>
           </div>
         ) : (
@@ -101,7 +100,9 @@ export function WorkspaceHeader({
             <Route size={14} aria-hidden="true" />
             <span className="header-route-copy">
               <span>{route ? `${route.label} · ${route.model}` : "未选择线路"}</span>
-              <small>{availability ? <><ModelAvailabilityBadge route={availability} compact /> · {health}</> : health}{modelAvailabilityRefreshing ? " · 更新中" : ""}</small>
+              <small>{availability
+                ? <ModelAvailabilityBadge route={availability} compact refreshing={modelAvailabilityRefreshing} />
+                : modelAvailabilityRefreshing ? "正在更新" : "暂无观测"}</small>
             </span>
           </button>
         )}
@@ -127,12 +128,6 @@ export function WorkspaceHeader({
       </div>
     </header>
   );
-}
-
-function routeHealthLabel(status: SessionProjection["routes"][number]["healthStatus"]): string {
-  if (status === "healthy") return "最近真实任务正常";
-  if (status === "unhealthy") return "最近任务有异常，可切换线路";
-  return "暂无近期真实任务记录";
 }
 
 function connectionLabel(state: ConnectionState): string {

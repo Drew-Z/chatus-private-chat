@@ -80,7 +80,8 @@ Examples in `public/app.js` include the session list, model picker, settings dia
   the authoritative Operations snapshot refreshes successfully. Read rollback
   must project `recovery_proven`; write rollback must project `shadowing`.
 - Use an unframed, scannable operations layout. Summary metrics form one full-width band; sections use restrained separators rather than nested cards. The eight-column member table scrolls inside its own wrapper on narrow screens and must never widen the admin page.
-- Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model. Finance mutation coverage injects fake actions and asserts no horizontal overflow at both widths.
+- Render the 24-bucket monitor with stylesheet-owned discrete height classes for attempt and failure levels. Both levels use the same chart-wide `maxAttempts` denominator (`monitorBarLevel(value, maxAttempts)`); scaling failures against one bucket's attempts falsely turns a low-volume single failure into a full-height marker. Do not add React inline `style` props for the chart: the production CSP keeps `style-src 'self'`, and the accessible bucket label remains the exact-count source of truth.
+- Desktop and 390px browser fixtures use synthetic `AdminOperationsSnapshot` data and render `AdminOperationsContent` directly so visual tests cannot authenticate, call `/api`, or contact a model. Monitor coverage includes a low-volume bucket with one attempt and one failure beside a higher chart-wide attempt peak, then asserts the failure marker keeps the corresponding low discrete level. Finance mutation coverage injects fake actions and asserts no horizontal overflow at both widths.
 
 ## Scenario: Recoverable React Admin Safety
 
@@ -525,14 +526,15 @@ type LegacyRouteMigrationResponse = {
 - Keep the message list as the chat column's vertical scroll owner. `MessageComposer` is the non-shrinking bottom child, reserves status height, applies safe-area padding, grows its textarea to a bounded cap, and keeps Send and Stop in the same action box.
 - The transcript stays at or below 720px. Assistant content is unframed, user content uses a compact bubble, and code/tables scroll locally instead of widening the page.
 - Render source URL/document parts after primary content in a named `<section>`. Sanitize URL protocols before creating links, retain the full accessible/title text, and visually contain long labels.
-- At 520px and below, preserve measurable space for both the conversation title and logical route/model. Compact the product identity to its mark instead of hiding the active conversation title.
+- At 780px and below, use a stable 56px primary row for navigation, conversation identity, and actions plus a 40px contextual row for the logical route/model and passive availability label. Preserve measurable title and route width; compact the product identity instead of squeezing both labels into one line. The member projection may present only the decoded status/confidence/freshness/speed fields, never Provider identity, raw counts, failure classes, or telemetry.
+- Between 781px and 1024px, the context command may collapse to its Lucide icon while retaining the full `title` and `aria-label`. Treat 960 CSS px as the 1920-at-200%-zoom desktop checkpoint and assert the title, route control, and global actions remain disjoint.
 - A mobile drawer records its opener only on the closed-to-open transition. Move focus to the close control after the opening click/visibility transition settles only if the user has not moved focus, and restore the opener on an actual close or unmount rather than every effect cleanup.
 - Keep conversation configuration and member configuration as separate layered surfaces. `ConversationInspector` is keyed to the active conversation and owns only route/model, Skills, tools, files, and sharing presentation; `MemberSettingsCenter` owns appearance, memory, MCP, account/data, and session/device presentation. Both surfaces must preserve the existing permission gates and focus lifecycle of the API/dialog components they host.
 - The inspector is closed by default on desktop and becomes a drawer/full-screen layer below the tablet breakpoint. The settings center uses master-detail on desktop and list-to-detail on mobile; every layer receives an accessible name, initial focus, Escape handling, Tab containment, and opener restoration.
 
 ### Tests Required
 
-- Assert header regions do not overlap, the title and route retain visible width at 480px and 390px, the header is at most 60px, and the transcript stays at or below 720px.
+- Assert header regions do not overlap, desktop height stays at most 60px, widths at or below 780px use the bounded 96px two-row geometry, and the 960px zoom-equivalent checkpoint keeps the route before global actions. The title and route retain visible width at 780px/480px/390px, and the transcript stays at or below 720px. Cover recent, limited, stale, degraded, unavailable, no-observation, and refreshing member availability labels without Provider or aggregate diagnostics.
 - Assert the drawer receives initial focus, traps Tab, closes on Escape, restores its opener, and returns focus from the conversation-delete dialog.
 - Assert textarea growth/capping, equal Send/Stop geometry, reserved status space, local code overflow, source containment, user-bubble contrast, and 44px touch actions.
 
