@@ -61,7 +61,7 @@ prepare the pull request for an explicit merge decision.
   `npm run typecheck`, `npx wrangler deploy --dry-run`,
   `python ./.trellis/scripts/task.py validate-all`, and `git diff --check` pass
   in the documented serial order.
-- [ ] PR #97 is pushed without force, all required GitHub checks are green, and
+- [x] PR #97 is pushed without force, all required GitHub checks are green, and
   the draft is converted to Ready for an explicit final merge decision.
 - [x] No production deployment, live Provider/model/MCP/OAuth request,
   production observation action, PR #93 mutation, or legacy rollout

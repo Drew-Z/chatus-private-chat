@@ -14,9 +14,9 @@
   integration defects.
 - [x] Review the final diff for protected paths, secrets, content data, unrelated
   changes, and accidental product-scope expansion.
-- [ ] Commit any required conflict/integration resolution, push without force,
+- [x] Commit any required conflict/integration resolution, push without force,
   and wait for all PR #97 GitHub checks.
-- [ ] Convert PR #97 from Draft to Ready after all checks pass and present the
+- [x] Convert PR #97 from Draft to Ready after all checks pass and present the
   exact merge state for final confirmation.
 
 ## Validation Order

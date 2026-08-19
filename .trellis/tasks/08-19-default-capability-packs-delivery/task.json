@@ -71,6 +71,12 @@
         "status": "passed",
         "summary": "No whitespace errors",
         "at": "2026-08-19T16:05:51.786624+00:00"
+      },
+      {
+        "command": "gh pr checks 97 --watch",
+        "status": "passed",
+        "summary": "changes quality workspace-browser and agent-browser passed at head a5509b9",
+        "at": "2026-08-19T16:17:57.081725+00:00"
       }
     ]
   }
