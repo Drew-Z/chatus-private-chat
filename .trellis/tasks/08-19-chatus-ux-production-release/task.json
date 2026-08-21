@@ -16,7 +16,7 @@
   "base_branch": "codex/chatus-ux-production-release",
   "worktree_path": null,
   "commit": "98db808ae8c489bd93ff64848a32b940ddadc6e7",
-  "pr_url": null,
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/100",
   "subtasks": [],
   "children": [],
   "parent": null,
