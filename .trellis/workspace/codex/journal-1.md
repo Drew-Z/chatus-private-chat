@@ -449,3 +449,38 @@ Merged current main into PR 97, preserved capability and CI histories, passed al
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Chatus production release observation
+
+**Date**: 2026-08-21
+**Task**: Chatus production release observation
+**Branch**: `codex/chatus-ux-production-release`
+
+### Summary
+
+Released candidate e074560 through GitHub Actions, passed member acceptance, completed exact-SHA 24-hour passive observation from d67af302 with a reconciled zero-traffic aggregate, recorded bounded evidence, created PR #100, and archived the task. No synthetic model traffic or legacy rollout changes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `98db808` | (see git log) |
+| `d9dedd9` | (see git log) |
+| `e7d93d2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
