@@ -1,0 +1,4 @@
+{"file":".trellis/spec/platform/delivery-governance.md","reason":"Verify workflow provenance, exact-SHA artifacts, release records, and archive readiness."}
+{"file":".trellis/spec/platform/deployment-configuration.md","reason":"Verify current-main deployment guards, dry-run boundary, smoke evidence, and recovery rules."}
+{"file":".trellis/spec/platform/production-acceptance.md","reason":"Verify member acceptance cleanup, release fencing, retained evidence, and absence of model traffic."}
+{"file":".trellis/spec/platform/model-monitoring.md","reason":"Verify aggregate arithmetic, 24-hour freshness, privacy, member availability, and no-data semantics."}

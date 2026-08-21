@@ -1,0 +1,89 @@
+{
+  "id": "chatus-ux-production-release",
+  "name": "chatus-ux-production-release",
+  "title": "Chatus UX production release",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-08-19",
+  "completedAt": "2026-08-21",
+  "branch": null,
+  "base_branch": "codex/chatus-ux-production-release",
+  "worktree_path": null,
+  "commit": "98db808ae8c489bd93ff64848a32b940ddadc6e7",
+  "pr_url": "https://github.com/Drew-Z/chatus-private-chat/pull/100",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "validation": [
+      {
+        "command": "npm run check:frontend",
+        "status": "passed",
+        "summary": "Frontend build and structure checks passed.",
+        "at": "2026-08-19T07:59:18.145800+00:00"
+      },
+      {
+        "command": "npm test",
+        "status": "passed",
+        "summary": "55 test files and 811 tests passed on the required complete rerun.",
+        "at": "2026-08-19T07:59:19.493034+00:00"
+      },
+      {
+        "command": "npm run typecheck",
+        "status": "passed",
+        "summary": "Root, client, and browser TypeScript checks passed.",
+        "at": "2026-08-19T07:59:20.290598+00:00"
+      },
+      {
+        "command": "npx wrangler deploy --dry-run",
+        "status": "passed",
+        "summary": "Worker bundle dry-run completed without production mutation.",
+        "at": "2026-08-19T07:59:21.047893+00:00"
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "summary": "No whitespace errors detected.",
+        "at": "2026-08-19T07:59:21.804828+00:00"
+      },
+      {
+        "command": "python ./.trellis/scripts/task.py validate-all",
+        "status": "passed",
+        "summary": "Repository consistency passed.",
+        "at": "2026-08-19T07:59:22.559785+00:00"
+      },
+      {
+        "command": "GitHub Actions Deploy to Cloudflare run 32230681004",
+        "status": "passed",
+        "summary": "Exact candidate SHA deployed; production smoke, manifest retention, and cleanup succeeded.",
+        "at": "2026-08-19T08:23:13.883353+00:00"
+      },
+      {
+        "command": "GitHub Actions Production member acceptance run 32231590373",
+        "status": "passed",
+        "summary": "Exact deployed SHA and model-request-free temporary-member acceptance succeeded with bounded artifact.",
+        "at": "2026-08-19T08:23:14.213599+00:00"
+      },
+      {
+        "command": "Pre-deadline main drift review through d67af302",
+        "status": "passed",
+        "summary": "Candidate remains an ancestor; executable observation and acceptance blobs plus the passive-observation section are unchanged; additive auxiliary-vision monitoring drift is compatible with the deployed candidate.",
+        "at": "2026-08-19T19:37:43.228370+00:00"
+      },
+      {
+        "command": "GitHub Actions Production model observation run 32432590580",
+        "status": "passed",
+        "summary": "Exact-SHA passive observation and model-request-free member availability succeeded; aggregate artifact reconciled to a fresh zero-traffic result.",
+        "at": "2026-08-21T00:31:25.770567+00:00"
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+{"file":".trellis/spec/platform/delivery-governance.md","reason":"Exact-main GitHub Actions deployment, bounded delivery evidence, and Trellis release-record contracts."}
+{"file":".trellis/spec/platform/deployment-configuration.md","reason":"Production configuration, same-SHA smoke recovery, current-main guards, and GitHub-Actions-only deployment."}
+{"file":".trellis/spec/platform/production-acceptance.md","reason":"Exact-SHA temporary-member acceptance, cleanup, privacy, and model-request-free behavior."}
+{"file":".trellis/spec/platform/model-monitoring.md","reason":"24-hour aggregate reconciliation, member availability, observation privacy, and zero-traffic semantics."}

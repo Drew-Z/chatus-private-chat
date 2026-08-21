@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
-- **Last Active**: 2026-08-20
+- **Total Sessions**: 14
+- **Last Active**: 2026-08-21
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~451 | Active |
+| `journal-1.md` | ~486 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-08-21 | Chatus production release observation | `98db808`, `d9dedd9`, `e7d93d2` | `codex/chatus-ux-production-release` |
 | 13 | 2026-08-20 | Deliver default capability packs PR | `dbb6e38`, `7565ae3`, `a5509b9`, `c9dba7c` | `codex/chatus-default-capability-packs` |
 | 12 | 2026-08-19 | Harden Playwright CI installation | `385aa0b` | `codex/playwright-ci-reliability` |
 | 11 | 2026-08-19 | Complete Chatus default capability packs | `49cb0f9`, `8ccffe7` | `codex/chatus-default-capability-packs` |
